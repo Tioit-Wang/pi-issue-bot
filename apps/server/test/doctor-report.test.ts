@@ -185,8 +185,8 @@ describe('runDoctor', () => {
     expect(parsed).toMatchObject({ worst: 'warn', exitCode: DOCTOR_EXIT_OK });
   });
 
-  it('CHECKS 清单：12 项且 id 唯一（cli 按 id 断言/排障）', () => {
-    expect(CHECKS).toHaveLength(12);
+  it('CHECKS 清单：13 项且 id 唯一（cli 按 id 断言/排障）', () => {
+    expect(CHECKS).toHaveLength(13);
     const ids = CHECKS.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual([
@@ -198,6 +198,7 @@ describe('runDoctor', () => {
       'postgres',
       'pin',
       'host',
+      'model-endpoint',
       'shell',
       'exec-roundtrip',
       'socket-ownership',

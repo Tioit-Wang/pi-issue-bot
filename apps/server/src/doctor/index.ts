@@ -22,6 +22,7 @@ import { dockerCheck } from './checks/docker.ts';
 import { diskCheck } from './checks/disk.ts';
 import { execRoundtripCheck } from './checks/exec-roundtrip.ts';
 import { hostCheck } from './checks/host.ts';
+import { modelEndpointCheck } from './checks/model-endpoint.ts';
 import { imageCheck } from './checks/image.ts';
 import { nftablesCheck } from './checks/nftables.ts';
 import { pinCheck } from './checks/pin.ts';
@@ -54,6 +55,7 @@ export const CHECKS: readonly CheckDefinition[] = Object.freeze([
   postgresCheck,
   pinCheck,
   hostCheck,
+  modelEndpointCheck,
   shellCheck,
   execRoundtripCheck,
   socketOwnershipCheck,

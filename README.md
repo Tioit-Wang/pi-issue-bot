@@ -89,6 +89,23 @@ pnpm cli -- migrate --dsn postgres://…        # 建 16 张表 + schema_migrati
 pnpm --filter @pi-issue-bot/panel dev         # 面板（MSW 假数据，`?mock=empty|error|unauthorized|slow`）
 ```
 
+### 模型端点（标准 OpenAI / DeepSeek / MiMo 兼容）
+
+agent 的模型请求由 pi-host 代发，我们只负责把端点配置交过去，**不做 provider 客户端**：
+任何说 OpenAI 兼容协议（`/chat/completions`、`/models`）的端点都能直接用。
+
+| 变量 | 说明 | 兼容别名 |
+|---|---|---|
+| `PI_BOT_MODEL_BASE_URL` | base URL，形如 `https://api.deepseek.com/v1`（尾部 `/` 会被吃掉） | `OPENAI_BASE_URL`、`DEEPSEEK_BASE_URL` |
+| `PI_BOT_MODEL_NAME` | 模型名，`deepseek-chat` / `gpt-4o-mini` / MiMo 对应模型名 | `PI_BOT_MODEL` |
+| `PI_BOT_MODEL_API_KEY` | 模型 API key | `OPENAI_API_KEY`、`DEEPSEEK_API_KEY` |
+
+- 三者都会以「我们自己的名字 + 标准 `OPENAI_*` 名」两种形式交给 pi-host（可信侧），**永不进任务容器**。
+- 配了 key 却没配模型名 → 启动即报错（不让它伪装成「任务失败」）。
+- `pi-bot doctor` 新增第 13 项 `model-endpoint`：`GET <base>/models` 验证「端点可达 + 凭证被接受」，
+  不烧 token；没配是 `warn`（dry-run 不需要），401/403 与不可达是 `fail`。
+- 完整变量清单见 [`deploy/env.example`](deploy/env.example)。
+
 ## 还需要真实环境才能验的部分（诚实账）
 
 1. **`vendor/pi-host/<version>/` 尚未 vendored**：`PIN.json` 校验、`connection/initialize` 实机握手、`PI_DESKTOP_BASH` 三条命令路径（R1）、单 pi-host 并发矩阵（R2）都必须在拿到 bundle 后跑 `docs/spec/b0-spike.md` 的脚本。

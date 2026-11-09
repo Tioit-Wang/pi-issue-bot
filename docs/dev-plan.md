@@ -370,3 +370,17 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 2. `test/sandbox-shim.test.ts` 在一次**并行跑测试**时失败，单独复跑与整跑复验均通过——原因是多个会话的测试在争同一台机器的临时目录/进程。**结论：验收门禁必须串行执行，不要在被调度会话跑测试的同时跑整仓测试。**
 
 **仍未覆盖（与 §13.5 一致，不新增）**：`vendor/pi-host` bundle、真实 GitHub App 凭证、目标机 nftables、面板 OAuth。
+
+### 13.8 追加需求：模型端点对接标准 OpenAI / DeepSeek / MiMo 接口（PM 补记）
+
+需求方明确「API 会对接标准 openai or DeepSeek mimo 接口」。按 §9 的变更控制（技术侧小改，不重开设计），本轮落到三处，均在既有边界内：
+
+| 改动 | 落点 | 为什么这样切 |
+|---|---|---|
+| 配置层 | `apps/server/src/app/config.ts` 新增 `AppConfig.model`：`PI_BOT_MODEL_BASE_URL` / `PI_BOT_MODEL_NAME` / `PI_BOT_MODEL_API_KEY`，兼容别名 `OPENAI_*` / `DEEPSEEK_*`；base URL 规范化（去尾 `/`、拒 query/hash、只收 http(s)）；**配了 key 没配模型名即启动失败** | 换供应商只改环境变量；不实现 provider 客户端——pi-host 自己说 OpenAI 兼容协议 |
+| 传递层 | `apps/server/src/app/model-env.ts`：白名单方式把三个值以「我们自己的名字 + `OPENAI_*` 标准名」交给 pi-host（`HostSupervisor.extraEnv`） | 只给需要的变量，不灌整个 `process.env`；key 停在可信侧（bot + pi-host），不进容器 |
+| 预检层 | `doctor` 新增第 13 项 `model-endpoint`：`GET <base>/models`（8s 超时，不烧 token）；未配 → `warn`，2xx → `ok`，模型名不在列表 → `warn`，401/403/404/网络错误 → `fail` | 同时验「端点可达 + 凭证被接受」；`/models` 是各家兼容端点都实现的最小只读面 |
+
+**自验**：`apps/server/test/app-model-endpoint.test.ts`（9 例，含别名优先级 / 归一化 / 启动失败 / 脱敏摘要 / `hostModelEnv` 映射）与 `test/doctor-model-endpoint.test.ts`（8 例，200/缺模型名/401/404/网络错误/未配置），`doctor-report.test.ts` 的检查清单同步为 13 项。三条门禁仍全绿（server 734 通过 / 2 跳过）。
+
+**没做的**：不内置任何厂商默认值（不猜端点）、不做多模型路由与 fallback、不在面板上暴露模型配置（面板只读，改配置走 `EnvironmentFile`）。

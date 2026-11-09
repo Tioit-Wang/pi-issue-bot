@@ -21,6 +21,8 @@ export {
 } from './config.ts';
 export type { AppConfig } from './config.ts';
 
+export { HOST_MODEL_ENV_KEYS, describeModelEndpoint, hostModelEnv } from './model-env.ts';
+
 export {
   APP_ERROR_CODES,
   QUEUE_STOP_TIMEOUT_MS,

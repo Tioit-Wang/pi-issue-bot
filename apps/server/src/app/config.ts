@@ -60,6 +60,20 @@ export const APP_ENV_KEYS = {
   dryRun: 'PI_BOT_DRY_RUN',
   /** GitHub token（只用于 webhook 的 10 秒应答；worker 的写面走 App 认证） */
   githubToken: 'PI_BOT_GITHUB_TOKEN',
+  /**
+   * 模型 API key。**标准 OpenAI / DeepSeek / MiMo 兼容端点都能用**：
+   * 我们自己这一份是 `PI_BOT_MODEL_API_KEY`，兼容别名 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`。
+   */
+  modelApiKey: 'PI_BOT_MODEL_API_KEY',
+  openaiApiKey: 'OPENAI_API_KEY',
+  deepseekApiKey: 'DEEPSEEK_API_KEY',
+  /** 模型 base URL（形如 `https://api.openai.com/v1`、`https://api.deepseek.com/v1`）；别名 `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` */
+  modelBaseUrl: 'PI_BOT_MODEL_BASE_URL',
+  openaiBaseUrl: 'OPENAI_BASE_URL',
+  deepseekBaseUrl: 'DEEPSEEK_BASE_URL',
+  /** 模型名（`gpt-4o-mini`、`deepseek-chat`、`mimo-…`）；兼容别名 `PI_BOT_MODEL` */
+  modelName: 'PI_BOT_MODEL_NAME',
+  modelNameAlias: 'PI_BOT_MODEL',
 } as const;
 
 /** 缺省值（来源写在注释里，不做路径推导）。 */
@@ -101,6 +115,21 @@ export interface AppConfig {
   };
   readonly github: {
     readonly token: string | null;
+  };
+  /**
+   * 模型端点（plan §4.4：模型请求由宿主代发，key 只在可信侧）。
+   *
+   * 这里只做**搬运与校验**，不实现任何 provider 客户端：pi-host 拿到这几个环境变量后按
+   * 标准 OpenAI 兼容协议（`/chat/completions`、`/models`）说话，所以 OpenAI、DeepSeek、
+   * MiMo 这类兼容端点共用一套配置，切换只改 base URL / model name。
+   */
+  readonly model: {
+    /** `null` = 没配（本机 dry-run / 单测场景）；有值时 pi-host 才能真跑 turn */
+    readonly apiKey: string | null;
+    /** 已去掉尾部 `/`；`null` = 不覆盖 pi-host 的默认端点 */
+    readonly baseUrl: string | null;
+    /** `null` = 没配模型名（`doctor` 会 warn） */
+    readonly name: string | null;
   };
   readonly host: {
     /** `null` = 不拉起 pi-host（本机没有 bundle）；装配层会换成「明确失败」的端口 */
@@ -168,6 +197,28 @@ function readBoolean(env: EnvLike, key: string, fallback: boolean): boolean {
   }
   throw new ConfigError(`${key} 只接受 true/false/1/0，收到 ${raw}`);
 }
+/**
+ * 规范化模型 base URL：`https://api.deepseek.com/v1/` → `https://api.deepseek.com/v1`。
+ *
+ * 只做三件事：去掉尾部 `/`（否则拼出来是 `//models`）、拒绝非 http(s)、拒绝带 query/hash
+ * （那说明用户把完整接口路径贴进来了，直接报错比悄悄 @ts-ignore 好）。
+ * **不猜端点**：没配就返回 `null`，让 pi-host 用它自己的默认值。
+ */
+function normalizeModelBaseUrl(raw: string, key: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new ConfigError(`${key} 不是合法 URL：${raw}（形如 https://api.deepseek.com/v1）`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new ConfigError(`${key} 只接受 http/https，收到 ${parsed.protocol}`);
+  }
+  if (parsed.search !== '' || parsed.hash !== '') {
+    throw new ConfigError(`${key} 不应带查询串或锚点（填 base URL，不要填某个接口的完整路径）：${raw}`);
+  }
+  return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/u, '');
+}
 
 /* ── 装配 ─────────────────────────────────────────────────────────────────── */
 
@@ -195,6 +246,28 @@ export function readAppConfig(env: EnvLike): AppConfig {
     throw new ConfigError(`缺少 ${APP_ENV_KEYS.dataDir}（数据目录：job 目录、clone 缓存、磁盘水位都在它下面）`);
   }
 
+  // 模型端点：key 有三个别名（我们自己的 + OPENAI_ / DEEPSEEK_），先到先得。
+  // 为什么允许别名：这台机器上别的工具（pi-host、各家 SDK）已经在读标准名，硬性要求改名
+  // 只会让运维同时维护两套变量；别名让「标准 OpenAI / DeepSeek / MiMo 端点」开箱可用。
+  const modelKey = readFirst(env, [
+    APP_ENV_KEYS.modelApiKey,
+    APP_ENV_KEYS.openaiApiKey,
+    APP_ENV_KEYS.deepseekApiKey,
+  ]);
+  const modelBase = readFirst(env, [
+    APP_ENV_KEYS.modelBaseUrl,
+    APP_ENV_KEYS.openaiBaseUrl,
+    APP_ENV_KEYS.deepseekBaseUrl,
+  ]);
+  const modelName = readFirst(env, [APP_ENV_KEYS.modelName, APP_ENV_KEYS.modelNameAlias]);
+
+  // 配了 key 却没配模型名 → 启动就炸。理由：pi-host 每个 turn 都要模型名，
+  // 让它到第一个任务才失败，等于把配置错误伪装成「任务失败」（plan §10 要求启动可判）。
+  if (modelKey !== null && modelName === null) {
+    throw new ConfigError(
+      `配置了 ${modelKey.key} 但缺少 ${APP_ENV_KEYS.modelName}（例：deepseek-chat / gpt-4o-mini / mimo-…）`,
+    );
+  }
   const bundleDir = readString(env, APP_ENV_KEYS.hostBundleDir);
   const hostToken = readString(env, APP_ENV_KEYS.hostToken);
   // bundle 存在但没有设备令牌：**不在启动时炸**（配对是 `bootstrap-host` 的活，
@@ -232,6 +305,11 @@ export function readAppConfig(env: EnvLike): AppConfig {
     },
     webhook: { secret: webhookSecret },
     github: { token: readString(env, APP_ENV_KEYS.githubToken) },
+    model: {
+      apiKey: modelKey === null ? null : modelKey.value,
+      baseUrl: modelBase === null ? null : normalizeModelBaseUrl(modelBase.value, modelBase.key),
+      name: modelName === null ? null : modelName.value,
+    },
     host: {
       bundleDir,
       dataDir: readString(env, APP_ENV_KEYS.hostDataDir) ?? `${dataDir}/host`,
@@ -273,6 +351,13 @@ export function describeAppConfig(config: AppConfig): Readonly<Record<string, un
     // 只报「配没配」：`token` 这个键名会让日志门面的值级脱敏把整个对象抹掉，
     // 所以这里用 `*Configured` 命名（§10.2 要的是「值不出现」，不是「连状态都看不见」）
     githubTokenConfigured: config.github.token !== null,
+    // 模型端点：base URL 与模型名可以出现（不是秘密），key 只报「配没配」。
+    // 键名刻意不用 `apiKey`——日志门面的 `*.apiKey` 脱敏路径会把布尔值也抹成 `<redacted>`。
+    model: {
+      baseUrl: config.model.baseUrl,
+      name: config.model.name,
+      keyConfigured: config.model.apiKey !== null,
+    },
     host: {
       bundleDir: config.host.bundleDir,
       dataDir: config.host.dataDir,

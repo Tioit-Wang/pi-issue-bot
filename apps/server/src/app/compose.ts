@@ -62,6 +62,7 @@ import { createSupervisorHostPort, runTask } from '../worker/index.ts';
 import type { HostPort, TaskRunReport, WorktreePort } from '../worker/index.ts';
 import type { AppConfig } from './config.ts';
 import { describeAppConfig } from './config.ts';
+import { hostModelEnv } from './model-env.ts';
 import { createRacpChannelFactory } from './racp.ts';
 import type { RacpChannelFactory } from './racp.ts';
 import {
@@ -217,6 +218,9 @@ function createDefaultHostPort(config: AppConfig, logger: Logger): HostPort {
     dataDir: config.host.dataDir,
     port: config.host.port,
     logger,
+    // 模型端点从这里进 pi-host：base URL / key / model 三个，别名同时写（见 model-env.ts）。
+    // key 只在可信侧（bot + pi-host），永不进任务容器（plan §8.4）。
+    extraEnv: hostModelEnv(config),
   });
   return createSupervisorHostPort(supervisor);
 }
