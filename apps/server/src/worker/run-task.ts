@@ -1,0 +1,545 @@
+/**
+ * 一次任务的完整链路（B13；tech-plan §4.3 的九步 + §4.7 的三层时间闸）。
+ *
+ * ```
+ * 1 project/register → 2 session/create → 3 events/subscribe → 4 turn/start
+ *                                          ↓（事件循环，含审批/反问应答）
+ * 5 workspace/diff → 6 校验信封 → 7 写执行器 → 8 session/archive → 9 落库
+ * ```
+ *
+ * 九步的**顺序就是单测的断言对象**（`onStep` 回调 + `TaskRunReport.steps`）：
+ * worktree → container → proxy → host → turn → diff → validate → execute → dispose。
+ *
+ * 四处关键取舍（都在对应位置有展开注释）：
+ *  - **dry-run 不产生任何写副作用**：连 `actions` 行都不写（见 `writeback.ts`）。
+ *  - **任务级时间闸分两段**：setup（worktree/容器/代理/host）与 turn 各自套同一个
+ *    `runWithDeadline`。为什么不是一个大 `runWithDeadline` 包住全部：外层一旦 reject，
+ *    `runWithDeadline` 不会等内层落地，容器销毁与 `runs` 落库就会和后台还在跑的
+ *    turn 打架（同一 run 两处写库）。分段后每一段超时都能**确定性收尾**。
+ *  - **超时不自动重试**：`decideRetry()` 只读最高优先级分类，`timeout` 恒为 `retry:false`。
+ *  - **OOM 必须在销毁前采**（§6.3）：处置只调 `lifecycle.dispose()`，它内部先 inspect 再销毁。
+ */
+import { createDegeneracyMonitor } from '../degeneracy/index.ts';
+import type { DegeneracyHit } from '../degeneracy/index.ts';
+import { decideRetry, pickHighestPrioritySignal } from '../queue/index.ts';
+import type { FailureClass, FailureSignal } from '../queue/index.ts';
+import { DEFAULT_TURN_TIMEOUT_MS, REVIEW_PR_TURN_TIMEOUT_MS, driveTurn } from '../runtime/turn-driver.ts';
+import type { TurnDriveResult, TurnDriverOps } from '../runtime/turn-driver.ts';
+import {
+  buildContainerCreateOptions,
+  classifyDestroyedState,
+  containerNameFor,
+} from '../sandbox/index.ts';
+import type { ContainerStateSnapshot, TaskOutcome } from '../sandbox/index.ts';
+import { createNullLogger, runWithDeadline, summarizeIssues } from './deps.ts';
+import type { EventEnvelope } from './deps.ts';
+import { envelopeRowOf, findEnvelopeText, prepareEnvelope } from './envelope.ts';
+import type { CapturedEvent } from './envelope.ts';
+import {
+  isInterruptError,
+  isTimeoutError,
+  observeCommandTimeout,
+  signalFromContainerState,
+  signalFromDegeneracy,
+  signalFromError,
+  signalFromParse,
+} from './failure.ts';
+import type { CommandTimeoutObservation } from './failure.ts';
+import type {
+  ActionOutcome,
+  EndpointRegistry,
+  PreparedEnvelope,
+  RunOutcome,
+  TaskRunInput,
+  TaskRunReport,
+  TaskRunnerDeps,
+  TaskStep,
+  WorkerTaskStatus,
+} from './types.ts';
+import { WORKER_TASK_STATUS } from './types.ts';
+import { executeActions } from './writeback.ts';
+
+/** `/review-pr` 的命令名（决定 30min 而非 20min 的任务级时间闸，§4.7）。 */
+export const REVIEW_PR_COMMAND = '/review-pr';
+
+/** 命令 → 任务级时间闸（毫秒）。 */
+export function timeoutMsForCommand(command: string): number {
+  const normalized = command.trim().toLowerCase();
+  return normalized === REVIEW_PR_COMMAND || normalized.startsWith(`${REVIEW_PR_COMMAND} `)
+    ? REVIEW_PR_TURN_TIMEOUT_MS
+    : DEFAULT_TURN_TIMEOUT_MS;
+}
+
+/** `runs.outcome` → 生命周期处置用的 `TaskOutcome`（§6.3 那张表）。 */
+export function toTaskOutcome(outcome: RunOutcome): TaskOutcome {
+  switch (outcome) {
+    case 'succeeded':
+      return 'success';
+    case 'timed-out':
+      return 'timeout';
+    case 'cancelled':
+      return 'cancelled';
+    case 'degenerate-output':
+      // 熔断与超时同一档：立即销毁（§6.3「超时 / 熔断 / 取消」）
+      return 'circuit-open';
+    case 'failed':
+      return 'failure';
+  }
+}
+
+/** `runs.outcome` → `tasks.status`。 */
+export function toTaskStatus(outcome: RunOutcome): WorkerTaskStatus {
+  switch (outcome) {
+    case 'succeeded':
+      return WORKER_TASK_STATUS.succeeded;
+    case 'timed-out':
+      return WORKER_TASK_STATUS.timedOut;
+    case 'cancelled':
+      return WORKER_TASK_STATUS.cancelled;
+    case 'degenerate-output':
+    case 'failed':
+      // `tasks.status` 没有「熔断」这一档：它是失败的一个分类（原因在 runs.failure_class）
+      return WORKER_TASK_STATUS.failed;
+  }
+}
+
+/**
+ * 由**全部信号**推出 run 的结局。
+ *
+ * 只看最高优先级的那一个（§7.3）：`timeout` / `interrupt` / `degenerate-output` 同在
+ * 优先级 1，它们分别落 `timed-out` / `cancelled` / `degenerate-output`（面板文案不同），
+ * 其余一律 `failed`。
+ */
+export function decideOutcome(
+  signals: readonly FailureSignal[],
+  terminal: string | null,
+  hasDegeneracyHit: boolean,
+): RunOutcome {
+  if (hasDegeneracyHit) {
+    return 'degenerate-output';
+  }
+  const highest = pickHighestPrioritySignal(signals);
+  if (highest === null) {
+    return terminal === 'turn.completed' ? 'succeeded' : 'failed';
+  }
+  switch (highest.failureClass) {
+    case 'timeout':
+      return 'timed-out';
+    case 'interrupt':
+      return 'cancelled';
+    case 'degenerate-output':
+      return 'degenerate-output';
+    default:
+      return 'failed';
+  }
+}
+
+/**
+ * 记下 `session/create` 与 `turn/start` 返回的 id。
+ *
+ * 为什么需要这一层：`driveTurn()` 只在**成功返回**时把 `sessionId` / `turnId` 交给上层；
+ * 超时、取消、事件流异常这些路径它直接抛错，而 `runs.session_id` / `runs.turn_id`
+ * 恰恰在失败场景才有排查价值（面板详情页靠它们回到 Host 侧会话）。
+ * 所以这里在 operation 边界上各记一份，两条路径都能把 id 写进 `runs`。
+ *
+ * 刻意**逐个方法显式委托**而不是 `{ ...ops }`：`RacpOps` 是类实例，方法在原型上，
+ * 展开运算符只会复制自有属性——那样就会静默丢掉所有方法。
+ */
+function recordingOps(
+  ops: TurnDriverOps,
+  sink: { sessionId?: string; turnId?: string },
+): TurnDriverOps {
+  return {
+    projectRegister: (params, options) => ops.projectRegister(params, options),
+    sessionCreate: async (params, options) => {
+      const session = await ops.sessionCreate(params, options);
+      sink.sessionId = session.id;
+      return session;
+    },
+    eventsSubscribe: (params, options) => ops.eventsSubscribe(params, options),
+    turnStart: async (params, options) => {
+      const turn = await ops.turnStart(params, options);
+      sink.turnId = turn.id;
+      return turn;
+    },
+    turnInterrupt: (params, options) => ops.turnInterrupt(params, options),
+    approvalRespond: (params, options) => ops.approvalRespond(params, options),
+    inputRespond: (params, options) => ops.inputRespond(params, options),
+    workspaceDiff: (params, options) => ops.workspaceDiff(params, options),
+    sessionArchive: (params, options) => ops.sessionArchive(params, options),
+  };
+}
+
+/** 跑一次任务。**不抛异常**：任何失败都体现在 `report.outcome` 与 `report.signals` 上。 */
+export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promise<TaskRunReport> {
+  const clock = deps.clock ?? ((): number => Date.now());
+  const logger = (deps.logger ?? createNullLogger()).child({ taskId: input.taskId, runId: input.runId });
+  const startedAtMs = clock();
+  const timeoutMs = (deps.timeoutForCommand ?? timeoutMsForCommand)(input.command);
+  const attempt = Math.max(1, input.attempt ?? 1);
+  const dryRun = input.dryRun === true;
+
+  const steps: TaskStep[] = [];
+  const recordStep = (step: TaskStep, detail?: Readonly<Record<string, unknown>>): void => {
+    steps.push(step);
+    deps.onStep?.(step, detail);
+  };
+
+  const signals: FailureSignal[] = [];
+  const commandTimeouts: CommandTimeoutObservation[] = [];
+  const captured: CapturedEvent[] = [];
+  const actionOutcomes: ActionOutcome[] = [];
+  const endpoints: EndpointRegistry = new Map();
+  const monitor = createDegeneracyMonitor(deps.degeneracy ?? {});
+
+  let cursor = 0;
+  let appendChain: Promise<void> = Promise.resolve();
+  const appendEvent = (kind: string, payload: unknown): void => {
+    cursor += 1;
+    const assigned = cursor;
+    appendChain = appendChain
+      .then(() => deps.store.appendEvent({ runId: input.runId, cursor: assigned, kind, payload }))
+      .catch((error: unknown) => {
+        // 落 run_events 失败不能杀掉任务（同 turn-driver 对 onEvent 的处理）
+        logger.warn({ kind, cursor: assigned, err: String(error) }, 'run_events 落库失败（已忽略）');
+      });
+  };
+
+  let containerId: string | undefined;
+  let jobDir: string | undefined;
+  let sessionId: string | undefined;
+  let turnId: string | undefined;
+  /** 由 `recordingOps()` 填的 id：失败路径（超时/取消）也要能写进 `runs.session_id` / `turn_id`。 */
+  const recordedIds: { sessionId?: string; turnId?: string } = {};
+  let terminal: string | null = null;
+  let turnResult: TurnDriveResult | undefined;
+  let eventCount = 0;
+  let degeneracyHit: DegeneracyHit | null = null;
+  let degeneracyInterrupted = false;
+  let containerState: ContainerStateSnapshot | null = null;
+  let disposed = false;
+  let prepared: PreparedEnvelope | null = null;
+
+  await deps.store.beginRun({
+    runId: input.runId,
+    taskId: input.taskId,
+    attempt,
+    startedAt: new Date(startedAtMs),
+  });
+  await deps.store.markTask({ taskId: input.taskId, status: WORKER_TASK_STATUS.running, endedAt: new Date(startedAtMs) });
+
+  /** 熔断命中后的退出路径：`turn/interrupt`（幂等）→ 停止产出事件。 */
+  const interruptForDegeneracy = async (ref: {
+    readonly sessionId: string;
+    readonly turnId: string;
+  }): Promise<void> => {
+    try {
+      await deps.ops.turnInterrupt({ sessionId: ref.sessionId, turnId: ref.turnId });
+    } catch (error) {
+      logger.warn({ code: isTimeoutError(error) ? 'timeout' : 'unknown' }, '熔断后 turn/interrupt 失败（幂等，继续）');
+    }
+  };
+
+  /** 事件流包装：先喂熔断监视器，再交给 turn-driver（它负责落库与审批应答）。 */
+  const observedEvents = async function* observe(
+    context: { readonly sessionId: string; readonly turnId: string },
+  ): AsyncGenerator<EventEnvelope> {
+    for await (const event of deps.events(context)) {
+      const hit = monitor.observe({ kind: event.kind, payload: event.payload });
+      if (hit !== null && !degeneracyInterrupted) {
+        degeneracyInterrupted = true;
+        degeneracyHit = hit;
+        logger.warn({ criterion: hit.criterion }, '重复输出熔断命中，中断本轮');
+        await interruptForDegeneracy(context);
+      }
+      const timeout = observeCommandTimeout(event);
+      if (timeout !== undefined) {
+        commandTimeouts.push(timeout);
+      }
+      yield event;
+      if (degeneracyInterrupted) {
+        return;
+      }
+    }
+  };
+
+  // ── 1–4：worktree → container → proxy → host（同一段预算） ──────────────────
+  try {
+    await runWithDeadline(
+      {
+        ms: timeoutMs,
+        label: `setup:${input.taskId}`,
+        ...(input.parent === undefined ? {} : { parent: input.parent }),
+      },
+      async () => {
+        recordStep('worktree');
+        const handle = await deps.worktree.create({
+          taskId: input.taskId,
+          repo: input.repo,
+          ...(input.headSha === undefined ? {} : { headSha: input.headSha }),
+        });
+        jobDir = handle.jobDir;
+
+        recordStep('container');
+        const spec = buildContainerCreateOptions({
+          jobId: input.taskId,
+          jobDir: handle.jobDir,
+          image: deps.image,
+          ...(deps.memoryTier === undefined ? {} : { memoryTier: deps.memoryTier }),
+          ...(deps.networkMode === undefined ? {} : { networkMode: deps.networkMode }),
+        });
+        containerId = await deps.docker.createContainer(spec);
+
+        recordStep('proxy');
+        const endpoint = await deps.proxy.listen({
+          jobId: input.taskId,
+          jobDir: handle.jobDir,
+          containerId,
+        });
+        // tech-plan §4.5 的那张表：socket 路径 → 该进哪个容器
+        endpoints.set(endpoint.socketPath ?? endpoint.address, { jobId: input.taskId, containerId });
+
+        recordStep('host');
+        const host = await deps.host.ready();
+        logger.debug({ hostId: host.hostId, port: host.port, version: host.version }, 'pi-host 就绪');
+      },
+    );
+  } catch (error) {
+    signals.push(signalFromError(error));
+    logger.error({ err: String(error) }, '任务准备阶段失败，跳过 turn');
+  }
+
+  const setupFailed = signals.length > 0 || containerId === undefined || jobDir === undefined;
+  // 显式收窄：`setupFailed` 是布尔量，TS 不会据此收窄 `jobDir`，所以取一个局部量。
+  const worktreeRoot = setupFailed ? undefined : jobDir;
+
+  // ── 5–8：turn → diff → 信封 → 写执行器 ──────────────────────────────────────
+  if (worktreeRoot !== undefined) {
+    recordStep('turn');
+    try {
+      turnResult = await driveTurn({
+        ops: recordingOps(deps.ops, recordedIds),
+        worktreeRoot,
+        prompt: input.prompt,
+        messageId: `${input.runId}:${attempt}`,
+        timeoutMs,
+        ...(input.parent === undefined ? {} : { parent: input.parent }),
+        events: observedEvents,
+        onEvent: async (event) => {
+          captured.push({ eventId: event.eventId, kind: event.kind, payload: event.payload });
+          appendEvent(event.kind, event.payload);
+        },
+        onAudit: (audit) => {
+          deps.onAuditEvent?.(audit);
+          appendEvent('approval.audit', audit);
+        },
+        title: `${input.command} ${input.repo}#${String(input.targetNumber)}`,
+        logger,
+      });
+      terminal = turnResult.terminal;
+      eventCount = turnResult.events;
+      sessionId = turnResult.sessionId;
+      turnId = turnResult.turnId;
+    } catch (error) {
+      const signal = signalFromError(error);
+      signals.push(signal);
+      if (isTimeoutError(error)) {
+        logger.warn({ timeoutMs }, '任务级超时：中断并销毁容器（不自动重试）');
+      } else if (isInterruptError(error)) {
+        logger.warn({}, '任务被取消');
+      }
+      // session/turn id 由 driveTurn 内部维护，异常路径上我们只能从错误里拿不到；
+      // `runs.session_id` 允许为空（§7.2），面板按 run_events 也能定位。
+    }
+  }
+
+  recordStep('diff', { events: eventCount, terminal });
+  if (turnResult !== undefined) {
+    // `workspace/diff` 已由 turn-driver 在归档前取过（第 6 步），这里只把它记进报告。
+    logger.debug({ diffBytes: turnResult.diff.diff.length }, 'workspace/diff 已采集');
+  }
+
+  if (degeneracyHit !== null) {
+    await deps.store.recordDegeneracyHit({ runId: input.runId, hit: degeneracyHit });
+    signals.push(signalFromDegeneracy(degeneracyHit));
+  }
+
+  // 终态事件自己的语义：`turn.failed` / `turn.interrupted` 也是观测到的信号
+  if (terminal === 'turn.failed') {
+    signals.push({ failureClass: 'unknown', detail: 'turn.failed：Host 报本轮失败' });
+  } else if ((terminal === 'turn.interrupted' || terminal === 'turn.canceled') && degeneracyHit === null) {
+    signals.push({ failureClass: 'interrupt', detail: `turn 终态 ${terminal}` });
+  } else if (terminal === 'stream-ended' && degeneracyHit === null) {
+    signals.push({
+      failureClass: 'unknown',
+      detail: 'turn 没有终态事件（stream-ended）：无法确认本轮正常结束',
+    });
+  }
+
+  // ── 信封（第 7 步）：只有在拿到 turn 结果时才校验 ────────────────────────────
+  recordStep('validate');
+  if (turnResult !== undefined) {
+    const found = findEnvelopeText(captured);
+    prepared = prepareEnvelope(found?.text ?? null, {
+      ...(deps.allowedIntents === undefined ? {} : { allowedIntents: deps.allowedIntents }),
+      ...(deps.allowPushBranch === undefined ? {} : { allowPushBranch: deps.allowPushBranch }),
+      ...(deps.allowedLabels === undefined ? {} : { allowedLabels: deps.allowedLabels }),
+    });
+    const row = envelopeRowOf(prepared.text, prepared);
+    await deps.store.recordEnvelope({
+      runId: input.runId,
+      verdict: row.verdict,
+      actions: row.actions,
+      usage: row.usage,
+      valid: prepared.valid,
+      errors: prepared.errors,
+    });
+    if (!prepared.valid) {
+      signals.push(signalFromParse(summarizeIssues(prepared.errors)));
+    } else if (prepared.dropped.length > 0) {
+      appendEvent('writeback.dropped', { dropped: prepared.dropped });
+    }
+  }
+
+  // ── 写执行器（第 8 步） ────────────────────────────────────────────────────
+  recordStep('execute');
+  // 熔断命中时**只校验入库、不执行写动作**：plan §9.3 的处置是「已产出的结构化结果照样校验入库」，
+  // 没说「照样发布」。一份在退化状态下产出的评论/标签，发布出去比丢掉代价大得多。
+  if (prepared !== null && prepared.valid && prepared.accepted.length > 0 && degeneracyHit === null) {
+    const target =
+      deps.targets === undefined
+        ? {}
+        : await deps.targets
+            .load({ repo: input.repo, targetNumber: input.targetNumber })
+            .catch(() => ({}));
+    const executed = await executeActions({
+      runId: input.runId,
+      repo: input.repo,
+      targetNumber: input.targetNumber,
+      actions: prepared.accepted,
+      dryRun,
+      api: deps.github,
+      ledger: deps.ledger,
+      target,
+      store: deps.store,
+      clock,
+    });
+    actionOutcomes.push(...executed.outcomes);
+    signals.push(...executed.signals);
+    if (dryRun) {
+      // dry-run 的「计划」留在这里：不写 actions 行，但面板与审计能看到本来要做什么
+      appendEvent('writeback.dry-run', {
+        status: 'dry-run',
+        actions: executed.outcomes.map((item) => ({
+          intent: item.intent,
+          target: item.target,
+          reason: item.reason,
+        })),
+      });
+    }
+  }
+
+  // ── 结局判定 → 生命周期处置（第 9 步之前） ─────────────────────────────────
+  const preOutcome = decideOutcome(signals, terminal, degeneracyHit !== null);
+  const endedAtMs = clock();
+
+  recordStep('dispose', { outcome: preOutcome });
+  if (containerId !== undefined && jobDir !== undefined) {
+    try {
+      const disposeResult = await deps.lifecycle.dispose({
+        jobId: input.taskId,
+        containerId,
+        jobDir,
+        outcome: toTaskOutcome(preOutcome),
+      });
+      disposed = true;
+      containerState = disposeResult.state;
+      // 采到 OOM 却与 lifecycle 的判定不一致时以采到的状态为准（§7.3 的判定源是 OOMKilled）
+      const patched = classifyDestroyedState(disposeResult.state);
+      if (patched !== undefined && preOutcome !== 'succeeded') {
+        logger.debug({ patched }, '销毁前采集出的容器状态');
+      }
+    } catch (error) {
+      signals.push(signalFromError(error, `容器处置失败：${String(error)}`));
+    }
+  } else {
+    // 没起容器也要清端点（worktree 失败时不会有端点，destroy 是幂等的）
+    await deps.proxy.destroy({ jobId: input.taskId }).catch(() => undefined);
+  }
+  endpoints.clear();
+
+  // 容器状态的结论只在「本轮本来就不算成功」时升级为信号（见 failure.ts 文件头第 2 条）
+  if (preOutcome !== 'succeeded') {
+    const containerSignal = signalFromContainerState(containerState);
+    if (containerSignal !== undefined) {
+      signals.push(containerSignal);
+    }
+  }
+
+  const outcome = decideOutcome(signals, terminal, degeneracyHit !== null);
+  const highest = pickHighestPrioritySignal(signals);
+  const failureClass: FailureClass | null = outcome === 'succeeded' ? null : (highest?.failureClass ?? 'unknown');
+  const retry = decideRetry(signals, { attempt });
+  const endedAt = new Date(endedAtMs);
+
+  const failureDetail = {
+    signals: signals.map((signal) => ({
+      failureClass: signal.failureClass,
+      httpStatus: signal.httpStatus ?? null,
+      retryAfterSeconds: signal.retryAfterSeconds ?? null,
+      detail: signal.detail ?? null,
+    })),
+    // 命令级超时不参与分类，只留痕（§7.3：交给 agent 换策略）
+    commandTimeouts,
+    containerState,
+    terminal,
+    dryRun,
+    envelope: prepared === null ? null : { valid: prepared.valid, accepted: prepared.accepted.length, dropped: prepared.dropped.length },
+    actions: actionOutcomes.map((item) => ({ intent: item.intent, status: item.status, target: item.target })),
+    retry,
+  };
+
+  await appendChain.catch(() => undefined);
+  // 成功路径用 turn-driver 给的 id；失败路径（超时/取消）用它从 operation 边界记下的那一份。
+  sessionId = sessionId ?? recordedIds.sessionId;
+  turnId = turnId ?? recordedIds.turnId;
+  await deps.store.finishRun({
+    runId: input.runId,
+    outcome,
+    failureClass,
+    failureDetail,
+    endedAt,
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(turnId === undefined ? {} : { turnId }),
+  });
+  await deps.store.markTask({
+    taskId: input.taskId,
+    status: toTaskStatus(outcome),
+    endedAt,
+    ...(containerId === undefined ? {} : { containerName: containerNameFor(input.taskId) }),
+  });
+
+  return {
+    runId: input.runId,
+    taskId: input.taskId,
+    outcome,
+    failureClass,
+    signals,
+    retry,
+    steps,
+    terminal,
+    envelope: prepared,
+    sessionId: sessionId ?? null,
+    turnId: turnId ?? null,
+    actions: actionOutcomes,
+    dryRun,
+    containerState,
+    containerId: containerId ?? null,
+    jobDir: jobDir ?? null,
+    events: eventCount,
+    degeneracy: monitor.stats,
+    durationMs: endedAtMs - startedAtMs,
+    disposed,
+    retryable: retry.retry,
+  };
+}
