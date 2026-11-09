@@ -3,13 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "React SPA 面板，构建产物由 server 托管（骨架阶段无页面）",
+  "description": "React SPA 面板（Vite 8 + React 19 + Tailwind 4），构建产物由 server 托管",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "gen:api": "openapi-typescript ../../openapi/pi-bot.openapi.json -o src/lib/api-types.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.107.1",
@@ -37,5 +41,10 @@
     "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.3.5",
     "vite": "^8.3.7"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }

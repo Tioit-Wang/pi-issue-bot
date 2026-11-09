@@ -1,0 +1,97 @@
+/**
+ * 面板侧契约类型的**唯一**入口（E8：单一事实源 = `packages/contract/src/**`）。
+ *
+ * 为什么不是 `openapi/pi-bot.openapi.json` + `openapi-typescript`：
+ * 该产物当前有 11 个**自指 `$ref`**（`components.schemas.XResponse = {$ref: "#/components/schemas/XResponse"}`，
+ * 即响应体本身丢了），`openapi-typescript` 会在 redocly 解析阶段直接抛
+ * `Self-referencing circular pointer`，生成不出类型（缺陷属于 W1-A 的 `gen:openapi`，不在本 session 的可写范围）。
+ *
+ * 因此这里**只做类型再导出**：响应类型仍然来自那份 zod（`z.infer` 的产物），不手抄任何 DTO。
+ * 唯一的例外是下面 5 个**查询入参**类型：`api.ts` 只导出了 `*Response` 类型，
+ * `*Query` 是 `z.infer<typeof xxxQuerySchema>`（需要 zod 才能推导，而面板不直接依赖 zod），
+ * 所以按 schema 的字面约束写在这里，一字不差（字段名、可空性、枚举取值都对齐）。
+ * `gen:openapi` 修好后，把整个文件换成生成类型的别名即可，页面代码一行都不用改。
+ */
+import type {
+  AuditResponse,
+  CostsResponse,
+  EnvelopeRecord,
+  OverviewResponse,
+  RevertsResponse,
+  RunEventRecord,
+  RunSummary,
+  SystemResponse,
+  TaskDetailResponse,
+  TaskListItem,
+  TasksResponse,
+} from '../../../../packages/contract/src/index.ts';
+
+/* ── 响应类型（与契约的 `*Response` 一一对应） ────────────────────────────── */
+export type {
+  AuditResponse,
+  CostsResponse,
+  EnvelopeRecord,
+  OverviewResponse,
+  RevertsResponse,
+  RunEventRecord,
+  RunSummary,
+  SystemResponse,
+  TaskDetailResponse,
+  TaskListItem,
+  TasksResponse,
+};
+
+/** 审计行（`AuditResponse['items'][number]`）。 */
+export type AuditRow = AuditResponse['items'][number];
+/** 详情里的 diff（`TaskDetailResponse['diff']`）。 */
+export type TaskDiff = TaskDetailResponse['diff'];
+
+/* ── 查询入参（对应 contract 的 `*QuerySchema`，见文件头说明） ──────────────── */
+
+/** `overviewQuerySchema` = `timeRangeShape`。 */
+export type OverviewQuery = { from?: string; to?: string };
+
+/** `tasksQuerySchema`。 */
+export type TasksQuery = {
+  repo?: string;
+  status?: TaskListItem['status'];
+  failureClass?: NonNullable<TaskListItem['failureClass']>;
+  command?: string;
+  from?: string;
+  to?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+/** `costsQuerySchema`。 */
+export type CostsQuery = { from?: string; to?: string; repo?: string; top?: number };
+
+/** `qualityQuerySchema`。 */
+export type QualityQuery = {
+  from?: string;
+  to?: string;
+  repo?: string;
+  command?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+/** `auditQuerySchema`。 */
+export type AuditQuery = {
+  from?: string;
+  to?: string;
+  repo?: string;
+  command?: string;
+  intent?: AuditRow['intent'];
+  cursor?: string;
+  limit?: number;
+};
+
+/** 错误体（契约 §0.1）：所有 4xx/5xx 只有这一种形状。 */
+export type ApiErrorBody = {
+  error: {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+  };
+};

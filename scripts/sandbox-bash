@@ -1,0 +1,30 @@
+#!/bin/sh
+# 把 host-core 的 `bash -lc <cmd>` 转给本任务的 exec 端点。本脚本不接触 docker。
+#
+# 为什么是「找端点」而不是「找容器」（tech-plan §4.5）：容器名不能由 `pwd -P` 推导——
+# agent 一旦 `cd` 到子目录就会指向错误的容器。shim 只负责说「我在哪」，
+# 代理负责说「你该进哪个容器」。所以这里从 $PWD 逐级上溯最多 4 层，取**最近**的端点。
+#
+# 两种端点形态（dev-plan §13.1 的平台差异）：
+#   - POSIX：`<job>/.pi-bot/exec.sock`（unix socket，`-S` 可判）
+#   - Windows：命名管道无法用 `-S` 判断，代理额外写 `<job>/.pi-bot/exec.endpoint` 承载地址
+set -eu
+
+client=${PI_BOT_EXEC_CLIENT:-/usr/local/lib/pi-bot/exec-client}
+d=$(pwd -P)
+i=0
+while [ "$i" -le 4 ]; do
+  if [ -S "$d/.pi-bot/exec.sock" ]; then
+    exec "$client" "$d/.pi-bot/exec.sock" "$(pwd -P)" "$@"
+  fi
+  if [ -f "$d/.pi-bot/exec.endpoint" ]; then
+    exec "$client" "$d/.pi-bot/exec.endpoint" "$(pwd -P)" "$@"
+  fi
+  [ "$d" = "/" ] && break
+  d=$(dirname "$d")
+  i=$((i + 1))
+done
+
+# 找不到就明确失败：**绝不静默回落到宿主执行**，否则 D5（命令必须进容器）会悄悄失效。
+printf 'pi-bot: NO_EXEC_ENDPOINT: 向上 4 层内找不到 .pi-bot/exec.sock（cwd=%s）\n' "$PWD" >&2
+exit 2

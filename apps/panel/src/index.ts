@@ -1,7 +1,8 @@
 /**
- * apps/panel 入口占位（tech-plan §9）。
+ * `apps/panel` 的包入口。
  *
- * TODO(面板 owner session)：Vite 8 + React 19 SPA，路由见 tech-plan §9.2。
- * 骨架阶段不装 react/vite 依赖、不写任何页面。
+ * 面板是 SPA，真正的入口是 `src/main.tsx`（由 `index.html` 引用，自带 `QueryClient` 与 `BrowserRouter`）；
+ * 这里导出不含任何副作用的路由表与轮询常量，供测试与将来的嵌入式用法复用。
  */
-export {};
+export { AppRoutes, NAV_ITEMS, PANEL_ROUTES } from './routes.tsx';
+export { createQueryClient, REFETCH_INTERVAL } from './lib/queries.ts';
