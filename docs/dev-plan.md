@@ -326,3 +326,47 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 | 表结构 | `information_schema.tables` | 17 张 = 16 张业务表 + `schema_migrations` |
 | 队列 | `pg-boss.start + ensureQueues + registerSchedules` | `pgboss.queue` 6 条（`run-task`/`queue-gate`/`lifecycle-cleanup`/`metrics-rollup`/`reconcile`/`retention-cleanup`）；`pgboss.schedule` 5 条 cron（`* * * * *`×2、`10 0 * * *`、`0 * * * *`、`40 0 * * *`） |
 | 契约产物 | `openapi/pi-bot.openapi.json` | 9 paths / 35 schemas；二次生成哈希一致 |
+
+### 13.7 执行记录（波次收口，PM 自验）
+
+四波、16 个 `pi.session-orchestrator` 会话，文件所有权零重叠，未发生抢改。会话 ID 保留在 `SessionTask` 台账里，可 `send` 回同一会话继续。
+
+| 波次 | 会话 | 切片 | 结果 |
+|---|---|---|---|
+| W1 | `19d53c37` | A 契约冻结（B3+B4） | completed：三份契约 + zod/Ajv + `openapi.json` |
+| W1 | `abbb97ac` | B 数据与队列（B2+B9） | completed：16 表 + `0000_init` + pg-boss 封装 |
+| W1 | `78a4f4c4` | C RACP 客户端（B5） | completed：86 测试（二进制帧/子协议/断线/游标） |
+| W1 | `a8a6545d` | D GitHub 层（B12） | completed：认证/工厂/限流/六动作骨架 |
+| — | PM | `packages/shared` | 补位：logger + 值级脱敏 + `runWithDeadline` + `AppError` + Result（30 测试），解掉 runtime/http 的跨会话依赖 |
+| W2 | `67b94442` | E pi-host 监督（B6） | completed：PIN 钉扎/AES-GCM/退避重启/审批矩阵/turn-driver |
+| W2 | `e97aba18` | F 沙箱执行面（B7） | completed：HostConfig/exec 代理/shim/生命周期；**真容器 10 通过 1 跳过**（含 `State.OOMKilled`） |
+| W2 | `5e5ca30d` | G HTTP 面（B10+B11） | completed：webhook 九步 + handler 内 10 秒应答 + 独立 metrics + CLI 接线 |
+| W2 | `431a703f` | H 查询层 + 面板 P0 | completed：8 查询（真 PG）+ 7 路由壳 + 四态 + `format` 单测 |
+| W3 | `d9ab1fb3` | I worker 闭环（B13） | completed（一次 `NETWORK_ERROR` 后 `send` 续跑并修完 `tsc`/lint） |
+| W3 | `59862123` | J 面板 S1/S4/S5/S7 | completed：4 页 + 4 handler + 13 测试 |
+| W3 | `a8ea243e` | K 面板 S2/S3/S6 | completed（同上，`send` 续跑）：列表游标/URL 同步、详情三 Tabs、CSV 导出 |
+| W3 | `286c1f82` | L doctor（B8） | completed（同上，`send` 续跑）：13 项三态，真跑 7 ok / 4 warn / 1 fail |
+| W4 | `0a756e00` | M 技能与 M1 工作流 | completed：技能校验/命令鉴权/triage/compliance/close 闸门 |
+| W4 | `6d67ac08` | N git 与写回闸门（M4 ⛔） | completed：真 bare 仓库验 4 条反例（未声明改动/工作流篡改/hook/逃逸路径） |
+| W4 | `dce712d3` | O 聚合与对账作业（M3） | completed：`metrics_daily` 幂等 UPSERT、7 天对账、90 天保留、生命周期清扫 |
+| W4 | `d6c1212c` | P 装配与端到端 | completed：`createApplication` + `serve` 接线 + 4 条 e2e（真 PG + 假 host + 假 GitHub） |
+
+**PM 最终自验（2026-06，本机）**
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `pnpm -r typecheck` | exit 0（6/6 包） |
+| 单测 | `pnpm -r test` | exit 0：**server 66 文件 / 717 通过 / 2 跳过**；panel 66；racp-client 86；contract 37；envelope 27；shared 30 |
+| 静态门禁 | `pnpm lint` | exit 0（0 error；6 warning 均为既有 `scripts/spike/*.mjs`） |
+| 面板构建 | `pnpm --filter @pi-issue-bot/panel build` | exit 0（714 modules） |
+| 真库迁移 | `migrate()` 对 `pi_issue_bot_test` | `0000_init` 应用成功；重跑 `applied=[]`（幂等） |
+| 队列 | `pg-boss` 真启动 | 6 队列 + 5 条 cron |
+| 真容器 | `test/sandbox-docker.test.ts` | 10 通过（只读根 fs、身份挂载 `pwd`、内存上限、`timeout` kill、**OOMKilled**） |
+| 端到端 | `test/e2e-*.test.ts` | 5 用例通过：`actions` 0 行、**非 GET 调用计数 = 0**、同一 delivery 20 次仍 1 行 |
+
+**两次失败与处理（不掩饰）**
+
+1. W3 的 I / K / L 三个会话在同一时段返回 `NETWORK_ERROR`（provider 侧断流），产物已落盘但有自有文件缺陷（`consistent-type-imports`、未使用变量、`runTask` 返回类型缺 `sessionId/turnId`）。按 §8.3 用 `send` 回同一会话续跑修完，未新开会话、未抢文件。
+2. `test/sandbox-shim.test.ts` 在一次**并行跑测试**时失败，单独复跑与整跑复验均通过——原因是多个会话的测试在争同一台机器的临时目录/进程。**结论：验收门禁必须串行执行，不要在被调度会话跑测试的同时跑整仓测试。**
+
+**仍未覆盖（与 §13.5 一致，不新增）**：`vendor/pi-host` bundle、真实 GitHub App 凭证、目标机 nftables、面板 OAuth。

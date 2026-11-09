@@ -2,14 +2,15 @@
 
 用 PI SDK（`pi-host` / `agent-runtime`）构建的 Issue / PR 自动处理平台。
 
-**当前阶段：设计定稿 v0.4 + 技术方案 v1.0，实现未开始。**
+**当前阶段：技术方案 v1.1 + 代码实现完成（M0–M4 切片），真实环境验收待目标机。**
 
 | 项 | 状态 |
 |---|---|
 | 需求与设计 | v0.4，已定稿（`docs/plan.md`） |
 | 视觉稿 | `docs/plan.html`（同一份计划的排版版本，浏览器直接打开） |
-| 技术方案 | v1.0，已定稿（`docs/tech-plan.md`） |
-| 实现 | 未开始（从 M0 起） |
+| 技术方案 | v1.1，已定稿（`docs/tech-plan.md`） |
+| 契约 | 已冻结：`docs/spec/contract-{db,api,envelope}.md` + `packages/contract`（zod）+ `openapi/pi-bot.openapi.json` |
+| 实现 | 控制面/执行面/面板全部落代码，见下方「实现状态」 |
 
 ## 它做什么
 
@@ -62,6 +63,35 @@
 
 自研只有 5 处（RACP-WS 客户端、重复输出熔断、容器生命周期策略、自动审批策略、被人改回判定），合计约 1200–1600 行，其余全部使用成熟开源库。
 
-## 下一步：实现 M0
+## 实现状态
 
-按 `docs/tech-plan.md` §12 的里程碑推进。M0 必须先用真实 pi-host bundle 验证两个风险：`PI_DESKTOP_BASH` 覆盖是否覆盖全部命令路径（R1），以及单 pi-host 多 session 的并发上限（R2）。
+代码已按 `docs/tech-plan.md` §12 的 M0–M4 切片落地，`docs/dev-plan.md` §13 记录波次、文件所有权与验收证据。
+
+| 层 | 已实现 | 关键文件 |
+|---|---|---|
+| 契约 | 16 表列定义、9 接口、信封 JSON Schema 正反例、`.github/pi-bot.yml` 与技能 frontmatter 的 zod | `packages/contract`、`packages/envelope`、`docs/spec/contract-*.md` |
+| 数据/队列 | drizzle schema + `0000_init` 迁移、pg-boss 封装、`failure_class` 优先级、重试矩阵、排队闸门、429 熔断 | `apps/server/src/{db,queue}` |
+| agent 侧 | RACP-WS 客户端（帧/传输/18 条白名单 op、断线不重发、游标重放）、pi-host 监督与配对、AES-GCM 令牌、自动审批、turn 驱动 | `packages/racp-client`、`apps/server/src/runtime` |
+| 执行面 | HostConfig 映射（身份挂载/只读/分档内存）、exec 代理 + shim（容器内 `timeout` + `PI_CMD_ID` 兜底）、生命周期与 OOM 采集 | `apps/server/src/sandbox`、`scripts/sandbox-bash`、`images/`、`deploy/` |
+| GitHub | App 认证、Octokit 工厂与限流头、六动作执行器（隐藏标记去重、标签归属、无 merge） | `apps/server/src/github` |
+| 闭环 | worker 全链（信封→写回闸门→审计）、重复输出熔断、M1 分类/合规/不重复催办、关闭闸门、定时作业（聚合/对账/保留期/清扫） | `apps/server/src/{worker,degeneracy,skills,workflows,jobs,git}` |
+| HTTP/面板 | webhook 九步管线 + handler 内 10 秒应答、8 个只读接口、独立 `/metrics`、7 页面板（四态 + MSW） | `apps/server/src/{http,queries,app}`、`apps/panel` |
+
+## 怎么跑
+
+```powershell
+pnpm install
+pnpm -r typecheck; pnpm -r test; pnpm lint   # 三条门禁
+pnpm gen:openapi                              # 由 zod 重新生成 openapi/pi-bot.openapi.json
+pnpm cli -- --help                            # pi-bot CLI（serve / doctor / bootstrap-host / replay / migrate）
+docker compose -f deploy/compose.yaml up -d postgres   # 或自备 PG16+
+pnpm cli -- migrate --dsn postgres://…        # 建 16 张表 + schema_migrations
+pnpm --filter @pi-issue-bot/panel dev         # 面板（MSW 假数据，`?mock=empty|error|unauthorized|slow`）
+```
+
+## 还需要真实环境才能验的部分（诚实账）
+
+1. **`vendor/pi-host/<version>/` 尚未 vendored**：`PIN.json` 校验、`connection/initialize` 实机握手、`PI_DESKTOP_BASH` 三条命令路径（R1）、单 pi-host 并发矩阵（R2）都必须在拿到 bundle 后跑 `docs/spec/b0-spike.md` 的脚本。
+2. **GitHub App 凭证**：`GitHub 零副作用`在 e2e 里用假 client 验过（非 GET 计数 = 0、`actions` 0 行），真投递与写回需要装 App。
+3. **`deploy/nftables.conf` 只写不跑**：本机（Windows + VPN）`canary-network` 项为 `fail`（内网可达），需在目标 Linux 机 apply 后复验。
+4. **面板鉴权**：OAuth 流程留了注入点与 TODO，未接真 OAuth App。
