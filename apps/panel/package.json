@@ -1,0 +1,14 @@
+{
+  "name": "@pi-issue-bot/panel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "React SPA 面板，构建产物由 server 托管（骨架阶段无页面）",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}

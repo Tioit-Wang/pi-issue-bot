@@ -22,3 +22,9 @@ jobs/
 Thumbs.db
 .idea/
 .vscode/
+
+# tooling caches (S3 骨架追加)
+coverage/
+.vitest/
+.eslintcache
+*.local

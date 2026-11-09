@@ -1,0 +1,14 @@
+{
+  "name": "@pi-issue-bot/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "zod 请求/响应契约 + 由 OpenAPI 生成的 panel 客户端类型（叶子包）",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}

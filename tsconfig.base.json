@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "全仓共享的 TS 配置。每个包只写 extends + include，不覆盖这些编译选项。",
+  "compilerOptions": {
+    // 选 nodenext 而不是 bundler：运行时就是 Node（tsx / node --experimental-strip-types），
+    // 没有 bundler 兜底。让 TS 用与 Node 一致的 ESM 解析规则，才能在开发期就暴露
+    // 「本地能跑、生产跑不起来」的引入路径问题（相对引入必须带扩展名）。
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "useUnknownInCatchVariables": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // verbatimModuleSyntax + allowImportingTsExtensions：源码里的 import 原样交给运行时，
+    // 不做「编译期增删 import」的魔法；配合上面的 nodenext，相对引入写 ./x.ts。
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  }
+}

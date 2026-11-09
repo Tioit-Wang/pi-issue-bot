@@ -1,0 +1,10 @@
+# pnpm workspace 定义（tech-plan §8.1 的目录布局）
+# 只有 apps/* 与 packages/* 是 workspace 包；images/ deploy/ migrations/ scripts/ 是资源与脚本目录，
+# 由根 package.json 的脚本直接调用，不单独成包。
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# 关于 `pnpm install` 打印的「Ignored build scripts: esbuild」：
+# 这是 pnpm 10 的默认安全行为，**不影响本仓库**——esbuild 的平台二进制由 optionalDependencies 提供，
+# 不依赖 postinstall。不要为了消掉这行提示去跑 `pnpm approve-builds`（那会悄悄改变安装行为）。

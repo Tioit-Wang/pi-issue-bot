@@ -1,0 +1,5 @@
+# 本仓库在 Windows 上开发、在 Linux 上运行。
+# core.autocrlf=true 会把 .sh 检出成 CRLF，带 CRLF 的 POSIX 脚本在 Linux 上会以
+# "bad interpreter: /bin/sh^M" 失败，因此脚本类文件强制 LF。
+*.sh  text eol=lf
+*.mjs text eol=lf

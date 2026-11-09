@@ -1,0 +1,14 @@
+{
+  "name": "@pi-issue-bot/envelope",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "任务信封 JSON Schema + Ajv 校验器（骨架阶段无实现）",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}

@@ -2,14 +2,14 @@
 
 用 PI SDK（`pi-host` / `agent-runtime`）构建的 Issue / PR 自动处理平台。
 
-**当前阶段：设计定稿 v0.4，技术方案待定。**
+**当前阶段：设计定稿 v0.4 + 技术方案 v1.0，实现未开始。**
 
 | 项 | 状态 |
 |---|---|
 | 需求与设计 | v0.4，已定稿（`docs/plan.md`） |
 | 视觉稿 | `docs/plan.html`（同一份计划的排版版本，浏览器直接打开） |
-| 技术方案 | 未开始 |
-| 实现 | 未开始 |
+| 技术方案 | v1.0，已定稿（`docs/tech-plan.md`） |
+| 实现 | 未开始（从 M0 起） |
 
 ## 它做什么
 
@@ -45,12 +45,23 @@
 
 - [`docs/plan.md`](docs/plan.md) — 需求与设计，唯一事实源
 - [`docs/plan.html`](docs/plan.html) — 同一份计划的排版版本（视觉效果，内容以 `plan.md` 为准）
+- [`docs/tech-plan.md`](docs/tech-plan.md) — 技术方案 v1.0：选型、逐组件成熟库/自研判定、面板与后端结构
+- [`docs/dev-plan.md`](docs/dev-plan.md) — 开发计划：session 编排、切片波次、验收闸门、并行冲突规则
 
-## 下一步：技术方案（未开始）
+## 技术方案要点
 
-已确认的约束：
+| 项 | 结论 |
+|---|---|
+| 后端语言 | Node 24 + TypeScript（否决 Go：pi-host 本身就是 Node 程序，RACP 契约是 TypeBox schema） |
+| 框架 | Fastify 5 + zod 4 → OpenAPI 3.1 |
+| 队列与持久化 | 单个 PostgreSQL 16+，队列用 pg-boss 12（不引入 Redis） |
+| agent 调用 | RACP-WS（JSON-RPC over loopback WebSocket），pi-host bundle 作子进程 |
+| 命令进容器 | `PI_DESKTOP_BASH` 覆盖 + 15 行 shim → `docker exec`，工作树按同路径挂载 |
+| GitHub 集成 | Octokit 5 + `@octokit/auth-app` + `@octokit/webhooks`（不用 Probot） |
+| 面板 | React 19 + Vite 8 + Tailwind 4 + shadcn/ui + Recharts + TanStack Query |
 
-1. 优先使用开源库与成熟实现
-2. MVP 不为已有成熟方案的组件自己造轮子；无成熟库时才自行实现
-3. 面板用 React + Tailwind CSS
-4. 后端语言待定（Go 或其他，技术方案阶段决定）
+自研只有 5 处（RACP-WS 客户端、重复输出熔断、容器生命周期策略、自动审批策略、被人改回判定），合计约 1200–1600 行，其余全部使用成熟开源库。
+
+## 下一步：实现 M0
+
+按 `docs/tech-plan.md` §12 的里程碑推进。M0 必须先用真实 pi-host bundle 验证两个风险：`PI_DESKTOP_BASH` 覆盖是否覆盖全部命令路径（R1），以及单 pi-host 多 session 的并发上限（R2）。

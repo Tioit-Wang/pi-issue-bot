@@ -1,0 +1,4 @@
+# spike 脚本必须在工作树里保持 LF：仓库 core.autocrlf=true 会把 .sh 检出成 CRLF，
+# 带 CRLF 的 POSIX 脚本在 Linux 上会以 "bad interpreter: /bin/sh^M" 失败。
+*.sh text eol=lf
+*.mjs text eol=lf

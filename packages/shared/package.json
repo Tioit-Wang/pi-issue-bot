@@ -1,0 +1,14 @@
+{
+  "name": "@pi-issue-bot/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "logger、redaction、Result、runWithDeadline 等通用工具（叶子包，骨架阶段无实现）",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@pi-issue-bot/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "控制面：Fastify + worker 同进程可执行（骨架阶段只有 CLI 占位）",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "cli": "tsx src/cli.ts"
+  }
+}
