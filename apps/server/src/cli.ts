@@ -22,28 +22,16 @@
  * 既破坏既有调用点，也让退出码语义模糊。
  */
 import { pathToFileURL } from 'node:url';
-import type { FastifyInstance } from 'fastify';
-import type { PgBoss } from 'pg-boss';
-import type { Pool } from 'pg';
 import { createLogger } from '../../../packages/shared/src/index.ts';
 import type { Logger } from '../../../packages/shared/src/index.ts';
+import { createApplication, createUnavailableWebhookAck, readAppConfig } from './app/index.ts';
+import type { AppConfig, Application } from './app/index.ts';
 import { closePool, createPool, migrate } from './db/index.ts';
 import { ConfigError, readDatabaseUrl, readServeConfig } from './config/env.ts';
 import type { EnvLike } from './config/env.ts';
-import { createGithubClient } from './github/index.ts';
-import {
-  buildServer,
-  createGithubWebhookAck,
-  createMetrics,
-  createMetricsServer,
-  createOctokitVerifier,
-  createQueueEnqueuer,
-  createSessionAuth,
-  replayDelivery,
-} from './http/index.ts';
-import type { HealthCheck, MetricsServer, WebhookAck } from './http/index.ts';
-import { QUEUE, bootstrapQueue, createBoss, startBoss, stopBoss } from './queue/index.ts';
-import { createQueries } from './queries/index.ts';
+import { createQueueEnqueuer, replayDelivery } from './http/index.ts';
+import type { WebhookAck } from './http/index.ts';
+import { bootstrapQueue, createBoss, startBoss, stopBoss } from './queue/index.ts';
 
 export const EXIT_OK = 0;
 export const EXIT_USAGE = 1;
@@ -195,28 +183,24 @@ export type RunCliOptions = {
   readonly io?: CliIo;
   readonly now?: () => Date;
   readonly moduleLoader?: ModuleLoader;
+  /**
+   * `serve` 的装配注入点：测试用它把 docker / pi-host / GitHub 全换成假件
+   * （`test/app-lifecycle.test.ts` 用这条路径验「不连真 docker、不连真 host 也能跑起来」）。
+   */
+  readonly appFactory?: (config: AppConfig) => Application;
+  /** `serve` 等信号的方式（测试直接 resolve，不必真发 SIGTERM）。 */
+  readonly waitSignal?: () => Promise<NodeJS.Signals>;
 };
 
-/** `serve` 装配出来的东西（`runServe` 只负责 listen 与等信号）。 */
-export type ServeHandle = {
-  readonly server: FastifyInstance;
-  readonly metrics: MetricsServer;
-  readonly boss: PgBoss;
-  readonly pool: Pool;
-  shutdown(): Promise<void>;
-};
+/** `serve` 的装配注入点类型（`createApplication` 的形状）。 */
+export type ServeAppFactory = (config: AppConfig) => Application;
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /** 没有 GitHub 凭证时的 ack：明确报错，让 webhook handler 记 warn 并继续回 200。 */
-export function createUnavailableAck(reason: string): WebhookAck {
-  const fail = async (): Promise<void> => {
-    throw new Error(`ack 不可用：${reason}`);
-  };
-  return { addEyesReaction: fail, postAckComment: fail };
-}
+export const createUnavailableAck: (reason: string) => WebhookAck = createUnavailableWebhookAck;
 
 /**
  * 等 SIGTERM / SIGINT（优雅停机的触发点）。
@@ -261,102 +245,39 @@ export async function runWithDeadline(
 }
 
 /**
- * 装配 `serve`：HTTP 主实例（3000）+ 独立 metrics 实例（9464）+ pg-boss。
+ * 装配 `serve`：把 `createApplication` 的结果原样交出去。
  *
- * 分工与 W3 的接口：
- *  - **worker**：这里只 `bootstrapQueue`（建队列 + 注册 cron）并留着 `boss` 给 worker 切片
- *    `registerTaskWorker(...)`；本切片不注册 handler（挂了 handler 却没有编排逻辑只会吞任务）。
- *  - **doctor**：`doctor/` 落地后通过 `doctorHealth` 注入点接进 `/healthz` 与 `/api/system`。
+ * 为什么本文件不再自己拼 pool/boss/fastify：装配是**一件事**（`app/compose.ts`），
+ * 散在 CLI 里会出现「测试验的装配」与「线上跑的装配」两份相似代码 —— W4-P 之前就是那样，
+ * 而两份代码的分叉点永远在出事的时候才被发现。
+ *
+ * 注入：`options.appFactory` 可以替换整份装配（测试用假 docker / 假 host / 假 GitHub，
+ * 见 `test/app-lifecycle.test.ts`）；`options.waitSignal` 可以替换等信号的方式。
  */
-export async function startServe(runtime: CommandRuntime): Promise<ServeHandle> {
-  const config = readServeConfig(runtime.env);
-  const logger = createLogger({ service: 'pi-bot', level: config.logLevel });
-  const pool = createPool({
-    connectionString: config.databaseUrl,
-    applicationName: 'pi-bot-http',
-  });
-  const boss = createBoss({ connectionString: config.databaseUrl, applicationName: 'pi-bot-queue' });
-  await startBoss(boss);
-  await bootstrapQueue(boss, { info: (message) => { logger.info(message); } });
-
-  const metrics = createMetrics({ defaultMetrics: true });
-  const metricsServer = createMetricsServer({
-    metrics,
-    host: config.metricsHost,
-    port: config.metricsPort,
-    logger,
-  });
-  await metricsServer.listen();
-
-  // GitHub 客户端只用于「10 秒应答」这一步；凭证缺失时降级为「不可用 ack」，
-  // 而不是让整个进程起不来（handler 会把失败降级成 warn）。
-  const githubToken = runtime.env['PI_BOT_GITHUB_TOKEN'];
-  const ack: WebhookAck =
-    typeof githubToken === 'string' && githubToken !== ''
-      ? createGithubWebhookAck(createGithubClient({ authToken: githubToken }))
-      : createUnavailableAck('未配置 PI_BOT_GITHUB_TOKEN');
-
-  const queueHealth = async (): Promise<HealthCheck[]> => {
-    // pg-boss 12 没有 `getQueueSize`：用 `getQueueStats` 的计数列（迁移过大版本时这里会先红）
-    const stats = await boss.getQueueStats(QUEUE.runTask);
-    const latest = stats.at(-1);
-    const detail =
-      latest === undefined
-        ? '无队列统计'
-        : `queued ${String(latest.queuedCount)} active ${String(latest.activeCount)}`;
-    return [{ id: 'queue.runTask', status: 'ok', detail }];
-  };
-
-  const server = buildServer({
-    logger,
-    pool,
-    queries: createQueries({ pool }),
-    // TODO(owner: 面板切片)：OAuth 登录与 `isOrgMember`（Members:read）接进来之前，
-    // 只做会话校验（401 语义完整，403 语义待接）。
-    requireAuth: createSessionAuth({ store: pool, logger }),
-    webhook: {
-      verify: createOctokitVerifier(config.webhookSecret),
-      db: pool,
-      enqueue: createQueueEnqueuer(boss),
-      ack,
-      logger,
-    },
-    metrics,
-    bodyLimitBytes: config.bodyLimitBytes,
-    openapi: config.openapi,
-    queueHealth,
-  });
-
-  await server.listen({ host: config.httpHost, port: config.httpPort });
-  logger.info(
-    {
-      http: `${config.httpHost}:${String(config.httpPort)}`,
-      metrics: `${config.metricsHost}:${String(config.metricsPort)}`,
-      openapi: config.openapi,
-    },
-    'pi-bot serve 已启动',
-  );
-
-  return {
-    server,
-    metrics: metricsServer,
-    boss,
-    pool,
-    async shutdown() {
-      // 顺序有讲究：先停入口（不再进新请求），再停队列（让手上的 job 收尾），最后关池
-      await server.close();
-      await metricsServer.close();
-      await stopBoss(boss);
-      await closePool(pool);
-    },
-  };
+function buildApplication(runtime: CommandRuntime, options: RunCliOptions): Application {
+  const config = readAppConfig(runtime.env);
+  const factory = options.appFactory ?? createApplication;
+  return factory(config);
 }
 
-async function runServe(runtime: CommandRuntime): Promise<number> {
-  const handle = await startServe(runtime);
-  const signal = await waitForShutdownSignal();
-  runtime.io.out(`${CLI_NAME} serve: 收到 ${signal}，开始优雅停机（上限 90s）\n`);
-  await runWithDeadline(handle.shutdown(), SHUTDOWN_TIMEOUT_MS, () => {
+/**
+ * `serve` 的执行通道：装配 → start → 等 SIGTERM/SIGINT → 停机（≤90s，`TimeoutStopSec=90`）。
+ *
+ * 退出码：正常停机 `EXIT_OK`；停机超预算**照样** `EXIT_OK`（进程已经被 systemd 判超时，
+ * 这里再报一个失败码只会让「谁的问题」更模糊），但会在 stderr 留一行明确的记录。
+ */
+async function runServe(runtime: CommandRuntime, options: RunCliOptions): Promise<number> {
+  const app = buildApplication(runtime, options);
+  const address = await app.start();
+  runtime.io.out(
+    `${CLI_NAME} serve: 已启动 http://${address.http.host}:${String(address.http.port)}` +
+      `（metrics ${address.metrics.host}:${String(address.metrics.port)}）\n`,
+  );
+
+  const waitSignal = options.waitSignal ?? waitForShutdownSignal;
+  const signal = await waitSignal();
+  runtime.io.out(`${CLI_NAME} serve: 收到 ${signal}，开始优雅停机（上限 ${String(SHUTDOWN_TIMEOUT_MS)}ms）\n`);
+  await runWithDeadline(app.stop(), SHUTDOWN_TIMEOUT_MS, () => {
     runtime.io.err(`${CLI_NAME} serve: 停机超过 ${String(SHUTDOWN_TIMEOUT_MS)}ms，强制退出\n`);
   });
   return EXIT_OK;
@@ -538,7 +459,7 @@ export async function runCli(argv: readonly string[], options: RunCliOptions = {
   try {
     switch (command.name) {
       case 'serve':
-        return await runServe(runtime);
+        return await runServe(runtime, options);
       case 'migrate':
         return await runMigrate(runtime);
       case 'replay':
