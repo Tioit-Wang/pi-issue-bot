@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue / PR 自动处理平台 · 设计方案 v0.4</title>
+<style>
+  :root{
+    --paper:#F5F2EA;
+    --paper-2:#EDE9DE;
+    --ink:#17150F;
+    --ink-2:#3A3629;
+    --muted:#7A7361;
+    --rule:#D8D1C0;
+    --trust:#1E4A3A;
+    --trust-soft:#DDE5DE;
+    --untrust:#A03A1E;
+    --untrust-soft:#F0DED6;
+    --warn:#8A5A12;
+    --warn-soft:#F2E7D2;
+    --serif:"Source Han Serif SC","Noto Serif CJK SC","Songti SC","SimSun",Georgia,serif;
+    --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",-apple-system,sans-serif;
+    --mono:"JetBrains Mono","Cascadia Mono",Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:15.5px;line-height:1.78;
+    text-wrap:pretty;
+  }
+  ::selection{background:var(--trust);color:var(--paper)}
+
+  #progress{position:fixed;top:0;left:0;height:2px;background:var(--trust);width:0;z-index:50;transition:width .12s linear}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 32px}
+
+  /* ---------- hero ---------- */
+  header.hero{padding:76px 0 40px;border-bottom:1px solid var(--rule)}
+  .kicker{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;align-items:baseline
+  }
+  .kicker b{color:var(--trust);font-weight:600}
+  h1{
+    font-family:var(--serif);font-weight:600;
+    font-size:clamp(30px,4.4vw,54px);line-height:1.24;letter-spacing:-.01em;
+    margin:22px 0 0;max-width:20em
+  }
+  h1 em{font-style:normal;color:var(--trust)}
+  .lede{margin:20px 0 0;max-width:44em;font-size:17px;line-height:1.85;color:var(--ink-2)}
+  .lede strong{font-weight:600;color:var(--ink)}
+  .thesis{
+    margin:32px 0 0;padding:20px 0 20px 22px;border-left:3px solid var(--untrust);
+    font-family:var(--serif);font-size:18px;line-height:1.7;max-width:40em
+  }
+  .thesis span{display:block;font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;
+    color:var(--untrust);text-transform:uppercase;margin-bottom:8px}
+
+  /* ---------- layout ---------- */
+  @media (max-width:900px){
+    .wrap{padding:0 22px}
+  }
+  .grid{display:grid;grid-template-columns:196px minmax(0,1fr);gap:56px;padding:56px 32px 90px}
+  @media (max-width:900px){
+    .grid{grid-template-columns:1fr;gap:0;padding:32px 22px 60px}
+    .rail{display:none}
+  }
+
+  .rail{position:relative}
+  .rail-inner{position:sticky;top:34px}
+  .rail ol{list-style:none;margin:0;padding:0}
+  .rail li{margin:0 0 2px}
+  .rail a{
+    display:flex;gap:10px;align-items:baseline;
+    padding:6px 0 6px 10px;border-left:1px solid var(--rule);
+    text-decoration:none;color:var(--muted);font-size:13px;line-height:1.5;
+    transition:color .18s,border-color .18s
+  }
+  .rail a i{font-family:var(--mono);font-size:10.5px;font-style:normal;letter-spacing:.06em;opacity:.75}
+  .rail a:hover{color:var(--ink);border-left-color:var(--ink-2)}
+  .rail a.on{color:var(--ink);border-left:2px solid var(--trust);padding-left:9px;font-weight:600}
+  .rail .railnote{
+    margin-top:26px;padding-top:16px;border-top:1px solid var(--rule);
+    font-size:11.5px;line-height:1.7;color:var(--muted);font-family:var(--mono)
+  }
+
+  /* ---------- sections ---------- */
+  section{margin:0 0 74px;scroll-margin-top:24px}
+  section:last-child{margin-bottom:0}
+  .shead{display:flex;gap:14px;align-items:baseline;border-bottom:1px solid var(--rule);padding-bottom:10px;margin-bottom:26px}
+  .shead .num{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;color:var(--trust);padding-top:5px}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(21px,2.4vw,27px);margin:0;line-height:1.34;letter-spacing:-.005em}
+  h3{font-size:15px;font-weight:600;margin:34px 0 10px;letter-spacing:.01em}
+  h3:first-child{margin-top:0}
+  p{margin:0 0 14px;max-width:46em}
+  p.small{font-size:13.5px;color:var(--muted);line-height:1.72}
+  ul,ol.plain{margin:0 0 14px;padding-left:1.15em;max-width:46em}
+  li{margin:0 0 7px}
+  li::marker{color:var(--muted)}
+  code{font-family:var(--mono);font-size:.875em;background:var(--paper-2);padding:.1em .34em;border-radius:2px}
+  b,strong{font-weight:600}
+  .hl{color:var(--trust);font-weight:600}
+
+  /* ---------- tables ---------- */
+  table{width:100%;border-collapse:collapse;margin:0 0 10px;font-size:14px}
+  th,td{text-align:left;padding:9px 14px 9px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:500;padding-bottom:7px}
+  td:first-child{font-family:var(--mono);font-size:12px;color:var(--trust);white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td.k{color:var(--muted);font-size:13px}
+  table.dtable td:first-child{width:56px}
+  table.dtable td:nth-child(2){width:104px;color:var(--muted);font-size:13px;white-space:nowrap}
+  table.bnd td:first-child{color:var(--ink);font-family:var(--sans);font-size:13.5px;white-space:normal;width:44%}
+  table.bnd td:nth-child(2){width:110px;color:var(--trust);font-size:13px}
+  table.bnd td:last-child{color:var(--muted);font-size:13px}
+
+  /* ---------- arch ---------- */
+  .arch{
+    display:grid;grid-template-columns:1fr 62px 1fr;align-items:stretch;margin:8px 0 6px;
+    border:1px solid var(--rule);background:#FBFAF5
+  }
+  @media (max-width:760px){.arch{grid-template-columns:1fr}}
+  .side{padding:20px 22px}
+  .side .tag{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    display:flex;align-items:center;gap:8px;margin-bottom:14px
+  }
+  .side .tag s{width:7px;height:7px;border-radius:50%;text-decoration:none;flex:none}
+  .trust-side{background:var(--trust-soft);border-right:1px solid var(--rule)}
+  .trust-side .tag{color:var(--trust)}
+  .trust-side .tag s{background:var(--trust)}
+  .untrust-side{background:repeating-linear-gradient(135deg,#FBF8F2 0 9px,#F6F2E8 9px 18px)}
+  .untrust-side .tag{color:var(--untrust)}
+  .untrust-side .tag s{background:var(--untrust)}
+  .side ul{list-style:none;margin:0;padding:0;font-size:13.5px;line-height:1.62}
+  .side ul li{margin:0 0 9px;display:flex;gap:9px}
+  .side ul li::before{content:"—";color:var(--muted);flex:none}
+  .side .name{font-weight:600;display:block;font-size:14px;margin-bottom:2px}
+  .side .sub{color:var(--muted);font-size:12.5px;display:block}
+  .bridge{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+    background:var(--paper-2);border-right:1px solid var(--rule);
+    font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--muted);text-align:center;padding:10px 4px
+  }
+  .bridge .arrow{font-size:16px;color:var(--ink-2);line-height:1}
+  @media (max-width:760px){
+    .bridge{border-right:none;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);padding:10px}
+  }
+  .cap{font-size:12.5px;color:var(--muted);margin:10px 0 26px;line-height:1.7}
+
+  /* ---------- capability blocks ---------- */
+  .caps{display:grid;gap:0;border-top:1px solid var(--rule)}
+  .cap-row{display:grid;grid-template-columns:64px minmax(0,1fr);gap:20px;padding:22px 0;border-bottom:1px solid var(--rule)}
+  .cap-row .cnum{font-family:var(--mono);font-size:11px;color:var(--untrust);letter-spacing:.1em;padding-top:4px}
+  .cap-row h4{margin:0 0 8px;font-size:16px;font-weight:600}
+  .cap-row h4 span{font-family:var(--mono);font-size:11.5px;color:var(--muted);font-weight:400;letter-spacing:.06em;margin-left:10px}
+  .cap-row ul{margin:0;padding-left:1.1em;font-size:14px;max-width:none}
+  .cap-row ul li{margin-bottom:5px}
+  .cap-row .why{margin:11px 0 0;font-size:13px;color:var(--ink-2);background:var(--paper-2);padding:9px 13px;border-left:2px solid var(--trust)}
+  .cap-row .why.new{border-left-color:var(--untrust)}
+
+  /* ---------- ladder ---------- */
+  .ladder{margin:6px 0 0;border:1px solid var(--rule)}
+  .rung{display:grid;grid-template-columns:1.05fr 96px minmax(0,1.35fr);border-bottom:1px solid var(--rule);font-size:13.5px}
+  .rung:last-child{border-bottom:none}
+  .rung > div{padding:12px 16px}
+  .rung .act{font-family:var(--mono);font-size:12.5px;letter-spacing:.02em}
+  .rung .gate{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;display:flex;align-items:center;gap:7px}
+  .rung .gate s{width:6px;height:6px;border-radius:50%;text-decoration:none;flex:none}
+  .lvl-auto .gate{color:var(--trust)} .lvl-auto .gate s{background:var(--trust)}
+  .lvl-human .gate{color:var(--warn)} .lvl-human .gate s{background:#C08A2B}
+  .lvl-off .gate{color:var(--untrust)} .lvl-off .gate s{background:var(--untrust)}
+  .rung .cond{color:var(--muted);font-size:12.5px;border-left:1px solid var(--rule)}
+  @media (max-width:760px){
+    .rung{grid-template-columns:1fr}
+    .rung .cond{border-left:none;border-top:1px solid var(--rule)}
+  }
+
+  /* ---------- code ---------- */
+  pre{
+    margin:0 0 16px;padding:18px 20px;background:#17150F;color:#E7E2D4;
+    font-family:var(--mono);font-size:12.5px;line-height:1.75;overflow-x:auto;border-radius:2px
+  }
+  pre .c{color:#8C8471}
+  pre .a{color:#8FBF9E}
+  pre .r{color:#E09A78}
+
+  /* ---------- steps ---------- */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule);margin:0 0 10px}
+  @media (max-width:700px){.steps{grid-template-columns:1fr}}
+  .step{background:var(--paper);padding:16px 18px}
+  .step .n{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.12em}
+  .step .t{font-weight:600;font-size:14px;margin:5px 0 5px}
+  .step .d{font-size:12.5px;color:var(--muted);line-height:1.65}
+  .step .d code{white-space:nowrap}
+
+  /* ---------- callouts ---------- */
+  .note{border:1px solid var(--untrust);background:var(--untrust-soft);padding:16px 20px;margin:24px 0 0}
+  .note .t{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--untrust);margin-bottom:7px}
+  .note p{margin:0;font-size:13.5px;line-height:1.75}
+  .guard{border:1px solid var(--rule);background:#FBFAF5;padding:16px 20px;margin:24px 0 0}
+  .guard .t{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--trust);margin-bottom:7px}
+  .guard p{margin:0 0 8px;font-size:13.5px;line-height:1.75}
+  .guard p:last-child{margin-bottom:0}
+  .guard ol{margin:0;padding-left:1.2em;font-size:13.5px;line-height:1.8}
+  .guard code{background:var(--paper-2)}
+
+  /* ---------- milestones ---------- */
+  .mile{list-style:none;margin:0;padding:0;border-left:1px solid var(--rule)}
+  .mile li{position:relative;padding:0 0 26px 26px;margin:0}
+  .mile li::before{
+    content:"";position:absolute;left:-4.5px;top:7px;width:8px;height:8px;
+    background:var(--paper);border:1.5px solid var(--trust);border-radius:50%
+  }
+  .mile li:last-child{padding-bottom:0}
+  .mile .m{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;color:var(--trust)}
+  .mile .mt{font-weight:600;font-size:15px;margin:3px 0 4px}
+  .mile .md{font-size:13.5px;color:var(--ink-2);line-height:1.7;max-width:42em}
+
+  /* ---------- open items ---------- */
+  .open{list-style:none;margin:0;padding:0;counter-reset:q}
+  .open li{
+    counter-increment:q;display:grid;grid-template-columns:30px 1fr;gap:12px;
+    padding:13px 0;border-bottom:1px dashed var(--rule);font-size:14px
+  }
+  .open li:last-child{border-bottom:none}
+  .open li::before{content:counter(q,decimal-leading-zero);font-family:var(--mono);font-size:11px;color:var(--untrust);padding-top:3px}
+  .open .q b{font-weight:600}
+  .open .q span{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+
+  footer{border-top:1px solid var(--rule);padding:30px 0 60px}
+  footer .frow{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:baseline}
+  footer .sig{font-family:var(--serif);font-size:15px;color:var(--ink-2)}
+  footer .meta{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
+
+  @media print{
+    #progress,.rail{display:none}
+    body{background:#fff}
+    .grid{grid-template-columns:1fr;padding:0}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="kicker">
+      <span>设计方案 · v0.4</span>
+      <span>pi-host / agent-runtime</span>
+      <span>无阈值 · 无合并权 · <b>只做异常兜底</b></span>
+    </div>
+    <h1>用 PI SDK 做一个<br>Issue / PR <em>自动处理</em>平台</h1>
+    <p class="lede">
+      打标、合规检查、<code>@机器人 /命令</code>、自动建 issue、自动推分支开 PR——全部自动，不设信心阈值，也没有合并权。
+      这套系统真正的边界不在「能做多少」，而在<strong>不可信代码在哪跑、钥匙放在哪。</strong>
+    </p>
+    <div class="thesis">
+      <span>核心判断</span>
+      沙箱里只装不可信的东西。agent 是拿着钥匙的一方，它不进容器；容器里没有凭证，也就没有值得偷的东西。
+    </div>
+  </div>
+</header>
+
+<div class="wrap grid">
+  <nav class="rail" aria-label="目录">
+    <div class="rail-inner">
+      <ol>
+        <li><a href="#s1"><i>01</i>已确认约束</a></li>
+        <li><a href="#s2"><i>02</i>核心矛盾</a></li>
+        <li><a href="#s3"><i>03</i>架构与边界</a></li>
+        <li><a href="#s4"><i>04</i>能力清单</a></li>
+        <li><a href="#s5"><i>05</i>权限与闸门</a></li>
+        <li><a href="#s6"><i>06</i>沙箱与网络</a></li>
+        <li><a href="#s7"><i>07</i>时间与熔断</a></li>
+        <li><a href="#s8"><i>08</i>里程碑</a></li>
+        <li><a href="#s9"><i>09</i>待定事项</a></li>
+      </ol>
+      <div class="railnote">
+        可信侧 = 墨绿<br>不可信侧 = 赭红<br>熔断 = 琥珀
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section id="s1">
+      <div class="shead"><div class="num">01</div><h2>已确认约束</h2></div>
+      <p class="small">两轮讨论定下的九条，后面的设计不超出这个范围。</p>
+      <table class="dtable">
+        <tbody>
+          <tr><td>D1</td><td class="k">部署形态</td><td>单组织自托管，一个 GitHub Org、少量仓库，单机</td></tr>
+          <tr><td>D2</td><td class="k">代码托管</td><td>GitHub.com，用 <b>GitHub App</b>：安装级 token、1 小时过期、权限可收窄、可审计</td></tr>
+          <tr><td>D3</td><td class="k">写操作</td><td>打标 / 评论 / 建 issue / 推 commit / 开 PR 全自动；<b>没有合并能力</b></td></tr>
+          <tr><td>D4</td><td class="k">分析深度</td><td>真实检出：clone + 装依赖 + 跑测试，每任务独立 worktree</td></tr>
+          <tr><td>D5</td><td class="k">沙箱</td><td>Docker，一任务一容器，按结果销毁；agent 在宿主机，只有命令进容器</td></tr>
+          <tr><td>D6</td><td class="k">置信阈值</td><td><b>不设</b>。判定靠证据不靠自评分；关闭 issue 走确定性条件（见 05）</td></tr>
+          <tr><td>D7</td><td class="k">网络</td><td>公网放行，内网与云元数据地址阻断；完全断网降级为高风险任务的加固档</td></tr>
+          <tr><td>D8</td><td class="k">人工</td><td>取消事前审批与事后复核，只保留异常兜底通知</td></tr>
+          <tr><td>D9</td><td class="k">规模</td><td>&lt; 100 事件/天，2–4 并发</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s2">
+      <div class="shead"><div class="num">02</div><h2>核心矛盾</h2></div>
+      <p>D3 与 D4 组合起来就是这台机器最危险的地方：<b>同一台主机上，既有外来代码的执行权，又有仓库的写凭证。</b>取消阈值、全自动之后，防止误判的缓冲垫没有了，唯一还能依靠的就是「结构上做不到坏事」。</p>
+      <p>常见两种做法都不可接受：</p>
+      <ul>
+        <li><b>把 agent 也塞进容器</b>——模型密钥跟着进去，陌生代码和 agent 住一间屋，结论可被篡改；</li>
+        <li><b>不隔离、靠提示词约束</b>——<code>postinstall</code> 一行脚本就能反弹 shell，提示词拦不住。</li>
+      </ul>
+      <p>方案取第三条路：<span class="hl">把「想」和「做」分开</span>。agent 在门外做推理，容器只负责跑命令；凭证永不进入不可信一侧，agent 的产出还得先过结构化校验才能变成 GitHub 写操作。</p>
+    </section>
+
+    <section id="s3">
+      <div class="shead"><div class="num">03</div><h2>架构与执行边界</h2></div>
+
+      <div class="arch">
+        <div class="side trust-side">
+          <div class="tag"><s></s>可信侧 · 宿主机</div>
+          <ul>
+            <li><span><span class="name">控制面</span><span class="sub">验签 · 去重 · 队列 · 重试 · 熔断 · 写执行器</span></span></li>
+            <li><span><span class="name">pi-host + agent-runtime</span><span class="sub">推理、技能、模型请求、transcript 落 host-core</span></span></li>
+            <li><span><span class="name">凭证</span><span class="sub">GitHub installation token 与模型 key 只在这一层</span></span></li>
+            <li><span><span class="name">文件工具</span><span class="sub">Read / Glob / Grep / Edit 直接操作挂载目录</span></span></li>
+          </ul>
+        </div>
+        <div class="bridge">
+          <span class="arrow">↕</span>
+          <span>Bash</span>
+          <span>docker exec</span>
+        </div>
+        <div class="side untrust-side">
+          <div class="tag"><s></s>不可信侧 · 容器</div>
+          <ul>
+            <li><span><span class="name">worktree</span><span class="sub">挂载到 /work，一任务一份</span></span></li>
+            <li><span><span class="name">装依赖与跑测试</span><span class="sub">执行陌生仓库的 install / test / build 脚本</span></span></li>
+            <li><span><span class="name">无凭证</span><span class="sub">没有 GitHub token、没有模型 key、没有 docker socket</span></span></li>
+            <li><span><span class="name">有公网、无内网</span><span class="sub">装依赖需要公网；私网段与元数据地址不可达</span></span></li>
+          </ul>
+        </div>
+      </div>
+      <p class="cap">跨边界的只有一条通道：送进一条命令，收回一段输出。</p>
+
+      <h3>实际执行位置</h3>
+      <table class="bnd">
+        <thead><tr><th>东西</th><th>在哪</th><th>隔离</th></tr></thead>
+        <tbody>
+          <tr><td>控制面 / pi-host / agent / 凭证</td><td>宿主机进程</td><td>无（可信侧）</td></tr>
+          <tr><td>pnpm install、测试、构建、每条命令</td><td>容器内</td><td>namespace + cgroup + cap-drop + 只读根 fs + 非 root</td></tr>
+          <tr><td>仓库文件</td><td>同一份 bind mount</td><td>宿主直接读写，容器只见 <code>/work</code></td></tr>
+          <tr><td>命令与会输出</td><td>跨边界</td><td>唯一数据通道</td></tr>
+        </tbody>
+      </table>
+
+      <h3>为什么 agent 不进容器</h3>
+      <p>「沙箱就是 Docker」没错，要补的是<b>沙箱里装什么</b>。容器是给陌生人用的隔离房间：可以让他进去跑工具、装东西；但不会自己也搬进去住，尤其口袋里还有钥匙。</p>
+      <ol class="plain">
+        <li><b>同一个进程空间。</b>陌生代码和 agent 共处一容器，前者能读后者的环境变量（模型 key 就在里面）、能 <code>ptrace</code> 它、能把它杀掉。</li>
+        <li><b>结论可被篡改。</b>agent 的判定决定要不要推 commit、要不要发评论；判决者和被观察者住一间屋，这个判定就不值得信。</li>
+        <li><b>工程代价。</b>镜像从约 400 MB 涨到 1.5 GB+（要装 pi-host 与运行时打包）；transcript 由 Rust <code>host-core</code> 独占写入，塞进一次性容器就得每任务一个库，或者把权威数据库挂进不可信环境——后者更糟。</li>
+      </ol>
+      <p class="small">如果坚持让 agent 进容器，代价是：需要一个能注入模型 key 的宿主侧出口代理、接受每任务独立 transcript 库、并放弃「结论不可被篡改」这个性质。技术上能做，不划算。</p>
+
+      <h3>任务信封</h3>
+      <p>agent 拿不到 GitHub 凭证，只能交出一份结构化结果，由控制面校验后决定执行哪些动作。字段不合规的动作直接丢弃并记为解析失败，没有自由发挥的通道。这条约束不因 agent 在哪而改变——它防的是「被 stdout 里的陌生文本说动」。</p>
+<pre><span class="c">// 每个任务结束时 agent 只能交出这个</span>
+{
+  <span class="a">"verdict"</span>: { kind:<span class="a">"issue"</span>, labels:[<span class="a">"bug"</span>] },
+  <span class="a">"actions"</span>: [
+    { intent:<span class="a">"comment"</span>,     body:<span class="a">"…"</span> },
+    { intent:<span class="a">"label"</span>,       add:[<span class="a">"bug"</span>] },
+    { intent:<span class="a">"create_issue"</span>, title:<span class="a">"…"</span>, fingerprint:<span class="a">"dep-vuln:x"</span> },
+    { intent:<span class="a">"push_branch"</span>,  branch:<span class="a">"bot/fix-123"</span>, openPr:true }
+  ],
+  <span class="a">"usage"</span>: { inputTokens:<span class="r">0</span>, outputTokens:<span class="r">0</span>, costUsd:<span class="r">0</span> }
+}</pre>
+      <p class="small">信封里故意没有 <code>confidence</code>：自评分不可核查、没有消费方，而且最容易被顺手改回阈值。可核查的是证据——每条判定附命中的规则与原文片段（见 04.2）。</p>
+    </section>
+
+    <section id="s4">
+      <div class="shead"><div class="num">04</div><h2>能力清单</h2></div>
+      <div class="caps">
+        <div class="cap-row">
+          <div class="cnum">04.1</div>
+          <div>
+            <h4>分类打标<span>issues.opened / edited / reopened</span></h4>
+            <ul>
+              <li>标签来自仓库的 <code>.github/pi-bot.yml</code>，不发明新标签；默认集 <code>bug / feature / question / docs / needs-info / area/*</code></li>
+              <li><b>不设信心阈值</b>：一律打标；判定附命中的规则与原文证据，不用自评分</li>
+              <li>幂等重算：issue 被编辑后重判，只增删<b>自己打过的</b>标签，人打的不动</li>
+            </ul>
+            <p class="why">敢全自动不是因为判断准，而是因为可逆：标签可撤、评论可改、commit 只落在 <code>bot/*</code> 分支。可逆性替代了阈值。</p>
+          </div>
+        </div>
+        <div class="cap-row">
+          <div class="cnum">04.2</div>
+          <div>
+            <h4>标准合规检查与自动回复<span>合规闸门</span></h4>
+            <ul>
+              <li>规则来源：issue 模板必填项 + 配置里的显式检查（复现步骤、版本号、日志）</li>
+              <li>判定结构化：每条规则 pass/fail 附 issue 原文证据，不是客套话</li>
+              <li>不合规 → 一条评论列出缺什么、附模板片段，打 <code>needs-info</code></li>
+              <li>只在<b>缺失项集合变化</b>时再回复；同一句话不催第二次</li>
+            </ul>
+            <p class="why">阈值取消后，噪音控制只剩下这一条。机器人最大的敌人不是判错，是被当成刷屏。</p>
+          </div>
+        </div>
+        <div class="cap-row">
+          <div class="cnum">04.3</div>
+          <div>
+            <h4>主动建 issue<span>新增能力</span></h4>
+            <ul>
+              <li>触发场景：PR review 顺带发现的独立缺陷、依赖与回归告警；同类 issue 汇总默认关闭</li>
+              <li>去重键 <code>(repo, 指纹)</code>：命中就追加一条评论到原 issue，不新开</li>
+              <li>日配额默认 10 个/仓库，超限写入待办队列而不创建</li>
+              <li>只创建、不关闭；关闭属于不可逆动作，走 04.2 的条件闸门</li>
+            </ul>
+            <p class="why new">这是唯一一种「不可逆的噪音」：开出去的 issue 会通知全组。所以它单独有配额和去重，不受「无阈值」影响。</p>
+          </div>
+        </div>
+        <div class="cap-row">
+          <div class="cnum">04.4</div>
+          <div>
+            <h4>@ 触发的技能指令<span>/review-pr · /issue-triage · /issue-repro</span></h4>
+            <ul>
+              <li>门禁看 <code>author_association</code>：OWNER / MEMBER / COLLABORATOR 或白名单；机器人账号忽略</li>
+              <li>命令即技能（markdown frontmatter），仓库可自带技能，与内置命令同级</li>
+              <li>同一 <code>head_sha</code> 重跑是空操作；换了新提交则取代上一条评论</li>
+              <li>10 秒内给出回应（表情或一行确认），否则用户以为没生效</li>
+            </ul>
+            <p class="why">技能是唯一需要写代码的地方，其余都是配置——维护者能自己加命令而不动平台。</p>
+          </div>
+        </div>
+        <div class="cap-row">
+          <div class="cnum">04.5</div>
+          <div>
+            <h4>Web 统计面板<span>唯一的质量信号</span></h4>
+            <ul>
+              <li>吞吐：事件量、任务结果分布（成功/失败/超时/熔断/解析失败）、p50–p95 耗时、队列深度</li>
+              <li><b>自动执行后被人改回</b>的次数与比例——事后复核取消后，这是唯一的质量指标</li>
+              <li>成本：按仓库/命令拆的 token 与金额，最贵的十个任务</li>
+              <li>审计：谁触发的、跑了哪个提交、写了什么，可导出</li>
+            </ul>
+            <p class="why">面板不做事前拦截，只做事后可见。看得见，才敢继续放开。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="s5">
+      <div class="shead"><div class="num">05</div><h2>权限与闸门</h2></div>
+      <p>能自动的全部自动，剩下的不是「人工审批」，而是零成本的机器约束。</p>
+      <div class="ladder">
+        <div class="rung lvl-auto">
+          <div class="act">打标签</div>
+          <div class="gate"><s></s>自动</div>
+          <div class="cond">无阈值；只增删自己打过的</div>
+        </div>
+        <div class="rung lvl-auto">
+          <div class="act">发评论</div>
+          <div class="gate"><s></s>自动</div>
+          <div class="cond">结构化校验通过 + 隐藏任务标记 + 频率限制</div>
+        </div>
+        <div class="rung lvl-auto">
+          <div class="act">创建 issue</div>
+          <div class="gate"><s></s>自动</div>
+          <div class="cond">去重键命中则追加评论；日配额 10/仓库</div>
+        </div>
+        <div class="rung lvl-auto">
+          <div class="act">推 commit / 开 PR</div>
+          <div class="gate"><s></s>自动</div>
+          <div class="cond">只到 <code>bot/*</code> 分支；永不强推，永不改写贡献者分支</div>
+        </div>
+        <div class="rung lvl-human">
+          <div class="act">关闭 issue</div>
+          <div class="gate"><s></s>有条件</div>
+          <div class="cond">不在全自动清单内：带 <code>needs-info</code> + 缺失项 48h 未变 + 无人回复（确定性条件，不看自评分）</div>
+        </div>
+        <div class="rung lvl-off">
+          <div class="act">合并</div>
+          <div class="gate"><s></s>不存在</div>
+          <div class="cond">代码层不实现 merge 调用；分支保护强制人工 review 兜底</div>
+        </div>
+      </div>
+
+      <div class="guard">
+        <div class="t">「没有合并权限」要落到哪里</div>
+        <p>GitHub 的权限粒度到不了「能推 commit 但不能合并」这一档——merge 和推 commit 共用 <code>Contents: write</code>。所以是双保险，不是单点：</p>
+        <ol>
+          <li>代码层面<b>不存在</b> merge 调用，App 清单里也不勾选相关能力；</li>
+          <li>受保护分支要求人工 review 与必需检查全绿——这是真约束，任何人都绕不过；</li>
+          <li>每次写操作进审计，与 GitHub 侧审计对账。</li>
+        </ol>
+      </div>
+
+      <div class="guard">
+        <div class="t">权限全给的对应措施</div>
+        <p>installation token 本身 1 小时过期、只作用域到配置的仓库、只存在控制面进程里、每次写操作留痕。这样即使 agent 被注入，损失上限是「一个仓库、一小时内」，而不是「整个组织」。</p>
+      </div>
+    </section>
+
+    <section id="s6">
+      <div class="shead"><div class="num">06</div><h2>沙箱与网络</h2></div>
+      <p>一任务一容器，常驻空闲进程，按需 <code>exec</code>。参数写死，不留给调用方决定。</p>
+<pre>docker run -d --init --rm \
+  --name pi-job-&lt;id&gt; \
+  --user 1001:1001 \
+  --read-only --tmpfs /tmp:rw,size=512m,noexec,nosuid \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 512 --memory 2g --memory-swap 2g --cpus 2 \
+  --ulimit nofile=4096 \
+  -v /srv/pi/jobs/&lt;id&gt;/work:/work:rw \
+  -v pi-dep-cache:/cache:ro \
+  -w /work \
+  pi-worker:&lt;toolchain&gt; sleep infinity</pre>
+
+      <h3>网络策略</h3>
+      <p>不强制断网——装依赖本来就要公网。容器里没有任何可偷的凭证，所以外传本身不是威胁；真正的威胁是把它当跳板去扫内网、打云元数据。所以按「能不能去哪」来切，而不是按「有没有网」。</p>
+      <div class="steps">
+        <div class="step">
+          <div class="n">放行</div>
+          <div class="t">公网</div>
+          <div class="d">包管理器仓库、公共 CDN 等一切正常出网需求</div>
+        </div>
+        <div class="step">
+          <div class="n">阻断</div>
+          <div class="t">私网与元数据</div>
+          <div class="d"><code>10/8</code> · <code>172.16/12</code> · <code>192.168/16</code> · <code>169.254/16</code> · <code>::1</code></div>
+        </div>
+        <div class="step">
+          <div class="n">可选加固</div>
+          <div class="t">完全断网</div>
+          <div class="d">高风险任务（会自动推分支的）可切到 <code>--network=none</code></div>
+        </div>
+      </div>
+      <p class="small">实现两条路，按环境选：<b>出口代理 + allowlist</b>（可控，需一个代理进程）或 <b>docker network + iptables DROP 私网段</b>（零依赖，够用）。两条都要覆盖 IPv6。</p>
+
+      <h3>容器生命周期</h3>
+      <p>不定销毁策略，磁盘会被调试残留吃干净。<code>--rm</code> 只是兜底，真正的清理靠这张表。</p>
+      <table>
+        <thead><tr><th>结果</th><th>容器</th><th>worktree</th></tr></thead>
+        <tbody>
+          <tr><td>成功</td><td>立即销毁</td><td>保留 24h 供查 diff，之后回收</td></tr>
+          <tr><td>失败（非超时）</td><td>保留 1h 可复现，之后强删</td><td>保留 1h</td></tr>
+          <tr><td>超时 / 熔断</td><td>立即 SIGKILL</td><td>立即回收</td></tr>
+          <tr><td>磁盘水位 &gt; 85%</td><td>强制清理最旧的失败容器</td><td>无视保留期，清最旧</td></tr>
+        </tbody>
+      </table>
+
+      <h3>四条不可让步的红线</h3>
+      <ul>
+        <li><b>docker socket 只挂控制面。</b>socket 等价于宿主机 root，进容器等于把逃逸入口递进去；</li>
+        <li><b>容器里没有任何 token</b>，模型请求由宿主代发，容器连 key 的影子都看不到；</li>
+        <li><b>能力全砍</b>：<code>cap-drop ALL</code>、只读根文件系统、非 root、pids 与内存上限；</li>
+        <li><b>挂载只给一份 worktree</b>，不给宿主目录、不给数据目录。</li>
+      </ul>
+
+      <h3>预检：不通过就拒绝启动</h3>
+      <p class="small">daemon 可达 · 磁盘 ≥ 20GB · worker 镜像存在且工具链匹配 · 金丝雀容器里访问 <code>169.254.169.254</code> 确实失败 · <code>--memory / --cpus</code> 真的在生效。最后一条最容易被忽略：Docker Desktop 里 cgroup 有时不落地，静默跑成无限制比报错危险得多。</p>
+
+      <div class="note">
+        <div class="t">验证边界</div>
+        <p>当前这台开发机没有 Docker，也没有 WSL 发行版。容器行为只能在目标机或 CI 上验证——本地的绿灯不能当成沙箱可用。Windows 侧还有两个限制：挂载 Windows 路径走 9p/virtiofs，装依赖慢 2–4 倍；所有容器共享 Docker Desktop 的 Linux VM，隔离上限是 <code>Windows ← VM ← 容器</code>，单组织自托管够用，但不是多租户边界。</p>
+      </div>
+    </section>
+
+    <section id="s7">
+      <div class="shead"><div class="num">07</div><h2>时间、重试与熔断</h2></div>
+      <p>全自动之后，失败处理就是全部运维。这一节的目的只有一个：<b>别让一次事故变成一张账单。</b></p>
+
+      <h3>三层时间闸</h3>
+      <table>
+        <thead><tr><th>层级</th><th>默认</th><th>超时处置</th></tr></thead>
+        <tbody>
+          <tr><td>单条命令</td><td>120s（install/build 类放宽到 300s）</td><td>杀掉该条命令，记 <code>command-timeout</code>，让 agent 决定换策略</td></tr>
+          <tr><td>单任务</td><td>20min（<code>/review-pr</code> 30min）</td><td>kill 容器 + 中断轮次，记 <code>timed-out</code></td></tr>
+          <tr><td>队列等待</td><td>10min</td><td>回复「排队过长，请稍后」，不占并发</td></tr>
+        </tbody>
+      </table>
+      <p class="small">超时的任务<b>不自动重试</b>——重试只会再烧一遍同样的时间与 token。只接受人工 <code>/retry</code>。</p>
+
+      <h3>重试矩阵</h3>
+      <table>
+        <thead><tr><th>错误</th><th>重试</th><th>做法</th></tr></thead>
+        <tbody>
+          <tr><td>429 限流</td><td>是</td><td>优先读 <code>retry-after</code>，否则指数退避 + 抖动，最多 4 次</td></tr>
+          <tr><td>5xx / 网络抖动</td><td>是</td><td>同上，最多 3 次</td></tr>
+          <tr><td>容器崩溃</td><td>最多 1 次</td><td>第二次仍崩判为环境问题，转异常兜底</td></tr>
+          <tr><td>401 / 403 / 其他 4xx</td><td>否</td><td>转异常兜底</td></tr>
+          <tr><td>结果解析失败</td><td>否</td><td>重试会得到同样的坏输出，需调 prompt</td></tr>
+          <tr><td>命令级超时</td><td>否</td><td>记为失败，交给 agent 换策略</td></tr>
+        </tbody>
+      </table>
+      <p class="small">两条硬约束：<b>非幂等写不盲目重试</b>——评论、打标、建 issue 重试前先查现状，靠隐藏标记与去重键兜住；<b>连续 5 次 429 触发全局熔断 15 分钟</b>，避免把配额一次打穿。</p>
+
+      <h3>重复输出熔断</h3>
+      <p>AI 卡在同一个思路里反复说同一段话时，表现不是「慢」，是<b>按 token 计费的无限循环</b>；而且重复推理往往意味着上下文已经被污染，重试只会把同样的坑再走一遍。所以这一条与限流熔断并列，属于硬保险。</p>
+      <div class="guard">
+        <div class="t">触发条件（满足任一即中止本轮）</div>
+        <ol>
+          <li><b>段落重复</b>：归一化（去空白、去标点）后，同一段 ≥ 200 字符的窗口在一次任务里出现 ≥ 3 次；</li>
+          <li><b>低增量</b>：最近 4k 输出 token 里新增 n-gram 占比 &lt; 5%，等于在自我复述；</li>
+          <li><b>工具循环</b>：同一工具、同一参数连续调用 3 次，且没有产生新的文件或测试结果变化。</li>
+        </ol>
+        <p>处置：<code>turn/interrupt</code> 打断本轮 → 任务标 <code>degenerate-output</code> → <b>不自动重试</b> → 已产出的结构化结果照样校验入库（能救回多少算多少）→ 进异常兜底通知。</p>
+      </div>
+
+      <h3>异常兜底</h3>
+      <p>这是唯一保留的人工触点，且只在失败时出现：超时、熔断、认证失败、解析失败、容器崩溃。正常路径完全静默——没有「请审批」，只有「出事了」。</p>
+    </section>
+
+    <section id="s8">
+      <div class="shead"><div class="num">08</div><h2>里程碑</h2></div>
+      <p class="small">每一阶段都以「仓库开关 + dry-run」交付，dry-run 永久保留。</p>
+      <ol class="mile">
+        <li>
+          <div class="m">M0</div>
+          <div class="mt">最小闭环</div>
+          <div class="md">GitHub App、webhook 验签与去重、任务表、拉起 pi-host 跑一个写死的技能，只产出不写入。目标是把端到端链路跑通，不带任何智能。</div>
+        </li>
+        <li>
+          <div class="m">M1</div>
+          <div class="mt">分类与合规（含首周观察期）</div>
+          <div class="md">04.1、04.2、标签与评论执行器、只读任务的容器档。上线首周强制 dry-run：照常判定、不写回，用真实 issue 回放校准 prompt。观察期不是审批，是校准。</div>
+        </li>
+        <li>
+          <div class="m">M2</div>
+          <div class="mt">命令面与运行时保险</div>
+          <div class="md">04.4 的命令注册表与鉴权、10 秒应答；<code>/review-pr</code> 接真实检出与测试执行；同批交付三层超时、重试矩阵、重复输出熔断——它们不是后续优化，是 M2 的验收项。</div>
+        </li>
+        <li>
+          <div class="m">M3</div>
+          <div class="mt">面板与主动建 issue</div>
+          <div class="md">04.5 的只读视图与审计日志、04.3 的去重与配额；含「自动执行后被人改回」的采集口径。</div>
+        </li>
+        <li>
+          <div class="m">M4</div>
+          <div class="mt">写回升级</div>
+          <div class="md">默认 auto 的 <code>push_branch</code> + 开 PR；不合规关闭走条件闸门。合并不实现。</div>
+        </li>
+      </ol>
+    </section>
+
+    <section id="s9">
+      <div class="shead"><div class="num">09</div><h2>待定事项</h2></div>
+      <p class="small">只剩这三条会实质改变实现工作量。</p>
+      <ol class="open">
+        <li><div class="q"><b>标签体系来源</b><span>沿用各仓库现有标签，还是统一强制默认那套？前者要读现状并做映射，后者要迁移维护者习惯。</span></div></li>
+        <li><div class="q"><b>主动建 issue 的场景范围</b><span>目前默认开「PR review 顺带发现的缺陷」与「依赖/回归告警」，「同类 issue 汇总」默认关闭，要开吗？</span></div></li>
+        <li><div class="q"><b>面板登录与数据保留</b><span>GitHub OAuth App 还是组织 SSO；transcript 与 webhook 原文留多久（默认 90 天，指标永久）。</span></div></li>
+      </ol>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap frow">
+    <div class="sig">讨论稿——用于对齐方向，不是最终实现承诺。</div>
+    <div class="meta">PI SDK · pi-host · Docker · v0.4</div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.rail a'));
+  var sections = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+
+  function onScroll(){
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+
+    var mark = h.scrollTop + 140;
+    var active = 0;
+    for (var i = 0; i < sections.length; i++){
+      if (sections[i] && sections[i].offsetTop <= mark) active = i;
+    }
+    // the last section can never clear the 140px mark, so pin it at the bottom
+    if (h.scrollTop + h.clientHeight >= h.scrollHeight - 4) active = links.length - 1;
+
+    links.forEach(function(a, i){ a.classList.toggle('on', i === active); });
+  }
+
+  var raf = null;
+  window.addEventListener('scroll', function(){
+    if (raf) return;
+    raf = requestAnimationFrame(function(){ raf = null; onScroll(); });
+  }, {passive:true});
+  window.addEventListener('resize', onScroll);
+  onScroll();
+
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    document.querySelectorAll('section').forEach(function(s, i){
+      s.style.opacity = 0;
+      s.style.transform = 'translateY(10px)';
+      s.style.transition = 'opacity .5s ease ' + Math.min(i * 40, 260) + 'ms, transform .5s ease ' + Math.min(i * 40, 260) + 'ms';
+    });
+    requestAnimationFrame(function(){
+      document.querySelectorAll('section').forEach(function(s){
+        s.style.opacity = 1;
+        s.style.transform = 'none';
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>
