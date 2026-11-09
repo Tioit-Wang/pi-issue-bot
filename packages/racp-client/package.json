@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "RACP-WS 客户端（自研 S1：JSON-RPC 2.0 帧层，骨架阶段无实现）",
+  "description": "RACP-WS 客户端（自研 S1：JSON-RPC 2.0 帧层 + 握手常量 + 白名单 operation 封装）",
   "exports": {
     ".": "./src/index.ts"
   },

@@ -250,3 +250,79 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 3. **E6/E7 需回写进 tech-plan**（PM 已在 §11 拍定，文档尚未更新）：由 S4 或下一轮修订 session 落文，落完 B7 才能开工。
 4. **并发上限实测为 4 个活跃 session**（S6 的 spawn 被 `LIMIT_EXCEEDED` 挡回）：排程必须按 4 算，S6=B9 队列封装排第一顺位补位。
 5. 之后的顺序：B2（数据，等契约）→ B9（队列）→ B6（pi-host 监督）→ B7（沙箱代理，等 E6/E7）→ **B13 单路端到端**（第一个真实事件跑到信封入库、GitHub 零副作用）。
+
+---
+
+## 13. 本轮执行计划（v1.2 · PM 调度，2026-06）
+
+> 上文 §0–§12 是 v1.0 的历史快照（Wave 1 的 4 个 session + 评审 + 4 个 Blocker）。本节是**重开的执行计划**：
+> 复用已冻结的 `tech-plan` v1.1 与 `contract-skill.md`，把「S2 契约 failed、S5 被 cancel」之后剩下的 B2–B13 + 面板 P0–S7 全部重新排程。
+
+### 13.1 环境事实（实测，不是假设）
+
+| 项 | 实测值 | 对计划的后果 |
+|---|---|---|
+| OS / shell | Windows 10/11 + PowerShell | 脚本一律 `.ps1`/`node`，shell 脚本只写不跑 |
+| Node | **v22.19.0**（`engines` 要求 ≥24，pnpm 仅告警） | 用 tsx 跑 TS；`--experimental-strip-types` 可用 |
+| pnpm | 10.9.0，registry = npmmirror | 安装快，但新包可能 ETIMEDOUT 重试 |
+| Docker | **有**：Docker 29.4.0，Linux 容器（WSL2 后端） | 容器验收**本机真跑**：`HostConfig` 实参、`docker exec`、超时 kill、OOM、金丝雀网络可达性 |
+| PostgreSQL | **有**：容器 `postgres18`（PG 18.3）`127.0.0.1:5432`，`postgres/postgres`；已建专用库 `pi_issue_bot`（开发）与 `pi_issue_bot_test`（测试，可随时 drop） | 迁移、pg-boss、查询、聚合都在真库上验；**不许**再用 mock 冒充「已验证」 |
+| Docker socket | Windows 下是命名管道 `//./pipe/docker_engine`（Linux 生产是 `/var/run/docker.sock`） | exec 代理的 socket 路径必须可配置：Linux 用 unix socket，Windows 用命名管道；断言脚本两种都要能跑 |
+| `vendor/pi-host` | **不存在**（无 SDK checkout） | RACP 客户端只能对 **mock host** 验证；握手常量按 `tech-plan` §4.2 字面量实现 |
+
+### 13.2 本轮 PM 裁定（新增，编号接 §11 的 E7）
+
+| # | 事项 | 裁定 | 理由 |
+|---|---|---|---|
+| E8 | 面板契约的单一事实源（`dev-plan` §5 说 `apps/panel/openapi.yaml`，`tech-plan` §8.3 说由 zod 生成） | **单一事实源 = `packages/contract/src/**` 的 zod**；产物 `openapi/pi-bot.openapi.json` 由 `pnpm gen:openapi` 生成并入 git；面板类型只从 `@pi-issue-bot/contract` 取，不手写 DTO，不再有第二份 `apps/panel/openapi.yaml` | 两份契约必然漂移；zod 已是后端校验面，加一份 openapi 就够面板用 |
+| E9 | 并行 session 抢 `pnpm-lock.yaml` | **lockfile 归 PM 独占**：所有依赖由 PM 一次预装完；session 一律不得 `pnpm add` / `pnpm install`，缺依赖写进汇报 | 4 路并发装包必然互相覆盖 lockfile 与 node_modules |
+| E10 | 并行 session 的 git 写入 | **session 不执行 `git add/commit/push`**，工作树改动保留；每个波次收口后由 PM 统一提交并打波次说明 | 同一 index 并发写必冲突；PM 提交能让「谁改了什么」与波次对齐 |
+| E11 | 本机 Docker / PG 可用性（原判「都没有」，已按实测更正） | **Docker 与 PG 都在本机真跑**：容器与数据库相关验收必须在本机执行；只有 `vendor/pi-host` bundle 与真实 GitHub App 凭证两类例外，才标注「需目标机/需凭证」 | 实测 Docker 29.4.0 + PG 18.3；有环境却只交 mock 等于漏验 |
+
+### 13.3 波次与 session 台账（本轮）
+
+并发上限实测 **4 个活跃 session**（插件 `pi.session-orchestrator` 每个 creator 4 个；`LIMIT_EXCEEDED` 见过）。每个 session 独占一组文件，**零重叠**。
+
+| 波次 | Session | 主题 | 文件所有权（只写这些） | 完成判定（DoD） |
+|---|---|---|---|---|
+| **W1** | A | 契约冻结（B3 + B4） | `docs/spec/contract-{db,api,envelope}.md`、`packages/contract/**`、`packages/envelope/**`、`openapi/**` | 三份契约落盘；zod schema + Ajv 正反例单测通过；`openapi.json` 生成并入 git |
+| W1 | B | 数据与队列（B2 + B9） | `apps/server/src/db/**`、`apps/server/src/queue/**`、`migrations/**` | 16 张表 drizzle schema + 首个迁移可离线生成；`idempotency_key`/`failure_class` 优先级/`singletonKey`/定时任务有单测 |
+| W1 | C | RACP 客户端（B5） | `packages/racp-client/**` | 帧层/传输/客户端/ops + mock host 测试：binary frame 拒、子协议错、非 loopback 拒、版本不符、`after` 重放、断线拒 in-flight |
+| W1 | D | GitHub 层（B12） | `apps/server/src/github/**` | App 认证与 Octokit 工厂（注入式）+ 限流头解析 + 写执行器骨架（隐藏标记纯函数）+ 假 octokit 单测；`no-merge` 断言仍绿 |
+| **W2** | E | pi-host 监督与审批（B6） | `apps/server/src/runtime/**` | 子进程监督（退避重启）+ `bootstrap-host` 配对 + 令牌 AES-256-GCM 落库 + 自动审批策略表 + `runWithDeadline` 接入，全部单测 |
+| W2 | F | 沙箱执行面（B7） | `apps/server/src/sandbox/**`、`scripts/sandbox-bash`、`images/**`、`deploy/**` | exec 代理（unix socket，查表→docker exec，含容器内 `timeout`）+ exec-client + HostConfig 映射 + 生命周期/水位 + shim（E6/E7 已定稿口径） |
+| W2 | G | HTTP 面与仓库配置（B10 + B11 + B12 接入） | `apps/server/src/http/**`、`apps/server/src/config/**` | webhook 原始 body 验签 → 去重 → 入队 + handler 内 10 秒应答 + `/healthz` + 独立 `127.0.0.1:9464` metrics + `.github/pi-bot.yml` schema 校验 |
+| W2 | H | 查询面 + 面板壳层（B11 + P0） | `apps/server/src/queries/**`、`apps/panel/**` | 7 条只读查询与 `openapi` 类型对齐；面板 7 路由可达、四态齐备、`format.ts` 六类单测、MSW 拦截 `/api/*` |
+| **W3** | I | worker 闭环（B13） | `apps/server/src/worker/**`、`apps/server/src/degeneracy/**` | register→create→subscribe→turn→事件→diff→信封→写执行器全链（依赖注入可测）；三层时间闸 + `failure_class` 落库 + 重复输出熔断 |
+| W3 | J | 面板页面 S1/S4/S5/S7 | `apps/panel/src/routes/{overview,costs,quality,system}.tsx` + 各自 `mocks/handlers/*.ts` | 每页数据源 = 契约字段；空/载/错/慢四态；数字格式化只走 `format.ts` |
+| W3 | K | 面板页面 S2/S3/S6 | `apps/panel/src/routes/{tasks,task-detail,audit}.tsx` + 各自 `mocks/handlers/*.ts` | 游标分页 + URL 同步；详情三 Tabs；审计 CSV 导出的 blob 下载 |
+| W3 | L | doctor + 部署面（B8） | `apps/server/src/doctor/**`、`scripts/doctor*` | 逐项 ok/warn/fail（含 `docker.sock` 归属、PIN 哈希、金丝雀）+ 退出码语义；docker 项标「需目标机执行」 |
+| **W4** | M | M1 能力：分类/合规/评论/标签 | `apps/server/src/skills/**`、`workflows/**`（新建） | 技能 frontmatter 校验 + 标签归属（只动自己打的）+ `issue_states` 的 UPSERT/不重复催办 |
+| W4 | N | M4 写回闸门与关闭闸门 | `apps/server/src/git/**` | 声明∩实际 + 拒收清单 + 临时 index 组 commit + `close_issue` 四反例单测 |
+
+### 13.4 每个 session 的统一约束（brief 里逐条复述）
+
+1. **只写自己那组文件**；`package.json`（根）、`tsconfig.base.json`、`eslint.config.js`、`vitest.config.ts`、`pnpm-workspace.yaml`、`docs/plan.md`、`docs/tech-plan.md`、`docs/dev-plan.md`、`README.md` 一律只读。
+2. 依赖已由 PM 预装（tech-plan §2 全表），**不得 `pnpm add` / `pnpm install`**。
+3. 不得 `git add/commit/push`。
+4. 交回前必须：`pnpm -r typecheck`、`pnpm -r test`、`pnpm lint` 三条 exit 0；新功能必须带单测。
+5. 本机 **有 Docker（Linux 容器）和 PG 18**：容器与数据库相关的东西必须在本机真跑；没有 `vendor/pi-host` bundle，RACP 实机握手除外。
+6. 交回 ≤40 行结构化汇报：产出、关键取舍 3 条、自测输出摘要、未完成、阻塞。
+
+### 13.5 本轮之后仍未覆盖（诚实记账）
+
+- **依赖真实凭证的 Gate**：`GitHub 零副作用`（需真 App）、`vendor/pi-host` 实机握手（需 bundle）。Docker / PG 相关 Gate 现在都能在本机跑，不再算「需目标机」。
+- `vendor/pi-host/<version>/` 尚未 vendored（需要一次显式 PR 拉 bundle + `PIN.json`）。
+- M3 的改回检测（reconcile）与 M4 的 push/开 PR 真实链路依赖真实 GitHub App 安装，本机只到「注入式可测」。
+
+### 13.6 PM 自验记录（Wave 1 收口）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `pnpm -r typecheck` | exit 0（6/6 包 Done） |
+| 单测 | `pnpm -r test` | exit 0：server 165 / racp-client 86 / contract 37 / envelope 27 / shared 1，全通过 |
+| 静态门禁 | `pnpm lint` | exit 0（0 error；6 warning 全在既有 `scripts/spike/*.mjs`） |
+| 真库迁移 | `migrate(pool, migrations/)` 对 `pi_issue_bot_test` | `{"applied":["0000_init"],"skipped":[]}`；重跑 → `applied:[] , skipped:["0000_init"]`（幂等成立） |
+| 表结构 | `information_schema.tables` | 17 张 = 16 张业务表 + `schema_migrations` |
+| 队列 | `pg-boss.start + ensureQueues + registerSchedules` | `pgboss.queue` 6 条（`run-task`/`queue-gate`/`lifecycle-cleanup`/`metrics-rollup`/`reconcile`/`retention-cleanup`）；`pgboss.schedule` 5 条 cron（`* * * * *`×2、`10 0 * * *`、`0 * * * *`、`40 0 * * *`） |
+| 契约产物 | `openapi/pi-bot.openapi.json` | 9 paths / 35 schemas；二次生成哈希一致 |

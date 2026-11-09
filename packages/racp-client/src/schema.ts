@@ -16,7 +16,7 @@ import { protocolError } from './errors.ts';
 
 export type JsonRecord = Record<string, unknown>;
 
-const isRecord = (value: unknown): value is JsonRecord =>
+export const isRecord = (value: unknown): value is JsonRecord =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isNonEmptyString = (value: unknown): value is string => isString(value) && value.length > 0;

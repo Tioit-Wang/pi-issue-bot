@@ -1,7 +1,10 @@
 /**
- * 任务信封入口占位（plan §5 / tech-plan §8.2 的 `envelope/`）。
+ * `@pi-issue-bot/envelope` —— 任务信封的 JSON Schema + Ajv 校验器 + 动作白名单/过滤器。
  *
- * TODO(契约 owner session)：JSON Schema + Ajv 校验器、动作过滤器（不合规动作丢弃）。
- * 硬约束：本包不得 import 任何 apps/*（由 lint 强制）。
+ * 使用方：`apps/server/src/envelope`（tech-plan §8.2 的 `envelope/` 模块，只做转接）
+ * 与 `apps/server/src/worker`（校验产出 → 过滤动作 → 交写执行器）。
+ * 硬约束：本包不得 import `apps/*`；除 ajv/ajv-formats 外不引第三方依赖。
  */
-export {};
+export * from './schema.ts';
+export * from './validate.ts';
+export * from './actions.ts';

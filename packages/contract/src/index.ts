@@ -1,7 +1,26 @@
 /**
- * 契约包入口占位（tech-plan §2.1 / §8.1）。
+ * `@pi-issue-bot/contract` —— 契约叶子包（只依赖 zod）。
  *
- * TODO(契约 owner session)：zod 定义 + OpenAPI 生成类型。
- * 硬约束：本包是叶子，不得 import 任何 apps/* 或其它 packages/*（由 lint 强制）。
+ * 内容：
+ * - `enums.ts`   状态 / 结果 / 失败分类 / 动作 intent / 改回方式 / 事件 kind / 错误码
+ * - `common.ts`  全局标量约定（时间、金额、比例、耗时、分页、错误体）
+ * - `api.ts`     9 个接口的响应与查询 schema
+ * - `repo-config.ts`  `.github/pi-bot.yml`
+ * - `skills.ts`       技能 frontmatter（`docs/spec/contract-skill.md`）
+ * - `schemas.ts`      名字 → schema 注册表（OpenAPI 生成的输入）
+ *
+ * 使用方：`apps/server/src/{http,queries,config,skills}` 与 `apps/panel`（后者只取类型）。
+ * 硬约束：本包不得 import `apps/*` 或其它 workspace 包（lint 的 `no-restricted-paths` 强制）。
  */
-export {};
+export * from './enums.ts';
+export * from './common.ts';
+export * from './api.ts';
+export * from './repo-config.ts';
+export * from './skills.ts';
+export * from './schemas.ts';
+
+/**
+ * 契约版本：`openapi/pi-bot.openapi.json` 的 `info.version` 与 `/api/system` 的
+ * `version.contract` 都取它。**改字段就升它**，让面板能在启动时发现「后端换了契约」。
+ */
+export const CONTRACT_VERSION = '1.0.0';

@@ -13,6 +13,8 @@
  * 所以先在本地声明同一组字面量。TODO(owner: 后端控制面)：shared 有了之后改成
  * `import type { FailureClass } from '@pi-issue-bot/shared'`，映射表原样搬过去。
  */
+import { redactSecrets, redactValue } from './redact.ts';
+
 
 /** plan §7 / tech-plan §7.3 的失败分类。顺序即优先级，和 §7.3 的表一致。 */
 export const FAILURE_CLASSES = [
@@ -63,9 +65,11 @@ export type RemoteErrorCode = keyof typeof REMOTE_ERROR_RETRIABLE;
 
 /**
  * 只在客户端产生的码。`HOST_DISCONNECTED` 是规范点名的（§14a 最后一条），
- * `TIMEOUT` 沿用规范 §6.2.1 已经在用的名字；其余三个是本客户端内部的：
+ * `TIMEOUT` 沿用规范 §6.2.1 已经在用的名字；其余是本客户端内部的：
  * `ABORTED`（调用方 AbortSignal / 任务级时间闸）、`NOT_CONNECTED`（还没连过）、
- * `CLIENT_CLOSED`（`close()` 主动关闭）。
+ * `CLIENT_CLOSED`（`close()` 主动关闭）、`PROTOCOL_ERROR`（帧/形状/信封读不动）、
+ * `BINARY_FRAME`（收到 binary 帧，只接受文本帧）、
+ * `HANDSHAKE_REJECTED`（WS 升级被 Host 拒，且不是 401/403/400 这几种可命名的）。
  * `HOST_VERSION_MISMATCH` 来自 tech-plan §4.1 第 4 条，表示握手协商失败。
  */
 export const CLIENT_ERROR_SPEC = {
@@ -75,8 +79,10 @@ export const CLIENT_ERROR_SPEC = {
   ABORTED: { retriable: false },
   NOT_CONNECTED: { retriable: false },
   CLIENT_CLOSED: { retriable: false },
+  PROTOCOL_ERROR: { retriable: false },
+  BINARY_FRAME: { retriable: false },
+  HANDSHAKE_REJECTED: { retriable: false },
 } as const satisfies Record<string, { retriable: boolean }>;
-
 export type ClientErrorCode = keyof typeof CLIENT_ERROR_SPEC;
 
 /**
@@ -132,6 +138,11 @@ export const CODE_FAILURE_CLASS: Record<string, FailureClass> = {
   INTERNAL: 'sandbox',
   NOT_CONNECTED: 'sandbox',
   CLIENT_CLOSED: 'sandbox',
+  // 帧层读不动对方的帧 / 收到 binary 帧 / 握手被拒：都是执行面这一侧不可用，
+  // 与 §7.3「其余全部归 sandbox」一致（不是我们请求形状的问题）。
+  PROTOCOL_ERROR: 'sandbox',
+  BINARY_FRAME: 'sandbox',
+  HANDSHAKE_REJECTED: 'sandbox',
 };
 
 /** 线上码 → 失败分类；不认识的码返回 `undefined`（保留原名，不硬塞）。 */
@@ -180,11 +191,15 @@ export class RacpError extends Error {
   readonly failureClass: FailureClass | undefined;
 
   constructor(init: RacpErrorInit) {
-    super(init.message, init.cause === undefined ? undefined : { cause: init.cause });
+    // 值级脱敏在这里做一次就够：本包**所有**错误都经由本构造函数产生，
+    // 因此 `pdt1.` / `ppt1.` 一类令牌不可能借错误消息漏进日志（tech-plan §10.2）。
+    // TODO(owner: @pi-issue-bot/shared)：shared 落地 logger + redaction 后，
+    // 这里改成调用 shared 的实现，patterns 不再由本包维护。
+    super(redactSecrets(init.message), init.cause === undefined ? undefined : { cause: init.cause });
     this.name = 'RacpError';
     this.code = init.code;
     this.traceId = init.traceId;
-    this.details = init.details;
+    this.details = redactValue(init.details);
     this.kind = init.kind ?? 'rpc';
     this.retriable =
       init.retriable ??
@@ -264,7 +279,52 @@ export function fromJsonRpcError(error: { code: number; message: string; data?: 
 
 /** 协议层面读不动对方的帧（不是业务错误，是契约被破坏）。 */
 export function protocolError(message: string, details?: unknown, cause?: unknown): RacpError {
-  return new RacpError({ code: 'PROTOCOL_ERROR' as string, message, details, cause, kind: 'protocol' });
+  return new RacpError({ code: 'PROTOCOL_ERROR', message, details, cause, kind: 'protocol' });
+}
+
+/** 握手/协议版本对不上（子协议缺失、`protocolVersion` 不是 1.0）：Host 与我们不是同一套契约。 */
+export function protocolMismatchError(message: string, details?: unknown): RacpError {
+  return new RacpError({ code: 'PROTOCOL_MISMATCH', message, details, kind: 'protocol' });
+}
+
+/** 收到 binary 帧：RACP 只允许文本帧（ADR 0285 §3）；这是对端违约，不是可重试的抖动。 */
+export function binaryFrameError(details?: unknown): RacpError {
+  return new RacpError({
+    code: 'BINARY_FRAME',
+    message: '收到 binary 帧：RACP 只接受文本帧，已按协议错误拒绝该帧',
+    details,
+    kind: 'protocol',
+  });
+}
+
+/** 本地前置校验失败（非 loopback / 缺 Bearer / 端口非法）：我们这边把请求造错了。 */
+export function invalidArgumentError(message: string, details?: unknown): RacpError {
+  return new RacpError({ code: 'INVALID_ARGUMENT', message, details, kind: 'transport' });
+}
+
+/** WS 升级被 Host 拒绝，且不是 401/403/400 这几种能命名的。 */
+export function handshakeRejectedError(message: string, cause?: unknown, details?: unknown): RacpError {
+  return new RacpError({ code: 'HANDSHAKE_REJECTED', message, details, cause, kind: 'transport' });
+}
+
+/** 本地前置错误：Host 没有可用端口 / 连接阶段超时（`HANDSHAKE_TIMEOUT` 归入 TIMEOUT）。 */
+export function handshakeTimeoutError(url: string, handshakeTimeoutMs: number): RacpError {
+  return new RacpError({
+    code: 'TIMEOUT',
+    message: `WS 握手超过 ${handshakeTimeoutMs}ms 未完成（${url}）`,
+    details: { url, handshakeTimeoutMs },
+    kind: 'timeout',
+  });
+}
+
+/** `connection/initialize` 协商出的 hostVersion 与 PIN.json 钉扎的值不符（tech-plan §2.2 第 2 条）。 */
+export function hostVersionMismatchError(expected: string, actual: string): RacpError {
+  return new RacpError({
+    code: 'HOST_VERSION_MISMATCH',
+    message: `host 版本不符：期望 ${expected}，协商得到 ${actual}（按 PIN.json 钉扎，见 tech-plan §2.2）`,
+    details: { expected, actual },
+    kind: 'protocol',
+  });
 }
 
 export function abortedError(reason?: unknown): RacpError {
@@ -296,8 +356,12 @@ export function disconnectedError(details?: unknown, cause?: unknown): RacpError
   });
 }
 
-export function notConnectedError(): RacpError {
-  return new RacpError({ code: 'NOT_CONNECTED', message: '还没有调用 connect()', kind: 'closed' });
+/** 还没连（或已经断开但调用方没重连）：错误消息带上方法名与当前状态，便于定位装配问题。 */
+export function notConnectedError(
+  message = '还没有调用 connect()',
+  details?: unknown,
+): RacpError {
+  return new RacpError({ code: 'NOT_CONNECTED', message, details, kind: 'closed' });
 }
 
 export function closedError(): RacpError {

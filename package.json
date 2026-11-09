@@ -15,6 +15,7 @@
     "test:all": "vitest run --passWithNoTests",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "gen:openapi": "pnpm --filter @pi-issue-bot/contract gen:openapi",
     "cli": "tsx apps/server/src/cli.ts"
   },
   "devDependencies": {
