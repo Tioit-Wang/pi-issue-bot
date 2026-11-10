@@ -685,7 +685,9 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
       await deps.ack.addEyesReaction({ repo, issueNumber: plan.targetNumber });
       taskLog.info('已打 eyes reaction');
     } else {
-      ackComment = `已收到 ${plan.command}，排队中……（任务 ${taskId.slice(0, 8)}）`;
+      // 自由问答的 command 是 `@answer:<base64url>`，回执里不能把它糊到用户脸上
+      const ackLabel = plan.command.startsWith(FREE_MENTION_PREFIX) ? '你的提问' : plan.command;
+      ackComment = `已收到 ${ackLabel}，排队中……（任务 ${taskId.slice(0, 8)}）`;
       await deps.ack.postAckComment({ repo, issueNumber: plan.targetNumber, body: ackComment });
       taskLog.info('已回「已收到」评论');
     }
