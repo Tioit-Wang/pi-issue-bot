@@ -62,8 +62,27 @@ export const WEBHOOK_HEADERS = {
   signature: 'x-hub-signature-256',
 } as const;
 
-/** 命令触发：`@pi-bot /review-pr`。App slug 固定为 `pi-bot`。 */
-export const COMMAND_MENTION_PATTERN = /(?:^|\s)@pi-bot\s+(\/[a-z][a-z0-9-]{1,30})(?=\s|$)/u;
+/** 缺省句柄：App 名为 `pi-bot` 的部署用它（其它 App 用 `PI_BOT_MENTION` 覆盖）。 */
+export const DEFAULT_BOT_MENTION = 'pi-bot';
+
+/** 转义正则字面量（句柄来自配置，不能直接拼进正则）。 */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 命令触发正则：`@<handle> /review-pr`。
+ *
+ * 句柄**必须**可配：文档 §6.4 只规定「`@机器人 /命令`」，而 slug 由 App 名字决定
+ * （本仓库实际部署的 App 是 `pi-issue-bot-tioit`）——写死 `pi-bot` 会让真实用户
+ * @ 了机器人却没反应。
+ */
+export function commandMentionPattern(handle: string = DEFAULT_BOT_MENTION): RegExp {
+  return new RegExp(`(?:^|\\s)@${escapeRegExp(handle)}\\s+(\\/[a-z][a-z0-9-]{1,30})(?=\\s|$)`, 'u');
+}
+
+/** 缺省句柄的正则（测试与「App 就叫 pi-bot」的部署用）。 */
+export const COMMAND_MENTION_PATTERN = commandMentionPattern();
 
 /* ── 注入面 ──────────────────────────────────────────────────────────────── */
 
@@ -100,6 +119,8 @@ export type WebhookDeps = {
   readonly now?: () => Date;
   /** 熔断/暂停判定。默认读 `runtime_flags.rate_limit_pause`。 */
   readonly isPaused?: () => Promise<boolean>;
+  /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
+  readonly mention?: string;
 };
 
 export type WebhookInput = {
@@ -176,11 +197,11 @@ export function issueVersionHash(updatedAt: unknown): string {
 }
 
 /** 从评论正文里取命令（`@pi-bot /review-pr`）；没有则 `null`。 */
-export function extractCommand(body: unknown): string | null {
+export function extractCommand(body: unknown, mention: string = DEFAULT_BOT_MENTION): string | null {
   if (typeof body !== 'string') {
     return null;
   }
-  const matched = COMMAND_MENTION_PATTERN.exec(body);
+  const matched = commandMentionPattern(mention).exec(body);
   return matched?.[1] ?? null;
 }
 
@@ -201,6 +222,8 @@ export function decideWebhookTask(input: {
   readonly event: string;
   readonly action: string | null;
   readonly payload: unknown;
+  /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
+  readonly mention?: string;
 }): WebhookDecision {
   const payload = asRecord(input.payload);
   const actorUser = asRecord(payload?.['sender']);
@@ -213,9 +236,9 @@ export function decideWebhookTask(input: {
       return { action: 'ignore', reason: `issue_comment.${input.action ?? '未知'} 不在白名单` };
     }
     const comment = asRecord(payload?.['comment']);
-    const command = extractCommand(comment?.['body']);
+    const command = extractCommand(comment?.['body'], input.mention ?? DEFAULT_BOT_MENTION);
     if (command === null) {
-      return { action: 'ignore', reason: '评论里没有 @pi-bot 命令' };
+      return { action: 'ignore', reason: `评论里没有 @${input.mention ?? DEFAULT_BOT_MENTION} 命令` };
     }
     const issue = asRecord(payload?.['issue']);
     const number = readNumber(issue, 'number');
@@ -481,7 +504,12 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
-  const decision = decideWebhookTask({ event: input.event, action, payload });
+  const decision = decideWebhookTask({
+    event: input.event,
+    action,
+    payload,
+    ...(deps.mention === undefined ? {} : { mention: deps.mention }),
+  });
   if (decision.action === 'ignore') {
     log.info({ repo, reason: decision.reason }, '事件不在白名单，不建任务');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));

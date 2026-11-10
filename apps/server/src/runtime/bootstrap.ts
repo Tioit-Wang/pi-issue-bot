@@ -47,7 +47,7 @@ import type {
   HostSpawn,
   HostSupervisorOptions,
 } from './host-supervisor.ts';
-import { assertHostVersionMatches, bundleBinaryPath, verifyPin } from './pin.ts';
+import { assertHostVersionMatches, resolveBundleCommand, verifyPin } from './pin.ts';
 import type { PinReadFile, PinVerification } from './pin.ts';
 
 /** `host_credentials` 一行（与 `db/schema.ts` 的列一一对应）。 */
@@ -257,7 +257,11 @@ function parseExpiresAt(value: string | undefined): Date | null {
 export async function bootstrapHost(options: BootstrapHostOptions): Promise<BootstrapHostResult> {
   const logger = options.logger ?? createNullLogger();
   const steps: BootstrapStep[] = [];
-  const binaryPath = options.binaryPath ?? bundleBinaryPath(options.bundleDir);
+  // `runner.json` 存在时（Windows 开发机）二进制是 `node`、前置参数是 `pi-host.js`；
+  // `options.binaryPath` 显式覆盖时前置参数无意义，按空处理。
+  const bundleCommand = resolveBundleCommand(options.bundleDir);
+  const binaryPath = options.binaryPath ?? bundleCommand.command;
+  const prependArgs = options.binaryPath === undefined ? bundleCommand.prependArgs : [];
 
   // 第 0 步：PIN 钉扎（启动前校验一次，§2.2 第 2 条）。
   let pin = await verifyPin({
@@ -277,6 +281,7 @@ export async function bootstrapHost(options: BootstrapHostOptions): Promise<Boot
     port: 0,
     pair: true,
     logger,
+    prependArgs,
     ...(options.sandboxBashPath === undefined ? {} : { sandboxBashPath: options.sandboxBashPath }),
     ...(options.baseEnv === undefined ? {} : { baseEnv: options.baseEnv }),
     ...(options.extraEnv === undefined ? {} : { extraEnv: options.extraEnv }),

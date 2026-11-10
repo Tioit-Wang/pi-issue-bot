@@ -51,8 +51,8 @@ import type {
 /** RACP 的 WS 路径与子协议（tech-plan §4.2 的已验证事实）。 */
 export const RACP_PATH = '/v1/racp/ws';
 export const RACP_SUBPROTOCOL = 'pi-racp.v1.jsonrpc';
-/** 事件推送的方法名（`RacpClient` 的 `EVENT_NOTIFICATION_METHOD`）。 */
-export const EVENT_METHOD = 'events/event';
+/** 事件推送的方法名（真实 Host v0.22.0 的 `RACP_EVENT_NOTIFICATION`；客户端默认值同此）。 */
+export const EVENT_METHOD = 'session/event';
 
 /** 假 host 自报的版本（本机没有 bundle；`PIN.json` 校验归 doctor）。 */
 export const E2E_HOST_VERSION = '0.21.0';

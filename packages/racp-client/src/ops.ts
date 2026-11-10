@@ -13,6 +13,7 @@
  */
 
 import type { RacpClient, RequestOptions } from './client.ts';
+import { randomUUID } from 'node:crypto';
 import { invalidArgumentError, protocolError } from './errors.ts';
 import { previewRedacted } from './redact.ts';
 import {
@@ -169,6 +170,8 @@ export interface TurnStartParams {
   readonly sessionId: string;
   readonly input: { readonly messageId: string; readonly text: string };
   readonly admission?: TurnAdmission;
+  /** 重试幂等键：同一 key 重发不会产生第二个 turn（Host 侧去重）。 */
+  readonly idempotencyKey?: string;
 }
 
 export interface TurnRefParams {
@@ -261,14 +264,22 @@ export class RacpOps {
     assertNonEmptyString(params.path, 'project/register 的 path');
     const result = await this.#call('project/register', { path: params.path }, options);
     const record = asRecord(result, 'project/register');
-    const projectId = record.projectId;
-    if (typeof projectId !== 'string' || projectId.length === 0) {
-      throw protocolError('project/register 未返回 projectId', { received: previewRedacted(record) });
+    // 真实的 Host（v0.22.0，`packages/racp/src/operations.ts`）返回 `{ project: { id, … } }`；
+    // 早期按文档字面量写的扁平 `{ projectId }` 仍然接受，避免夹具与真实 Host 二选一。
+    const projectValue = record['project'];
+    const project = isRecord(projectValue) ? projectValue : {};
+    const rawId = project['id'] ?? record['projectId'];
+    if (typeof rawId !== 'string' || rawId.length === 0) {
+      throw protocolError('project/register 未返回 project.id', { received: previewRedacted(record) });
     }
     return {
-      projectId,
-      ...(typeof record.path === 'string' ? { path: record.path } : {}),
-      ...(typeof record.workspaceLabel === 'string' ? { workspaceLabel: record.workspaceLabel } : {}),
+      projectId: rawId,
+      ...(typeof project['path'] === 'string'
+        ? { path: project['path'] }
+        : typeof record['path'] === 'string'
+          ? { path: record['path'] }
+          : {}),
+      ...(typeof record['workspaceLabel'] === 'string' ? { workspaceLabel: record['workspaceLabel'] } : {}),
     };
   }
 
@@ -328,8 +339,13 @@ export class RacpOps {
         });
       }
     }
-    const payload: JsonRecord = { sessionId: params.sessionId };
-    if (params.after !== undefined) payload.after = params.after;
+    // 真实 Host（v0.22.0）的 `SubscribeParams.scope` 是**必填**联合（`session|host`）：
+    // 白名单只订阅单个 session，所以恒发 `session`。
+    const payload: JsonRecord = { scope: 'session', sessionId: params.sessionId };
+    // 真实 Host 的 `after` 只接受 `{epoch, sequence}` 游标（v0.22.0 实测）：
+    // 传数字会被 typebox 拒成 `invalid params: must be object`。
+    // 调用方传 0 的语义是「从头订阅」——那正是 Host 省略 `after` 时的默认行为，所以不发。
+    if (isRecord(params.after) && typeof params.after.epoch === 'string') payload.after = params.after;
     const result = await this.#call('events/subscribe', payload, options);
     const record = asRecordOrEmpty(result);
     const cursor = record.cursor;
@@ -373,9 +389,15 @@ export class RacpOps {
     assertNonEmptyString(params.sessionId, 'turn/start 的 sessionId');
     assertNonEmptyString(params.input?.text, 'turn/start 的 input.text');
     assertNonEmptyString(params.input?.messageId, 'turn/start 的 input.messageId');
+    // 真实 Host 的 `TurnStartParams` 还要求 `context.requestId`（必填，v0.22.0 实测），
+    // 且 `idempotencyKey` 属于请求上下文；缺 `context` 会被拒成 `INVALID_ARGUMENT`。
     const payload: JsonRecord = {
       sessionId: params.sessionId,
       input: { messageId: params.input.messageId, text: params.input.text },
+      context: {
+        requestId: randomUUID(),
+        ...(params.idempotencyKey === undefined ? {} : { idempotencyKey: params.idempotencyKey }),
+      },
     };
     if (params.admission !== undefined) payload.admission = params.admission;
     const result = await this.#call('turn/start', payload, options);
@@ -436,13 +458,30 @@ export class RacpOps {
     assertNonEmptyString(params.sessionId, 'workspace/diff 的 sessionId');
     const result = await this.#call('workspace/diff', { sessionId: params.sessionId }, options);
     if (typeof result === 'string') return { diff: result };
+    // 真实 Host（v0.22.0）把 `workspace.diff()` 的原样结果交回来，字段名不是文档字面量里的
+    // `diff`（实测没有这一项）。这里按「第一个看起来像 diff 的字符串」取，认不出来才报错——
+    // 但**把 `files` 数组当成空 diff**：没有改动是 triage 的正常结果，不该算失败。
     const record = asRecord(result, 'workspace/diff');
-    if (typeof record.diff !== 'string') {
-      throw protocolError('workspace/diff 未返回 diff 字符串', { received: previewRedacted(record) });
+    const direct = ['diff', 'patch', 'unified', 'text', 'patchText']
+      .map((key) => record[key])
+      .find((value): value is string => typeof value === 'string');
+    const fromFiles = Array.isArray(record['files'])
+      ? (record['files'] as unknown[])
+          .map((file) => {
+            const entry = isRecord(file) ? file : {};
+            const patch = entry['patch'] ?? entry['unified'] ?? entry['diff'];
+            return typeof patch === 'string' ? patch : '';
+          })
+          .filter((patch) => patch.length > 0)
+          .join('\n')
+      : '';
+    const diff = direct ?? fromFiles;
+    if (diff.length === 0 && !Array.isArray(record['files']) && Object.keys(record).length > 0) {
+      throw protocolError('workspace/diff 未返回可识别的 diff', { received: previewRedacted(record) });
     }
     return {
-      diff: record.diff,
-      ...(typeof record.truncated === 'boolean' ? { truncated: record.truncated } : {}),
+      diff,
+      ...(typeof record['truncated'] === 'boolean' ? { truncated: record['truncated'] } : {}),
     };
   }
 

@@ -33,6 +33,7 @@ import { closePool, createPool } from '../db/index.ts';
 import { readRepoPolicy } from '../config/index.ts';
 import { resolveGithubAuth } from './github-auth.ts';
 import type { GithubClient, GithubWriteApi } from '../github/index.ts';
+import { RepoCache, createExecFileRunGit, createRepoWorktreePort } from '../git/index.ts';
 import {
   APP_VERSION,
   buildServer,
@@ -56,7 +57,7 @@ import type {
 } from '../queue/index.ts';
 import { createQueries } from '../queries/index.ts';
 import type { Queries } from '../queries/index.ts';
-import { HostSupervisor, bundleBinaryPath, createNodeHostSpawn } from '../runtime/index.ts';
+import { HostSupervisor, createNodeHostSpawn, resolveBundleCommand } from '../runtime/index.ts';
 import type { SandboxDocker } from '../sandbox/index.ts';
 import { createSupervisorHostPort, runTask } from '../worker/index.ts';
 import type { HostPort, TaskRunReport, WorktreePort } from '../worker/index.ts';
@@ -212,9 +213,19 @@ function createDefaultHostPort(config: AppConfig, logger: Logger): HostPort {
     );
     return createUnavailableHostPort('未配置 PI_BOT_HOST_BUNDLE_DIR（本机没有 vendor/pi-host bundle）');
   }
+  // bundle 可以自带 `runner.json` 声明启动命令（Windows 开发机：`node pi-host.js`）；
+  // 没声明就是 §2.2 的 `bin/pi-host`。见 `runtime/pin.ts::resolveBundleCommand`。
+  const command = resolveBundleCommand(bundleDir);
+  if (command.prependArgs.length > 0) {
+    logger.info(
+      { command: command.command, prependArgs: command.prependArgs },
+      'bundle 自带 runner.json：按它启动 pi-host（Linux 生产不会走这条）',
+    );
+  }
   const supervisor = new HostSupervisor({
     spawn: createNodeHostSpawn(),
-    binaryPath: bundleBinaryPath(bundleDir),
+    binaryPath: command.command,
+    prependArgs: command.prependArgs,
     dataDir: config.host.dataDir,
     port: config.host.port,
     logger,
@@ -222,7 +233,33 @@ function createDefaultHostPort(config: AppConfig, logger: Logger): HostPort {
     // key 只在可信侧（bot + pi-host），永不进任务容器（plan §8.4）。
     extraEnv: hostModelEnv(config),
   });
-  return createSupervisorHostPort(supervisor);
+  // 设备令牌来自环境（`PI_BOT_HOST_TOKEN`）：常驻 Host 没有 `--pair` 行，必须显式传。
+  return createSupervisorHostPort(supervisor, { token: config.host.token ?? undefined });
+}
+
+/**
+ * 真实检出：`RepoCache`（clone 缓存 + `git worktree add --detach`）接成 `WorktreePort`。
+ *
+ * 为什么放在装配层：`git/` 只认识 `RepoCache` 与 `RunGit`，`config` 与日志面都是装配层的知识。
+ * 私有仓库的认证走 remote URL 里的 token（`x-access-token:` 形式），token 只活在这个闭包里，
+ * 不会进容器、也不会写进 `tasks`/`runs`——写回推送另有 `push.ts` 的 askpass 通道。
+ */
+function createDefaultWorktreePort(config: AppConfig, logger: Logger): WorktreePort {
+  const token = config.github.token;
+  const runGit = createExecFileRunGit({ env: { GIT_TERMINAL_PROMPT: '0' } });
+  const cache = new RepoCache({
+    cacheRoot: config.worker.cacheRoot,
+    runGit,
+    logger,
+  });
+  return createRepoWorktreePort({
+    cache,
+    jobRoot: config.worker.jobRoot,
+    logger,
+    ...(token === null
+      ? {}
+      : { remoteUrl: (repo: string) => `https://x-access-token:${token}@github.com/${repo}.git` }),
+  });
 }
 
 /** 没有令牌时的 ack：明确报错，让 webhook handler 记 warn 并继续回 200（§5.3 第 8 步）。 */
@@ -331,7 +368,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       pool,
       logger,
       ...(overrides.docker === undefined ? {} : { docker: overrides.docker }),
-      ...(overrides.worktree === undefined ? {} : { worktree: overrides.worktree }),
+      worktree: overrides.worktree ?? createDefaultWorktreePort(config, logger),
       // 有 bundle 就真起 pi-host（`HostSupervisor`）；没有就换成「明确失败」的端口并告警
       host: overrides.host ?? createDefaultHostPort(config, logger),
       ...(overrides.github === undefined ? {} : { github: overrides.github }),
@@ -379,6 +416,8 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       verify,
       db: pool,
       enqueue: createQueueEnqueuer(queue),
+      // 句柄来自配置：`@<App slug> /命令`（文档 §6.4 只规定「@机器人 /命令」）
+      mention: config.github.mention,
       ack,
       logger,
       now,

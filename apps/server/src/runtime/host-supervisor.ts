@@ -122,6 +122,11 @@ export interface HostSupervisorOptions {
   /** pi-host 可执行文件（`vendor/pi-host/<version>/bin/pi-host`）。 */
   readonly binaryPath: string;
   /** `--data-dir`：Host 的会话/模型状态目录。 */
+  /**
+   * 排在 `buildHostArgs` 之前的参数（`runner.json` 的 `args`）。
+   * Windows 开发机上 `command` 是 `node`、这里放 `pi-host.js`；Linux 生产恒为空。
+   */
+  readonly prependArgs?: readonly string[];
   readonly dataDir: string;
   /** `--port`，默认 0（随机端口，引导期用）。 */
   readonly port?: number;
@@ -492,8 +497,8 @@ export class HostSupervisor {
 
     return {
       command: options.binaryPath,
-      args: buildHostArgs(options),
       env,
+      args: [...(this.#options.prependArgs ?? []), ...buildHostArgs(options)],
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     };
   }

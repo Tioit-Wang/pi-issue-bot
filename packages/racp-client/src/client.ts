@@ -42,6 +42,8 @@ import {
 } from './frames.ts';
 import { previewRedacted } from './redact.ts';
 import {
+  RACP_CLIENT_NAME,
+  RACP_CLIENT_VERSION,
   RACP_PROTOCOL_VERSION,
   assertWith,
   isEventEnvelope,
@@ -60,13 +62,13 @@ import {
 /**
  * 事件推送用的通知方法名。
  *
- * **这是一条假设，不是已验证事实**：`racp.schema.json` 还没 vendored（`docs/dev-plan.md`
- * §13.1 已记账），所以「事件用哪个 method 推」只能取规范里最直白的形状。两种可能性都兜住了：
- * 收到 `params` 本身是合法 `EventEnvelope`，或者 `params.event` 是合法 `EventEnvelope`，
- * 都进 `onEvent`；其余进 `onNotification`（不会丢，运行时装配时看一眼日志就知道该改成什么）。
- * 接上真实 host 后如果方法名不同，用 `eventNotificationMethod` 选项覆盖，不必改代码。
+ * **这条已按真实 Host 校准（v0.22.0）**：事件推送的 method 是 `session/event`
+ * （`@pi-desktop/shared` 的 `RACP_EVENT_NOTIFICATION`），不是文档字面量里更直白的 `events/event`。
+ * 用错名字的后果不是报错而是**静默无事件**：turn 会一直等到任务级超时，表现为「agent 不动了」。
+ * 两种 `params` 形状（直接是信封，或 `params.event`）都兜住了；要换 method 用
+ * `eventNotificationMethod` 选项覆盖。
  */
-export const EVENT_NOTIFICATION_METHOD = 'events/event';
+export const EVENT_NOTIFICATION_METHOD = 'session/event';
 
 /** 单次调用默认超时。与 tech-plan §12 的 p95 目标（90s 量级）留出余量，但不是任务级时间闸。 */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -489,9 +491,23 @@ export class RacpClient {
 
   #buildInitializeParams(): unknown {
     if (this.#options.initializeParams !== undefined) return this.#options.initializeParams;
-    const params: Record<string, unknown> = { protocolVersion: RACP_PROTOCOL_VERSION };
-    if (this.#options.clientInfo !== undefined) params.client = this.#options.clientInfo;
-    return params;
+    // Host 的 `RacpInitializeParamsSchema`（v0.22.0 实测）要求四件：`protocolVersion`、
+    // `client{name,version}`、`bindings`（必须含 `RACP-WS`）、`capabilities`。
+    // 只发 `protocolVersion` 会被直接拒成 `INVALID_ARGUMENT / invalid connection/initialize params`。
+    return {
+      protocolVersion: RACP_PROTOCOL_VERSION,
+      client: this.#options.clientInfo ?? { name: RACP_CLIENT_NAME, version: RACP_CLIENT_VERSION },
+      bindings: ['RACP-WS'],
+      capabilities: {
+        eventReplay: true,
+        approvals: true,
+        inputRequests: true,
+        turnQueue: true,
+        hostEvents: true,
+        history: true,
+        terminal: true,
+      },
+    };
   }
 
   #checkProtocolVersion(result: InitializeResult): void {

@@ -82,16 +82,26 @@ export function createLifecycleDisposer(executor: LifecycleExecutor): LifecycleD
   };
 }
 
-/** `runtime/host-supervisor.ts::HostSupervisor` → `HostPort`。 */
-export function createSupervisorHostPort(supervisor: HostSupervisor): HostPort {
+/**
+ * `runtime/host-supervisor.ts::HostSupervisor` → `HostPort`。
+ *
+ * `token` 是**设备令牌**（`PI_BOT_HOST_TOKEN` / `host_credentials` 解出来的 `pdt1.…`）：
+ * 常驻 Host 不用 `--pair` 启动，`info.pairing` 永远是 `undefined`，
+ * 所以「连上去用什么令牌」必须由装配层显式传入，不能指望从 READY 行里拿到。
+ */
+export function createSupervisorHostPort(
+  supervisor: HostSupervisor,
+  options: { readonly token?: string | undefined } = {},
+): HostPort {
   return {
     async ready() {
       const info = supervisor.info ?? (await supervisor.start());
+      const token = options.token ?? (info.pairing === undefined ? undefined : info.pairing.token);
       return {
         hostId: info.hostId,
         port: info.port,
         version: info.version,
-        ...(info.pairing === undefined ? {} : { token: info.pairing.token }),
+        ...(token === undefined || token === '' ? {} : { token }),
       };
     },
     async stop() {

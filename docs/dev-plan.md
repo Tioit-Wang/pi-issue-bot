@@ -425,3 +425,70 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 **这一轮发现、尚未修的**（记在案，避免下次重踩）：
 1. **失败不落 `runs` 行**：`HOST_UNAVAILABLE` 这类在 run 创建之前就失败的路径，只在 pg-boss job 的 `output` 与日志里，`runs`/`run_events` 是空的、`tasks.status` 停在 `queued`。这违反 plan §10「每个失败都有分类」——应在 orchestration 包装层 catch 后补一条 `runs`（outcome=failed + failure_class）并推进 task 状态。
 2. **契约文档与迁移漂移**：`contract-db.md`（W1-A）给 `tasks` 补了 `outcome/failure_class/cost_usd/dry_run/started_at`，但 `0000_init.sql`（W1-B，并行产出）没有这些列。查询与面板都按迁移走所以测试全绿，但文档多承诺了 5 列；下一轮需要一次迁移（序号落在 0000–0099 段）把列补齐或把文档改回。
+
+---
+
+## 13.11 真实链路打通（2026-11-10，Windows 本机 + 真 pi-host v0.22.0）
+
+§13.10 记的「唯一挡住完整链路的东西」已经不在了：**bundle 拿到了、握手通了、agent 真的跑了 turn、GitHub 写真的发生了**。这一节只记事实与它带来的改动。
+
+### 13.11.1 bundle 从哪来（可复现）
+
+| 产物 | 来源 | 校验 |
+|---|---|---|
+| `pi-host.js` / `agent-runtime/` / `install.sh` / `SHA256SUMS` | 上游发布物 `vastsa/PI-Desktop@v0.22.0` 的 `pi-host-0.22.0-linux-x64.tar.gz` | 与同目录 `.sha256` 一致（`bd841667…ab823`） |
+| `bin/pi-desktop-host-core.exe` | 本机已安装的 PI-Desktop 0.22.0（`resources/bin`） | 版本与 bundle 同为 0.22.0；`PIN.json` 记它的哈希 |
+| `PIN.json` | 本次手写：`hostVersion=0.22.0`、`wsPath=/v1/racp/ws`、`wsSubprotocol=pi-racp.v1.jsonrpc`、三份产物的 sha256 | `verifyPin` 通过（`bootstrap-host` 第 0 步） |
+
+**上游只发 POSIX 目标**（`bundle.mjs` 的 `platform` 白名单就是 linux/darwin）。Windows 开发机因此用「Linux bundle 的 JS + 桌面安装里的 win32 host-core」，清单里每份产物各自钉哈希——不是「假装它是 Windows bundle」。
+
+### 13.11.2 Windows 启动适配：`runner.json`（唯一的生产代码新增）
+
+`bin/pi-host` 是 `#!/bin/sh` + `exec node pi-host.js`：Windows 不认 shebang，也不接受无扩展名的非 PE 文件，`spawn('…/bin/pi-host')` 直接 `ENOENT`。改法是把「怎么启动」做成 bundle 里的数据：
+
+```
+<bundleDir>/runner.json   { "command": "node.exe 绝对路径", "args": ["pi-host.js"] }
+```
+
+- `runtime/pin.ts::resolveBundleCommand()` 读它，相对路径按 bundleDir 解析，`-` 开头的参数原样保留；**没有 `runner.json` 时行为与 §2.2 完全一致**（`bin/pi-host`），Linux 生产一行都不改。
+- `HostSupervisor` 新增 `prependArgs`（排在 `buildHostArgs` 之前），`compose` 与 `bootstrapHost` 都改用 `resolveBundleCommand`。
+- `runner.json` 不放松任何安全约束：哈希校验仍在 `PIN.json`。
+
+### 13.11.3 实测修掉的契约漂移（6 条：按文档字面量写的客户端撞上真 Host）
+
+| # | 现象 | 真实契约（v0.22.0） | 改动 |
+|---|---|---|---|
+| 1 | `INVALID_ARGUMENT: invalid connection/initialize params` | 必须带 `{protocolVersion, client{name,version}, bindings:["RACP-WS"], capabilities}` | `client.ts` 补齐四件；新增 `RACP_CLIENT_NAME/VERSION` |
+| 2 | `project/register 未返回 projectId` | 返回 `{ project: { id, … } }` | `ops.ts::projectRegister` 两种形状都接受 |
+| 3 | `invalid params: must be object` | `events/subscribe` 的 `scope` 必填；`after` 只收 `{epoch,sequence}`（传 `0` 非法） | 恒发 `scope:'session'`；数字 `after` → 不发 |
+| 4 | 同上（换到 turn/start） | `turn/start` 必须带 `context.requestId` | `ops.ts::turnStart` 补 `context` |
+| 5 | **静默无事件**（turn 一直等到 20min 超时） | 事件推送方法是 `session/event`，不是 `events/event` | `EVENT_NOTIFICATION_METHOD` 改默认值；e2e 夹具同步 |
+| 6 | `workspace/diff 未返回 diff 字符串` | `workspace.diff()` 原样返回，没有 `diff` 字段 | 取 `diff/patch/unified/text`，`files` 拼接；`{files:[]}` → 空 diff |
+
+两条是**能力缺失**而不是形状不符：
+
+- `session/archive` 被注册成 `unavailable("session archival")` → 归档失败不再算任务失败（只记 warn）。
+- `provider-import`（给 host-core 装模型端点）走 **POSIX-only admin socket**：`prepareAdminDirectory()` 在 win32 直接 `ADMIN_UNAVAILABLE`。本机做法是把桌面上已配好的 provider 行与 `.machine-key`/`*.bin` 放进 host 的 data dir；Linux 生产用 `pi-host provider-import --data-dir …`（payload 已按上游 `provider-sync.ts` 的严格校验构造通过）。
+
+### 13.11.4 `serve` 装配缺口（之前从没真跑过，所以没暴露）
+
+1. **设备令牌没接进 RACP 端口**：`createSupervisorHostPort()` 只取 READY 行的 `pairing.token`，常驻 Host 没有 `--pair` 行 → `RACP_TOKEN_MISSING`。已加 `options.token`，`compose` 传 `PI_BOT_HOST_TOKEN`。
+2. **真实检出没装配**：`createWorkerPorts()` 默认注入「明确失败」的 `WORKTREE_UNAVAILABLE`，`git/` 的 `createRepoWorktreePort` 一直没人接。已在 `compose` 装配（`RepoCache` + `git worktree add --detach`）；私有仓库认证走 remote URL 的 `x-access-token`，token 只在该闭包里。
+3. **`@` 句柄写死**：`COMMAND_MENTION_PATTERN` 硬编码 `@pi-bot`，而 slug 由 App 名字决定（本次 `pi-issue-bot-tioit`）。文档 §6.4 只规定「`@机器人 /命令`」，所以句柄必须是配置：新增 `PI_BOT_MENTION`（默认 `pi-bot`），`webhook.ts` 用 `commandMentionPattern(handle)`，`WebhookDeps.mention` 由装配层传。
+
+### 13.11.5 实跑结论（可复现）
+
+| 场景 | 结果 |
+|---|---|
+| `bootstrap-host`（PIN → spawn → READY/PAIRING → WS → `connection/pair` → 令牌入库） | 六步全通，`hostVersion=0.22.0` |
+| `serve` 启动 | `/healthz` 200、`/metrics` 200、6 队列 + 5 cron、`githubAuthMode=app`（installation 180374996） |
+| `gh webhook forward` → `/webhook` | 真事件直达本地：`issues.opened` → `auto:triage` 入队 + eyes reaction；`issue_comment` 带 `@pi-issue-bot-tioit /issue-triage` → 命令任务入队 |
+| `auto:triage`（issue #8） | **agent 在容器内真跑了工具、产出合法信封**：issue 被打上 `bug`+`needs-info` 并收到中文分析评论 |
+| `auto:triage`（issue #10） | turn `completed` 但没有可校验信封 → `run.outcome=failed`、`failure_class=parse`。**不是链路问题，是 skill/prompt 对「必须输出 JSON 信封」的约束还不够硬** |
+
+### 13.11.6 仍然没做（与 §13.5 同一口径）
+
+- **worker 的 GitHub 写面仍走 `PI_BOT_GITHUB_TOKEN`**：`worker-deps.ts` 只看 `config.github.token`；App 认证已接在 webhook ack 与 `compose` 的客户端上，worker 侧还没切到 installation token。
+- skill/prompt 需要对「信封必须输出」做一轮收口（issue #10 即证据）。
+- 面板 OAuth 未接（`/api/*` 恒 401）；生产 webhook 需要公网入口（本机是 `gh webhook forward`）。
+- 本机磁盘水位 93% > 85%：`lifecycle-cleanup` 会按水位销毁容器，长任务与它抢容器是常态。

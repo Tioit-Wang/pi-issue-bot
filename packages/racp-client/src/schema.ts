@@ -44,6 +44,11 @@ export const TURN_STATUSES = [
   'failed',
   'canceled',
 ] as const;
+
+/** 握手自报身份：Host 的 `RacpInitializeParamsSchema.client` 是必填（`{name, version}`）。 */
+export const RACP_CLIENT_NAME = 'pi-issue-bot';
+/** 与 `packages/racp-client/package.json` 的版本保持一致（手动同步，这里只有一处引用）。 */
+export const RACP_CLIENT_VERSION = '0.0.0';
 export const TURN_ADMISSIONS = ['reject_if_busy', 'queue'] as const;
 export const ITEM_TYPES = ['message', 'tool', 'compaction'] as const;
 export const ITEM_STATUSES = ['streaming', 'completed'] as const;

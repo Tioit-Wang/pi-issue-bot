@@ -287,7 +287,19 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
         const diff = await params.ops.workspaceDiff({ sessionId }, requestOptions);
 
         // 7. session/archive（任务结束立即归档；删除交给每日清理）
-        await params.ops.sessionArchive({ sessionId }, requestOptions);
+        //
+        // **归档失败不算任务失败**：v0.22.0 的 Host 把 `session/archive` 注册成
+        // 「不可用」（`unavailable("session archival")`），能力表里没有它就是没有。
+        // 归档只是清理动作，把它变成 run 的终态会把「agent 干得对不对」和
+        // 「宿主版本有没有这个能力」混为一谈——所以这里只记 warn。
+        try {
+          await params.ops.sessionArchive({ sessionId }, requestOptions);
+        } catch (error) {
+          logger.warn(
+            { code: isAppError(error) ? error.code : 'UNKNOWN' },
+            'session/archive 失败（Host 可能不提供该 operation；不影响本次结果）',
+          );
+        }
 
         return {
           projectId,

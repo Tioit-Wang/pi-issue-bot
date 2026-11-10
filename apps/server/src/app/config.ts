@@ -67,6 +67,11 @@ export const APP_ENV_KEYS = {
   /** App 安装 ID（安装到账号/组织后由 GitHub 给出；没有它取不到 installation token） */
   githubInstallationId: 'PI_BOT_GITHUB_INSTALLATION_ID',
   /**
+   * 评论里 @ 的句柄（GitHub App 的 slug）。文档 §6.4 只规定「`@机器人 /命令`」，
+   * 而 slug 由 App 名字决定（本次是 `pi-issue-bot-tioit`），所以句柄必须是配置而不是字面量。
+   */
+  mention: 'PI_BOT_MENTION',
+  /**
    * 模型 API key。**标准 OpenAI / DeepSeek / MiMo 兼容端点都能用**：
    * 我们自己这一份是 `PI_BOT_MODEL_API_KEY`，兼容别名 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`。
    */
@@ -96,6 +101,8 @@ export const APP_DEFAULTS = {
   /** plan §11：M1 首周强制干跑，因此**缺省 true**（要真写必须显式配 false） */
   dryRun: true,
   allowPushBranch: false,
+  /** 缺省句柄：App 名叫 `pi-bot` 的部署不用配 `PI_BOT_MENTION` */
+  mention: 'pi-bot',
 } as const;
 
 export interface AppConfig {
@@ -131,6 +138,8 @@ export interface AppConfig {
     readonly privateKeyPath: string | null;
     /** 安装 ID；`null` = 还没装（此时 App 认证不可用，会 warn） */
     readonly installationId: number | null;
+    /** 评论里 @ 的句柄（App slug）；默认 `pi-bot` */
+    readonly mention: string;
   };
   /**
    * 模型端点（plan §4.4：模型请求由宿主代发，key 只在可信侧）。
@@ -337,6 +346,7 @@ export function readAppConfig(env: EnvLike): AppConfig {
       appId: readOptionalInt(env, APP_ENV_KEYS.githubAppId, 1),
       privateKeyPath: readString(env, APP_ENV_KEYS.githubAppPrivateKeyPath),
       installationId: readOptionalInt(env, APP_ENV_KEYS.githubInstallationId, 1),
+      mention: readString(env, APP_ENV_KEYS.mention) ?? APP_DEFAULTS.mention,
     },
     model: {
       apiKey: modelKey === null ? null : modelKey.value,

@@ -200,8 +200,19 @@ describe('ops：context 与结果形状', () => {
     }
   });
 
-  it('workspace/diff 返回对象但缺 diff 字段 → PROTOCOL_ERROR', async () => {
+  it('workspace/diff 的 `{files: []}` 归一成空 diff（无改动不是失败）', async () => {
     const host = await MockHost.start({ handlers: { 'workspace/diff': () => ({ files: [] }) } });
+    try {
+      const { ops } = await connected(host);
+      // 真实 Host v0.22.0 返回的就是这种形状；triage 不改文件，空 diff 是正常结果。
+      expect(await ops.workspaceDiff({ sessionId: 'session-1' })).toEqual({ diff: '' });
+    } finally {
+      await host.close();
+    }
+  });
+
+  it('workspace/diff 返回既不是字符串也没有 files 的对象 → PROTOCOL_ERROR', async () => {
+    const host = await MockHost.start({ handlers: { 'workspace/diff': () => ({ nonsense: 1 }) } });
     try {
       const { ops } = await connected(host);
       await expectAsyncRacpError(() => ops.workspaceDiff({ sessionId: 'session-1' }), 'PROTOCOL_ERROR');

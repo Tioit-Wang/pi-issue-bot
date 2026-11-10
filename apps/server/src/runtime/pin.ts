@@ -21,6 +21,7 @@
  * 单测用内存文件表跑，生产用 `node:fs/promises` 的薄包装。
  */
 
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { sha256Hex } from './crypto.ts';
@@ -36,8 +37,8 @@ export const PIN_ERROR_CODES = {
   hashMismatch: 'PIN_HASH_MISMATCH',
   bindingMismatch: 'PIN_WS_BINDING_MISMATCH',
   hostVersionMismatch: 'HOST_VERSION_MISMATCH',
+  runnerInvalid: 'BUNDLE_RUNNER_INVALID',
 } as const;
-
 /** `PIN.json` 的形状（§2.2：`{ hostVersion, wsPath, wsSubprotocol, sha256, fetchedAt, upstreamRef }`）。 */
 export interface PinFile {
   /** 这一份 bundle 的版本，用于与 `connection/initialize` 协商出的版本比对。 */
@@ -290,4 +291,98 @@ export async function verifyPin(options: VerifyPinOptions): Promise<PinVerificat
  */
 export function bundleBinaryPath(bundleDir: string): string {
   return join(bundleDir, 'bin', 'pi-host');
+}
+
+/**
+ * bundle 可选的启动描述文件（`<bundleDir>/runner.json`）：
+ * `{ "command": "bin/node.exe", "args": ["pi-host.js"] }`。
+ *
+ * 为什么需要：`bin/pi-host` 是 POSIX 启动脚本（`#!/bin/sh` + `exec node pi-host.js`）。
+ * Windows 既不认 shebang，也不接受无扩展名的非 PE 文件——`spawn('…/bin/pi-host')` 直接
+ * `ENOENT`。把启动命令写成数据而不是写死在代码里，就能在开发机上用同一份 bundle
+ * （`{ "command": "node", "args": ["pi-host.js"] }`），而 Linux 生产侧一行都不改。
+ *
+ * 边界：`runner.json` **不放松**任何安全约束——相对路径按 bundleDir 解析，
+ * 哈希校验仍在 `PIN.json`。
+ */
+export const BUNDLE_RUNNER_FILE_NAME = 'runner.json';
+
+/** 启动命令（`command` + 前置参数，前置参数排在 `buildHostArgs` 之前）。 */
+export interface BundleCommand {
+  readonly command: string;
+  readonly prependArgs: readonly string[];
+}
+
+/** `runner.json` 的读取器：文件不存在返回 `undefined`（不抛错）。 */
+export type BundleRunnerReadText = (absolutePath: string) => string | undefined;
+
+/** 默认读取器：`node:fs` 同步读；不存在/不可读一律当「没有 runner.json」。 */
+function defaultReadText(absolutePath: string): string | undefined {
+  try {
+    const raw = readFileSync(absolutePath, 'utf8');
+    // Windows 上手工写的 JSON 常带 BOM（PowerShell 5.1 的 `Set-Content -Encoding utf8`），
+    // `JSON.parse` 会因此报错。剥掉它比要求人手清理现实。
+    return raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAbsoluteLike(value: string): boolean {
+  return value.startsWith('/') || value.startsWith('\\') || /^[A-Za-z]:/.test(value);
+}
+
+/** 相对路径按 bundleDir 解析；`--flag` 这类参数原样保留。 */
+function resolveArg(bundleDir: string, value: string): string {
+  if (value.startsWith('-')) {
+    return value;
+  }
+  return isAbsoluteLike(value) ? value : join(bundleDir, value);
+}
+
+/**
+ * 决定「怎么启动这个 bundle」。
+ *
+ * - 没有 `runner.json`：`{ command: bundleBinaryPath(bundleDir), prependArgs: [] }`，
+ *   与 §2.2 的布局完全一致（Linux 生产走这条）。
+ * - 有 `runner.json`：按它启动，`args` 里非 `-` 开头的项按 bundleDir 解析成绝对路径
+ *   （`node pi-host.js` 里的 `pi-host.js` 不该依赖 `cwd`）。
+ */
+export function resolveBundleCommand(
+  bundleDir: string,
+  readText: BundleRunnerReadText = defaultReadText,
+): BundleCommand {
+  const raw = readText(join(bundleDir, BUNDLE_RUNNER_FILE_NAME));
+  if (raw === undefined) {
+    return { command: bundleBinaryPath(bundleDir), prependArgs: [] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new AppError(`${BUNDLE_RUNNER_FILE_NAME} 不是合法 JSON`, {
+      code: PIN_ERROR_CODES.runnerInvalid,
+      failureClass: 'parse',
+      retriable: false,
+      cause: error,
+    });
+  }
+  if (!isRecord(parsed) || !nonEmptyString(parsed['command'])) {
+    throw pinError(
+      `${BUNDLE_RUNNER_FILE_NAME} 必须形如 { "command": "…", "args": ["…"] }`,
+      PIN_ERROR_CODES.runnerInvalid,
+    );
+  }
+  const argsValue = parsed['args'];
+  if (argsValue !== undefined && (!Array.isArray(argsValue) || argsValue.some((item) => typeof item !== 'string'))) {
+    throw pinError(`${BUNDLE_RUNNER_FILE_NAME} 的 args 必须是字符串数组`, PIN_ERROR_CODES.runnerInvalid);
+  }
+
+  const command = String(parsed['command']);
+  const args = (Array.isArray(argsValue) ? argsValue : []) as readonly string[];
+  return {
+    command: isAbsoluteLike(command) ? command : join(bundleDir, command),
+    prependArgs: args.map((arg) => resolveArg(bundleDir, arg)),
+  };
 }

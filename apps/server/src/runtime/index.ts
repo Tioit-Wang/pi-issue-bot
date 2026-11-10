@@ -15,13 +15,16 @@
 
 // ── PIN 钉扎（§2.2） ────────────────────────────────────────────────────────
 export {
+  BUNDLE_RUNNER_FILE_NAME,
   PIN_ERROR_CODES,
   PIN_FILE_NAME,
   assertHostVersionMatches,
   bundleBinaryPath,
   parsePinFile,
   verifyPin,
+  resolveBundleCommand,
 } from './pin.ts';
+export type { BundleCommand, BundleRunnerReadText } from './pin.ts';
 export type { PinFile, PinReadFile, PinVerification, PinVerifiedFile, VerifyPinOptions } from './pin.ts';
 
 // ── 令牌加密（§7.2 / §10.4） ───────────────────────────────────────────────
