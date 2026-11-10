@@ -71,10 +71,9 @@ export const ISSUE_GREETING_BODY = [
   '我是 **pi-issue-bot**，这个 issue 由我接管。',
   '',
   '- 想让我做判定/复现/审查：`@pi-issue-bot-tioit /issue-triage`、`/issue-repro`、`/review-pr`',
-  '- 想直接问我问题：`@pi-issue-bot-tioit 你的问题`',
   '',
-  '- 想让我做判定/复现/审查：`@pi-issue-bot-tioit /issue-triage`、`/issue-repro`、`/review-pr`',
-
+  '判定结果会以标签 + 一条说明评论回帖；只在拿到可信结论时才写。',
+].join('\n');
 /** 缺省句柄：App 名为 `pi-bot` 的部署用它（其它 App 用 `PI_BOT_MENTION` 覆盖）。 */
 export const DEFAULT_BOT_MENTION = 'pi-bot';
 
