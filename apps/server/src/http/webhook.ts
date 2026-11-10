@@ -353,7 +353,8 @@ export function decideWebhookTask(input: {
       issueVersionHash: null,
       actorLogin: login,
       association: readString(comment, 'author_association'),
-      ackStyle: 'comment' as const,
+      // 回执统一走 eyes reaction：不发「已收到」评论，避免每个命令都多一条噪声
+      ackStyle: 'reaction' as const,
     };
 
     if (command === null) {

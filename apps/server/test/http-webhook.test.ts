@@ -254,7 +254,7 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(result.elapsedMs).toBeLessThan(2000);
   });
 
-  it('评论命令：ack 走「一行已收到」评论，并在响应里回带文案', async () => {
+  it('评论命令：ack 走 eyes reaction（不再回「已收到」评论）', async () => {
     await enableRepo({ dryRun: false });
     const h = harness();
     const result = await handleWebhook(h.deps, {
@@ -266,10 +266,13 @@ describe('webhook 九步管线（真 PG）', () => {
     });
 
     expect(result.status).toBe(200);
-    expect(h.events).toEqual(['enqueue', 'comment']);
+    // 只打表情 + 入队，不发「已收到」评论（用户要求：处理完只回最终结果）
+    expect(h.events).toEqual(['enqueue', 'reaction']);
+    expect(h.reactions).toEqual([{ repo: REPO, issueNumber: 12 }]);
+    expect(h.comments).toHaveLength(0);
     const body = result.body as { action: string; ackComment: string | null; taskId: string | null };
     expect(body.action).toBe('enqueued');
-    expect(body.ackComment).toContain('/review-pr');
+    expect(body.ackComment).toBeNull();
     expect(body.taskId).not.toBeNull();
     // 命令任务落库的三列（F9：入队即定型）
     const rows = await db.sql('select source, command, actor_login, target_kind, target_number from tasks');
