@@ -43,10 +43,20 @@ import {
   createMetricsServer,
   createOctokitVerifier,
   createQueueEnqueuer,
+  createAllowAllAuth,
   decodeFreeQuestion,
   createSessionAuth,
 } from '../http/index.ts';
-import type { BuildServerDeps, HealthCheck, Metrics, MetricsServer, WebhookAck, WebhookVerify } from '../http/index.ts';
+import type {
+  BuildServerDeps,
+  HealthCheck,
+  Metrics,
+  MetricsServer,
+  RequireAuth,
+  SessionStore,
+  WebhookAck,
+  WebhookVerify,
+} from '../http/index.ts';
 import { JOB_SCHEDULES, registerJobs } from '../jobs/index.ts';
 import type { JobDeps } from '../jobs/index.ts';
 import { QUEUE, bootstrapQueue, createBoss, enqueueRetry, registerScheduleWorker, registerTaskWorker } from '../queue/index.ts';
@@ -274,6 +284,21 @@ export function createUnavailableWebhookAck(reason: string): WebhookAck {
 }
 
 /**
+ * 面板鉴权：`off` 直接放行（`PI_BOT_PANEL_AUTH=off`，缺省只在 loopback 上），
+ * `session` 走 `panel_sessions` 的 cookie 会话。
+ *
+ * 为什么允许 `off`：本地面板（127.0.0.1）没有外部可达面，而 OAuth 流程尚未接入；
+ * 关掉只影响 `/api/*` 的读接口，`/webhook` 的验签与 worker 的写面完全不受影响。
+ */
+function createPanelAuth(config: AppConfig, store: SessionStore, logger: Logger): RequireAuth {
+  if (config.panelAuth === 'off') {
+    logger.warn({}, '面板鉴权已关闭（PI_BOT_PANEL_AUTH=off）：/api/* 不做会话校验，仅适用于 loopback');
+    return createAllowAllAuth();
+  }
+  return createSessionAuth({ store, logger });
+}
+
+/**
  * GitHub 客户端装配：**App 认证优先**（installation token），token 兜底，都没有就 `null`。
  * 解析逻辑与「缺什么」的措辞在 `github-auth.ts`；这里只负责按模式记一条启动日志。
  */
@@ -422,7 +447,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     pool,
     queries,
     // TODO(owner: 面板鉴权切片)：OAuth + `isOrgMember` 接进来之前只有会话校验（401 完整、403 待接）
-    requireAuth: overrides.requireAuth ?? createSessionAuth({ store: pool, logger }),
+    requireAuth: overrides.requireAuth ?? createPanelAuth(config, pool, logger),
     webhook: {
       verify,
       db: pool,

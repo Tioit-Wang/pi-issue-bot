@@ -62,6 +62,8 @@ export const APP_ENV_KEYS = {
   greet: 'PI_BOT_GREET',
   /** 纯 @ 提问（不带 `/命令`）的开关（默认开） */
   freeMention: 'PI_BOT_FREE_MENTION',
+  /** 面板鉴权：`off`（直接放行，只用于 loopback）/ `session`（cookie 会话） */
+  panelAuth: 'PI_BOT_PANEL_AUTH',
   /** GitHub token（只用于 webhook 的 10 秒应答；worker 的写面走 App 认证） */
   githubToken: 'PI_BOT_GITHUB_TOKEN',
   /** GitHub App ID（推荐认证方式；与 `PI_BOT_GITHUB_TOKEN` 二选一，App 优先） */
@@ -125,6 +127,8 @@ export interface AppConfig {
   readonly greet: boolean;
   /** 纯 @ 提问（不带 `/命令`）也跑一次 turn（`PI_BOT_FREE_MENTION`） */
   readonly freeMention: boolean;
+  /** 面板鉴权模式；缺省 loopback 上是 `off`，其它地址上是 `session` */
+  readonly panelAuth: 'off' | 'session';
   readonly http: {
     readonly host: string;
     readonly port: number;
@@ -323,6 +327,16 @@ export function readAppConfig(env: EnvLike): AppConfig {
   // 也判断不了这台机器究竟配过对没有）。到第一个任务的 RACP 连接处才以可读错误失败
   // （见 `app/racp.ts::createRacpChannelFactory`）。
   const jobRoot = readString(env, APP_ENV_KEYS.jobRoot);
+  // 面板鉴权（`PI_BOT_PANEL_AUTH`）：`off` 直接放行、`session` 走 cookie 会话。
+  // 缺省只在 **loopback** 上放行——监听在 127.0.0.1 时没有外部可达面，本地面板不必先登录。
+  const httpHostForAuth = readString(env, APP_ENV_KEYS.httpHost) ?? APP_DEFAULTS.httpHost;
+  const panelAuthValue = readString(env, APP_ENV_KEYS.panelAuth);
+  const panelAuth: 'off' | 'session' =
+    panelAuthValue === 'off' || panelAuthValue === 'session'
+      ? panelAuthValue
+      : /^(127\.|::1$|localhost$)/.test(httpHostForAuth)
+        ? 'off'
+        : 'session';
 
   return {
     pgDsn: dsn.value,
@@ -331,6 +345,7 @@ export function readAppConfig(env: EnvLike): AppConfig {
     dryRun: readBoolean(env, APP_ENV_KEYS.dryRun, APP_DEFAULTS.dryRun),
     greet: readBoolean(env, APP_ENV_KEYS.greet, APP_DEFAULTS.greet),
     freeMention: readBoolean(env, APP_ENV_KEYS.freeMention, APP_DEFAULTS.freeMention),
+    panelAuth,
     http: {
       host: readString(env, APP_ENV_KEYS.httpHost) ?? APP_DEFAULTS.httpHost,
       // `PI_BOT_PORT`（新）优先，回退 `PI_BOT_HTTP_PORT`
