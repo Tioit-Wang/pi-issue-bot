@@ -70,8 +70,10 @@ describe('decideWebhookTask：纯 @ 提问', () => {
     });
     expect(decision.action).toBe('task');
     if (decision.action !== 'task') return;
-    expect(decision.plan.command.startsWith(FREE_MENTION_PREFIX)).toBe(true);
-    expect(decodeFreeQuestion(decision.plan.command)).toBe('这条报错怎么排查？');
+    // 契约里 command ≤64 字符，所以问题正文走 `promptText`（落 prompt_text 列）
+    expect(decision.plan.command).toBe('@answer');
+    expect(decision.plan.promptText).toBe('这条报错怎么排查？');
+    expect(decodeFreeQuestion(decision.plan.command)).toBeNull();
     expect(decision.plan.kind.startsWith('answer:')).toBe(true);
 
     const again = decideWebhookTask({

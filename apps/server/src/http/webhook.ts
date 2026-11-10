@@ -45,9 +45,8 @@ RETURNING "delivery_id"`,
   readDelivery: `SELECT "signature_valid" FROM "webhook_deliveries" WHERE "delivery_id" = $1`,
   /** 同一 delivery 先前验签失败、这次通过：把标记翻正后继续处理（不是重复投递）。 */
   markSignatureValid: `UPDATE "webhook_deliveries" SET "signature_valid" = true WHERE "delivery_id" = $1`,
-  /** 任务级幂等：唯一索引冲突即「同一次触发已经建过任务」。 */
-  insertTask: `INSERT INTO "tasks" ("id", "source", "repo", "target_kind", "target_number", "head_sha", "command", "actor_login", "queued_at", "idempotency_key", "status", "delivery_id")
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, 'queued', $10)
+  insertTask: `INSERT INTO "tasks" ("id", "source", "repo", "target_kind", "target_number", "head_sha", "command", "actor_login", "queued_at", "idempotency_key", "status", "delivery_id", "prompt_text")
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, 'queued', $10, $11)
 ON CONFLICT ("idempotency_key") DO NOTHING
 RETURNING "id"`,
   findTaskByIdempotencyKey: `SELECT "id" FROM "tasks" WHERE "idempotency_key" = $1`,
@@ -84,9 +83,17 @@ export const ISSUE_GREETING_BODY = [
  */
 export const FREE_MENTION_PREFIX = '@answer:';
 
-/** 问题正文 → `command` 里的锚（UTF-8 → base64url，避免中文/换行破坏 SQL 与日志）。 */
+/** 自由问答任务的 `tasks.command`（契约里 `command` ≤64 字符，所以问题正文另存 `prompt_text`）。 */
+export const FREE_ANSWER_COMMAND = '@answer';
+
+/** 问题正文 → 旧版 `command` 里的锚（仅用于兼容已存在的 `@answer:<base64>` 任务行）。 */
 export function encodeFreeQuestion(question: string): string {
   return Buffer.from(question, 'utf8').toString('base64url');
+}
+
+/** 自由问答任务：新格式 `@answer`，以及兼容期的旧格式 `@answer:<base64url>`。 */
+export function isFreeAnswerCommand(command: string): boolean {
+  return command === FREE_ANSWER_COMMAND || command.startsWith(FREE_MENTION_PREFIX);
 }
 
 /** `command` 里的锚 → 问题正文；不是自由问答任务返回 `null`。 */
@@ -238,6 +245,8 @@ export type WebhookTaskPlan = {
   readonly association: string | null;
   /** 第 8 步用哪种回应：issue/PR 事件打 reaction，评论命令回一行评论。 */
   readonly ackStyle: 'reaction' | 'comment';
+  /** 自由问答的问题正文（落 `tasks.prompt_text`；其它任务为 `undefined`）。 */
+  readonly promptText?: string;
 };
 
 export type WebhookDecision =
@@ -353,7 +362,8 @@ export function decideWebhookTask(input: {
         action: 'task',
         plan: {
           ...base,
-          command: `${FREE_MENTION_PREFIX}${encodeFreeQuestion(asked)}`,
+          command: FREE_ANSWER_COMMAND,
+          promptText: asked,
           // 幂等键按**问题正文**区分：同一问题重复 @ 是空操作，换个问题就能得到新回答
           kind: `answer:${createHash('sha256').update(asked, 'utf8').digest('hex').slice(0, 12)}`,
         },
@@ -420,7 +430,7 @@ export function checkCommandGate(
     return { allowed: false, reason: '仓库配置关闭了命令（commands.enabled=false）' };
   }
   // 自由问答（`@answer:<base64>`）不是配置里的命令名，但同样受 enabled/association 约束
-  const isFreeAnswer = plan.command.startsWith(FREE_MENTION_PREFIX);
+  const isFreeAnswer = isFreeAnswerCommand(plan.command);
   if (!isFreeAnswer && !config.commands.allowed.includes(plan.command)) {
     return { allowed: false, reason: `命令 ${plan.command} 不在白名单` };
   }
@@ -644,6 +654,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     plan.actorLogin,
     idempotencyKey,
     input.deliveryId,
+    plan.promptText ?? null,
   ]);
 
   if ((insertedTask.rowCount ?? 0) === 0) {
@@ -686,7 +697,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
       taskLog.info('已打 eyes reaction');
     } else {
       // 自由问答的 command 是 `@answer:<base64url>`，回执里不能把它糊到用户脸上
-      const ackLabel = plan.command.startsWith(FREE_MENTION_PREFIX) ? '你的提问' : plan.command;
+    const ackLabel = isFreeAnswerCommand(plan.command) ? '你的提问' : plan.command;
       ackComment = `已收到 ${ackLabel}，排队中……（任务 ${taskId.slice(0, 8)}）`;
       await deps.ack.postAckComment({ repo, issueNumber: plan.targetNumber, body: ackComment });
       taskLog.info('已回「已收到」评论');

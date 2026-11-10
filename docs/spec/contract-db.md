@@ -401,3 +401,4 @@ CREATE INDEX ix_actions_reverted_at        ON actions (reverted_at) WHERE revert
 | D8 | plan §10 的粗分类 `sandbox` 拆成 `sandbox-oom` / `sandbox-crash` | tech-plan §7.3 的优先级表已经把两者分开（OOM 不重试、崩溃重试 1 次）；保留粗分类会让重试决策无值可读 |
 | D9 | `wikis` 等未列入（原文也没有） | tech-plan §7.2 的 16 张表全部落地，未增未减 |
 | D10 | `tasks.container_name` 在容器销毁后置 NULL（未在 tech-plan 写明） | 容器名只是运行期映射；保留脏值会让「这个 job 还有容器吗」出现第二种判断依据（应以 exec 代理的映射表为准） |
+| D11 | `tasks` 增列 `prompt_text`（`0001_task_prompt_text.sql`） | 自由问答（评论里 `@bot 提问`）要把**问题正文**带进任务行。塞进 `tasks.command` 不行：契约里 `command` 是 `max(64)` 的命令名，长 base64 会让 `/api/tasks` 序列化 500（实测 2026-11-10）。`NULL` = 非自由问答任务 |

@@ -88,9 +88,11 @@ export interface TaskJobRow {
   readonly targetNumber: number;
   readonly headSha: string | null;
   readonly attempt: number;
+  /** 自由问答的问题正文（`tasks.prompt_text`）；其它命令为 `null`。 */
+  readonly promptText: string | null;
 }
 
-const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt"
+const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt", "prompt_text"
 from "tasks" where "id" = $1`;
 
 /**
@@ -126,6 +128,7 @@ export async function readTaskRow(db: SqlExecutor, taskId: string): Promise<Task
     targetKind,
     targetNumber: Number(row['target_number']),
     headSha: typeof row['head_sha'] === 'string' ? row['head_sha'] : null,
+    promptText: typeof row['prompt_text'] === 'string' ? row['prompt_text'] : null,
     attempt: typeof attempt === 'number' ? attempt : 0,
   };
 }

@@ -493,8 +493,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     const attempt = input.attempt ?? row.attempt + 1;
 
 
-    // 自由问答任务（`@answer:<base64url>`）：问题正文从 command 里解出来
-    const answerQuestion = decodeFreeQuestion(row.command);
+    // 自由问答任务：问题正文优先读 `tasks.prompt_text`（新格式），
+    // 兼容历史行 `command=@answer:<base64url>` 的解码
+    const answerQuestion = row.promptText ?? decodeFreeQuestion(row.command);
     const endpoint = await ports.host.ready();
     const channel = await racp(endpoint);
     try {
