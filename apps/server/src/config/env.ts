@@ -13,6 +13,12 @@ import { fileURLToPath } from 'node:url';
 /** 环境变量名（doc 里引用它，避免多处手抄字符串）。 */
 export const ENV_KEYS = {
   databaseUrl: 'PI_BOT_DATABASE_URL',
+  /**
+   * 新的首选名（与 `app/config.ts` 的 `PI_BOT_PG_DSN` 一致）。
+   * 为什么加别名：`serve` 读新名、`migrate`/`replay` 读旧名时，按 README 只设 `PI_BOT_PG_DSN`
+   * 会出现「服务能起、迁移报缺变量」——实测踩到过，所以两个名字都要认。
+   */
+  pgDsn: 'PI_BOT_PG_DSN',
   httpHost: 'PI_BOT_HTTP_HOST',
   httpPort: 'PI_BOT_HTTP_PORT',
   metricsHost: 'PI_BOT_METRICS_HOST',
@@ -99,11 +105,18 @@ export type ServeConfig = {
  * 刻意单独一个函数：这两个子命令不需要 webhook secret，也不该因为 secret 没配就跑不起来。
  */
 export function readDatabaseUrl(env: EnvLike): string {
-  const url = readString(env, ENV_KEYS.databaseUrl);
-  if (url === null) {
-    throw new ConfigError(`缺少 ${ENV_KEYS.databaseUrl}（形如 postgres://user:pass@host:5432/db）`);
+  // 两个名字都认：`PI_BOT_PG_DSN`（新，与 app/config.ts 一致）优先，回退 `PI_BOT_DATABASE_URL`。
+  const preferred = readString(env, ENV_KEYS.pgDsn);
+  if (preferred !== null) {
+    return preferred;
   }
-  return url;
+  const legacy = readString(env, ENV_KEYS.databaseUrl);
+  if (legacy !== null) {
+    return legacy;
+  }
+  throw new ConfigError(
+    `缺少 ${ENV_KEYS.pgDsn}（形如 postgres://user:pass@host:5432/db；兼容旧名 ${ENV_KEYS.databaseUrl}）`,
+  );
 }
 
 export function readServeConfig(env: EnvLike): ServeConfig {

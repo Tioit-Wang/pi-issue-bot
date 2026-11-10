@@ -402,3 +402,26 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 **代码侧同步（本轮新增）**：`AppConfig.github` 增加 `appId` / `privateKeyPath` / `installationId`；新增 `app/github-auth.ts::resolveGithubAuth`——三件齐全走 App 认证（`createInstallationTokenProvider`），只配一半记 `degraded` 并点明缺哪项，否则退回 `PI_BOT_GITHUB_TOKEN`，都没有则 `none`。私钥只在启动时读一次，读不到/不是 PEM 直接 `ConfigError`；`describeAppConfig` 不输出私钥路径。
 
 **踩坑记录**：① Edge 142 默认禁止对默认配置开远程调试（Chromium 136+ 的安全限制），且 App-Bound Encryption 让 cookie 无法拷到别的配置目录——最后按需求改用 Chrome（用户手动登录）。② `@octokit/auth-app` 的 strategy 必须显式 `type:'installation'`，否则每个请求都会 `Invalid auth type: undefined`；③ 单测里用假 PEM 会让 auth-app 抛 `ERR_OSSL_UNSUPPORTED` 变成 unhandled rejection——改用 `generateKeyPairSync` 生成的真 RSA 私钥。
+
+### 13.10 实跑结论（本机，2026-11-10）
+
+不是「看代码猜」，是把服务真拉起来打的：
+
+| 验证 | 结果 |
+|---|---|
+| 三条门禁 | `typecheck` 0 / `lint` 0 error / `test` 全绿（server 69 文件 743 通过 2 跳过、panel 66、shared 30、contract 37、envelope 27、racp-client 86） |
+| `pi-bot migrate` | 对 `pi_issue_bot` 应用 `0000_init` **成功**；重跑 `applied:[] skipped:[0000_init]`（幂等） |
+| `pi-bot serve` | 真启动：pg-boss 建 6 队列 + 5 条 cron，`run-task` worker 注册，HTTP 3000 / metrics 9464 |
+| `/healthz` | 200：`db ok（select 1）`、`queue.runTask ok`、`doctor skip（未接）` |
+| `/metrics`（9464） | 200，prom-client 指标可抓 |
+| `/api/overview` 未登录 | 401（面板会话缺失，符合契约） |
+| `POST /webhook` 无签名 | 401（验签生效） |
+| `POST /webhook` 带 HMAC | 首次 200 `action=ignored`（仓库未同步配置）；重复投递 `duplicate=true`，`webhook_deliveries` 仍 1 行 |
+| 播种 `repos` 后再投 | 200 `action=enqueued`、返回 `taskId`、`tasks` 1 行、pg-boss 出现 `run-task` job；`dry-run` 跳过 reaction（零 GitHub 写） |
+| worker 执行 | `run-task` 失败于 `HOST_UNAVAILABLE`（未 vendored pi-host bundle）——**符合预期**，是唯一挡住「完整链路」的东西 |
+
+**这一轮修掉的**：`migrate`/`replay` 只认 `PI_BOT_DATABASE_URL`，而 `serve` 优先 `PI_BOT_PG_DSN`；只设新名会出现「服务能起、迁移报缺变量」。已让 `readDatabaseUrl` 同时认两个名字（新名优先）并加回归测试。
+
+**这一轮发现、尚未修的**（记在案，避免下次重踩）：
+1. **失败不落 `runs` 行**：`HOST_UNAVAILABLE` 这类在 run 创建之前就失败的路径，只在 pg-boss job 的 `output` 与日志里，`runs`/`run_events` 是空的、`tasks.status` 停在 `queued`。这违反 plan §10「每个失败都有分类」——应在 orchestration 包装层 catch 后补一条 `runs`（outcome=failed + failure_class）并推进 task 状态。
+2. **契约文档与迁移漂移**：`contract-db.md`（W1-A）给 `tasks` 补了 `outcome/failure_class/cost_usd/dry_run/started_at`，但 `0000_init.sql`（W1-B，并行产出）没有这些列。查询与面板都按迁移走所以测试全绿，但文档多承诺了 5 列；下一轮需要一次迁移（序号落在 0000–0099 段）把列补齐或把文档改回。
