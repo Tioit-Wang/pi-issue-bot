@@ -3,37 +3,39 @@ import { Link, useSearchParams } from 'react-router';
 import { AsyncSection } from '../components/AsyncSection.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
-import { Card } from '../components/ui/card.tsx';
 import { Select } from '../components/ui/select.tsx';
 import type { IssueListItem } from '../lib/contract.ts';
-import { EMPTY, formatCount, formatTimeCell } from '../lib/format.ts';
+import { formatCount, formatTimeCell } from '../lib/format.ts';
 import { useIssuesInfinite } from '../lib/queries.ts';
 import { PageShell } from './PageShell.tsx';
 
 /**
- * Issue 会话列表（R3 / S-B，数据源 `GET /api/issues`，每 15s 轮询）。
+ * Issue 会话列表（R3；数据源 `GET /api/issues`，每 15s 轮询）。
  *
- * 这一页只做三件事（其余都是呈现）：
+ * 这一页要回答的是**「有没有事等我」**，不是「有多少轮对话」。2026-11-10 的改版
+ * （`docs/spec/ux-issue-sessions.md` §5）按这个结论重排信息层级：
  *
- *  1. **一行 = 一个 issue = 一个 session**：`repo#number`、标题、状态 chip、
- *     `humanTurns/botTurns`、最后活跃相对时间、最后一条预览（单行省略，`title` 里放全文）。
- *  2. **游标分页**：契约是 `cursor`（不透明）+ `nextCursor`/`hasMore`，所以用
- *     `useInfiniteQuery`（`useIssuesInfinite`）累积页，点「加载更多」拿下一页，不退化成页码语义。
- *  3. **筛选与 URL 双向同步**：`useSearchParams` 是唯一事实源（不在 `useState` 存副本），
- *     刷新/前进后退/贴链接都保持同一份筛选；写入时保留不认识的参数（例如 MSW 的 `?mock=error`）。
+ *  1. **结果状态最先看到**：7px 色点 + 状态词。旧版把「人 N · 机 N」摆在最显眼处，
+ *     而真数据里 14/18 条是 `人 0 机 0` + 后台 `failed:1`——最要紧的失败完全看不见。
+ *  2. **标题与「多久没动」同行**：标题单行截断，时间右对齐常显（不 hover 换位，
+ *     运维工具里时间必须一直在），对齐 PI-Desktop 的会话行（13px 标题 + 11px muted 时间）。
+ *  3. **副信息降噪**：仓库名、`人/自动/机` 计数、标签、`状态可能过期` 都在第二行，11px；
+ *     没有标签就不占位。
+ *  4. **预览标来源**：`lastPreview` 取不到机器人正文时会退化成人类提问（旧版会让人以为是机器人说的），
+ *     所以加「机：/人：」前缀。
+ *  5. **按天分组**（今天/昨天/更早，带条数）：这是「增量流」页，天界线是唯一有用的边界；
+ *     组内仍按 `lastActivityAt` 倒序，不插队（运行中靠色点表达，不抢排序）。
  *
- * 只读红线（spec §5 / R4）：这一页只有**导航**（行链接）与**筛选下拉**，
- * 没有输入框、没有发送按钮、没有任何写操作。
+ * 只读红线（R4）：只有行链接与两个筛选下拉，**没有**输入框、发送按钮、重跑/认领/已读等写操作。
  */
 const PAGE_SIZE = 10;
 
-/** 只认识的筛选键：同步 URL 时**只动这几个**，其余原样保留。 */
-const FILTER_KEYS = ['repo'] as const;
+/** 只认识的筛选键：同步 URL 时**只动这几个**，其余原样保留（例如 MSW 的 `?mock=error`）。 */
+const FILTER_KEYS = ['repo', 'kind'] as const;
 
 type FilterKey = (typeof FILTER_KEYS)[number];
 type Filters = Record<FilterKey, string>;
 
-/** `state` 是契约的 `open|closed|unknown`（`unknown` = 取不到 issue 元数据）。 */
 const STATE_LABEL: Record<IssueListItem['state'], string> = {
   open: 'open',
   closed: 'closed',
@@ -46,8 +48,59 @@ const STATE_VARIANT: Record<IssueListItem['state'], 'success' | 'outline' | 'mut
   unknown: 'muted',
 };
 
+/**
+ * 派生的「这一条现在怎么样」。只看已有字段，不改契约：
+ * `running/queued` 直接来自 `outcomes`；`failed` 要求「有失败且一次都没成功」——
+ * 否则那是「曾经成功、后来某次失败」，不该把整行判成失败。
+ */
+type DerivedStatus = 'running' | 'queued' | 'failed' | 'answered' | 'idle';
+
+const STATUS_TEXT: Record<DerivedStatus, string> = {
+  running: '进行中',
+  queued: '已排队',
+  failed: '失败',
+  answered: '已回复',
+  idle: '无结果',
+};
+
+/** 状态点的颜色（PI-Desktop 用 7px 色点 + 3px 15% halo 作为状态载体）。 */
+const STATUS_DOT: Record<DerivedStatus, string> = {
+  running: 'bg-amber-500 ring-amber-500/15',
+  queued: 'bg-sky-500 ring-sky-500/15',
+  failed: 'bg-red-500 ring-red-500/15',
+  answered: 'bg-emerald-500 ring-emerald-500/15',
+  idle: 'bg-muted-foreground/40 ring-transparent',
+};
+
+const STATUS_TEXT_COLOR: Record<DerivedStatus, string> = {
+  running: 'text-amber-600 dark:text-amber-400',
+  queued: 'text-sky-600 dark:text-sky-400',
+  failed: 'text-red-600 dark:text-red-400',
+  answered: 'text-emerald-600 dark:text-emerald-400',
+  idle: 'text-muted-foreground',
+};
+
+type OutcomeKey = keyof IssueListItem['outcomes'];
+
+function countOf(item: IssueListItem, key: OutcomeKey): number {
+  return item.outcomes[key] ?? 0;
+}
+
+function deriveStatus(item: IssueListItem): DerivedStatus {
+  if (countOf(item, 'running') > 0) return 'running';
+  if (countOf(item, 'queued') > 0) return 'queued';
+  if (countOf(item, 'failed') > 0 && countOf(item, 'succeeded') === 0) return 'failed';
+  if (countOf(item, 'succeeded') > 0) return 'answered';
+  return 'idle';
+}
+
+/** 「人问过、机器人一个字都没说」——真正需要人看一眼的那一类。 */
+function needsAnswer(item: IssueListItem): boolean {
+  return item.humanTurns > 0 && item.botTurns === 0;
+}
+
 function readFilters(params: URLSearchParams): Filters {
-  return { repo: params.get('repo') ?? '' };
+  return { repo: params.get('repo') ?? '', kind: params.get('kind') ?? '' };
 }
 
 /** `Tioit-Wang/pi-issue-bot#17` → `/issues/Tioit-Wang/pi-issue-bot/issue/17`（`repo` 含 `/`，接口拆四段）。 */
@@ -56,13 +109,44 @@ function detailHref(item: IssueListItem): string {
   return `/issues/${encodeURIComponent(owner ?? '')}/${encodeURIComponent(name ?? '')}/${item.kind}/${String(item.number)}`;
 }
 
+/** 仓库名：只有一个仓库时省略 owner；多个仓库时带 owner（否则 `widgets#17` 与 `lib#17` 撞名）。 */
+function shortRepo(repo: string, showOwner: boolean): string {
+  if (showOwner) return repo;
+  const parts = repo.split('/');
+  return parts.length === 2 ? (parts[1] ?? repo) : repo;
+}
+
+type DayGroup = { key: 'today' | 'yesterday' | 'earlier'; label: string; items: IssueListItem[] };
+
+/** 按本地日历日分组：今天 / 昨天 / 更早（输入已是 `lastActivityAt` 倒序）。 */
+function groupByDay(items: readonly IssueListItem[], now: Date): DayGroup[] {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+  const buckets: DayGroup[] = [
+    { key: 'today', label: '今天', items: [] },
+    { key: 'yesterday', label: '昨天', items: [] },
+    { key: 'earlier', label: '更早', items: [] },
+  ];
+  for (const item of items) {
+    const at = Date.parse(item.lastActivityAt);
+    const bucket =
+      Number.isNaN(at) || at >= startOfToday ? buckets[0] : at >= startOfYesterday ? buckets[1] : buckets[2];
+    bucket?.items.push(item);
+  }
+  return buckets.filter((bucket) => bucket.items.length > 0);
+}
+
 export function IssuesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = readFilters(searchParams);
 
   const query = useMemo(
-    () => ({ limit: PAGE_SIZE, ...(filters.repo === '' ? {} : { repo: filters.repo }) }),
-    [filters.repo],
+    () => ({
+      limit: PAGE_SIZE,
+      ...(filters.repo === '' ? {} : { repo: filters.repo }),
+      ...(filters.kind === '' ? {} : { kind: filters.kind as IssueListItem['kind'] }),
+    }),
+    [filters.repo, filters.kind],
   );
 
   const { data, error, isLoading, isFetching, isFetchingNextPage, hasNextPage, fetchNextPage } =
@@ -71,12 +155,30 @@ export function IssuesPage() {
   const issues = useMemo(() => data?.pages.flatMap((page) => page.issues) ?? [], [data]);
   const anyFilter = FILTER_KEYS.some((key) => filters[key] !== '');
 
+  const summary = useMemo(() => {
+    let running = 0;
+    let failed = 0;
+    let pending = 0;
+    for (const item of issues) {
+      const status = deriveStatus(item);
+      if (status === 'running' || status === 'queued') running += 1;
+      if (status === 'failed') failed += 1;
+      if (needsAnswer(item)) pending += 1;
+    }
+    return { running, failed, pending };
+  }, [issues]);
+
+  const groups = useMemo(() => groupByDay(issues, new Date()), [issues]);
+
   /** 仓库候选值 = 已加载数据 ∪ 当前选中值（契约没有「仓库清单」接口，不凭空造列表）。 */
   const repoOptions = useMemo(() => {
     const seen = new Set(issues.map((issue) => issue.repo));
     if (filters.repo !== '') seen.add(filters.repo);
     return [...seen].sort().map((value) => ({ value, label: value }));
   }, [issues, filters.repo]);
+
+  /** 只有出现多个仓库时才在行内显示 owner（单仓库时那是每行都重复的噪声）。 */
+  const showOwner = repoOptions.length > 1;
 
   const setFilter = (key: FilterKey, value: string): void => {
     // 复制一份再改：`?mock=error` 这类 mock/外部参数必须原样留着
@@ -95,7 +197,7 @@ export function IssuesPage() {
   return (
     <PageShell
       title="Issue 会话"
-      description={`按最后活跃时间倒序 · 已显示 ${formatCount(issues.length)} 个会话 · 每 15 秒刷新`}
+      description="一个 issue = 一个会话 · 按最后活跃倒序 · 每 15 秒刷新"
       actions={
         <div className="flex items-center gap-2">
           {isFetching && !isLoading ? (
@@ -103,102 +205,88 @@ export function IssuesPage() {
               刷新中…
             </span>
           ) : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!anyFilter}
-            onClick={clearFilters}
-            data-testid="issues-clear"
-          >
+          <Button variant="ghost" size="sm" disabled={!anyFilter} onClick={clearFilters} data-testid="issues-clear">
             清除筛选
           </Button>
         </div>
       }
     >
-      <div className="flex flex-wrap items-center gap-2" data-testid="issues-filters">
-        <Select
-          aria-label="仓库筛选"
-          options={repoOptions}
-          placeholder="全部仓库"
-          value={filters.repo}
-          onChange={(event) => {
-            setFilter('repo', event.target.value);
-          }}
-        />
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2" data-testid="issues-filters">
+          <Select
+            aria-label="仓库筛选"
+            options={repoOptions}
+            placeholder="全部仓库"
+            value={filters.repo}
+            onChange={(event) => {
+              setFilter('repo', event.target.value);
+            }}
+          />
+          <Select
+            aria-label="类型筛选"
+            options={[
+              { value: 'issue', label: 'Issue' },
+              { value: 'pr', label: 'Pull request' },
+            ]}
+            placeholder="Issue 与 PR"
+            value={filters.kind}
+            onChange={(event) => {
+              setFilter('kind', event.target.value);
+            }}
+          />
+        </div>
+
+        {issues.length === 0 ? null : (
+          <p className="px-1 text-[11px] text-muted-foreground" data-testid="issues-summary">
+            已加载 {formatCount(issues.length)} 个 · 进行中{' '}
+            <span className={STATUS_TEXT_COLOR.running}>{formatCount(summary.running)}</span> · 失败{' '}
+            <span className={STATUS_TEXT_COLOR.failed}>{formatCount(summary.failed)}</span> · 待人回答{' '}
+            <span className={STATUS_TEXT_COLOR.running}>{formatCount(summary.pending)}</span>
+          </p>
+        )}
       </div>
 
       <AsyncSection
         isLoading={isLoading}
         error={error}
         isEmpty={issues.length === 0}
-        emptyText="还没有处理过的 Issue 会话；换个仓库或清空筛选再试。"
+        emptyText={
+          anyFilter
+            ? '当前筛选下没有会话。换个仓库/类型，或清除筛选。'
+            : '还没有处理过的 Issue 会话 —— 在 issue 里 @ 机器人或发一条 /命令 就会出现在这里（去「系统」页可确认在线状态）。'
+        }
         testId="issues"
         skeletonHeight="h-64"
         skeleton={
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
             {Array.from({ length: 6 }, (_, index) => (
               <div
                 key={`issues-skeleton-${String(index)}`}
-                className="h-14 w-full animate-pulse rounded-md bg-muted"
+                className="h-12 w-full animate-pulse rounded-[10px] bg-muted"
               />
             ))}
           </div>
         }
       >
-        <Card className="flex flex-col" data-testid="issues-list">
-          <ul className="flex flex-col">
-            {issues.map((issue) => (
-              <li
-                key={`${issue.repo}#${issue.kind}${String(issue.number)}`}
-                data-testid={`issue-row-${issue.repo}#${issue.kind}${String(issue.number)}`}
-                className="border-b border-border/60 last:border-0"
-              >
-                <Link
-                  to={detailHref(issue)}
-                  className="flex flex-col gap-1 px-3 py-2.5 hover:bg-muted/50"
-                  data-testid="issue-row-link"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-xs">{issue.repo}</span>
-                    <span className="font-mono text-xs text-muted-foreground">
-                      #{formatCount(issue.number)}
-                    </span>
-                    {issue.kind === 'pr' ? <Badge variant="outline">PR</Badge> : null}
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {issue.title ?? '（取不到标题）'}
-                    </span>
-                    <Badge variant={STATE_VARIANT[issue.state]}>{STATE_LABEL[issue.state]}</Badge>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span data-testid="issue-row-turns">
-                      人 {formatCount(issue.humanTurns)} · 机 {formatCount(issue.botTurns)}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <time title={formatTimeCell(issue.lastActivityAt).title}>
-                      {formatTimeCell(issue.lastActivityAt).text}
-                    </time>
-                    {issue.labels.length === 0 ? null : (
-                      <span className="flex flex-wrap items-center gap-1">
-                        {issue.labels.map((label) => (
-                          <Badge key={label} variant="secondary">
-                            {label}
-                          </Badge>
-                        ))}
-                      </span>
-                    )}
-                  </div>
-                  <p
-                    className="truncate text-xs text-muted-foreground"
-                    title={issue.lastPreview ?? ''}
-                    data-testid="issue-row-preview"
-                  >
-                    {issue.lastPreview ?? EMPTY}
-                  </p>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {/* 行间用 1px 间距而不是分隔线：让 10px 圆角的 hover 底读成独立行（PI-Desktop 的做法） */}
+        <div className="flex flex-col gap-3" data-testid="issues-list">
+          {groups.map((group) => (
+            <section key={group.key} className="flex flex-col gap-px">
+              <h2 className="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">
+                {group.label} · {formatCount(group.items.length)}
+              </h2>
+              <ul className="flex flex-col gap-px">
+                {group.items.map((issue) => (
+                  <IssueRow
+                    key={`${issue.repo}#${issue.kind}${String(issue.number)}`}
+                    issue={issue}
+                    showOwner={showOwner}
+                  />
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
 
         <div className="mt-3 flex items-center justify-center gap-2">
           <Button
@@ -219,5 +307,73 @@ export function IssuesPage() {
         </div>
       </AsyncSection>
     </PageShell>
+  );
+}
+
+/** 一行 = 一个会话。三段：状态 + 标题 + 时间 / 元信息 / 预览。 */
+function IssueRow({ issue, showOwner }: { issue: IssueListItem; showOwner: boolean }) {
+  const status = deriveStatus(issue);
+  const time = formatTimeCell(issue.lastActivityAt);
+  const previewSource = issue.botTurns > 0 ? '机' : '人';
+
+  return (
+    <li data-testid={`issue-row-${issue.repo}#${issue.kind}${String(issue.number)}`} className="min-w-0">
+      <Link
+        to={detailHref(issue)}
+        className="group flex min-w-0 flex-col gap-0.5 rounded-[10px] px-2 py-1.5 transition-colors hover:bg-foreground/[0.05] focus-visible:bg-foreground/[0.05] focus-visible:outline-none"
+        data-testid="issue-row-link"
+      >
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            aria-hidden="true"
+            className={`inline-flex h-[7px] w-[7px] shrink-0 rounded-full ring-[3px] ${STATUS_DOT[status]}`}
+          />
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-[18px] text-foreground/80 group-hover:text-foreground">
+            {issue.title ?? '（取不到标题）'}
+          </span>
+          <time className="shrink-0 text-[11px] text-muted-foreground" title={time.title}>
+            {time.text}
+          </time>
+        </div>
+
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 pl-[13px] text-[11px] text-muted-foreground">
+          <span className={`font-medium ${STATUS_TEXT_COLOR[status]}`}>{STATUS_TEXT[status]}</span>
+          <span aria-hidden="true">·</span>
+          <span className="font-mono">
+            {shortRepo(issue.repo, showOwner)}#{issue.number}
+          </span>
+          {issue.kind === 'pr' ? <Badge variant="outline">PR</Badge> : null}
+          <Badge variant={STATE_VARIANT[issue.state]}>{STATE_LABEL[issue.state]}</Badge>
+          {needsAnswer(issue) ? <Badge variant="warning">待人回答</Badge> : null}
+          {issue.stateStale ? (
+            <span className="text-amber-600 dark:text-amber-400" title="状态不是来自投递事件，可能过期">
+              状态可能过期
+            </span>
+          ) : null}
+          <span data-testid="issue-row-turns">
+            人 {formatCount(issue.humanTurns)}
+            {issue.autoTurns > 0 ? ` · 自动 ${formatCount(issue.autoTurns)}` : ''} · 机{' '}
+            {formatCount(issue.botTurns)}
+          </span>
+          {issue.labels.length === 0 ? null : (
+            <span className="flex flex-wrap items-center gap-1">
+              {issue.labels.map((label) => (
+                <Badge key={label} variant="secondary">
+                  {label}
+                </Badge>
+              ))}
+            </span>
+          )}
+        </div>
+
+        <p
+          className="truncate pl-[13px] text-[11px] text-muted-foreground/80"
+          title={issue.lastPreview ?? ''}
+          data-testid="issue-row-preview"
+        >
+          {issue.lastPreview === null ? '—' : `${previewSource}：${issue.lastPreview}`}
+        </p>
+      </Link>
+    </li>
   );
 }

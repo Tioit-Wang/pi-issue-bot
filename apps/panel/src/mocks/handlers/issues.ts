@@ -39,11 +39,36 @@ const BOT_LOGIN = 'pi-issue-bot[bot]';
 const REPO_MAIN = 'acme/widgets';
 const REPO_OTHER = 'other/lib';
 
+/**
+ * mock 侧「种子」类型：契约里的新字段（`stateStale`/`autoTurns`/`commentId`/`attempts`/`truncated`）
+ * 在样本里能省就省，由 `finalizeList` / `finalizeTurn` 统一补默认值——否则每加一个契约字段
+ * 都要改十几处字面量，而漂移正是在这种地方长出来的。
+ */
+type ListSeed = Omit<IssueListItem, 'stateStale' | 'autoTurns'> &
+  Partial<Pick<IssueListItem, 'stateStale' | 'autoTurns'>>;
+type TurnSeed = Omit<IssueTurn, 'commentId' | 'attempts' | 'truncated'> &
+  Partial<Pick<IssueTurn, 'commentId' | 'attempts' | 'truncated'>>;
+
 type IssueRecord = {
-  list: IssueListItem;
+  list: ListSeed;
   participants: string[];
-  turns: IssueTurn[];
+  turns: TurnSeed[];
 };
+
+/** 补齐列表行的契约字段（样本里默认可信：`stateStale=false`、`autoTurns=0`）。 */
+function finalizeList(seed: ListSeed): IssueListItem {
+  return { ...seed, stateStale: seed.stateStale ?? false, autoTurns: seed.autoTurns ?? 0 };
+}
+
+/** 补齐轮次的契约字段（`commentId`/`attempts`/`truncated`）。 */
+function finalizeTurn(seed: TurnSeed): IssueTurn {
+  return {
+    ...seed,
+    commentId: seed.commentId ?? null,
+    attempts: seed.attempts ?? 1,
+    truncated: seed.truncated ?? false,
+  };
+}
 
 /** 预告文本按契约截前 120 字（这是列表行的「最后一条预览」）。 */
 function previewOf(text: string): string {
@@ -65,7 +90,7 @@ function storyEacces(now: number): IssueRecord {
   const questionThree = '顺便看下 CI 里那个 flaky 的 panel 测试，今天挂了三次。';
   const toolAt = (minutesAgo: number): string => at(minutesAgo);
 
-  const turns: IssueTurn[] = [
+  const turns: TurnSeed[] = [
     {
       id: 'task:8f3c1a',
       role: 'human',
@@ -448,7 +473,7 @@ export function buildIssuesResponse(search: string, now: number = Date.now()): I
 
   return {
     generatedAt: new Date(now).toISOString(),
-    issues: page.map((record) => record.list),
+    issues: page.map((record) => finalizeList(record.list)),
     hasMore,
     nextCursor: hasMore ? `${CURSOR_PREFIX}${String(nextOffset)}` : null,
   };
@@ -490,10 +515,11 @@ export function buildIssueSessionResponse(
       title: record.list.title,
       url: record.list.url,
       state: record.list.state,
+      stateStale: record.list.stateStale ?? false,
       labels: record.list.labels,
       participants: record.participants,
     },
-    turns: record.turns,
+    turns: record.turns.map(finalizeTurn),
   };
 }
 

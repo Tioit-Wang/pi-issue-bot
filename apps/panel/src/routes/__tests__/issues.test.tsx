@@ -261,3 +261,69 @@ describe('四态锚点', () => {
     expect((await screen.findByTestId('issue-detail-empty')).textContent).toContain('还没有任何轮次');
   });
 });
+
+/**
+ * 2026-11-10 列表改版（`docs/spec/ux-issue-sessions.md` §5）：把「有没有事等我」摆到第一层。
+ * 这里钉住五件事，防止下一轮样式调整把它们悄悄改回去。
+ */
+describe('/issues 改版：派生状态 / 天分组 / 类型筛选 / 空态分流', () => {
+  it('每条给出派生状态（色点 + 状态词），不再只堆「人 N · 机 N」', async () => {
+    renderList();
+    const content = await screen.findByTestId('issues-content');
+
+    // succeeded=2, failed=1 → 已回复（曾经成功过，不该整行判失败）
+    const answered = within(content).getByTestId('issue-row-acme/widgets#issue17');
+    expect(answered.textContent).toContain('已回复');
+    // 色点是 7px 圆点（aria-hidden），状态不只靠文字徽标
+    expect(answered.querySelector('span[aria-hidden="true"].rounded-full')).not.toBeNull();
+    // 预览必须带来源前缀，否则人类提问会被误读成机器人说的话
+    expect(within(answered).getByTestId('issue-row-preview').textContent).toMatch(/^(机|人)：/);
+
+    // outcomes={queued:1} → 已排队
+    const queued = within(content).getByTestId('issue-row-other/lib#issue7');
+    expect(queued.textContent).toContain('已排队');
+  });
+
+  it('按本地日历日分组，组标题带条数', async () => {
+    renderList();
+    const content = await screen.findByTestId('issues-content');
+    const heads = within(content).getAllByRole('heading', { level: 2 });
+    expect(heads.length).toBeGreaterThan(0);
+    for (const head of heads) {
+      expect(head.textContent ?? '').toMatch(/(今天|昨天|更早) · \d+/);
+    }
+  });
+
+  it('顶部摘要给出「进行中 / 失败 / 待人回答」三个可扫读的数', async () => {
+    renderList();
+    await screen.findByTestId('issues-content');
+    const summary = screen.getByTestId('issues-summary');
+    expect(summary.textContent ?? '').toContain('已加载');
+    expect(summary.textContent ?? '').toContain('失败');
+    expect(summary.textContent ?? '').toContain('待人回答');
+  });
+
+  it('类型筛选能查 PR（旧版只有仓库筛选，PR 会话根本进不来）', async () => {
+    const user = userEvent.setup();
+    renderList();
+    await screen.findByTestId('issues-content');
+
+    await user.selectOptions(screen.getByLabelText('类型筛选'), 'pr');
+
+    // 断言「请求真的换了参数」——这页没有 LocationProbe（列表页不挂 Routes），别依赖它
+    await waitFor(() => {
+      expect(requests.some((url) => url.includes('/api/issues') && url.includes('kind=pr'))).toBe(true);
+    });
+  });
+
+  it('空态分两种：库里没有 vs 被筛选筛空', async () => {
+    const filtered = renderList('/issues?repo=nope/none');
+    expect((await screen.findByTestId('issues-empty')).textContent ?? '').toContain('当前筛选下没有会话');
+    filtered.unmount();
+
+    renderList('/issues?mock=empty');
+    expect((await screen.findByTestId('issues-empty')).textContent ?? '').toContain(
+      '还没有处理过的 Issue 会话',
+    );
+  });
+});

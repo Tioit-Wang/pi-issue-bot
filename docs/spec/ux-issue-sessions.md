@@ -174,6 +174,31 @@ sessions 禁止：`pnpm add/install`、`git add/commit/push`、改 `docs/plan.md
 - 右侧栏（≥lg 断点固定，窄屏为顶部折叠块）：「做了什么」（本轮 actions：评论/标签/推送，按 `intent` 分色）、「结果」（outcome、failureClass、耗时、成本、任务链接 `/tasks/:id`）、「标签变更」（`bot_labels`）。
 - 列表页：每行 `repo#number 标题`、状态 chip、`humanTurns/botTurns`、最后活跃相对时间、最后一条预览（一行省略号）。点击进详情。
 - 只读：整个新视图只有导航与展开/折叠交互，**没有输入框、没有发送按钮**。
+
+### 5.1 列表页 `/issues`（2026-11-10 改版，按三个评审 session 的结论收敛）
+
+**这一页要回答的是「有没有事等我」**，不是「有多少轮对话」。真数据验证过旧版的失败：
+18 条里 14 条显示「人 0 · 机 0」、预览 `—`，而后台其实是 `failed:1` —— 最要紧的失败完全看不见。
+
+- **每行三层**（对齐 PI-Desktop 的会话行：13px 标题 + 11px muted 时间，行高紧凑、无分隔线）：
+  1. `7px 色点（ring 3px / 15%）` + **标题**（单行 truncate）+ **相对时间**（右对齐、常显）。
+  2. **派生状态词**（进行中/失败/已回复/已排队/无结果）· `repo#number`（单仓库时省略 owner）·
+     `open/closed` chip · `待人回答` chip · `状态可能过期` · `人 N · 自动 M · 机 K` · 标签 chips。
+  3. **预览**（11px 单行，带 `机：`/`人：` 来源前缀；`null` 显示 `—`）。
+- **派生状态**只在面板算，不改契约：
+  `running>0 → 进行中`；`queued>0 → 已排队`；`failed>0 且 succeeded===0 → 失败`；
+  `succeeded>0 → 已回复`；否则 `无结果`。「曾经成功、后来某次失败」**不**判整行失败。
+- **待人回答** = `humanTurns>0 && botTurns===0`（人说过话、机器人一个字没说）。
+- **按本地日历日分组**：今天 / 昨天 / 更早，组标题带条数（`今天 · 12`）；组内仍按 `lastActivityAt` 倒序，
+  **不把运行中置顶**（插队会毁掉「刚发生」的语义）。
+- **顶部摘要**：`已加载 N · 进行中 X · 失败 Y · 待人回答 Z`（只统计已加载页，措辞如实说「已加载」）。
+- **筛选**：`repo` + `kind`（Issue / Pull request）。`kind` 是本次补上的缺口——契约 `kind` 默认 `issue`，
+  旧版没有这个筛选，PR 会话根本进不来。
+- **空态分两种**：无筛选 → 「还没有处理过的 Issue 会话 + 触发方式 + 去系统页确认」；
+  有筛选 → 「当前筛选下没有会话」+ 清除筛选。**都不给按钮式写操作**。
+- 分隔线不用 `border`，改用 `gap-px` + `rounded-[10px]` hover 底（PI-Desktop 的做法）。
+- **不要做**（评审判定「最容易被人顺手加上」的三类）：① 行内「重跑 / 再问一次 / 重新打标」按钮（本质是 POST）；
+  ② 标题/全文搜索框（契约没有 `q`，标题只在 jsonb）；③ 把 chip 做成可写（点标签打标、右键认领、已读状态写 URL/localStorage）。
 - 空态/错误/加载沿用 `AsyncSection` 的四态 id 约定：`issues-{loading,error,empty,content}`、`issue-detail-{loading,error,empty,content}`。
 - 轮询：列表 `15s`、详情 `5s`（复用 `REFETCH_INTERVAL.list/detail`）。
 

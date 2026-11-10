@@ -16,6 +16,11 @@ import type {
   AuditResponse,
   CostsResponse,
   EnvelopeRecord,
+  IssueListItem,
+  IssueSessionResponse,
+  IssuesListResponse,
+  IssueToolCall,
+  IssueTurn,
   OverviewResponse,
   RevertsResponse,
   RunEventRecord,
@@ -31,6 +36,11 @@ export type {
   AuditResponse,
   CostsResponse,
   EnvelopeRecord,
+  IssueListItem,
+  IssueSessionResponse,
+  IssuesListResponse,
+  IssueToolCall,
+  IssueTurn,
   OverviewResponse,
   RevertsResponse,
   RunEventRecord,
@@ -88,101 +98,23 @@ export type AuditQuery = {
 };
 
 /* ── Issue 会话（`docs/spec/ux-issue-sessions.md` §3） ──────────────────────────
- * TODO(S-A): 换成契约导出 —— `packages/contract` 的 issue schema 由 S-A 补，
- * 那边落地后把这一段换成 `packages/contract/src/index.ts` 的类型再导出即可（字段名一字不改）。
- * 在那之前按 spec §3 **逐字**声明最小类型：不自行改名、不加派生字段。
+ * 响应/行/轮次类型全部来自 `packages/contract`（E8 单一事实源），这里只补两个
+ * 契约里没有的面板侧类型：查询入参与路由路径参数（路由参数是字符串）。
  */
 
-/** `kind` 只有两个取值（spec §3.1 查询参数 `kind?=issue|pr`，默认 `issue`）。 */
-export type IssueKind = 'issue' | 'pr';
+/** `kind` 取值 = 列表行的 `kind`（契约 `targetKindSchema`）。 */
+export type IssueKind = IssueListItem['kind'];
 
-/** `GET /api/issues` 的列表行（spec §3.1）。 */
-export type IssueListItem = {
-  repo: string;
-  kind: IssueKind;
-  number: number;
-  title: string | null;
-  url: string | null;
-  state: 'open' | 'closed' | 'unknown';
-  /** `max(最后一条 task.queued_at, 最后一件 action.applied_at)`。 */
-  lastActivityAt: string;
-  /** 人类触发次数（tasks 行数）。 */
-  humanTurns: number;
-  /** 机器人发言/动作次数（actions 行数，含 label）。 */
-  botTurns: number;
-  /** `bot_labels` 里未移除的。 */
-  labels: string[];
-  /** `{ succeeded: 2, failed: 1 }`：该 issue 下的结果计数。 */
-  outcomes: Record<string, number>;
-  /** 最后一条机器人正文前 120 字；取不到退化成最后一条人类问题；再取不到 `null`。 */
-  lastPreview: string | null;
-};
+/** `GET /api/issues` 响应体（契约名 `IssuesListResponse`，保留旧别名以免页面大改）。 */
+export type IssuesResponse = IssuesListResponse;
 
-/** `GET /api/issues` 的响应体（spec §3.1）。 */
-export type IssuesResponse = {
-  generatedAt: string;
-  issues: IssueListItem[];
-  hasMore: boolean;
-  nextCursor: string | null;
-};
-
-/** `GET /api/issues` 的查询参数（spec §3.1；`limit` 1..100，默认 30）。 */
+/** `GET /api/issues` 的查询参数：`kind` 缺省 `issue`，`limit` 1..100 默认 30。 */
 export type IssuesQuery = {
   repo?: string;
   kind?: IssueKind;
   limit?: number;
   /** 不透明字符串，只能原样回传。 */
   cursor?: string;
-  /** 标题/编号模糊匹配（可选）。 */
-  q?: string;
-};
-
-/** 单次工具调用（spec §3.2 `toolCalls[]`）。 */
-export type IssueToolCall = {
-  name: string;
-  summary: string;
-  at: string;
-  ok: boolean;
-};
-
-/**
- * 一轮对话（spec §3.2 `turns[]`）：人类 = 一次任务，机器人 = 一次 run 的产出。
- *
- * 字段名严格照抄 spec：`channel` 只有人类轮有值，`labels`/`failureClass`/`taskId`
- * 只有机器人轮有值（这里统一成「没有就是 null / 空数组」，页面不必区分联合类型）。
- * `truncated` 与 `toolCalls` 同级（单轮 >50 条时置 true）。
- */
-export type IssueTurn = {
-  id: string;
-  role: 'human' | 'bot';
-  login: string;
-  at: string;
-  channel: 'mention' | 'command' | 'auto' | null;
-  text: string | null;
-  commentUrl: string | null;
-  labels: string[];
-  status: string | null;
-  failureClass: string | null;
-  /** ⚠ 仅接口字段：**不得**出现在任何 GitHub 评论里（spec §3.2 的警示）。 */
-  taskId: string | null;
-  toolCalls: IssueToolCall[];
-  truncated?: boolean;
-};
-
-/** `GET /api/issues/:owner/:name/:kind/:number` 的响应体（spec §3.2）。 */
-export type IssueSessionResponse = {
-  generatedAt: string;
-  issue: {
-    repo: string;
-    kind: IssueKind;
-    number: number;
-    title: string | null;
-    url: string | null;
-    state: 'open' | 'closed' | 'unknown';
-    labels: string[];
-    participants: string[];
-  };
-  turns: IssueTurn[];
 };
 
 /** 详情接口的路径参数：`repo` 含 `/`，所以拆成 `owner`/`name` 两段（spec §3.2）。 */
