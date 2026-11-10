@@ -39,6 +39,8 @@ export interface ExecuteActionsInput {
   readonly api: GithubWriteApi;
   readonly ledger?: BotLabelLedger | undefined;
   readonly target: WriteTargetContext;
+  /** 提问者 login（`tasks.actor_login`）：回复会被加 `@login` 前缀。 */
+  readonly mention?: string | null | undefined;
   readonly store: RunStore;
   readonly clock: () => number;
 }
@@ -54,6 +56,24 @@ export function actionTargetOf(repo: string, suffix: string | number): string {
 }
 
 /**
+ * 给最终回复加 `@提问者` 前缀。
+ *
+ * 为什么在写回时加、而不是让 agent 自己写：agent 看不到触发评论的作者（提示词里只有 issue 号与问题正文），
+ * 而 `@login` 必须来自那一行 `tasks.actor_login`。已经是 `@…` 开头的不重复加。
+ */
+export function withMention(body: string, mention: string | null | undefined): string {
+  if (mention === null || mention === undefined) {
+    return body;
+  }
+  const trimmed = mention.trim();
+  if (trimmed === '') {
+    return body;
+  }
+  const handle = trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
+  return body.trimStart().startsWith(handle) ? body : `${handle} ${body}`;
+}
+
+/**
  * 把信封动作翻译成写执行器的 `WriteAction`。
  *
  * `label` 的翻译值得单说：信封给的是 `add` / `remove` 两个增量集合，
@@ -63,7 +83,13 @@ export function actionTargetOf(repo: string, suffix: string | number): string {
  */
 export function toWriteActions(
   action: EnvelopeAction,
-  context: { readonly repo: string; readonly targetNumber: number; readonly target: WriteTargetContext },
+  context: {
+    readonly repo: string;
+    readonly targetNumber: number;
+    readonly target: WriteTargetContext;
+    /** 提问者 login；给了就让回复以 `@login` 开头（人不传就不加）。 */
+    readonly mention?: string | null | undefined;
+  },
 ): WriteAction[] {
   switch (action.intent) {
     case 'comment':
@@ -73,7 +99,7 @@ export function toWriteActions(
           repo: context.repo,
           target: context.targetNumber,
           intent: 'comment',
-          body: action.body,
+          body: withMention(action.body, context.mention),
         },
       ];
     case 'label': {
@@ -148,6 +174,7 @@ export async function executeActions(input: ExecuteActionsInput): Promise<Execut
         repo: input.repo,
         targetNumber: input.targetNumber,
         target: input.target,
+        mention: input.mention,
       });
     } catch (error) {
       const signal = signalFromGithub(error);

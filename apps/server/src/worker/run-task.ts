@@ -36,6 +36,12 @@ import type { EventEnvelope } from './deps.ts';
 import { envelopeRowOf, findEnvelopeText, prepareEnvelope } from './envelope.ts';
 import type { CapturedEvent } from './envelope.ts';
 import {
+  buildFallbackCommentBody,
+  findLastAgentText,
+  postFallbackComment,
+  supportsCommentFallback,
+} from './fallback.ts';
+import {
   isInterruptError,
   isTimeoutError,
   observeCommandTimeout,
@@ -401,6 +407,64 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     }
   }
 
+  // ── 兜底回复：信封不可信时**唯一**允许的写回 ────────────────────────────────
+  //
+  // 真实故障：`@answer` 的 turn 正常跑完（`turn.completed`、工具也跑了），
+  // 但事件流里没有能通过 Ajv 的信封 → 按「没有可信信封 → 不写回」的设计，用户看到「@ 了没反应」。
+  // 信封校验是安全边界，一步都不能松；但「agent 已经写出面向人的答案」不该被一起丢掉。
+  //
+  // 五个条件同时成立才兜底（缺一条就只留痕、不写任何东西）：
+  //   1. 有一封信封且**不合规**（`missing-envelope` 也算不合规）；
+  //   2. 命令是评论类（`/issue-triage`、`/issue-repro`、`@answer`）——
+  //      `/review-pr` 的结论若不可信就不该发出去，push 类任务更没有可发的东西；
+  //   3. turn 正常收尾（`turn.completed`）：半路结束的 turn 没有「交付物」可言；
+  //   4. 不是 dry-run（零副作用是 M0 的验收口径，`actions` 也必须 0 行）；
+  //   5. 没有命中熔断（退化输出不值得发布）。
+  //
+  // 兜底**不改结局**：run 仍然是 `failure_class=parse`，打标与其它写回仍然只认合规信封。
+  let fallback: ActionOutcome | null = null;
+  if (prepared !== null && !prepared.valid) {
+    const agentText =
+      turnResult !== undefined && terminal === 'turn.completed' ? findLastAgentText(captured) : null;
+    const body = agentText === null ? null : buildFallbackCommentBody(agentText);
+
+    let blocked: string | null = null;
+    if (dryRun) {
+      blocked = 'dry-run：兜底评论同样不写（零副作用口径）';
+    } else if (degeneracyHit !== null) {
+      blocked = '熔断命中：不发布退化输出';
+    } else if (!supportsCommentFallback(input.command)) {
+      blocked = `命令 ${input.command} 不在兜底白名单（仅 /issue-triage、/issue-repro、@answer）`;
+    } else if (terminal !== 'turn.completed') {
+      blocked = `turn 未正常收尾（terminal=${String(terminal)}）`;
+    } else if (body === null) {
+      blocked = '事件流里没有面向人的 assistant 文本（只有信封或什么都没有）';
+    }
+
+    if (blocked !== null) {
+      logger.info({ reason: blocked, command: input.command }, '信封不可信，但不发兜底评论');
+      appendEvent('writeback.fallback-skipped', { reason: blocked, command: input.command });
+    } else if (body !== null) {
+      fallback = await postFallbackComment({
+        runId: input.runId,
+        repo: input.repo,
+        targetNumber: input.targetNumber,
+        command: input.command,
+        body,
+        api: deps.github,
+        store: deps.store,
+        clock,
+      });
+      appendEvent('writeback.fallback', {
+        status: fallback.status,
+        target: fallback.target,
+        reason: fallback.reason,
+        command: input.command,
+      });
+      logger.warn({ status: fallback.status, target: fallback.target }, '信封不可信，已按 last assistant 文本兜底发评论');
+    }
+  }
+
   // ── 写执行器（第 8 步） ────────────────────────────────────────────────────
   recordStep('execute');
   // 熔断命中时**只校验入库、不执行写动作**：plan §9.3 的处置是「已产出的结构化结果照样校验入库」，
@@ -421,6 +485,7 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
       api: deps.github,
       ledger: deps.ledger,
       target,
+      mention: input.actorLogin ?? null,
       store: deps.store,
       clock,
     });
@@ -496,6 +561,11 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     dryRun,
     envelope: prepared === null ? null : { valid: prepared.valid, accepted: prepared.accepted.length, dropped: prepared.dropped.length },
     actions: actionOutcomes.map((item) => ({ intent: item.intent, status: item.status, target: item.target })),
+    // 兜底回复的留痕（`null` = 本轮没走兜底；原因看 `run_events` 的 `writeback.fallback*`）
+    fallback:
+      fallback === null
+        ? null
+        : { intent: fallback.intent, status: fallback.status, target: fallback.target, reason: fallback.reason },
     retry,
   };
 
@@ -532,6 +602,7 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     sessionId: sessionId ?? null,
     turnId: turnId ?? null,
     actions: actionOutcomes,
+    fallback,
     dryRun,
     containerState,
     containerId: containerId ?? null,

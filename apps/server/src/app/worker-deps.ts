@@ -90,9 +90,11 @@ export interface TaskJobRow {
   readonly attempt: number;
   /** 自由问答的问题正文（`tasks.prompt_text`）；其它命令为 `null`。 */
   readonly promptText: string | null;
+  /** 触发者 login：最终回复要以 `@login` 开头（`tasks.actor_login`）。 */
+  readonly actorLogin: string | null;
 }
 
-const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt", "prompt_text"
+const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt", "prompt_text", "actor_login"
 from "tasks" where "id" = $1`;
 
 /**
@@ -129,6 +131,7 @@ export async function readTaskRow(db: SqlExecutor, taskId: string): Promise<Task
     targetNumber: Number(row['target_number']),
     headSha: typeof row['head_sha'] === 'string' ? row['head_sha'] : null,
     promptText: typeof row['prompt_text'] === 'string' ? row['prompt_text'] : null,
+    actorLogin: typeof row['actor_login'] === 'string' ? row['actor_login'] : null,
     attempt: typeof attempt === 'number' ? attempt : 0,
   };
 }
@@ -162,17 +165,27 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
     '',
     '【第一段】给人看的回复：中文，不超过 8 行，先给结论再给依据；',
     '信息不足就直接说缺哪几项，不要编造。不要写 JSON、不要加代码围栏。',
-    '这一段会原样贴到 issue 上。',
+    '这一段会原样贴到 issue 上（它自己就能成立，别指望第二段替它说话）。',
     '',
-    '【第二段】**唯一**一个 ```json 代码块，机器用它打标与写回；字段必须齐全，不能加注释、',
-    '不能有 trailing comma、不要输出未定义的键：',
+    '【第二段】**唯一**一个 ```json 代码块，机器用它打标与写回。硬要求：',
+    '- 它是整条消息的**最后一个**代码块，块内是能直接 `JSON.parse` 的裸 JSON',
+    '  （不要注释、不要 trailing comma、不要 ```jsonc）；',
+    '- 顶层只允许 verdict / actions / usage 三个键，多一个键即不合规；',
+    '- `usage` 三个字段都必须给数字（不知道就写 0），缺一个即不合规；',
+    '- `verdict.evidence` 的每一项都必须同时有非空的 `rule` 与 `quote`（没有证据就给空数组）；',
+    '',
     '```json',
     '{',
-    '  "verdict": { "kind": "issue", "labels": ["bug"], "evidence": ["一句话依据"] },',
-    '  "actions": [{ "intent": "comment", "body": "与第一段一致的说明（可省略）" }],',
-    '  "usage": {}',
+    '  "verdict": {',
+    '    "kind": "issue",',
+    '    "labels": ["bug"],',
+    '    "evidence": [{ "rule": "repro-steps", "quote": "引用的原文片段", "passed": true }]',
+    '  },',
+    '  "actions": [{ "intent": "comment", "body": "与第一段一致的说明（可省略这条动作）" }],',
+    '  "usage": { "inputTokens": 0, "outputTokens": 0, "costUsd": 0 }',
     '}',
     '```',
+    '- `verdict.kind` 只能是 "issue" 或 "pr"；',
     '- `verdict.labels` 只能填仓库 `labels.map` 里映射过的判定键（bug / feature / question / docs / needs-info / area/db），',
     '没有把握就留空数组；',
     '- `actions` 里只允许 `comment`（本命令的 outputs 只含 comment 与 label）。',
@@ -204,12 +217,29 @@ export function buildAnswerPrompt(input: {
     '2. 需要看代码就去读仓库里的文件（工作目录就是该仓库的检出），不要凭空猜测。',
     '3. 中文，不超过 12 行；不确定就说不确定，并说明还缺什么信息。',
     '4. **不要**提问、不要要求用户粘贴更多内容除非确实必要；不要自称 AI。',
-    '5. 结尾附唯一一个 ```json 代码块（机器用，不打标，只发评论）：',
+    '输出分两段，顺序不能反，也不要再加别的段落：',
+    '',
+    '【第一段】给人看的回答（就是上面 1–4 那几条的要求）。它会被**原样**贴到 issue 上，所以：',
+    '- 这一段自己就要能独立读懂：不要提「信封 / verdict / actions」，不要写 JSON，不要加任何代码围栏；',
+    '- 机器解析不了第二段时，我们只发这一段 —— 不要指望第二段替你说话。',
+    '',
+    '【第二段】**唯一**一个 ```json 代码块，必须是整条消息的**最后一段**。硬要求：',
+    '- 它是最后一个代码块，块内是能直接 `JSON.parse` 的裸 JSON（不要注释、不要 trailing comma、不要 ```jsonc）；',
+    '- 顶层只允许 verdict / actions / usage 三个键，多一个键即不合规；',
+    '- `usage` 三个字段都必须给数字（不知道就写 0），缺一个即不合规；',
+    '- `verdict.evidence` 每项都必须同时有非空的 `rule` 与 `quote`（本命令没有证据就给空数组）；',
+    '',
+    '下面这份就是字段全集与形状（照抄结构，值按实际填）：',
     '```json',
-    '{ "verdict": { "kind": "issue", "labels": [], "evidence": [] },',
-    '  "actions": [{ "intent": "comment", "body": "把上面 1–4 的回答原样放这里" }],',
-    '  "usage": {} }',
+    '{',
+    `  "verdict": { "kind": "${input.targetKind}", "labels": [], "evidence": [] },`,
+    '  "actions": [{ "intent": "comment", "body": "把第一段的回答原样放这里（同样不要再嵌 JSON）" }],',
+    '  "usage": { "inputTokens": 0, "outputTokens": 0, "costUsd": 0 }',
+    '}',
     '```',
+    `- \`verdict.kind\` 只能是 "${input.targetKind}"（按目标类型填 "issue" 或 "pr"）；`,
+    '- `verdict.labels` 恒为空数组（本命令不打标）；',
+    '- `actions` 只允许一条 `{ "intent": "comment", "body": "…" }`（本命令的 outputs 只含 comment）。',
   ].join('\n');
 }
 

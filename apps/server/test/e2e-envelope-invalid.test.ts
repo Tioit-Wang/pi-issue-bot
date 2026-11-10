@@ -148,6 +148,11 @@ describe('e2e 信封不合规：envelopes.valid=false · actions 0 行 · failur
     // 5) 容器照样被处置（不留垃圾）
     expect(report.disposed).toBe(true);
 
+    // 6) dry-run 下**兜底评论也不发**：`actions` 0 行、非 GET 0 次这两条是 M0 的口径，
+    //    兜底回复（`worker/fallback.ts`）只在真实写回时才生效，所以这里 `fallback` 必须是 null。
+    //    这条断言的作用是防止有人为了「用户体验」把兜底塞进 dry-run，把零副作用验收悄悄破坏掉。
+    expect(report.fallback).toBeNull();
+
     console.log(
       `[e2e-envelope-invalid] runs=${String(snapshot.runs.length)}` +
         ` outcome=${String(snapshot.runs[0]?.['outcome'])}` +

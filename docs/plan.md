@@ -148,6 +148,14 @@ agent 拿不到 GitHub 凭证，只能交出结构化结果，由控制面校验
 - 命令即技能（markdown frontmatter），仓库可自带技能
 - 同一 `head_sha` 重跑是空操作；换新提交则取代上一条评论
 - 10 秒内给出回应（表情或一行确认）
+- 回执**只打表情、不回评论**：`eyes` reaction 打在**触发的那条评论**上（`POST /repos/:o/:r/issues/comments/:id/reactions`）；
+  issue 级事件（如 `issues.opened`）没有评论可打，才回落到 issue 级 reaction
+- 处理完成后**只发最终结果**一条评论，且以 `@<提问者>` 开头（我们去 @ 人；人来 @ 我们这件事见下条）
+- 用户可见的任何评论里**不出现任务编号**（内部 id 只进日志与面板，见 `docs/spec/ux-issue-sessions.md`）
+- **事实（2026-11 实测）**：GitHub App 的 `xxx[bot]` 账号**不可被 @** —— 不会出现在 @ 补全里、不会渲染成
+  `user-mention` 链接、不会发通知（`@github-actions[bot]` 同为纯文本；`@dependabot[bot]` 之所以变蓝是因为存在
+  同名 org）。因此「@ 机器人」只能靠 **webhook 正文里的字符串匹配**，触发条件同时支持 `/命令` 与纯提问，
+  不要依赖 GitHub 的 mention 语义
 
 ### 6.5 Web 统计面板
 

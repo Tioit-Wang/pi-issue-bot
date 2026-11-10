@@ -250,7 +250,7 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(result.body).toMatchObject({ action: 'enqueued' });
     // 顺序：入队 → 打 reaction；两者都在 await 返回之前（handler 内），不经过 worker
     expect(h.events).toEqual(['enqueue', 'reaction']);
-    expect(h.reactions).toEqual([{ repo: REPO, issueNumber: 7 }]);
+    expect(h.reactions).toEqual([{ repo: REPO, issueNumber: 7, commentId: null }]);
     expect(result.elapsedMs).toBeLessThan(2000);
   });
 
@@ -268,7 +268,8 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(result.status).toBe(200);
     // 只打表情 + 入队，不发「已收到」评论（用户要求：处理完只回最终结果）
     expect(h.events).toEqual(['enqueue', 'reaction']);
-    expect(h.reactions).toEqual([{ repo: REPO, issueNumber: 12 }]);
+    // 评论级回执：reaction 打在那条评论（id=555）上，不是 issue 上
+    expect(h.reactions).toEqual([{ repo: REPO, issueNumber: 12, commentId: 555 }]);
     expect(h.comments).toHaveLength(0);
     const body = result.body as { action: string; ackComment: string | null; taskId: string | null };
     expect(body.action).toBe('enqueued');
@@ -491,6 +492,7 @@ describe('webhook 纯函数', () => {
           issueVersionHash: 'x',
           actorLogin: 'alice',
           association: 'NONE',
+          commentId: null,
           ackStyle: 'reaction',
         },
         null,
@@ -515,6 +517,7 @@ describe('webhook 纯函数', () => {
       issueVersionHash: null,
       actorLogin: 'bob',
       association: 'CONTRIBUTOR',
+      commentId: 555,
       ackStyle: 'comment' as const,
     };
     const denied = checkCommandGate(plan, { ...config });
@@ -532,6 +535,7 @@ describe('webhook 纯函数', () => {
       issueVersionHash: 'abc',
       actorLogin: 'alice',
       association: null,
+      commentId: null,
       ackStyle: 'reaction' as const,
     };
     const key = idempotencyKeyFor({ ...base, command: 'auto:triage' }, REPO);

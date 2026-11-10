@@ -508,6 +508,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           targetKind: row.targetKind,
           targetNumber: row.targetNumber,
           ...(row.headSha === null ? {} : { headSha: row.headSha }),
+          actorLogin: row.actorLogin,
           prompt:
             answerQuestion === null
               ? buildTaskPrompt({

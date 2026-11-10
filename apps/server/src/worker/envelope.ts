@@ -25,8 +25,18 @@ export interface CapturedEvent {
   readonly payload: unknown;
 }
 
-/** 信封可能出现的载体：事件 kind → payload 里可能的字符串路径。 */
+/**
+ * 信封可能出现的载体：事件 payload 里可能的字符串路径。
+ *
+ * 第一组是**真 pi-host v0.22.0 的形状**（对着 `run_events` 里一条真实 `item.completed` 核过）：
+ * `{ event: { type: 'message_end', message: { role, content, … } }, itemId, itemType }` ——
+ * 信封就在 `message.content` 里。少了这条，真跑出来的信封永远被判 `missing-envelope`，
+ * 后面那些兼容路径只是 `{ text }` 这种简化形状（单测/假 host 用）。
+ */
 const ENVELOPE_TEXT_PATHS: readonly (readonly string[])[] = [
+  ['event', 'message', 'content'],
+  ['message', 'content'],
+  ['event', 'message', 'text'],
   ['text'],
   ['message', 'text'],
   ['item', 'text'],

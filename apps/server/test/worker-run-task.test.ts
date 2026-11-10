@@ -204,17 +204,28 @@ function createFakeOps(order: string[]): TurnDriverOps & { readonly calls: strin
   };
 }
 
-/** 假 GitHub 写入面：记调用，评论幂等点（无既有评论 → 发）。 */
-function createFakeGithub(): GithubWriteApi & { readonly calls: string[] } {
+/**
+ * 假 GitHub 写入面：记调用（含评论正文），评论幂等点（无既有评论 → 发）。
+ *
+ * `comments` 记**发出去的正文**：兜底回复的断言要看到标记与去掉信封后的文本，
+ * 只记方法名做不到这件事（`calls` 保留给「发了哪些动作」这类断言）。
+ */
+function createFakeGithub(): GithubWriteApi & {
+  readonly calls: string[];
+  readonly comments: string[];
+} {
   const calls: string[] = [];
+  const comments: string[] = [];
   return {
     calls,
+    comments,
     async listIssueComments() {
       calls.push('listIssueComments');
       return [];
     },
     async createIssueComment(input) {
       calls.push(`createIssueComment:${String(input.issueNumber)}`);
+      comments.push(input.body);
       return { id: 4242, htmlUrl: null };
     },
     async addLabels() {
@@ -457,7 +468,13 @@ describe('信封与动作过滤（plan §5 / tech-plan §5.6）', () => {
     expect(report.failureClass).toBe('parse');
     expect(report.retry.retry).toBe(false);
     expect(harness.store.envelopes[0]?.valid).toBe(false);
-    expect(harness.store.actions).toHaveLength(0);
+    // 不合规信封的动作一条都不执行（`report.actions` 是「信封里被接受的动作」清单）。
+    expect(report.actions).toHaveLength(0);
+    // `actions` 表里只允许出现**兜底评论**那一行（信封动作仍然 0 行）：
+    // 这一段文本是「产出如下：」+ 信封，摘掉信封后还剩人话，于是兜底路径会发一条评论。
+    expect(harness.store.actions.map((item) => item.intent)).toEqual(['fallback']);
+    // 安全边界：不合规信封**不许打标**（标签只能来自合规信封）。
+    expect(harness.github.calls).not.toContain('addLabels');
   });
 
   it('allowPushBranch=false：信封仍然合规，只有该动作被丢弃（valid 语义不受影响）', async () => {
@@ -481,6 +498,162 @@ describe('信封与动作过滤（plan §5 / tech-plan §5.6）', () => {
     expect(dropped).toBeDefined();
     // 好动作不受坏动作连累
     expect(harness.store.actions.map((item) => item.intent)).toEqual(['comment']);
+  });
+});
+
+describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts）', () => {
+  /** 不合规信封：`push_branch` 缺 `paths`（契约要求非空数组）。 */
+  const invalidEnvelope = (): string =>
+    JSON.stringify({
+      verdict: {
+        kind: 'issue',
+        labels: ['bug'],
+        evidence: [{ rule: 'has-repro-steps', quote: '复现步骤：…', passed: true }],
+      },
+      actions: [{ intent: 'push_branch', branch: 'bot/fix-7' }],
+      usage: { inputTokens: 900, outputTokens: 200, costUsd: 0.01 },
+    });
+
+  it('信封不合规 + 有人话 → 发兜底评论（带隐藏标记），run 仍是 parse、不打标', async () => {
+    const harness = createHarness({
+      events: () =>
+        asyncFrom([
+          env('item.completed', { text: `结论：这是权限问题。\n\`\`\`json\n${invalidEnvelope()}\n\`\`\`` }, 0),
+          env('turn.completed', { status: 'completed' }, 1),
+        ]),
+    });
+
+    const report = await runTask(makeInput(), harness.deps);
+
+    // 质量统计不能失真：信封不可信就是 parse，且不重试
+    expect(report.outcome).toBe('failed');
+    expect(report.failureClass).toBe('parse');
+    expect(report.retry.retry).toBe(false);
+    // 信封里的动作 0 条；兜底单独一栏
+    expect(report.actions).toHaveLength(0);
+    expect(report.fallback?.intent).toBe('fallback');
+    expect(report.fallback?.status).toBe('applied');
+
+    // 评论正文 = 人话 + 兜底标记 + pi-bot 去重标记；机器段（信封）不许出现在评论里
+    expect(harness.github.comments).toHaveLength(1);
+    const body = harness.github.comments[0] ?? '';
+    expect(body).toContain('结论：这是权限问题。');
+    expect(body).toContain('<!-- pi-issue-bot:fallback -->');
+    expect(body).toContain('<!-- pi-bot:octo/demo#7:fallback:');
+    expect(body).not.toContain('verdict');
+
+    // 安全边界：不打标；`actions` 表只有兜底那一行；`run_events` 留痕
+    expect(harness.github.calls).not.toContain('addLabels');
+    expect(harness.store.actions.map((item) => item.intent)).toEqual(['fallback']);
+    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback')).toBe(true);
+  });
+
+  it('完全没有信封（missing-envelope）也兜底 —— 这条正是「@ 了没反应」的真实故障', async () => {
+    const harness = createHarness({
+      events: () =>
+        asyncFrom([
+          env('item.completed', { text: '结论：EACCES 不是只读挂载造成的。\n\n依据：只读挂载返回 EROFS。' }, 0),
+          env('turn.completed', { status: 'completed' }, 1),
+        ]),
+    });
+
+    const report = await runTask(makeInput({ command: '@answer' }), harness.deps);
+
+    expect(report.envelope?.errors[0]?.keyword).toBe('missing-envelope');
+    expect(report.failureClass).toBe('parse');
+    expect(report.fallback?.status).toBe('applied');
+    expect(harness.github.comments[0]).toContain('EACCES 不是只读挂载造成的');
+  });
+
+  it('真 pi-host 形状（payload.event.message.content）也能取出人话，且跳过 tool 消息', async () => {
+    const content = `结论：这是 uid 不匹配。\n\`\`\`json\n${invalidEnvelope()}\n\`\`\``;
+    const harness = createHarness({
+      events: () =>
+        asyncFrom([
+          env(
+            'item.completed',
+            {
+              event: { type: 'message_end', message: { role: 'tool', content: '{"content":[],"isError":false}' } },
+              itemId: 'tool-1',
+              itemType: 'message',
+            },
+            0,
+          ),
+          env(
+            'item.completed',
+            { event: { type: 'message_end', message: { role: 'assistant', content } }, itemId: 'msg-1', itemType: 'message' },
+            1,
+          ),
+          env('turn.completed', { event: { type: 'agent_end', messageIds: [] } }, 2),
+        ]),
+    });
+
+    const report = await runTask(makeInput({ command: '@answer' }), harness.deps);
+
+    // 信封现在能找到（不再退化成 missing-envelope），只是不合规 → 仍然是 parse
+    expect(report.envelope?.errors[0]?.keyword).not.toBe('missing-envelope');
+    expect(report.failureClass).toBe('parse');
+    const body = harness.github.comments[0] ?? '';
+    expect(body).toContain('结论：这是 uid 不匹配。');
+    expect(body).not.toContain('verdict');
+    expect(body).not.toContain('isError');
+  });
+
+  it('/review-pr 不兜底（不可信的审查结论不该发出去）', async () => {
+    const harness = createHarness({
+      events: () => asyncFrom([env('item.completed', { text: '看起来没问题。' }, 0), env('turn.completed', {}, 1)]),
+    });
+
+    const report = await runTask(makeInput({ command: '/review-pr' }), harness.deps);
+
+    expect(report.fallback).toBeNull();
+    expect(harness.github.comments).toEqual([]);
+    expect(harness.store.actions).toHaveLength(0);
+    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback-skipped')).toBe(true);
+  });
+
+  it('dry-run 不兜底（零副作用 + actions 0 行）', async () => {
+    const harness = createHarness({
+      events: () => asyncFrom([env('item.completed', { text: '结论：……' }, 0), env('turn.completed', {}, 1)]),
+    });
+
+    const report = await runTask(makeInput({ dryRun: true }), harness.deps);
+
+    expect(report.dryRun).toBe(true);
+    expect(report.fallback).toBeNull();
+    expect(harness.github.calls).toEqual([]);
+    expect(harness.store.actions).toHaveLength(0);
+  });
+
+  it('只能看到信封、没有人话 → 兜不了（不凭空发明内容）', async () => {
+    const harness = createHarness({
+      events: () =>
+        asyncFrom([
+          env('item.completed', { text: `\`\`\`json\n${invalidEnvelope()}\n\`\`\`` }, 0),
+          env('turn.completed', {}, 1),
+        ]),
+    });
+
+    const report = await runTask(makeInput(), harness.deps);
+
+    expect(report.failureClass).toBe('parse');
+    expect(report.fallback).toBeNull();
+    expect(harness.github.comments).toEqual([]);
+    expect(harness.store.actions).toHaveLength(0);
+  });
+
+  it('信封合规 → 不兜底（正式动作照旧执行，只发那一条评论）', async () => {
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([{ intent: 'comment', body: '正式回复：缺复现步骤。' }])),
+    });
+
+    const report = await runTask(makeInput(), harness.deps);
+
+    expect(report.envelope?.valid).toBe(true);
+    expect(report.fallback).toBeNull();
+    expect(harness.github.comments).toHaveLength(1);
+    expect(harness.github.comments[0]).toContain('正式回复：缺复现步骤。');
+    expect(harness.github.comments[0]).not.toContain('pi-issue-bot:fallback');
   });
 });
 

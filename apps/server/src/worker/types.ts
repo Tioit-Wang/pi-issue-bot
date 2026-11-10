@@ -249,6 +249,8 @@ export interface TaskRunInput {
   /** 命令名：决定任务级时间闸（20min / `/review-pr` 30min）。 */
   readonly command: string;
   readonly repo: string;
+  /** 触发者 login（`tasks.actor_login`）；给了就让最终回复以 `@login` 开头。 */
+  readonly actorLogin?: string | null | undefined;
   readonly targetKind: 'issue' | 'pr';
   readonly targetNumber: number;
   readonly headSha?: string;
@@ -354,6 +356,15 @@ export interface TaskRunReport {
   readonly turnId: string | null;
   readonly envelope: PreparedEnvelope | null;
   readonly actions: readonly ActionOutcome[];
+
+  /**
+   * 兜底评论（信封不可信、但有可读文本时才可能有值；`null` = 没走兜底）。
+   *
+   * 刻意**不并入** `actions`：那里是「信封里被接受的写动作」，
+   * 兜底评论不属于任何一封信封（信封本身就是不可信的）。它单独一栏，
+   * 面板/统计才能把「模型交了合法信封」与「我们替它兜了一句」分开数。
+   */
+  readonly fallback: ActionOutcome | null;
   readonly dryRun: boolean;
   /** 容器销毁前采到的状态（OOM/ExitCode 的唯一来源）。 */
   readonly containerState: ContainerStateSnapshot | null;

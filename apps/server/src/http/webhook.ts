@@ -167,7 +167,12 @@ export type TaskEnqueuer = (data: RunTaskJobData) => Promise<string | null>;
 /** 「收到了」这一步（第 8 步）的 GitHub 写动作。干跑时**一个都不调**。 */
 export type WebhookAck = {
   /** `POST /repos/:o/:r/issues/:n/reactions { content: 'eyes' }` */
-  addEyesReaction(input: { readonly repo: string; readonly issueNumber: number }): Promise<void>;
+  addEyesReaction(input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    /** 触发评论的 databaseId；给了就打评论级 reaction，缺省回落 issue 级。 */
+    readonly commentId?: number | null;
+  }): Promise<void>;
   /** 评论场景的等价物：一行「已收到」。 */
   postAckComment(input: {
     readonly repo: string;
@@ -243,6 +248,8 @@ export type WebhookTaskPlan = {
   readonly issueVersionHash: string | null;
   readonly actorLogin: string;
   readonly association: string | null;
+  /** 触发评论的 databaseId（评论级回执用；issue/PR 事件为 `null`）。 */
+  readonly commentId: number | null;
   /** 第 8 步用哪种回应：issue/PR 事件打 reaction，评论命令回一行评论。 */
   readonly ackStyle: 'reaction' | 'comment';
   /** 自由问答的问题正文（落 `tasks.prompt_text`；其它任务为 `undefined`）。 */
@@ -353,6 +360,7 @@ export function decideWebhookTask(input: {
       issueVersionHash: null,
       actorLogin: login,
       association: readString(comment, 'author_association'),
+      commentId: readNumber(comment, 'id'),
       // 回执统一走 eyes reaction：不发「已收到」评论，避免每个命令都多一条噪声
       ackStyle: 'reaction' as const,
     };
@@ -403,6 +411,7 @@ export function decideWebhookTask(input: {
         issueVersionHash: issueVersionHash(issue?.['updated_at']),
         actorLogin,
         association: readString(issue, 'author_association'),
+        commentId: null,
         ackStyle: 'reaction',
       },
     };
@@ -694,12 +703,17 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
   let ackComment: string | null = null;
   try {
     if (plan.ackStyle === 'reaction') {
-      await deps.ack.addEyesReaction({ repo, issueNumber: plan.targetNumber });
-      taskLog.info('已打 eyes reaction');
+      await deps.ack.addEyesReaction({
+        repo,
+        issueNumber: plan.targetNumber,
+        commentId: plan.commentId,
+      });
+      taskLog.info({ commentId: plan.commentId }, '已打 eyes reaction');
     } else {
-      // 自由问答的 command 是 `@answer:<base64url>`，回执里不能把它糊到用户脸上
-    const ackLabel = isFreeAnswerCommand(plan.command) ? '你的提问' : plan.command;
-      ackComment = `已收到 ${ackLabel}，排队中……（任务 ${taskId.slice(0, 8)}）`;
+      // 保底分支（决策层当前恒为 reaction）：文案里**不带任务编号**——用户在 GitHub 上
+      // 不需要看到内部 id，排查靠 `delivery_id`/日志。
+      const ackLabel = isFreeAnswerCommand(plan.command) ? '你的提问' : plan.command;
+      ackComment = `已收到 ${ackLabel}，排队中……`;
       await deps.ack.postAckComment({ repo, issueNumber: plan.targetNumber, body: ackComment });
       taskLog.info('已回「已收到」评论');
     }
@@ -782,6 +796,17 @@ export function createGithubWebhookAck(client: GithubClient): WebhookAck {
   return {
     async addEyesReaction(input) {
       const { owner, repo } = splitRepo(input.repo);
+      // 评论触发时打到**那条评论**上（用户看自己评论的角标就能确认「收到了」）；
+      // issue/PR 事件没有评论可打，回落到 issue 级 reaction。
+      if (input.commentId !== undefined && input.commentId !== null) {
+        await client.request('POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+          owner,
+          repo,
+          comment_id: input.commentId,
+          content: 'eyes',
+        });
+        return;
+      }
       await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/reactions', {
         owner,
         repo,

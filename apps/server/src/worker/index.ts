@@ -67,6 +67,20 @@ export { envelopeRowOf, findEnvelopeText, prepareEnvelope } from './envelope.ts'
 export type { CapturedEvent, EnvelopeFilterOptions } from './envelope.ts';
 
 export {
+  COMMENT_FALLBACK_COMMANDS,
+  FALLBACK_COMMENT_MARKER,
+  FALLBACK_INTENT,
+  FREE_ANSWER_COMMAND,
+  MAX_FALLBACK_BODY_CHARS,
+  buildFallbackCommentBody,
+  findLastAgentText,
+  postFallbackComment,
+  stripEnvelopeBlocks,
+  supportsCommentFallback,
+} from './fallback.ts';
+export type { PostFallbackCommentInput } from './fallback.ts';
+
+export {
   isInterruptError,
   isTimeoutError,
   observeCommandTimeout,
