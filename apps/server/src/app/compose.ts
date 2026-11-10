@@ -43,6 +43,7 @@ import {
   createMetricsServer,
   createOctokitVerifier,
   createQueueEnqueuer,
+  decodeFreeQuestion,
   createSessionAuth,
 } from '../http/index.ts';
 import type { BuildServerDeps, HealthCheck, Metrics, MetricsServer, WebhookAck, WebhookVerify } from '../http/index.ts';
@@ -69,6 +70,7 @@ import { createRacpChannelFactory } from './racp.ts';
 import type { RacpChannelFactory } from './racp.ts';
 import {
   buildTaskPrompt,
+  buildAnswerPrompt,
   createUnavailableHostPort,
   createWorkerPorts,
   readTaskRow,
@@ -428,9 +430,11 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       // 句柄来自配置：`@<App slug> /命令`（文档 §6.4 只规定「@机器人 /命令」）
       mention: config.github.mention,
       // 新 issue 的「接管」评论（`PI_BOT_GREET`）：bot 在该 thread 发过言后，
+      // 新 issue 的「接管」评论（`PI_BOT_GREET`）：bot 在该 thread 发过言后，
       // 用户的 @ 下拉里才看得到它
       greet: config.greet,
       ack,
+      freeMention: config.freeMention,
       logger,
       now,
     },
@@ -463,6 +467,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     const dryRun = input.dryRun === true || config.dryRun || policy.dryRun;
     const attempt = input.attempt ?? row.attempt + 1;
 
+
+    // 自由问答任务（`@answer:<base64url>`）：问题正文从 command 里解出来
+    const answerQuestion = decodeFreeQuestion(row.command);
     const endpoint = await ports.host.ready();
     const channel = await racp(endpoint);
     try {
@@ -475,13 +482,22 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           targetKind: row.targetKind,
           targetNumber: row.targetNumber,
           ...(row.headSha === null ? {} : { headSha: row.headSha }),
-          prompt: buildTaskPrompt({
-            command: row.command,
-            repo: row.repo,
-            targetKind: row.targetKind,
-            targetNumber: row.targetNumber,
-            dryRun,
-          }),
+          prompt:
+            answerQuestion === null
+              ? buildTaskPrompt({
+                  command: row.command,
+                  repo: row.repo,
+                  targetKind: row.targetKind,
+                  targetNumber: row.targetNumber,
+                  dryRun,
+                })
+              : // 自由问答：问题正文在 `command` 里（`@answer:<base64url>`），不打标、只发评论
+                buildAnswerPrompt({
+                  repo: row.repo,
+                  targetKind: row.targetKind,
+                  targetNumber: row.targetNumber,
+                  question: answerQuestion,
+                }),
           attempt,
           dryRun,
         },

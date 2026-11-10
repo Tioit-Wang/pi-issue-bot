@@ -74,6 +74,54 @@ export const ISSUE_GREETING_BODY = [
   '',
   '判定结果会以标签 + 一条说明评论回帖；只在拿到可信结论时才写。',
 ].join('\n');
+
+/**
+ * 自由问答（`@bot 你的问题`，**不带** `/命令`）在 `tasks.command` 里的前缀。
+ *
+ * 为什么把问题编码进 `command` 而不是加一列：这条路径只需要「问题正文进 prompt」，
+ * 加列要动迁移 + `contract-db.md` + 面板展示三处；base64url 让问题只活在任务行里，
+ * 幂等键也天然按问题区分（同一问题重复 @ 是空操作，不同问题各自成任务）。
+ */
+export const FREE_MENTION_PREFIX = '@answer:';
+
+/** 问题正文 → `command` 里的锚（UTF-8 → base64url，避免中文/换行破坏 SQL 与日志）。 */
+export function encodeFreeQuestion(question: string): string {
+  return Buffer.from(question, 'utf8').toString('base64url');
+}
+
+/** `command` 里的锚 → 问题正文；不是自由问答任务返回 `null`。 */
+export function decodeFreeQuestion(command: string): string | null {
+  if (!command.startsWith(FREE_MENTION_PREFIX)) {
+    return null;
+  }
+  try {
+    const text = Buffer.from(command.slice(FREE_MENTION_PREFIX.length), 'base64url').toString('utf8');
+    return text.trim().length === 0 ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从评论里取「纯 @ 提问」的正文：@ 到了句柄、**没有** `/命令`、正文非空。
+ *
+ * 返回 `null` 表示这条评论不是自由提问（交给命令通道或直接忽略）。
+ */
+export function extractFreeQuestion(body: unknown, mention: string = DEFAULT_BOT_MENTION): string | null {
+  if (typeof body !== 'string') {
+    return null;
+  }
+  const escaped = escapeRegExp(mention);
+  const mentionPattern = new RegExp(`(?:^|\\s)@${escaped}\\b`, 'u');
+  if (!mentionPattern.test(body)) {
+    return null;
+  }
+  if (commandMentionPattern(mention).test(body)) {
+    return null;
+  }
+  const question = body.replace(new RegExp(`(?:^|\\s)@${escaped}\\b`, 'gu'), ' ').trim();
+  return question.length === 0 ? null : question.slice(0, 4000);
+}
 /** 缺省句柄：App 名为 `pi-bot` 的部署用它（其它 App 用 `PI_BOT_MENTION` 覆盖）。 */
 export const DEFAULT_BOT_MENTION = 'pi-bot';
 
@@ -129,6 +177,13 @@ export type WebhookDeps = {
   readonly ack: WebhookAck;
   readonly logger: Logger;
   readonly now?: () => Date;
+  /**
+   * 是否把「纯 @ 提问」（不带 `/命令`）也当成任务（`PI_BOT_FREE_MENTION`，默认开）。
+   *
+   * 关掉时只有 `@bot /命令` 会触发；打开时 `@bot 这个问题怎么解？` 也会跑一次 turn，
+   * 只允许产出 comment（不打标、不写回）。
+   */
+  readonly freeMention?: boolean;
   /** 熔断/暂停判定。默认读 `runtime_flags.rate_limit_pause`。 */
   readonly isPaused?: () => Promise<boolean>;
   /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
@@ -243,6 +298,12 @@ export function decideWebhookTask(input: {
   readonly action: string | null;
   readonly payload: unknown;
   /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
+
+  /**
+   * 是否把「纯 @ 提问」（不带 `/命令`）也当成任务（`PI_BOT_FREE_MENTION`，默认开）。
+   * 关掉时只有 `@bot /命令` 会建任务。
+   */
+  readonly freeMention?: boolean;
   readonly mention?: string;
 }): WebhookDecision {
   const payload = asRecord(input.payload);
@@ -256,10 +317,6 @@ export function decideWebhookTask(input: {
       return { action: 'ignore', reason: `issue_comment.${input.action ?? '未知'} 不在白名单` };
     }
     const comment = asRecord(payload?.['comment']);
-    const command = extractCommand(comment?.['body'], input.mention ?? DEFAULT_BOT_MENTION);
-    if (command === null) {
-      return { action: 'ignore', reason: `评论里没有 @${input.mention ?? DEFAULT_BOT_MENTION} 命令` };
-    }
     const issue = asRecord(payload?.['issue']);
     const number = readNumber(issue, 'number');
     if (number === null) {
@@ -268,21 +325,47 @@ export function decideWebhookTask(input: {
     const isPullRequest = asRecord(issue?.['pull_request']) !== null;
     const commentUser = asRecord(comment?.['user']);
     const login = readString(commentUser, 'login') ?? readString(actorUser, 'login') ?? 'unknown';
+    const mention = input.mention ?? DEFAULT_BOT_MENTION;
+
+    const command = extractCommand(comment?.['body'], mention);
+    // 纯 @ 提问（没有 `/命令`）：走自由问答通道，问题正文编码进 `command`（见上面的说明）
+    const question =
+      command === null && input.freeMention === true ? extractFreeQuestion(comment?.['body'], mention) : null;
+    if (command === null && question === null) {
+      return { action: 'ignore', reason: `评论里没有 @${mention} 命令` };
+    }
+
+    const base = {
+      source: 'command' as const,
+      targetKind: isPullRequest ? ('pr' as const) : ('issue' as const),
+      targetNumber: number,
+      // 评论载荷里没有 PR 的 head sha（要额外打一次 API）；锚缺省走 `none`。
+      headSha: null,
+      issueVersionHash: null,
+      actorLogin: login,
+      association: readString(comment, 'author_association'),
+      ackStyle: 'comment' as const,
+    };
+
+    if (command === null) {
+      const asked = question ?? '';
+      return {
+        action: 'task',
+        plan: {
+          ...base,
+          command: `${FREE_MENTION_PREFIX}${encodeFreeQuestion(asked)}`,
+          // 幂等键按**问题正文**区分：同一问题重复 @ 是空操作，换个问题就能得到新回答
+          kind: `answer:${createHash('sha256').update(asked, 'utf8').digest('hex').slice(0, 12)}`,
+        },
+      };
+    }
+
     return {
       action: 'task',
       plan: {
+        ...base,
         command,
         kind: `command:${command}`,
-        source: 'command',
-        targetKind: isPullRequest ? 'pr' : 'issue',
-        targetNumber: number,
-        // 评论载荷里没有 PR 的 head sha（要额外打一次 API）；锚缺省走 `none`，
-        // TODO(owner: W3 worker)：任务取到 PR 后补写 `tasks.head_sha`；换提交时应产生新任务。
-        headSha: null,
-        issueVersionHash: null,
-        actorLogin: login,
-        association: readString(comment, 'author_association'),
-        ackStyle: 'comment',
       },
     };
   }
@@ -336,7 +419,9 @@ export function checkCommandGate(
   if (!config.commands.enabled) {
     return { allowed: false, reason: '仓库配置关闭了命令（commands.enabled=false）' };
   }
-  if (!config.commands.allowed.includes(plan.command)) {
+  // 自由问答（`@answer:<base64>`）不是配置里的命令名，但同样受 enabled/association 约束
+  const isFreeAnswer = plan.command.startsWith(FREE_MENTION_PREFIX);
+  if (!isFreeAnswer && !config.commands.allowed.includes(plan.command)) {
     return { allowed: false, reason: `命令 ${plan.command} 不在白名单` };
   }
   if (config.commands.allow_users.includes(plan.actorLogin)) {
@@ -529,6 +614,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     action,
     payload,
     ...(deps.mention === undefined ? {} : { mention: deps.mention }),
+    ...(deps.freeMention === undefined ? {} : { freeMention: deps.freeMention }),
   });
   if (decision.action === 'ignore') {
     log.info({ repo, reason: decision.reason }, '事件不在白名单，不建任务');

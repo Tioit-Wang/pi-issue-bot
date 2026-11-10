@@ -14,6 +14,10 @@ export type { BuildServerDeps, HealthProvider } from './server.ts';
 
 export {
   COMMAND_MENTION_PATTERN,
+  extractFreeQuestion,
+  decodeFreeQuestion,
+  encodeFreeQuestion,
+  FREE_MENTION_PREFIX,
   ISSUE_ACTIONS,
   WEBHOOK_HEADERS,
   WEBHOOK_SQL,

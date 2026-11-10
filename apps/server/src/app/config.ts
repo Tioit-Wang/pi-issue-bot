@@ -60,6 +60,8 @@ export const APP_ENV_KEYS = {
   dryRun: 'PI_BOT_DRY_RUN',
   /** 新 issue 的「接管」评论开关（默认开；关掉就只在被 @ 时出声） */
   greet: 'PI_BOT_GREET',
+  /** 纯 @ 提问（不带 `/命令`）的开关（默认开） */
+  freeMention: 'PI_BOT_FREE_MENTION',
   /** GitHub token（只用于 webhook 的 10 秒应答；worker 的写面走 App 认证） */
   githubToken: 'PI_BOT_GITHUB_TOKEN',
   /** GitHub App ID（推荐认证方式；与 `PI_BOT_GITHUB_TOKEN` 二选一，App 优先） */
@@ -105,6 +107,8 @@ export const APP_DEFAULTS = {
   allowPushBranch: false,
   /** 新 issue 默认发「接管」评论：它同时也让 bot 进入该 thread 的参与者，@ 补全才看得到 */
   greet: true,
+  /** 纯 @ 提问默认开：`@bot 这个问题怎么解？` 也会得到回答 */
+  freeMention: true,
   /** 缺省句柄：App 名叫 `pi-bot` 的部署不用配 `PI_BOT_MENTION` */
   mention: 'pi-bot',
 } as const;
@@ -119,6 +123,8 @@ export interface AppConfig {
   readonly dryRun: boolean;
   /** 新 issue 的「接管」评论（`PI_BOT_GREET`） */
   readonly greet: boolean;
+  /** 纯 @ 提问（不带 `/命令`）也跑一次 turn（`PI_BOT_FREE_MENTION`） */
+  readonly freeMention: boolean;
   readonly http: {
     readonly host: string;
     readonly port: number;
@@ -324,6 +330,7 @@ export function readAppConfig(env: EnvLike): AppConfig {
     logLevel: readString(env, APP_ENV_KEYS.logLevel) ?? APP_DEFAULTS.logLevel,
     dryRun: readBoolean(env, APP_ENV_KEYS.dryRun, APP_DEFAULTS.dryRun),
     greet: readBoolean(env, APP_ENV_KEYS.greet, APP_DEFAULTS.greet),
+    freeMention: readBoolean(env, APP_ENV_KEYS.freeMention, APP_DEFAULTS.freeMention),
     http: {
       host: readString(env, APP_ENV_KEYS.httpHost) ?? APP_DEFAULTS.httpHost,
       // `PI_BOT_PORT`（新）优先，回退 `PI_BOT_HTTP_PORT`

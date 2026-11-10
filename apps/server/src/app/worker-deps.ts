@@ -176,6 +176,40 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
   ].join('\n');
 }
 
+/**
+ * 自由问答（`@bot 你的问题`）的提示词：**只允许产出 comment**。
+ *
+ * 与 `buildTaskPrompt` 的区别：没有「打标签」这个诉求，所以 `verdict.labels` 恒为空，
+ * 问题正文来自触发评论（编码在 `tasks.command` 里，见 `http/webhook.ts::decodeFreeQuestion`）。
+ */
+export function buildAnswerPrompt(input: {
+  readonly repo: string;
+  readonly targetKind: 'issue' | 'pr';
+  readonly targetNumber: number;
+  readonly question: string;
+}): string {
+  return [
+    `你是 pi-bot，正在 ${input.repo} 的 ${input.targetKind} #${String(input.targetNumber)} 上回答提问。`,
+    '',
+    '提问原文（用户 @ 你时写的）：',
+    '```text',
+    input.question.slice(0, 4000),
+    '```',
+    '',
+    '要求：',
+    '1. 直接回答提问：先结论，再依据；引用代码/日志时给出文件路径与行号。',
+    '2. 需要看代码就去读仓库里的文件（工作目录就是该仓库的检出），不要凭空猜测。',
+    '3. 中文，不超过 12 行；不确定就说不确定，并说明还缺什么信息。',
+    '4. **不要**提问、不要要求用户粘贴更多内容除非确实必要；不要自称 AI。',
+    '5. 结尾附唯一一个 ```json 代码块（机器用，不打标，只发评论）：',
+    '```json',
+    '{ "verdict": { "kind": "issue", "labels": [], "evidence": [] },',
+    '  "actions": [{ "intent": "comment", "body": "把上面 1–4 的回答原样放这里" }],',
+    '  "usage": {} }',
+    '```',
+  ].join('\n');
+}
+
 /* ── 端口集合 ─────────────────────────────────────────────────────────────── */
 
 /** worker 需要的全部端口（`ops` / `events` 由每一次 run 的 RACP 通道提供）。 */
