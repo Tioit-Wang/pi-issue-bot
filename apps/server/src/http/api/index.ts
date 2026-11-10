@@ -18,6 +18,10 @@ import {
   auditResponseSchema,
   costsQuerySchema,
   costsResponseSchema,
+  issueSessionParamsSchema,
+  issueSessionResponseSchema,
+  issuesListResponseSchema,
+  issuesQuerySchema,
   overviewQuerySchema,
   overviewResponseSchema,
   qualityQuerySchema,
@@ -158,6 +162,35 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
       preHandler: guard,
     },
     async () => deps.queries.system(),
+  );
+
+  // ── 9. GET /api/issues（按 issue 聚合的列表，`lastActivityAt` 倒序 + keyset 游标）─────
+  app.get(
+    '/api/issues',
+    {
+      schema: { querystring: issuesQuerySchema, response: { 200: issuesListResponseSchema } },
+      preHandler: guard,
+    },
+    async (request) => deps.queries.issues(request.query),
+  );
+
+  // ── 10. GET /api/issues/:owner/:name/:kind/:number（一个 issue 的会话）─────────────
+  // 路径是四段而不是 `:repo`：`repo` 含 `/`，`:repo` 会吞掉后面的段（spec §3.2 末段）。
+  app.get(
+    '/api/issues/:owner/:name/:kind/:number',
+    {
+      schema: { params: issueSessionParamsSchema, response: { 200: issueSessionResponseSchema } },
+      preHandler: guard,
+    },
+    async (request) => {
+      const { owner, name, kind, number } = request.params;
+      const session = await deps.queries.issueSession({ owner, name, kind, number });
+      if (session === null) {
+        // 查询层用 null 表示「这条 issue 没有任何任务」，404 的语义由 HTTP 层决定
+        throw httpError('not-found', `没有处理过这个 ${kind}：${owner}/${name}#${String(number)}`);
+      }
+      return session;
+    },
   );
 }
 

@@ -19,6 +19,7 @@
 import { QueryError, resolveWindow, type QueriesDeps, type QueryErrorCode } from './sql.ts';
 import { queryAudit, queryAuditCsv } from './audit.ts';
 import { queryCosts } from './costs.ts';
+import { queryIssues, queryIssueSession } from './issues.ts';
 import { queryOverview } from './overview.ts';
 import { queryReverts } from './quality.ts';
 import { querySystem } from './system.ts';
@@ -46,6 +47,12 @@ import type {
   TaskDiff,
   TaskListItem,
 } from './types.ts';
+import type {
+  IssuesListResponse,
+  IssuesQuery,
+  IssueSessionParams,
+  IssueSessionResponse,
+} from './issues.ts';
 
 export type Queries = {
   /** 总览：今日四个数字 + 24h 趋势 + 结果分布 + 失败 Top5 + 队列深度 + 熔断 + doctor 摘要。 */
@@ -64,6 +71,10 @@ export type Queries = {
   auditCsv: (query: AuditQuery) => Promise<string>;
   /** 系统信息：版本 / 协议 / host / doctor / 队列配置 / 保留期 / flags / 仓库开关。 */
   system: () => Promise<SystemResponse>;
+  /** 按 issue 聚合的列表（`(repo, kind, number)` 分组，`lastActivityAt` 倒序 + keyset 游标）。 */
+  issues: (query: IssuesQuery) => Promise<IssuesListResponse>;
+  /** 一个 issue 的会话（人问 AI 答）；该 issue 没有任何任务时返回 `null`（http 层映射 404）。 */
+  issueSession: (params: IssueSessionParams) => Promise<IssueSessionResponse | null>;
 };
 
 export function createQueries(deps: QueriesDeps): Queries {
@@ -85,6 +96,8 @@ export function createQueries(deps: QueriesDeps): Queries {
       return queryAuditCsv(runner, query, resolveWindow(query, at));
     },
     system: () => querySystem(runner, now()),
+    issues: (query) => queryIssues(runner, now(), query),
+    issueSession: (params) => queryIssueSession(runner, now(), params),
   };
 }
 
@@ -113,4 +126,8 @@ export type {
   TaskListItem,
   TasksQuery,
   TasksResponse,
+  IssuesListResponse,
+  IssuesQuery,
+  IssueSessionParams,
+  IssueSessionResponse,
 };

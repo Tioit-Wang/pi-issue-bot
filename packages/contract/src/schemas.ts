@@ -11,6 +11,10 @@ import {
   auditResponseSchema,
   costsQuerySchema,
   costsResponseSchema,
+  issueSessionParamsSchema,
+  issueSessionResponseSchema,
+  issuesListResponseSchema,
+  issuesQuerySchema,
   overviewQuerySchema,
   overviewResponseSchema,
   qualityQuerySchema,
@@ -36,6 +40,9 @@ export const responseSchemas = {
   AuditResponse: auditResponseSchema,
   SystemResponse: systemResponseSchema,
   WebhookAcceptedResponse: webhookAcceptedResponseSchema,
+  /** 按 issue 的会话视图（`docs/spec/ux-issue-sessions.md` §3）。 */
+  IssuesListResponse: issuesListResponseSchema,
+  IssueSessionResponse: issueSessionResponseSchema,
   /** 仓库配置与技能 frontmatter 不是 HTTP 响应，但面板要展示字段说明，一并发布。 */
   RepoConfig: repoConfigSchema,
   SkillFrontmatter: skillFrontmatterSchema,
@@ -48,7 +55,20 @@ export const querySchemas = {
   costsQuery: costsQuerySchema,
   qualityQuery: qualityQuerySchema,
   auditQuery: auditQuerySchema,
+  /** `/api/issues` 的筛选与分页（`kind` 默认 `issue`、`limit` 默认 30）。 */
+  issuesQuery: issuesQuerySchema,
+} as const satisfies Record<string, z.ZodType>;
+
+/**
+ * 路径参数 schema（OpenAPI 的 `in: path` 由它推导）。
+ *
+ * 单独一张表：这些 schema **不能**放进 `querySchemas`——那里的约定是「空对象也必须合法」
+ * （`packages/contract/test/contract.test.ts` 逐个断言 `safeParse({})`），而路径参数是必填的。
+ */
+export const paramsSchemas = {
+  issueSessionParams: issueSessionParamsSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 export type ResponseSchemaName = keyof typeof responseSchemas;
 export type QuerySchemaName = keyof typeof querySchemas;
+export type ParamSchemaName = keyof typeof paramsSchemas;

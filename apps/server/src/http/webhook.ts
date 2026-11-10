@@ -374,7 +374,12 @@ export function decideWebhookTask(input: {
           command: FREE_ANSWER_COMMAND,
           promptText: asked,
           // 幂等键按**问题正文**区分：同一问题重复 @ 是空操作，换个问题就能得到新回答
-          kind: `answer:${createHash('sha256').update(asked, 'utf8').digest('hex').slice(0, 12)}`,
+          // 幂等键 = 「问题正文 + 这条评论的 id」：同一条评论的重投仍是空操作，
+          // 但**换个评论再问同一句话**应该得到新回答（只按正文 hash 会静默吞掉第二次提问）。
+          kind: `answer:${createHash('sha256')
+            .update(`${asked}\u0000${String(comment?.['id'] ?? 'none')}`, 'utf8')
+            .digest('hex')
+            .slice(0, 12)}`,
         },
       };
     }
@@ -672,6 +677,20 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     const existing = await deps.db.query(WEBHOOK_SQL.findTaskByIdempotencyKey, [idempotencyKey]);
     const existingId = (existing.rows[0] as Record<string, unknown> | undefined)?.['id'];
     log.info({ repo, command: plan.command }, '任务级幂等命中，不再入队');
+    // 去重也必须给回执：否则用户看到的是「@ 了但一点反应都没有」。
+    // 同一句话再问一次会走到这条路径（幂等键按「问题 + 评论 id」算），
+    // 所以要在这里补一个 eyes，而不是让用户以为机器人死了。
+    if (!dryRun) {
+      try {
+        await deps.ack.addEyesReaction({
+          repo,
+          issueNumber: plan.targetNumber,
+          commentId: plan.commentId,
+        });
+      } catch (error) {
+        log.warn({ err: describeError(error) }, '去重分支打 reaction 失败（不影响 200）');
+      }
+    }
     return finish(200, accepted({
       deliveryId: input.deliveryId,
       action: 'duplicate',

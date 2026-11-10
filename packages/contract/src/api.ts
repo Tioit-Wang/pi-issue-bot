@@ -733,3 +733,194 @@ export const FAILURE_CLASS_DISPLAY_ORDER: readonly FailureClass[] = [
   'parse',
   'github-api',
 ];
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 9. 按 issue 聚合的会话视图 —— `GET /api/issues` 与 `GET /api/issues/:owner/:name/:kind/:number`
+//    事实源：`docs/spec/ux-issue-sessions.md` §3（字段名与语义照抄，别在这里发明）
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GitHub 参与者标识。**不能复用 `loginSchema`**：App 机器人是 `xxx[bot]`，
+ * 方括号不在 `loginSchema` 的正则里，而会话视图必须能显示机器人自己
+ * （spec §3.2 的 `participants: ["Tioit-Wang", "pi-issue-bot-tioit[bot]"]`）。
+ */
+export const actorHandleSchema = z.string().min(1).max(100);
+
+/** issue / PR 的状态；payload 里取不到时为 `unknown`（不是 `null`，面板用一个 chip 显示）。 */
+export const issueStateSchema = z.enum(['open', 'closed', 'unknown']);
+export type IssueState = z.infer<typeof issueStateSchema>;
+
+/** 人类这一轮的触发渠道：`@` 提及 / `/命令` / 自动（`auto:*` 与 cron）。 */
+export const issueTurnChannelSchema = z.enum(['mention', 'command', 'auto']);
+export type IssueTurnChannel = z.infer<typeof issueTurnChannelSchema>;
+
+/** 一轮的方向：人类提问 / 机器人产出。 */
+export const issueTurnRoleSchema = z.enum(['human', 'bot']);
+export type IssueTurnRole = z.infer<typeof issueTurnRoleSchema>;
+
+/**
+ * 一次工具调用（来源：`run_events.kind = 'tool.progress'`，按 `cursor` 升序）。
+ *
+ * `name` 一定是字符串：真库的 `tool.progress` 没有稳定的工具名字段（`payload.tool` 还可能是对象），
+ * 取不到时由查询层填 `unknown`——面板不用再判空。
+ */
+export const issueToolCallSchema = z
+  .object({
+    /** 工具名（`payload.tool.name` → `payload.tool`（字符串才用）→ `payload.name` → `payload.title`）；取不到为 `unknown`。 */
+    name: z.string().min(1).max(200),
+    /** 一行摘要（已折叠空白、截到 160 字）；取不到为 `null`。 */
+    summary: z.string().max(200).nullable(),
+    at: isoDateTimeSchema,
+    ok: z.boolean(),
+  })
+  .strict()
+  .meta({ id: 'IssueToolCall' });
+export type IssueToolCall = z.infer<typeof issueToolCallSchema>;
+
+/**
+ * 会话里的一轮。
+ *
+ * - 人类：一次任务 = 一轮，`id = task:<taskId>`，正文取触发评论原文（`webhook_deliveries`）。
+ * - 机器人：一次任务 = 一轮（**多次 attempt 合并**，`attempts` 只作脚注），`id = run:<最后一次 runId>`。
+ *   骨架是 `runs` 而不是 `actions`：dry-run 仓库不写 `actions` 行，但 `envelopes` 一定有。
+ *
+ * 字段是两种角色的并集（spec §3.2 的例子按角色各写了一部分）：没有意义的字段给 `null`
+ * （bot 轮的 `channel`、human 轮的 `failureClass`/`taskId`），不用可选字段——契约 §0 的约定。
+ */
+export const issueTurnSchema = z
+  .object({
+    /** `task:<id>` 或 `run:<id>`（React key）。 */
+    id: z.string().min(1).max(80),
+    role: issueTurnRoleSchema,
+    /** 谁说的话；人类 login 或机器人自身（`xxx[bot]`，取不到为 `null`）。 */
+    login: actorHandleSchema.nullable(),
+    at: isoDateTimeSchema,
+    /** 人类轮的触发渠道；机器人轮恒为 `null`。 */
+    channel: issueTurnChannelSchema.nullable(),
+    /** 正文；都没有为 `null`。 */
+    text: z.string().max(40_000).nullable(),
+    /** 该轮对应评论的 id（`actions.external_ref`，**不是** URL）；没有为 `null`。 */
+    commentId: z.string().max(64).nullable(),
+    /** 该轮对应评论的链接（服务端拼 `…/issues/<n>#issuecomment-<id>`）；没有为 `null`。 */
+    commentUrl: z.string().max(500).nullable(),
+    /** 本轮打过的标签（机器人轮有意义；人类轮为 `[]`）。 */
+    labels: z.array(labelNameSchema).max(50),
+    /** 任务级状态（`tasks.status` 映射后的契约取值）—— human 与 bot 轮同一个口径。 */
+    status: taskStatusSchema,
+    /** 该轮 run 的失败分类；未失败为 `null`。 */
+    failureClass: failureClassSchema.nullable(),
+    /** 这一轮背后的任务 id；**仅供面板跳转 `/tasks/:id`**，不得出现在任何 GitHub 评论里（R2）。 */
+    taskId: shortIdSchema.nullable(),
+    /** 机器人轮合并了几次 attempt（人类轮恒为 1）；失败那几次只在右栏作脚注。 */
+    attempts: z.number().int().min(1),
+    /** 工具调用；单轮最多 50 条，超出部分丢弃并把 `truncated` 置 true。 */
+    toolCalls: z.array(issueToolCallSchema).max(50),
+    /** 该轮工具调用是否被截断（>50 条）。 */
+    truncated: z.boolean(),
+  })
+  .strict()
+  .meta({ id: 'IssueTurn' });
+export type IssueTurn = z.infer<typeof issueTurnSchema>;
+
+/** 结果分布：键是任务状态，值是任务数（没有出现的状态不占位，故用 partialRecord）。 */
+export const issueOutcomeCountsSchema = z.partialRecord(taskStatusSchema, countSchema);
+
+/** 列表的一行 = 一个 `(repo, kind, number)`（只出现被处理过的）。 */
+export const issueListItemSchema = z
+  .object({
+    repo: repoFullNameSchema,
+    kind: targetKindSchema,
+    number: z.number().int().positive(),
+    /** 该 issue 最新一条投递里的标题；取不到为 `null`。 */
+    title: z.string().max(500).nullable(),
+    /** …html_url；取不到为 `null`。 */
+    url: z.string().max(500).nullable(),
+    state: issueStateSchema,
+    /** `state` 不是来自投递事件时为 true：此时的值从 `issue_states.closed_at` 推断，面板应提示「可能过期」。 */
+    stateStale: z.boolean(),
+    /** 四源 max：`tasks.queued_at`、`actions.applied_at`、`runs.ended_at`、`bot_labels.applied_at`。 */
+    lastActivityAt: isoDateTimeSchema,
+    /** 人类触发次数（`tasks.source = 'command'`）。 */
+    humanTurns: countSchema,
+    /** 自动触发次数（`auto:*` / cron，`tasks.source <> 'command'`）。 */
+    autoTurns: countSchema,
+    /** 机器人动作次数（`actions` 行数，含 label；与 `runs` 不是同一个口径）。 */
+    botTurns: countSchema,
+    /** `bot_labels` 里未移除的标签。 */
+    labels: z.array(labelNameSchema).max(50),
+    outcomes: issueOutcomeCountsSchema,
+    /** 最后一条机器人正文前 120 字；没有就用最后一条人类提问；都没有为 `null`。 */
+    lastPreview: z.string().max(200).nullable(),
+  })
+  .strict()
+  .meta({ id: 'IssueListItem' });
+export type IssueListItem = z.infer<typeof issueListItemSchema>;
+
+/**
+ * `GET /api/issues` 的查询参数。
+ *
+ * **没有标题搜索参数**：标题只存在于 `webhook_deliveries.payload`（jsonb），按 §0 的约定不做 jsonb 深挖；
+ * 按标题检索留给后续的物化列（见 `docs/spec/contract-api.md` §10）。
+ */
+export const issuesQuerySchema = z
+  .object({
+    repo: repoFullNameSchema.optional(),
+    /** 默认只看 issue；`pr` 是单独一组（spec §1.3 坑 3）。 */
+    kind: targetKindSchema.default('issue'),
+    /** 1–100，默认 30（比其它列表小：一屏按会话读）。 */
+    limit: z.coerce.number().int().min(1).max(100).default(30),
+    cursor: pageCursorSchema,
+  })
+  .strict();
+
+export const issuesListResponseSchema = timestamped({
+  issues: z.array(issueListItemSchema).max(100),
+  ...pageInfoShape,
+})
+  .strict()
+  .meta({ id: 'IssuesListResponse' });
+export type IssuesListResponse = z.infer<typeof issuesListResponseSchema>;
+
+/** 会话页头部：issue 本身的信息（计数在列表行里）。 */
+export const issueSummarySchema = z
+  .object({
+    repo: repoFullNameSchema,
+    kind: targetKindSchema,
+    number: z.number().int().positive(),
+    title: z.string().max(500).nullable(),
+    url: z.string().max(500).nullable(),
+    state: issueStateSchema,
+    /** 同 `IssueListItem.stateStale`。 */
+    stateStale: z.boolean(),
+    labels: z.array(labelNameSchema).max(50),
+    /** 参与者：人类触发者，以及能解析到的机器人自身（`repos.config.bot.login`，取不到就不列）。 */
+    participants: z.array(actorHandleSchema).max(100),
+  })
+  .strict()
+  .meta({ id: 'IssueSummary' });
+export type IssueSummary = z.infer<typeof issueSummarySchema>;
+
+export const issueSessionResponseSchema = timestamped({
+  issue: issueSummarySchema,
+  /** 全部轮次（`at` 升序；同一时刻人类在前）。 */
+  turns: z.array(issueTurnSchema).max(500),
+})
+  .strict()
+  .meta({ id: 'IssueSessionResponse' });
+export type IssueSessionResponse = z.infer<typeof issueSessionResponseSchema>;
+
+/**
+ * `GET /api/issues/:owner/:name/:kind/:number` 的路径参数。
+ *
+ * 为什么是四段而不是 `:repo`：`repo` 含 `/`，`:repo` 会吞掉后面的段（spec §3.2 末段）。
+ * `number` 用 coerce：路径参数在 HTTP 里是字符串。
+ */
+export const issueSessionParamsSchema = z
+  .object({
+    owner: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/),
+    name: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/),
+    kind: targetKindSchema,
+    number: z.coerce.number().int().positive(),
+  })
+  .strict();
+export type IssueSessionParams = z.infer<typeof issueSessionParamsSchema>;

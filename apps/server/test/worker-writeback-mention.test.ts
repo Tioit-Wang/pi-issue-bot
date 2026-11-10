@@ -52,13 +52,22 @@ describe('toWriteActions：comment 动作带 @，其它动作不受影响', () =
   it('comment 正文被加前缀', () => {
     const actions = toWriteActions({ intent: 'comment', body: '根因是只读挂载。' } as never, contextFor('alice'));
     expect(actions).toHaveLength(1);
-    expect(actions[0]).toMatchObject({ kind: 'comment', repo: 'o/r', target: 7 });
-    expect(actions[0]?.body).toBe('@alice 根因是只读挂载。');
+    const action = actions[0];
+    // 收窄判别联合：`WriteAction` 是 union，只有 comment 才有 body
+    if (action === undefined || action.kind !== 'comment') {
+      throw new Error('期望产出 comment 动作');
+    }
+    expect(action).toMatchObject({ kind: 'comment', repo: 'o/r', target: 7 });
+    expect(action.body).toBe('@alice 根因是只读挂载。');
   });
 
   it('没给 mention（旧调用点）时正文一字不改', () => {
     const actions = toWriteActions({ intent: 'comment', body: '根因是只读挂载。' } as never, contextFor());
-    expect(actions[0]?.body).toBe('根因是只读挂载。');
+    const action = actions[0];
+    if (action === undefined || action.kind !== 'comment') {
+      throw new Error('期望产出 comment 动作');
+    }
+    expect(action.body).toBe('根因是只读挂载。');
   });
 
   it('label 动作不掺 @ 前缀', () => {
