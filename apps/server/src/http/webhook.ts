@@ -62,6 +62,19 @@ export const WEBHOOK_HEADERS = {
   signature: 'x-hub-signature-256',
 } as const;
 
+/**
+ * 新 issue 的「接管」评论（`PI_BOT_GREET` 开时发送）。
+ *
+ * 文案只讲三件事：我叫什么、怎么 @ 我、我会做什么。不承诺做不到的事。
+ */
+export const ISSUE_GREETING_BODY = [
+  '我是 **pi-issue-bot**，这个 issue 由我接管。',
+  '',
+  '- 想让我做判定/复现/审查：`@pi-issue-bot-tioit /issue-triage`、`/issue-repro`、`/review-pr`',
+  '- 想直接问我问题：`@pi-issue-bot-tioit 你的问题`',
+  '',
+  '- 想让我做判定/复现/审查：`@pi-issue-bot-tioit /issue-triage`、`/issue-repro`、`/review-pr`',
+
 /** 缺省句柄：App 名为 `pi-bot` 的部署用它（其它 App 用 `PI_BOT_MENTION` 覆盖）。 */
 export const DEFAULT_BOT_MENTION = 'pi-bot';
 
@@ -121,6 +134,14 @@ export type WebhookDeps = {
   readonly isPaused?: () => Promise<boolean>;
   /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
   readonly mention?: string;
+  /**
+   * 新 issue 是否发一条「接管」评论（`PI_BOT_GREET`，默认开）。
+   *
+   * 为什么需要它：GitHub 的 @ 补全只列「仓库协作者 + 该 thread 的参与者」，App 的 bot
+   * 不在协作者里；它在这个 issue 里说过话之后，用户才能在下拉里 @ 到它。这条评论
+   * 同时也是使用说明，所以它解决的是「所有 issue 都能 @ 到 bot」。
+   */
+  readonly greet?: boolean;
 };
 
 export type WebhookInput = {
@@ -587,6 +608,20 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     // 回应失败只记 warn：不该让 GitHub 因此重投一次（§5.3 七要点第三条）
     taskLog.warn({ err: describeError(error) }, '回应 GitHub 失败（不影响 200）');
     ackComment = null;
+  }
+
+  // ── 第 8.5 步：新 issue 的「接管」评论（`PI_BOT_GREET`，默认开）────────────
+  //
+  // 为什么单独发一条：GitHub 的 @ 补全只列「协作者 + 该 thread 的参与者」，机器人在这个
+  // issue 里说过话之后用户才能在下拉里 @ 到它；这条评论同时就是使用说明。
+  // 只对 `issues.opened` 的自动分类发一次；失败只记 warn（不能让 GitHub 重投）。
+  if (deps.greet === true && plan.command === 'auto:triage' && action === 'opened') {
+    try {
+      await deps.ack.postAckComment({ repo, issueNumber: plan.targetNumber, body: ISSUE_GREETING_BODY });
+      taskLog.info('已发「接管」评论');
+    } catch (error) {
+      taskLog.warn({ err: describeError(error) }, '接管评论发送失败（不影响 200）');
+    }
   }
 
   // ── 第 9 步：200 ─────────────────────────────────────────────────────────

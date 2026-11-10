@@ -427,6 +427,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       enqueue: createQueueEnqueuer(queue),
       // 句柄来自配置：`@<App slug> /命令`（文档 §6.4 只规定「@机器人 /命令」）
       mention: config.github.mention,
+      // 新 issue 的「接管」评论（`PI_BOT_GREET`）：bot 在该 thread 发过言后，
+      // 用户的 @ 下拉里才看得到它
+      greet: config.greet,
       ack,
       logger,
       now,
