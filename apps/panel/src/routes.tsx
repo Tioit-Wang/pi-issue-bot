@@ -3,6 +3,8 @@ import type { ReactElement } from 'react';
 import { AppLayout } from './layout/AppLayout.tsx';
 import { AuditPage } from './routes/audit.tsx';
 import { CostsPage } from './routes/costs.tsx';
+import { IssueDetailPage } from './routes/issue-detail.tsx';
+import { IssuesPage } from './routes/issues.tsx';
 import { NotFoundPage } from './routes/not-found.tsx';
 import { OverviewPage } from './routes/overview.tsx';
 import { QualityPage } from './routes/quality.tsx';
@@ -11,7 +13,7 @@ import { TaskDetailPage } from './routes/task-detail.tsx';
 import { TasksPage } from './routes/tasks.tsx';
 
 /**
- * 路由表 —— **7 条路由在这里一次冻结**（tech-plan §9.2）。
+ * 路由表 —— **一次冻结在这里**（tech-plan §9.2）：原 7 条 + Issue 会话 2 条（R3）。
  *
  * 为什么用 `<Routes>` 而不是 `createBrowserRouter`：
  * 测试里要能塞 `MemoryRouter`（jsdom 没有 History 语义），声明式路由两种入口通吃；
@@ -34,6 +36,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { path: '/costs', label: '成本', nav: true, element: <CostsPage /> },
   { path: '/quality', label: '质量', nav: true, element: <QualityPage /> },
   { path: '/audit', label: '审计', nav: true, element: <AuditPage /> },
+  { path: '/issues', label: 'Issue 会话', nav: true, element: <IssuesPage /> },
+  {
+    path: '/issues/:owner/:name/:kind/:number',
+    label: 'Issue 会话详情',
+    nav: false,
+    element: <IssueDetailPage />,
+  },
   { path: '/system', label: '系统', nav: true, element: <SystemPage /> },
 ];
 

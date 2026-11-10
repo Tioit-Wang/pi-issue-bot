@@ -40,7 +40,7 @@ function renderAt(path: string): void {
 }
 
 describe('路由表', () => {
-  it('冻结的 7 条路由与导航项', () => {
+  it('冻结的路由表与导航项（原 7 条 + Issue 会话 2 条）', () => {
     expect(PANEL_ROUTES.map((route) => route.path)).toEqual([
       '/',
       '/tasks',
@@ -48,13 +48,25 @@ describe('路由表', () => {
       '/costs',
       '/quality',
       '/audit',
+      '/issues',
+      '/issues/:owner/:name/:kind/:number',
       '/system',
     ]);
-    // 详情页不出现在左侧导航（它是任务列表的子页面）
-    expect(NAV_ITEMS.map((item) => item.path)).toEqual(['/', '/tasks', '/costs', '/quality', '/audit', '/system']);
+    // 详情页不出现在左侧导航（它是 Issue 会话列表的子页面）
+    expect(NAV_ITEMS.map((item) => item.path)).toEqual([
+      '/',
+      '/tasks',
+      '/costs',
+      '/quality',
+      '/audit',
+      '/issues',
+      '/system',
+    ]);
   });
 
   const cases: ReadonlyArray<{ path: string; heading: string }> = [
+    { path: '/issues', heading: 'Issue 会话' },
+    { path: '/issues/acme/widgets/issue/17', heading: 'Issue 会话' },
     { path: '/', heading: '总览' },
     { path: '/tasks', heading: '任务' },
     { path: '/tasks/t-mock-1', heading: '任务详情' },

@@ -37,11 +37,17 @@
 3. 同一 issue 会有多条 `tasks`（多次提问 / 多次命令），`target_kind` 可能是 `issue` 也可能是 `pr` —— 会话视图按 `(repo, target_kind, target_number)` 聚合，`target_kind='pr'` 单独展示。
 4. `webhook_deliveries.payload` 是 `jsonb`。**不要**在面板接口里 `jsonb` 深挖整份 payload（契约 §8.3 禁止解 jsonb 的既有约定对「对话正文」放宽一次：只取 `payload.comment.body/html_url/user.login` 与 `payload.issue.title/html_url/state` 这几个键）。
 
-### 1.4 回执与回复现状
+### 1.4 回执与回复（**已落地**，2026-11-10 实测通过）
 
-- 入队成功后 `http/webhook.ts:696` 走 `ackStyle='reaction'` → `addEyesReaction({repo, issueNumber})`，**打在 issue 上，不是打在触发评论上**（R1 要改）。
-- 同文件 `:702` 非 reaction 分支的文案含 `（任务 ${taskId.slice(0,8)}）`（R2 要删；分支目前不可达，但要一起改掉）。
-- 最终回复正文 = 信封 `actions[].body`，由 `worker/writeback.ts` 落成评论，**当前不带 @ 提问者**（R1 要补）。
+- 入队后 eyes reaction 打在**触发的那条评论**上（`POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions`）；
+  `WebhookTaskPlan.commentId` 从 `issue_comment` 载荷取，issue 级事件（`issues.opened`）为 `null` 时回落 issue 级。
+- 回执文案里的任务编号已删净（用户可见文案不再出现内部 id）；`git/commit-tree.ts` 的提交主题仍带
+  `<intent> / <taskId>`，那是分支内的审计信息、不是给用户的回复，**保留**。
+- 最终回复 = 信封 `actions[].body`，写回时由 `worker/writeback.ts::withMention()` 加 `@<tasks.actor_login>` 前缀
+  （已以 `@…` 开头则不重复）。实测：`#17` 上 `@pi-issue-bot-tioit 用一句话说明这个仓库是做什么的。`
+  → 评论级 eyes + 一条署名 `@Tioit-Wang` 的回答，无回执评论、无任务编号。
+- 去重也要有回执：同一句话换条评论再问，会走「任务级幂等」分支，该分支现在同样打 eyes
+  （否则用户看到的是「@ 了但毫无反应」）；自由问答的幂等键含**评论 id**，所以换个评论问同一句话会重新回答。
 
 ### 1.5 GitHub 侧事实（回答「为什么 @ 不到 bot」）
 
@@ -151,7 +157,20 @@ sessions 禁止：`pnpm add/install`、`git add/commit/push`、改 `docs/plan.md
 
 ## 5. 设计要点（R3 的呈现）
 
-- 一个 issue = 一个 session，视觉按 AI 对话：左侧/主列是**气泡时间线**（人类右对齐或带 `login` 头像样式、机器人左对齐），每轮气泡内：正文 → 标签 chips → **可折叠的「工具调用（N）」**（默认收起，展开是表格：名字/摘要/时间/ok）。折叠区内**不放 `item.delta` 原始流**（太长），只放工具调用摘要。
+- 一个 issue = 一个 session。**视觉对齐 PI-Desktop 的会话消息列**（`apps/desktop/src/styles/messages.css` +
+  `chat-shell.css`，即用户说的 ailistmessage 观感），规则如下（已落地，改样式时按此为准）：
+  - 行：`flex`、行间距 12px、上下内边距 12px（`py-3`）；不再用卡片包住整轮。
+  - **人类**：右对齐（`justify-end`）、shrink-wrap 气泡，宽度上限 `min(82%, 600px)`；
+    圆角 18px、**右下角 4px**（`rounded-[18px] rounded-br-[4px]`）；底色是前景色 8%
+    （`bg-foreground/[0.08]`，等价 PI-Desktop 的 `color-mix(in oklab, var(--ds-text-primary) 8%, transparent)`）；
+    内边距 `10px 15px`；正文 15px / 行高 1.65、`whitespace-pre-wrap`。
+  - **机器人**：左对齐、**纯正文**——无气泡、无边框、无底色、无内边距，行宽上限 720px（`max-w-[45rem]`）；
+    正文与人类同一套字号行高。
+  - 元信息（login / 渠道 / status / 时间）是一行 11px 的 muted 文本，不再挂「人类/机器人」徽章：
+    角色由对齐方式表达（与 PI-Desktop 一致）。
+  - **工具调用**是安静的一行：`▸ 工具调用（N）`，透明底、hover 才提亮、默认收起；展开后是紧凑表
+    （名字/摘要/时间/ok），无表头底色与竖线，摘要单行截断。折叠区内**不放 `item.delta` 原始流**。
+  - 右侧栏「本轮详情」保持 `lg` 以上 sticky、窄屏置顶；卡片降噪（`shadow-none`、浅底）。
 - 右侧栏（≥lg 断点固定，窄屏为顶部折叠块）：「做了什么」（本轮 actions：评论/标签/推送，按 `intent` 分色）、「结果」（outcome、failureClass、耗时、成本、任务链接 `/tasks/:id`）、「标签变更」（`bot_labels`）。
 - 列表页：每行 `repo#number 标题`、状态 chip、`humanTurns/botTurns`、最后活跃相对时间、最后一条预览（一行省略号）。点击进详情。
 - 只读：整个新视图只有导航与展开/折叠交互，**没有输入框、没有发送按钮**。

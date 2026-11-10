@@ -18,6 +18,10 @@ import type {
   AuditResponse,
   CostsQuery,
   CostsResponse,
+  IssueSessionParams,
+  IssueSessionResponse,
+  IssuesQuery,
+  IssuesResponse,
   OverviewQuery,
   OverviewResponse,
   QualityQuery,
@@ -91,6 +95,18 @@ export const api = {
 
   taskDetail: (id: string): Promise<TaskDetailResponse> =>
     request<TaskDetailResponse>(`/api/tasks/${encodeURIComponent(id)}`),
+
+  issues: (query: IssuesQuery): Promise<IssuesResponse> =>
+    request<IssuesResponse>('/api/issues', { ...query }),
+
+  /**
+   * 一个 issue = 一个 session（spec §3.2）。
+   * `repo` 含 `/` 会被路由吞掉，所以路径是四段 `:owner/:name/:kind/:number`。
+   */
+  issueSession: (params: IssueSessionParams): Promise<IssueSessionResponse> =>
+    request<IssueSessionResponse>(
+      `/api/issues/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.name)}/${params.kind}/${String(params.number)}`,
+    ),
 
   costs: (query: CostsQuery): Promise<CostsResponse> => request<CostsResponse>('/api/costs', { ...query }),
 
