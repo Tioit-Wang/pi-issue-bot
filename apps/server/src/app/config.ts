@@ -60,6 +60,12 @@ export const APP_ENV_KEYS = {
   dryRun: 'PI_BOT_DRY_RUN',
   /** GitHub token（只用于 webhook 的 10 秒应答；worker 的写面走 App 认证） */
   githubToken: 'PI_BOT_GITHUB_TOKEN',
+  /** GitHub App ID（推荐认证方式；与 `PI_BOT_GITHUB_TOKEN` 二选一，App 优先） */
+  githubAppId: 'PI_BOT_GITHUB_APP_ID',
+  /** App 私钥文件路径（`.pem`，`0600`，只在 bot 进程可读） */
+  githubAppPrivateKeyPath: 'PI_BOT_GITHUB_APP_PRIVATE_KEY_PATH',
+  /** App 安装 ID（安装到账号/组织后由 GitHub 给出；没有它取不到 installation token） */
+  githubInstallationId: 'PI_BOT_GITHUB_INSTALLATION_ID',
   /**
    * 模型 API key。**标准 OpenAI / DeepSeek / MiMo 兼容端点都能用**：
    * 我们自己这一份是 `PI_BOT_MODEL_API_KEY`，兼容别名 `OPENAI_API_KEY` / `DEEPSEEK_API_KEY`。
@@ -113,8 +119,18 @@ export interface AppConfig {
   readonly webhook: {
     readonly secret: string;
   };
+  /**
+   * GitHub 认证：**App 优先**（installation token，1 小时过期，权限可收窄），
+   * 退回到一个静态 token（只建议本地调试/webhook 应答用）。
+   */
   readonly github: {
     readonly token: string | null;
+    /** App ID；`null` = 不用 App 认证 */
+    readonly appId: number | null;
+    /** 私钥 `.pem` 路径；`null` = 不读文件 */
+    readonly privateKeyPath: string | null;
+    /** 安装 ID；`null` = 还没装（此时 App 认证不可用，会 warn） */
+    readonly installationId: number | null;
   };
   /**
    * 模型端点（plan §4.4：模型请求由宿主代发，key 只在可信侧）。
@@ -184,6 +200,18 @@ function readInt(env: EnvLike, key: string, fallback: number, min: number, max: 
   return value;
 }
 
+/** 可选整数：没配返回 `null`；配了但不是整数就报错（不静默当 0）。 */
+function readOptionalInt(env: EnvLike, key: string, min: number): number | null {
+  const raw = readString(env, key);
+  if (raw === null) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < min) {
+    throw new ConfigError(`${key} 必须是 ≥${String(min)} 的整数，收到 ${raw}`);
+  }
+  return value;
+}
 function readBoolean(env: EnvLike, key: string, fallback: boolean): boolean {
   const raw = readString(env, key);
   if (raw === null) {
@@ -304,7 +332,12 @@ export function readAppConfig(env: EnvLike): AppConfig {
       port: readInt(env, APP_ENV_KEYS.metricsPort, APP_DEFAULTS.metricsPort, 0, 65_535),
     },
     webhook: { secret: webhookSecret },
-    github: { token: readString(env, APP_ENV_KEYS.githubToken) },
+    github: {
+      token: readString(env, APP_ENV_KEYS.githubToken),
+      appId: readOptionalInt(env, APP_ENV_KEYS.githubAppId, 1),
+      privateKeyPath: readString(env, APP_ENV_KEYS.githubAppPrivateKeyPath),
+      installationId: readOptionalInt(env, APP_ENV_KEYS.githubInstallationId, 1),
+    },
     model: {
       apiKey: modelKey === null ? null : modelKey.value,
       baseUrl: modelBase === null ? null : normalizeModelBaseUrl(modelBase.value, modelBase.key),
@@ -351,6 +384,12 @@ export function describeAppConfig(config: AppConfig): Readonly<Record<string, un
     // 只报「配没配」：`token` 这个键名会让日志门面的值级脱敏把整个对象抹掉，
     // 所以这里用 `*Configured` 命名（§10.2 要的是「值不出现」，不是「连状态都看不见」）
     githubTokenConfigured: config.github.token !== null,
+    // App 认证只说「配没配 + App ID」，私钥路径不进日志（路径里常含机器名/用户名）。
+    githubApp: {
+      appId: config.github.appId,
+      privateKeyConfigured: config.github.privateKeyPath !== null,
+      installationId: config.github.installationId,
+    },
     // 模型端点：base URL 与模型名可以出现（不是秘密），key 只报「配没配」。
     // 键名刻意不用 `apiKey`——日志门面的 `*.apiKey` 脱敏路径会把布尔值也抹成 `<redacted>`。
     model: {

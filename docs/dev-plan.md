@@ -384,3 +384,21 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 **自验**：`apps/server/test/app-model-endpoint.test.ts`（9 例，含别名优先级 / 归一化 / 启动失败 / 脱敏摘要 / `hostModelEnv` 映射）与 `test/doctor-model-endpoint.test.ts`（8 例，200/缺模型名/401/404/网络错误/未配置），`doctor-report.test.ts` 的检查清单同步为 13 项。三条门禁仍全绿（server 734 通过 / 2 跳过）。
 
 **没做的**：不内置任何厂商默认值（不猜端点）、不做多模型路由与 fallback、不在面板上暴露模型配置（面板只读，改配置走 `EnvironmentFile`）。
+
+### 13.9 真实凭证接入（浏览器操作，2026-11-10）
+
+需求方给了模型的接入信息，并要求在浏览器里创建 GitHub App 与测试仓库。记录实际操作与结论（密钥一律不入库）：
+
+| 项 | 结果 |
+|---|---|
+| 模型端点 | `https://platform.aimom.net/v1` + `deepseek-v4.1-flash`；`GET /v1/models` 实测返回 `deepseek-v4.1-flash`、`glm-5.3-flash`，正是 `doctor` 第 13 项 `model-endpoint` 的探测方式 |
+| GitHub App | 名称 **pi-issue-bot-tioit**，App ID **5690173**，拥有者 `Tioit-Wang`，仅安装到本账号 |
+| App 权限 | Repository：`contents=write`、`issues=write`、`pull_requests=write`、`checks=read`、`metadata=read`（强制）；Organization：`members=read`。**未申请** `administration`、`workflows`（tech-plan §5.2：能改 CI 等于能绕过必需检查） |
+| App 事件 | `issues`、`issue_comment`、`pull_request`、`pull_request_review`、`pull_request_review_comment`、`push`、`check_run` |
+| App webhook | **未启用**（还没有公网入口，开着只会让 GitHub 记投递失败）；创建时填的 `https://example.com/…` 只是通过表单校验的占位，装好 Caddy 后改成真实 `/webhook` 并设 secret |
+| 私钥 | 已通过浏览器生成并下载，移到 `~/.pi-desktop/scratch/<session>/secrets/`（**仓库之外**）；`deploy/env.example` 只留路径占位 |
+| 测试仓库 | **Tioit-Wang/pi-issue-bot-test**（private，带 README）→ https://github.com/Tioit-Wang/pi-issue-bot-test |
+
+**代码侧同步（本轮新增）**：`AppConfig.github` 增加 `appId` / `privateKeyPath` / `installationId`；新增 `app/github-auth.ts::resolveGithubAuth`——三件齐全走 App 认证（`createInstallationTokenProvider`），只配一半记 `degraded` 并点明缺哪项，否则退回 `PI_BOT_GITHUB_TOKEN`，都没有则 `none`。私钥只在启动时读一次，读不到/不是 PEM 直接 `ConfigError`；`describeAppConfig` 不输出私钥路径。
+
+**踩坑记录**：① Edge 142 默认禁止对默认配置开远程调试（Chromium 136+ 的安全限制），且 App-Bound Encryption 让 cookie 无法拷到别的配置目录——最后按需求改用 Chrome（用户手动登录）。② `@octokit/auth-app` 的 strategy 必须显式 `type:'installation'`，否则每个请求都会 `Invalid auth type: undefined`；③ 单测里用假 PEM 会让 auth-app 抛 `ERR_OSSL_UNSUPPORTED` 变成 unhandled rejection——改用 `generateKeyPairSync` 生成的真 RSA 私钥。

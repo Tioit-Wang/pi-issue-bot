@@ -31,7 +31,7 @@ import type { Logger } from '../../../../packages/shared/src/index.ts';
 import type { SqlExecutor } from '../db/index.ts';
 import { closePool, createPool } from '../db/index.ts';
 import { readRepoPolicy } from '../config/index.ts';
-import { createGithubClient } from '../github/index.ts';
+import { resolveGithubAuth } from './github-auth.ts';
 import type { GithubClient, GithubWriteApi } from '../github/index.ts';
 import {
   APP_VERSION,
@@ -233,12 +233,18 @@ export function createUnavailableWebhookAck(reason: string): WebhookAck {
   return { addEyesReaction: fail, postAckComment: fail };
 }
 
-function createDefaultGithubClient(config: AppConfig): GithubClient | null {
-  const token = config.github.token;
-  if (token === null) {
-    return null;
+/**
+ * GitHub 客户端装配：**App 认证优先**（installation token），token 兜底，都没有就 `null`。
+ * 解析逻辑与「缺什么」的措辞在 `github-auth.ts`；这里只负责按模式记一条启动日志。
+ */
+function createDefaultGithubClient(config: AppConfig, logger: Logger): GithubClient | null {
+  const resolution = resolveGithubAuth(config);
+  if (resolution.mode === 'degraded') {
+    logger.warn({ githubAuthMode: resolution.mode }, resolution.detail);
+  } else {
+    logger.info({ githubAuthMode: resolution.mode }, resolution.detail);
   }
-  return createGithubClient({ authToken: token });
+  return resolution.client;
 }
 /**
  * 容器记账装饰器：包住 `createContainer` / `destroyContainer`，维护「当前还活着的容器 id」。
@@ -317,7 +323,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
   const queue = overrides.queue ?? createDefaultQueue(config);
 
   // ── worker 端口（docker / exec 代理 / lifecycle / host / github / worktree）──
-  const baseGithubClient = createDefaultGithubClient(config);
+  const baseGithubClient = createDefaultGithubClient(config, logger);
   const declaredPorts =
     overrides.ports ??
     createWorkerPorts({

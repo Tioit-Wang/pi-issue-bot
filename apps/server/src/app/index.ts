@@ -21,6 +21,8 @@ export {
 } from './config.ts';
 export type { AppConfig } from './config.ts';
 
+export { resolveGithubAuth } from './github-auth.ts';
+export type { GithubAuthDeps, GithubAuthMode, GithubAuthResolution } from './github-auth.ts';
 export { HOST_MODEL_ENV_KEYS, describeModelEndpoint, hostModelEnv } from './model-env.ts';
 
 export {
