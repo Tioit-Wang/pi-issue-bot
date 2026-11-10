@@ -82,11 +82,13 @@ import type { RacpChannelFactory } from './racp.ts';
 import {
   buildTaskPrompt,
   buildAnswerPrompt,
+  createPromptEnricher,
   createUnavailableHostPort,
   createWorkerPorts,
   readTaskRow,
 } from './worker-deps.ts';
 import type { WorkerPorts } from './worker-deps.ts';
+import { createSkillStore } from '../skills/store.ts';
 
 /* ── 队列的最小接口（结构可替换）────────────────────────────────────────────── */
 
@@ -338,7 +340,7 @@ function trackContainers(docker: SandboxDocker, live: Set<string>): SandboxDocke
 
 /* ── schema 检查（serve 不迁移，只检查）───────────────────────────────────── */
 
-/** 业务表清单（`migrations/0000_init.sql` 建的那些；pg-boss 的表由 `queue.start()` 自己建）。 */
+/** 业务表清单（`migrations/` 建的那些；pg-boss 的表由 `queue.start()` 自己建）。 */
 export const REQUIRED_TABLES = [
   'tasks',
   'runs',
@@ -348,6 +350,10 @@ export const REQUIRED_TABLES = [
   'webhook_deliveries',
   'repos',
   'runtime_flags',
+  // 0002：技能管理（面板可写面）。缺表 → 技能接口与上传全废，所以纳入启动自检。
+  'skills',
+  'skill_versions',
+  'skills_audit',
 ] as const;
 
 /**
@@ -421,6 +427,8 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
 
   // ── http / metrics ───────────────────────────────────────────────────────
   const queries = overrides.queries ?? createQueries({ pool, now });
+  // 技能存储（面板可写面）：库里存清单与版本，正文落 `<PI_BOT_DATA_DIR>/skills/<id>/<version>/`。
+  const skillStore = createSkillStore({ pool, dataDir: config.dataDir });
   const metrics = overrides.metrics ?? createMetrics({ defaultMetrics: true });
   const metricsServer =
     overrides.metricsServer ??
@@ -447,6 +455,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     logger,
     pool,
     queries,
+    skills: { store: skillStore, writeMode: config.panelWrite },
     // TODO(owner: 面板鉴权切片)：OAuth + `isOrgMember` 接进来之前只有会话校验（401 完整、403 待接）
     requireAuth: overrides.requireAuth ?? createPanelAuth(config, pool, logger),
     webhook: {
@@ -462,6 +471,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       ack,
       freeMention: config.freeMention,
       logger,
+      // 面板上传且启用的技能名：让 `/demo` 这类命令不必先进仓库配置就能被调用
+      // （spec D0「上传即生效」；关掉开关后下一份投递就不再放行）。
+      listSkills: (repo) => skillStore.activeSkillNames(repo),
       now,
     },
     metrics,
@@ -497,6 +509,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     // 自由问答任务：问题正文优先读 `tasks.prompt_text`（新格式），
     // 兼容历史行 `command=@answer:<base64url>` 的解码
     const answerQuestion = row.promptText ?? decodeFreeQuestion(row.command);
+    // 面板上传技能的当前快照（仓库作用域优先，见 `SkillStore.activeSkillFiles`）。
+    const uploadedSkills = await skillStore.activeSkillFiles(row.repo);
+
     const endpoint = await ports.host.ready();
     const channel = await racp(endpoint);
     try {
@@ -541,6 +556,22 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           // 用量与费用：从 pi-host 的 sqlite 读真实 token，金额按 DeepSeek 官方价目算
           usage: createHostUsageReader({ dataDir: config.host.dataDir }),
           events: channel.events,
+          // 提示词装配（M1）：AGENTS.md 与仓库技能文件都在 **worktree** 里，而上面的 `prompt`
+          // 是在建 worktree 之前拼好的 —— 所以装配只能由 worker 在建完 worktree 之后回调补一次。
+          // 装配失败不影响任务（worker 侧回退到 basePrompt），所以这里不需要 try/catch。
+          promptEnricher: createPromptEnricher({
+            logger,
+            config: policy.config,
+            context: {
+              repo: row.repo,
+              targetKind: row.targetKind,
+              targetNumber: row.targetNumber,
+              ...(row.headSha === null ? {} : { headSha: row.headSha }),
+            },
+            // 面板上传的技能（spec R5「上传即生效、不重启」）：每轮任务开始前读一次启用集合。
+            // 放在这里而不是进程启动时：开关关掉后下一轮任务就不再带它，不需要重启。
+            extraSkillFiles: uploadedSkills,
+          }),
           image: config.worker.image,
           networkMode: config.worker.network,
           allowPushBranch: config.worker.allowPushBranch,

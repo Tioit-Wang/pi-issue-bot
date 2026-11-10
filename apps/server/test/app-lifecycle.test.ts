@@ -48,6 +48,10 @@ function createFakePool(order: Recorder): Pool {
         'webhook_deliveries',
         'repos',
         'runtime_flags',
+        // 0002 的三张技能表（`REQUIRED_TABLES` 与迁移必须同步，这里跟着一起长）
+        'skills',
+        'skill_versions',
+        'skills_audit',
       ].map((table) => ({ table_name: table }));
       return { rows, rowCount: rows.length };
     }

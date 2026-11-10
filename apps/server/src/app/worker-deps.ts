@@ -8,11 +8,21 @@
  *     比失败难查一个量级；
  *  3. **不读 env**：配置由 `app/config.ts` 装配好传进来（同 `config/env.ts` 的纪律）。
  */
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
+
 import { AppError } from '../../../../packages/shared/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import { createGithubWriteApi, createGithubClient } from '../github/index.ts';
 import type { GithubWriteApi } from '../github/index.ts';
 import type { SqlExecutor } from '../db/index.ts';
+import { collectAgentsMd } from '../skills/agents-md.ts';
+import { assemblePrompt } from '../skills/assemble.ts';
+import { renderSkillPrompt } from '../skills/prompt.ts';
+import type { SkillPromptContext } from '../skills/prompt.ts';
+import { REPO_SKILLS_DIR, createSkillRegistry } from '../skills/registry.ts';
+import type { SkillRepoConfig } from '../skills/registry.ts';
+import type { SkillFile } from '../skills/types.ts';
 import {
   createExecProxyPort,
   createLifecycleDisposer,
@@ -360,5 +370,142 @@ export function createWorkerBaseDeps(
     allowPushBranch: options.config.worker.allowPushBranch,
     logger: options.logger,
     ...(options.onStep === undefined ? {} : { onStep: options.onStep }),
+  };
+}
+
+/* ── 提示词装配（M1：AGENTS.md + 技能正文真正进入提示词）─────────────────────── */
+
+/**
+ * 单个仓库技能文件的字节上限。
+ *
+ * 技能目录（`.github/pi-bot/skills/`）是**仓库内容**，随时可能被改成巨型文件或垃圾；
+ * 装配路径上不值得为它读 10 MB。超限只跳过该文件并 warn，不影响其它技能。
+ */
+export const REPO_SKILL_MAX_BYTES = 262_144;
+
+/** `TaskRunnerDeps.promptEnricher` 的具体形状（避免每处再抄一遍长签名）。 */
+export type PromptEnricher = NonNullable<TaskRunnerDeps['promptEnricher']>;
+
+export interface PromptEnricherOptions {
+  readonly logger?: Logger;
+  /** 技能的仓库配置快照（`readRepoPolicy().config`）；只用于 `requires-repo-config` 的判定。 */
+  readonly config?: SkillRepoConfig | null;
+  /**
+   * 技能渲染上下文（`{{repo}}` / `{{target}}` / `{{title}}` …）。
+   *
+   * 为什么由调用方给：这些值来自**任务行**（`tasks` 表），是装配层的知识；
+   * 而 enricher 的入参只有 worktree/basePrompt/command（`worker/types.ts` 的约定）。
+   */
+  readonly context: SkillPromptContext;
+  /**
+   * 额外技能文件：M2 面板上传的技能（zip → store）解出来之后塞这里，
+   * 与本轮仓库技能走**同一条**装配（`createSkillRegistry` 的 `repoSkills`）。
+   * 优先级同 spec §7：面板-仓库 > 面板全局 > 仓库文件 > 内置。
+   */
+  readonly extraSkillFiles?: readonly SkillFile[];
+}
+
+/**
+ * 读 worktree 里的仓库技能文件。
+ *
+ * 目录不存在是**常态**（绝大多数仓库没有仓库技能），不是错误、也不记日志；
+ * 只读普通 `.md` 文件（`Dirent.isFile()` 对软链为 false，所以顺手挡住了软链逃逸）。
+ */
+async function readRepoSkillFiles(worktreeDir: string, logger?: Logger): Promise<readonly SkillFile[]> {
+  const dir = path.join(worktreeDir, REPO_SKILLS_DIR);
+  let names: string[];
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    names = entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.md'))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+
+  const files: SkillFile[] = [];
+  for (const name of names) {
+    const relPath = `${REPO_SKILLS_DIR}/${name}`;
+    try {
+      const buffer = await readFile(path.join(dir, name));
+      if (buffer.length > REPO_SKILL_MAX_BYTES) {
+        logger?.warn({ path: relPath, bytes: buffer.length }, '仓库技能文件超过 256 KB，已跳过');
+        continue;
+      }
+      files.push({ path: relPath, text: buffer.toString('utf8') });
+    } catch (error) {
+      logger?.warn({ path: relPath, err: String(error) }, '仓库技能文件读取失败，已跳过');
+    }
+  }
+  return files;
+}
+
+/**
+ * 默认的提示词 enricher（装配层实现，worker 只认 `TaskRunnerDeps.promptEnricher` 这个钩子）。
+ *
+ * 三步（spec §7 的装配顺序里属于「层」的那两步 + 交给 `assemblePrompt` 合成）：
+ *  1. `collectAgentsMd()`：根 AGENTS.md 总是进，就近窗按 hintPaths（本轮只给根，见下）；
+ *  2. 仓库技能 `<worktree>/.github/pi-bot/skills/*.md` → `createSkillRegistry`（内置技能也在里面，
+ *     所以即使仓库一个技能文件都没有，`/issue-triage` 这类内置技能照样能装配）；
+ *  3. `command` 命中技能 → `renderSkillPrompt()` → `assemblePrompt({ basePrompt, agentsMd, skill })`。
+ *
+ * **不抛异常**是调用方（`worker/run-task.ts`）的责任，但这里也尽量把「读不到」变成「少一段」：
+ * 唯一的抛错来源是 `assemblePrompt`（纯函数，实际不会抛）。
+ */
+export function createPromptEnricher(options: PromptEnricherOptions): PromptEnricher {
+  const logger = options.logger;
+  const extraSkillFiles = options.extraSkillFiles ?? [];
+
+  return async (input) => {
+    const repoSkillFiles = await readRepoSkillFiles(input.worktreeDir, logger);
+    const repoSkills = [...repoSkillFiles, ...extraSkillFiles];
+    const registry = createSkillRegistry({
+      ...(repoSkills.length === 0 ? {} : { repoSkills }),
+      config: options.config ?? null,
+      ...(logger === undefined ? {} : { logger }),
+    });
+    const skill = input.command === null ? undefined : registry.resolve(input.command);
+
+    const agentsMd = await collectAgentsMd({
+      worktreeDir: input.worktreeDir,
+      // 任务涉及路径：本轮拿不到「issue 正文里提到的文件/报错路径」（要读正文，见 M3），
+      // 所以先只进根 AGENTS.md；`hintPaths` 一有值，就近层就自动生效（逻辑已在 agents-md 里）。
+      hintPaths: [],
+    });
+
+    const assembled = assemblePrompt({
+      basePrompt: input.basePrompt,
+      agentsMd,
+      skill:
+        skill === undefined
+          ? null
+          : {
+              name: skill.name,
+              promptText: renderSkillPrompt({
+                skill,
+                context: options.context,
+                // 输出契约由 `basePrompt` 的尾部负责，且必须是**最后**一段；
+                // 这里再塞一份会让模型看到两个互相冲突的信封格式（`renderSkillPrompt` 自带的那份
+                // 用的是技能自己的 outputs，与 `buildTaskPrompt` 的命令级契约不是一回事）。
+                includeEnvelopeInstruction: false,
+              }).prompt,
+            },
+    });
+
+    logger?.debug(
+      {
+        command: input.command,
+        skill: skill?.name ?? null,
+        repoSkills: repoSkillFiles.length,
+        agentsMdRoot: agentsMd.root !== null,
+        agentsMdNearby: agentsMd.nearby.map((section) => section.path),
+        agentsMdSkipped: agentsMd.skipped,
+        ...assembled.stats,
+      },
+      '提示词装配完成（AGENTS.md + 技能）',
+    );
+
+    return assembled.prompt;
   };
 }

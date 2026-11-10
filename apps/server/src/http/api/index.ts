@@ -36,14 +36,26 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Logger } from '../../../../../packages/shared/src/index.ts';
 import type { RequireAuth } from './auth.ts';
 import type { Queries } from './queries.ts';
+import type { SkillStore } from '../../skills/store.ts';
+import { registerSkillRoutes } from './skills.ts';
+import type { SkillWriteMode } from './skills.ts';
 import { httpError } from '../errors.ts';
 import type { ZodFastify } from '../types.ts';
 
-/** 装配 8 条读路由需要的东西：查询面 + 鉴权钩子（其余都从 contract 取）。 */
+/** 技能写面的依赖（不注入 = 技能接口整体不挂载，`serve` 一定注入）。 */
+export type SkillApiWiring = {
+  readonly store: SkillStore;
+  readonly writeMode?: SkillWriteMode;
+};
+
+/**
+ * 装配面板路由需要的东西：查询面 + 鉴权钩子 + （可选）技能写面。其余都从 contract 取。
+ */
 export type ApiDeps = {
   readonly queries: Queries;
   readonly requireAuth: RequireAuth;
   readonly logger?: Logger;
+  readonly skills?: SkillApiWiring;
 };
 
 /** `/api/tasks/:id` 的路径参数。`shortIdSchema` 的长度上限是 64（`common.ts`）。 */
@@ -192,6 +204,17 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
       return session;
     },
   );
+
+  // ── 11. /api/skills（技能管理：读 3 条 + 写 5 条，写面带 CSRF/来源校验）─────────
+  // 不注入 `deps.skills` 就不挂载：读路由的测试与最小装配不需要建技能存储。
+  if (deps.skills !== undefined) {
+    registerSkillRoutes(app, {
+      store: deps.skills.store,
+      requireAuth: deps.requireAuth,
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+      ...(deps.skills.writeMode === undefined ? {} : { writeMode: deps.skills.writeMode }),
+    });
+  }
 }
 
 /** CSV 的数据行数（去掉表头与空行）；只用于判断是否达到导出口径。 */

@@ -45,3 +45,30 @@ export type {
   SkillSource,
   SkillSummary,
 } from './types.ts';
+
+// ── M1：提示词装配（AGENTS.md + 技能层）──────────────────────────────────────
+export { collectAgentsMd } from './agents-md.ts';
+export type { AgentsMdResult, AgentsMdSection, CollectAgentsMdInput } from './agents-md.ts';
+export { assemblePrompt, DEFAULT_ASSEMBLE_BUDGET_CHARS } from './assemble.ts';
+export type {
+  AssemblePromptInput,
+  AssemblePromptResult,
+  AssemblePromptStats,
+  AssembleSkillLayer,
+} from './assemble.ts';
+
+// ── M2：zip → 技能包 → 存储 ───────────────────────────────────────────────────
+export { readZipEntries, ZIP_LIMITS, ZipError } from './zip.ts';
+export type { ZipEntry, ZipErrorCode } from './zip.ts';
+export { extractSkillBundle, SKILL_ENTRY_FILE } from './bundle.ts';
+export type { SkillBundle, SkillBundleFile, SkillBundleValidation } from './bundle.ts';
+export { createSkillStore, SkillStoreError, treeHashOf } from './store.ts';
+export type {
+  SkillAuditAction,
+  SkillFileText,
+  SkillListFilter,
+  SkillStore,
+  SkillStoreOptions,
+  SkillUploadInput,
+  SkillUploadResult,
+} from './store.ts';

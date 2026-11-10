@@ -1,5 +1,6 @@
 /**
- * 面板的 API 客户端：**一个文件、只有 GET**（契约里面板侧没有写操作，tech-plan §8.3）。
+ * 面板的 API 客户端：**一个文件**。读接口全是 GET（tech-plan §8.3），
+ * 写接口只有技能管理那几个（`docs/spec/skill-management.md` §6）。
  *
  * 关于 openapi-fetch：原本按 E8 的方案是 `createClient<paths>()` + `openapi-typescript` 产物。
  * 现状是 `openapi/pi-bot.openapi.json` 的响应体是自指 `$ref`（生成会抛
@@ -10,7 +11,9 @@
  * 约定：
  * - 查询参数只带**有值**的（`undefined` / 空串不拼进 URL，否则后端 zod 会当成显式空值）；
  * - 4xx/5xx 一律抛 `ApiError`（带 status 与 `error.code`），由 hooks 决定展示或降级；
- * - CSV 导出返回 URL 字符串，交给 `<a download>` 或 `window.open`（W3-K 用）。
+ * - CSV 导出返回 URL 字符串，交给 `<a download>` 或 `window.open`（W3-K 用）；
+ * - **写请求**一律走 `write()`：带自定义头 `X-Pi-Bot-CSRF: 1` + `credentials: same-origin`
+ *   （spec R11 的双保险，缺了服务端直接 403），`204` / 空体不解析 JSON。
  */
 import type {
   ApiErrorBody,
@@ -31,6 +34,25 @@ import type {
   TasksQuery,
   TasksResponse,
 } from './contract.ts';
+
+/*
+ * 技能管理的 DTO 直接取自契约本体（`skills.ts` 的下半段）。
+ *
+ * 为什么不走 `./contract.ts`：那个文件是面板侧契约的**唯一**入口，但它目前还没有再导出
+ * 技能这一组（`skillListItemSchema` / `skillDetailSchema` / …），而本次改动不允许碰它
+ * （另一个 subagent 正在动 `packages/contract`）。等它补上再改回一行即可。
+ *
+ * 为什么用相对路径而不是 `@pi-issue-bot/contract`：面板**没有**把契约包声明成依赖，
+ * pnpm 没有建链接，包名解析不到（`lib/contract.ts` 用的也是这条相对路径）。
+ */
+import type {
+  SkillDetail,
+  SkillPatch,
+  SkillsQuery,
+  SkillsResponse,
+  SkillUploadResponse,
+  SkillVersionsResponse,
+} from '../../../../packages/contract/src/index.ts';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -60,6 +82,23 @@ export function toSearch(query: QueryValues | undefined): string {
   return text === '' ? '' : `?${text}`;
 }
 
+/** 4xx/5xx：把契约错误体翻成 `ApiError`（非 JSON 错误体用状态码兜底）。 */
+async function failWith(response: Response): Promise<never> {
+  // 错误体也可能不是 JSON（网关 502 之类），此时退化成状态码文案
+  let body: ApiErrorBody | null = null;
+  try {
+    body = (await response.json()) as ApiErrorBody;
+  } catch {
+    // 非 JSON 错误体（网关 502 等）：body 保持 null，用状态码兜底
+  }
+  throw new ApiError(
+    response.status,
+    body?.error?.code ?? 'internal',
+    body?.error?.message ?? `请求失败（HTTP ${String(response.status)}）`,
+    body?.error?.details,
+  );
+}
+
 async function request<T>(path: string, query?: QueryValues): Promise<T> {
   const response = await fetch(`${path}${toSearch(query)}`, {
     method: 'GET',
@@ -68,23 +107,43 @@ async function request<T>(path: string, query?: QueryValues): Promise<T> {
     credentials: 'same-origin',
   });
 
-  if (!response.ok) {
-    // 错误体也可能不是 JSON（网关 502 之类），此时退化成状态码文案
-    let body: ApiErrorBody | null = null;
-    try {
-      body = (await response.json()) as ApiErrorBody;
-    } catch {
-      // 非 JSON 错误体（网关 502 等）：body 保持 null，用状态码兜底
-    }
-    throw new ApiError(
-      response.status,
-      body?.error?.code ?? 'internal',
-      body?.error?.message ?? `请求失败（HTTP ${String(response.status)}）`,
-      body?.error?.details,
-    );
-  }
+  if (!response.ok) await failWith(response);
 
   return (await response.json()) as T;
+}
+
+/** 写请求必须带的自定义头（spec R11：缺了服务端回 403）。 */
+export const CSRF_HEADER = 'X-Pi-Bot-CSRF';
+
+type WriteInit = {
+  method: 'POST' | 'PATCH' | 'DELETE';
+  /** 原始二进制（上传 zip）或 JSON 字符串。 */
+  body?: BodyInit;
+  contentType?: string;
+};
+
+/**
+ * 写请求：自动带 CSRF 头与 cookie；`204`/空体返回 `undefined`（DELETE 常见）。
+ *
+ * 面板侧写接口的**响应体契约尚未定稿**（spec §6 只写了方法/路径），所以调用方一律用
+ * `void` 或只读 `skill`/`version` 这两个确定字段，不依赖完整响应形状。
+ */
+async function write<T>(path: string, init: WriteInit, query?: QueryValues): Promise<T> {
+  const headers: Record<string, string> = { accept: 'application/json', [CSRF_HEADER]: '1' };
+  if (init.contentType !== undefined) headers['content-type'] = init.contentType;
+
+  const response = await fetch(`${path}${toSearch(query)}`, {
+    method: init.method,
+    headers,
+    credentials: 'same-origin',
+    ...(init.body === undefined ? {} : { body: init.body }),
+  });
+
+  if (!response.ok) await failWith(response);
+  if (response.status === 204) return undefined as T;
+
+  const text = await response.text();
+  return (text === '' ? undefined : JSON.parse(text)) as T;
 }
 
 export const api = {
@@ -119,4 +178,42 @@ export const api = {
 
   /** 审计 CSV 的下载地址（`limit` 被服务端忽略，上限固定 50000）。 */
   auditCsvUrl: (query: AuditQuery = {}): string => `/api/audit/export.csv${toSearch({ ...query })}`,
+
+  /* ── 技能管理（spec §6；写操作的鉴权见 R11） ─────────────────────────────── */
+
+  skills: (query: SkillsQuery = {}): Promise<SkillsResponse> =>
+    request<SkillsResponse>('/api/skills', { ...query }),
+
+  skillDetail: (id: string): Promise<SkillDetail> =>
+    request<SkillDetail>(`/api/skills/${encodeURIComponent(id)}`),
+
+  skillVersions: (id: string): Promise<SkillVersionsResponse> =>
+    request<SkillVersionsResponse>(`/api/skills/${encodeURIComponent(id)}/versions`),
+
+  /**
+   * 上传 zip：**原始二进制**（`application/zip`），不是 multipart（spec §6 的「不引入新依赖」）。
+   * 查询串固定 `scope=global&enabled=true`：上传即生效（spec D0）；同 `name` 再传 = 新版本。
+   */
+  uploadSkill: async (file: Blob): Promise<SkillUploadResponse> => {
+    const bytes = await file.arrayBuffer();
+    return write<SkillUploadResponse>(
+      '/api/skills',
+      { method: 'POST', body: bytes, contentType: 'application/zip' },
+      { scope: 'global', enabled: 'true' },
+    );
+  },
+
+  /** 局部更新（只允许 `enabled` / `description` / `body`；`name`/`scope` 不可改）。 */
+  patchSkill: async (id: string, patch: SkillPatch): Promise<void> => {
+    await write<unknown>(`/api/skills/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+      contentType: 'application/json',
+    });
+  },
+
+  /** 软删（`?hard=1` 只对 `source='upload'` 有效，面板不提供硬删）。 */
+  deleteSkill: async (id: string): Promise<void> => {
+    await write<unknown>(`/api/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
 };

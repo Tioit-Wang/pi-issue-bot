@@ -526,3 +526,52 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 
 **已知边界**：`pricingCoverage` 只统计「有 `usage_costs` 行的 run」，早期没有 `turn_id` 的 run 永远不计；
 host 升级若改了 `turns` 表结构，读取器会退化成 `null`（面板显示无用量，而不是假 0）。
+
+---
+
+### 13.13 技能管理（M1–M3，2026-11-10）：装配、上传、面板
+
+需求事实源是 `docs/spec/skill-management.md`（v2 定案：技能独立无编排 / 上传即生效 + `enabled` 开关 /
+面板不公网但仍要 CSRF）。这一节只记**落地后与设计不同**的地方 —— 都是实测逼出来的。
+
+#### 13.13.1 交付面
+
+| 层 | 文件 | 说明 |
+|---|---|---|
+| M1 装配 | `skills/agents-md.ts`、`skills/assemble.ts`、`worker/run-task.ts` 的 `promptEnricher` 钩子 | AGENTS.md（根 ≤4000 + 就近 ≤3 个、合计 ≤6000）与技能正文进提示词；装配失败**回退 basePrompt**，不让任务失败 |
+| M2 解包 | `skills/zip.ts`、`skills/bundle.ts` | 零依赖 zip（中央目录 + `node:zlib` + 自写 CRC32），zip slip / 炸弹限额；技能包定根与中文校验原因 |
+| M2 存储 | `migrations/0002_skills.sql`、`skills/store.ts` | `skills` / `skill_versions` / `skills_audit` 三表；正文落 `<PI_BOT_DATA_DIR>/skills/<id>/<version>/`，库里只存清单与哈希 |
+| 接口 | `http/api/skills.ts` | 8 条路由（读 3 + 写 5）；写面 `X-Pi-Bot-CSRF` + `Origin`/`Sec-Fetch-Site` + `PI_BOT_PANEL_WRITE`（默认 `loopback`） |
+| 面板 | `apps/panel/src/routes/skills.tsx` | 列表 / 详情 / 上传 zip / 开关 / 删除 + 两种空态 |
+
+#### 13.13.2 实测修掉的三处「设计看着对、跑起来不对」
+
+1. **`name` 归一必须落到磁盘**（`bundle.ts`）。上传时 `name: demo` 被宽松归一成 `/demo` 并通过校验，
+   但落盘的 SKILL.md 原文仍是 `name: demo`；装配期 enricher 会**重新解析磁盘文本**，于是
+   `skill-invalid`、技能静默不生效（日志：`技能 demo 未通过校验（upload:/demo）：name: 必须以 / 开头`）。
+   修法：`files[]` 里的 SKILL.md 文本写成规范名并重算 `bytes`/`sha256`（决策 D2「规范存」的真正含义）。
+2. **命令门禁要认面板技能**（`webhook.ts` 的 `checkCommandGate` + `WebhookDeps.listSkills`）。
+   门禁原本只认仓库配置 `commands.allowed`，而上传技能永远不会出现在那里 —— 实测 `@bot /demo`
+   被 200 + `unauthorized` 静默吞掉（日志：`命令 /demo 不在白名单`）。修法：已启用的上传技能名
+   也算合法命令；`commands.enabled=false` 与 `author_associations` 两道闸仍然生效。
+3. **`skillsQuerySchema.enabled` 的语义**是「不传 = 全部」（面板的「全部」就是不传）；
+   契约注释原来写「缺省只看启用的」，已改正 —— 否则面板的「全部」永远看不到停用的技能。
+
+#### 13.13.3 真机验收（可复现）
+
+1. 造一个含暗号的技能 zip → `POST /api/skills?scope=global&enabled=true`（`Content-Type: application/zip`
+   + `X-Pi-Bot-CSRF: 1`）→ 200，`/demo` v1、338 字节、`validation.ok=true`。
+2. 测试仓库加 `AGENTS.md`（含 `AGENTMARK-9`），issue 评论 `@pi-issue-bot-tioit /demo` →
+   任务 `command=/demo` 建成并 succeeded，机器人回复里同时出现 **`PINEAPPLE-7`（技能正文）**
+   与 **`AGENTMARK-9`（AGENTS.md）** → 两层都真的进了提示词。
+3. `PATCH {enabled:false}` 后再评论 `/demo` → **不再建任务**，日志 `命令 /demo 不在白名单`；
+   重新开启后恢复。审计表依次是 `upload → new-version → disable → enable`。
+
+#### 13.13.4 仍然没做（明确记下来）
+
+- 面板只管理**上传**技能；内置与仓库文件技能仍只在 `/api/system` 展示（只读，不可在面板改）。
+- 上传入口固定 `scope=global`；`scope=repo` 与「先传上来别启用」没有 UI（接口已支持）。
+- 回滚端点（`POST /api/skills/:id/rollback`）与正文在线编辑只有接口，面板没接。
+- `patch({description})` 只改库里的列，**不回写** SKILL.md 的 frontmatter（本包不引 yaml 库）。
+- 装配期没有把 `run_events` 写一条 `prompt.assembled`（只在 debug 日志里），所以「提示词长什么样」
+  目前只能靠回复里的暗号反证。

@@ -47,6 +47,8 @@ export type BuildServerDeps = {
   readonly requireAuth: ApiDeps['requireAuth'];
   /** webhook 的全部依赖（验签 / 入队 / ack / db / logger）。 */
   readonly webhook: WebhookDeps;
+  /** 技能管理（写面）；不注入 → `/api/skills` 整体不挂载（读路由的测试不需要它）。 */
+  readonly skills?: ApiDeps['skills'];
   /** 不传则建一个内部的（`serve` 会传进来，测试也可以不传）。 */
   readonly metrics?: Metrics;
   readonly appVersion?: string;
@@ -221,6 +223,7 @@ export function buildServer(deps: BuildServerDeps): ZodFastify {
       queries: deps.queries,
       requireAuth: deps.requireAuth,
       logger: deps.logger,
+      ...(deps.skills === undefined ? {} : { skills: deps.skills }),
     });
   });
 

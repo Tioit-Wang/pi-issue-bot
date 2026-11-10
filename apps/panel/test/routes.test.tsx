@@ -40,7 +40,7 @@ function renderAt(path: string): void {
 }
 
 describe('路由表', () => {
-  it('冻结的路由表与导航项（原 7 条 + Issue 会话 2 条）', () => {
+  it('冻结的路由表与导航项（原 7 条 + Issue 会话 2 条 + 技能 1 条）', () => {
     expect(PANEL_ROUTES.map((route) => route.path)).toEqual([
       '/',
       '/tasks',
@@ -50,6 +50,7 @@ describe('路由表', () => {
       '/audit',
       '/issues',
       '/issues/:owner/:name/:kind/:number',
+      '/skills',
       '/system',
     ]);
     // 详情页不出现在左侧导航（它是 Issue 会话列表的子页面）
@@ -60,6 +61,7 @@ describe('路由表', () => {
       '/quality',
       '/audit',
       '/issues',
+      '/skills',
       '/system',
     ]);
   });
@@ -72,6 +74,7 @@ describe('路由表', () => {
     { path: '/tasks/t-mock-1', heading: '任务详情' },
     { path: '/costs', heading: '成本' },
     { path: '/quality', heading: '质量' },
+    { path: '/skills', heading: '技能' },
     { path: '/audit', heading: '审计' },
     { path: '/system', heading: '系统' },
   ];
@@ -88,12 +91,13 @@ describe('路由表', () => {
     expect(await screen.findByRole('heading', { level: 1, name: '页面不存在' })).toBeTruthy();
   });
 
-  it('每个页面都渲染在同一个外壳里（导航 6 项 + 只读提示）', async () => {
+  it('每个页面都渲染在同一个外壳里（导航项 + 内网说明）', async () => {
     renderAt('/costs');
     expect(await screen.findByRole('heading', { level: 1, name: '成本' })).toBeTruthy();
     for (const item of NAV_ITEMS) {
       expect(screen.getAllByRole('link', { name: item.label }).length).toBeGreaterThan(0);
     }
-    expect(screen.getByText(/不做任何写操作/)).toBeTruthy();
+    // 面板从「纯只读」变成「技能页可写」，文案随之更新；这里断言的是**有说明**，不锁死措辞
+    expect(screen.getByText(/只有「技能」页会写数据/)).toBeTruthy();
   });
 });

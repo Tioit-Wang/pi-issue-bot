@@ -322,12 +322,45 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
 
   // ── 5–8：turn → diff → 信封 → 写执行器 ──────────────────────────────────────
   if (worktreeRoot !== undefined) {
+    // ── 提示词装配（M1）：worktree 已就绪、交给宿主之前再装配一次 ────────────────
+    //
+    // 上游 `input.prompt` 是在建 worktree **之前**拼好的，而 AGENTS.md 与仓库技能文件都
+    // 在 worktree 里 —— 这就是「技能正文从未进提示词」的根因。时序上只能在建完 worktree
+    // 之后补一次，所以这里回调注入的 enricher。
+    //
+    // 两条边界：(a) 没注入 = 行为完全不变（`prompt` 就是 `input.prompt`）；
+    // (b) 装配失败不能让任务失败 —— 抛错/返回空串都回退到 `basePrompt` 并记 warn。
+    let prompt = input.prompt;
+    if (deps.promptEnricher !== undefined) {
+      try {
+        const enriched = await deps.promptEnricher({
+          worktreeDir: worktreeRoot,
+          basePrompt: input.prompt,
+          command: input.command,
+        });
+        if (typeof enriched === 'string' && enriched.length > 0) {
+          prompt = enriched;
+          logger.debug(
+            { baseChars: input.prompt.length, promptChars: enriched.length },
+            '提示词已装配（AGENTS.md + 技能）',
+          );
+        } else {
+          logger.warn({}, 'promptEnricher 返回空提示词，回退到 basePrompt');
+        }
+      } catch (error) {
+        logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          '提示词装配失败，回退到 basePrompt（不影响任务结局）',
+        );
+      }
+    }
+
     recordStep('turn');
     try {
       turnResult = await driveTurn({
         ops: recordingOps(deps.ops, recordedIds),
         worktreeRoot,
-        prompt: input.prompt,
+        prompt,
         messageId: `${input.runId}:${attempt}`,
         timeoutMs,
         ...(input.parent === undefined ? {} : { parent: input.parent }),

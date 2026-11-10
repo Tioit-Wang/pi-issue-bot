@@ -64,6 +64,7 @@ export const APP_ENV_KEYS = {
   freeMention: 'PI_BOT_FREE_MENTION',
   /** 面板鉴权：`off`（直接放行，只用于 loopback）/ `session`（cookie 会话） */
   panelAuth: 'PI_BOT_PANEL_AUTH',
+  panelWrite: 'PI_BOT_PANEL_WRITE',
   /** GitHub token（只用于 webhook 的 10 秒应答；worker 的写面走 App 认证） */
   githubToken: 'PI_BOT_GITHUB_TOKEN',
   /** GitHub App ID（推荐认证方式；与 `PI_BOT_GITHUB_TOKEN` 二选一，App 优先） */
@@ -129,6 +130,8 @@ export interface AppConfig {
   readonly freeMention: boolean;
   /** 面板鉴权模式；缺省 loopback 上是 `off`，其它地址上是 `session` */
   readonly panelAuth: 'off' | 'session';
+  /** 技能写面：`off` 全禁 / `loopback` 只收本机 / `any` 不限来源地址（仍要 CSRF 头）。 */
+  readonly panelWrite: 'off' | 'loopback' | 'any';
   readonly http: {
     readonly host: string;
     readonly port: number;
@@ -337,6 +340,14 @@ export function readAppConfig(env: EnvLike): AppConfig {
       : /^(127\.|::1$|localhost$)/.test(httpHostForAuth)
         ? 'off'
         : 'session';
+  // 技能写面（`PI_BOT_PANEL_WRITE`）：`off` 全禁 / `loopback` 只收本机（默认）/ `any` 不限来源地址。
+  // 缺省 `loopback`：面板不暴露到公网，所以「上传即生效」（spec D0）开箱可用；
+  // 但**不论哪种模式都仍要求 `X-Pi-Bot-CSRF` 头 + 来源校验**（那是防 CSRF，不是防公网）。
+  const panelWriteValue = readString(env, APP_ENV_KEYS.panelWrite);
+  const panelWrite: 'off' | 'loopback' | 'any' =
+    panelWriteValue === 'off' || panelWriteValue === 'any' || panelWriteValue === 'loopback'
+      ? panelWriteValue
+      : 'loopback';
 
   return {
     pgDsn: dsn.value,
@@ -346,6 +357,7 @@ export function readAppConfig(env: EnvLike): AppConfig {
     greet: readBoolean(env, APP_ENV_KEYS.greet, APP_DEFAULTS.greet),
     freeMention: readBoolean(env, APP_ENV_KEYS.freeMention, APP_DEFAULTS.freeMention),
     panelAuth,
+    panelWrite,
     http: {
       host: readString(env, APP_ENV_KEYS.httpHost) ?? APP_DEFAULTS.httpHost,
       // `PI_BOT_PORT`（新）优先，回退 `PI_BOT_HTTP_PORT`

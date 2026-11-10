@@ -8,7 +8,7 @@
  * `taskDetail` 的 404 在 hook 里被规约成 `null`（`/api/tasks/:id` 的 404 是正常业务态，
  * 不是错误——上层面板显示「任务不存在」即可）。
  */
-import { QueryClient, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from './api.ts';
 import type {
   AuditQuery,
@@ -19,6 +19,14 @@ import type {
   QualityQuery,
   TasksQuery,
 } from './contract.ts';
+/*
+ * 技能的 DTO 直接取自契约本体：`lib/contract.ts` 还没有再导出技能这一组，而本次改动不允许碰它
+ * （原因与相对路径的取舍见 `lib/api.ts` 顶部同一段说明）。
+ */
+import type {
+  SkillPatch,
+  SkillsQuery,
+} from '../../../../packages/contract/src/index.ts';
 
 /** 轮询间隔（毫秒）：总览 / 列表 / 详情。 */
 export const REFETCH_INTERVAL = {
@@ -37,6 +45,13 @@ export const queryKeys = {
   issues: (query: IssuesQuery) => ['issues', query] as const,
   issueSession: (params: IssueSessionParams) => ['issueSession', params] as const,
   system: () => ['system'] as const,
+  /*
+   * 技能页的三个 key 都以 `'skills'` 开头：写操作后一句
+   * `invalidateQueries({ queryKey: ['skills'] })` 就把列表/详情/版本全部失效。
+   */
+  skills: (query: SkillsQuery) => ['skills', 'list', query] as const,
+  skillDetail: (id: string) => ['skills', 'detail', id] as const,
+  skillVersions: (id: string) => ['skills', 'versions', id] as const,
 };
 
 /** 面板的 QueryClient 默认值：失败只重试一次（内网接口，重试多了只会拖慢首屏）。 */
@@ -152,5 +167,78 @@ export function useIssueSession(params: IssueSessionParams) {
       }
     },
     refetchInterval: REFETCH_INTERVAL.detail,
+  });
+}
+
+/* ── 技能管理（spec §6） ───────────────────────────────────────────────────── */
+
+/** 技能列表（筛选在服务端做，所以筛选参数进 `queryKey`）。 */
+export function useSkills(query: SkillsQuery = {}) {
+  return useQuery({
+    queryKey: queryKeys.skills(query),
+    queryFn: () => api.skills(query),
+    refetchInterval: REFETCH_INTERVAL.list,
+  });
+}
+
+/** 技能详情（frontmatter + 正文 + 文件清单 + 校验结果）：只在展开某一行时才挂载。 */
+export function useSkillDetail(id: string) {
+  return useQuery({
+    queryKey: queryKeys.skillDetail(id),
+    queryFn: () => api.skillDetail(id),
+    refetchInterval: REFETCH_INTERVAL.list,
+  });
+}
+
+/** 版本列表（标出当前版本）；上传/编辑后与详情一起失效。 */
+export function useSkillVersions(id: string) {
+  return useQuery({
+    queryKey: queryKeys.skillVersions(id),
+    queryFn: () => api.skillVersions(id),
+    refetchInterval: REFETCH_INTERVAL.list,
+  });
+}
+
+/** 写操作后的统一失效（列表/详情/版本都在 `'skills'` 前缀下）。 */
+function useInvalidateSkills(): () => Promise<void> {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: ['skills'] });
+}
+
+/**
+ * 启停 / 改描述（`PATCH /api/skills/:id`）。
+ *
+ * 不做乐观更新：服务端是唯一事实源（`enabled` 还可能被覆盖关系影响），
+ * 失败时列表保持原样，由页面把错误贴出来。
+ */
+export function useSkillPatch() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (vars: { id: string; patch: SkillPatch }) => api.patchSkill(vars.id, vars.patch),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/** 上传 zip（原始二进制，上传即生效）：成功后列表立刻刷新。 */
+export function useSkillUpload() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (file: Blob) => api.uploadSkill(file),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/** 软删（`DELETE /api/skills/:id`）：成功即从列表消失。 */
+export function useSkillDelete() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteSkill(id),
+    onSuccess: () => {
+      void invalidate();
+    },
   });
 }

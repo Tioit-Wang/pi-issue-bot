@@ -208,6 +208,11 @@ export type WebhookDeps = {
    * 同时也是使用说明，所以它解决的是「所有 issue 都能 @ 到 bot」。
    */
   readonly greet?: boolean;
+  /**
+   * 当前可用的上传技能名（`['/demo']`）。`/命令` 的门禁靠它放行面板上传的技能；
+   * 不注入 → 只认仓库配置 `commands.allowed`。
+   */
+  readonly listSkills?: (repo: string) => Promise<readonly string[]>;
 };
 
 export type WebhookInput = {
@@ -433,6 +438,8 @@ export type CommandGateResult =
 export function checkCommandGate(
   plan: WebhookTaskPlan,
   config: RepoConfig | null,
+  /** 面板上传且已启用的技能名（`['/demo']`）：它们不进仓库配置，但同样是合法命令。 */
+  knownSkills: readonly string[] = [],
 ): CommandGateResult {
   if (plan.source !== 'command') {
     // 判定类事件不走命令门禁：它们由仓库开关与事件白名单控制
@@ -444,9 +451,11 @@ export function checkCommandGate(
   if (!config.commands.enabled) {
     return { allowed: false, reason: '仓库配置关闭了命令（commands.enabled=false）' };
   }
-  // 自由问答（`@answer:<base64>`）不是配置里的命令名，但同样受 enabled/association 约束
+  // 自由问答（`@answer:<base64>`）不是配置里的命令名，但同样受 enabled/association 约束；
+  // 面板上传的技能同理：**仓库配置不必为它改一行**（spec D0「上传即生效」）。
   const isFreeAnswer = isFreeAnswerCommand(plan.command);
-  if (!isFreeAnswer && !config.commands.allowed.includes(plan.command)) {
+  const isKnownSkill = knownSkills.includes(plan.command);
+  if (!isFreeAnswer && !isKnownSkill && !config.commands.allowed.includes(plan.command)) {
     return { allowed: false, reason: `命令 ${plan.command} 不在白名单` };
   }
   if (config.commands.allow_users.includes(plan.actorLogin)) {
@@ -647,7 +656,13 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
   }
   const plan = decision.plan;
 
-  const gate = checkCommandGate(plan, policy.config);
+  // 面板上传的技能也是「已知命令」：仓库配置 `commands.allowed` 只列了 git 里声明的命令，
+  // 上传技能不该要求改仓库配置才能被调用（spec D0「上传即生效」）。
+  const knownSkills =
+    plan.source === 'command' && deps.listSkills !== undefined
+      ? await deps.listSkills(repo)
+      : [];
+  const gate = checkCommandGate(plan, policy.config, knownSkills);
   if (!gate.allowed) {
     log.warn({ repo, command: plan.command, reason: gate.reason }, '命令门禁不通过');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'unauthorized', taskId: null, duplicate: false, ackComment: null }));

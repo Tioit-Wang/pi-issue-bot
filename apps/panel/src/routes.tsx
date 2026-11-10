@@ -8,12 +8,13 @@ import { IssuesPage } from './routes/issues.tsx';
 import { NotFoundPage } from './routes/not-found.tsx';
 import { OverviewPage } from './routes/overview.tsx';
 import { QualityPage } from './routes/quality.tsx';
+import { SkillsPage } from './routes/skills.tsx';
 import { SystemPage } from './routes/system.tsx';
 import { TaskDetailPage } from './routes/task-detail.tsx';
 import { TasksPage } from './routes/tasks.tsx';
 
 /**
- * 路由表 —— **一次冻结在这里**（tech-plan §9.2）：原 7 条 + Issue 会话 2 条（R3）。
+ * 路由表 —— **一次冻结在这里**（tech-plan §9.2）：原 7 条 + Issue 会话 2 条（R3）+ 技能 1 条（R9）。
  *
  * 为什么用 `<Routes>` 而不是 `createBrowserRouter`：
  * 测试里要能塞 `MemoryRouter`（jsdom 没有 History 语义），声明式路由两种入口通吃；
@@ -43,6 +44,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     nav: false,
     element: <IssueDetailPage />,
   },
+  { path: '/skills', label: '技能', nav: true, element: <SkillsPage /> },
   { path: '/system', label: '系统', nav: true, element: <SystemPage /> },
 ];
 

@@ -296,3 +296,21 @@ create table skills_audit (
 
 §13 原来那三个问题已由用户答复（2026-11-10）：技能独立、上传即生效带开关、面板不公网。
 分析部分到此定稿；实施按 §11 的 M1 → M4 推进。
+
+---
+
+## 14. 落地结论（2026-11-10，M1–M3 已交付）
+
+实现与真机验收记录在 `docs/dev-plan.md` §13.13。三处**设计稿与实现不一致**，以实现为准：
+
+1. §12 决策 D2「宽松入、规范存」的「规范存」是**写进磁盘的 SKILL.md 也必须是 `/xxx`**，
+   不只是解析时的补斜杠 —— 装配期会重新解析磁盘文本，漏一步技能就静默不生效。
+2. §6 的 `POST /api/skills` 之外新增 `POST /api/skills/:id/versions` 与
+   `POST /api/skills/:id/rollback` 两个端点（同名新版本 / 回滚），契约在
+   `packages/contract/src/skills.ts`（`skillVersionUploadQuerySchema`、`skillRollbackBodySchema`、
+   `skillDeleteResponseSchema`）。
+3. §4 R11 的写面策略落成配置项 `PI_BOT_PANEL_WRITE = off | loopback | any`（默认 `loopback`）；
+   三种模式**都**要求 `X-Pi-Bot-CSRF: 1` + `Origin`/`Sec-Fetch-Site` 校验。
+
+另有一处与 §7 优先级相关的实现口径：`/命令` 的合法性由「仓库配置 `commands.allowed`」**或**
+「面板里已启用的上传技能」共同决定 —— 否则上传完还要手改仓库配置才能调用，等于没有「上传即生效」。

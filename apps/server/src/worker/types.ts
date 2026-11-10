@@ -321,6 +321,24 @@ export interface TaskRunnerDeps {
   readonly onStep?: (step: TaskStep, detail?: Readonly<Record<string, unknown>>) => void;
   /** 单步事件的观测点（审批审计等），默认落 `run_events`。 */
   readonly onAuditEvent?: (audit: unknown) => void;
+  /**
+   * 提示词装配钩子（M1：AGENTS.md + 技能正文真正进入提示词）。
+   *
+   * 为什么是钩子而不是在 `worker/` 里直接读文件：AGENTS.md 与仓库技能文件都在 **worktree** 里，
+   * 而 worktree 是 worker 的第 1 步亲手建的 —— 装配层（`app/worker-deps.ts`）拿不到它，
+   * 上游 `prompt` 又是在建 worktree 之前就拼好的。所以时序上只能在 worktree 就绪之后、把
+   * prompt 交给宿主之前回调一次。`worker/` 因此仍然不认识 `skills/`（依赖方向不变）。
+   *
+   * 不注入 = 行为完全不变；抛错 = 记 warn 并回退到 `input.prompt`（装配失败不该让任务失败）。
+   */
+  readonly promptEnricher?: (input: {
+    /** worktree 根（容器里的工作目录，也是 `project/register` 的 path）。 */
+    readonly worktreeDir: string;
+    /** 上游拼好的提示词（`TaskRunInput.prompt`）。 */
+    readonly basePrompt: string;
+    /** 任务命令（`/issue-triage`、`@answer` …），装配层按它选技能。 */
+    readonly command: string | null;
+  }) => Promise<string>;
 }
 
 /* ── 产出 ──────────────────────────────────────────────────────────────────── */

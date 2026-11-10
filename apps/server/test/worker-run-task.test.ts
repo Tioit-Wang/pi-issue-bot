@@ -78,6 +78,8 @@ interface HarnessOptions {
   readonly containerState?: ContainerStateSnapshot;
   readonly timeoutForCommand?: (command: string) => number;
   readonly allowPushBranch?: boolean;
+  /** 提示词装配钩子（不传 = 不装配，用来钉住「注入前后行为」两种形态）。 */
+  readonly promptEnricher?: TaskRunnerDeps['promptEnricher'];
 }
 
 /** 内存 `RunStore`：断言落库内容用。 */
@@ -175,13 +177,16 @@ function createMemoryStore(): RunStore & {
 }
 
 /** 假 ops：只记录调用，不建任何连接。 */
-function createFakeOps(order: string[]): TurnDriverOps & { readonly calls: string[] } {
+function createFakeOps(order: string[]): TurnDriverOps & { readonly calls: string[]; readonly prompts: string[] } {
   const calls: string[] = [];
+  /** 交给宿主的提示词正文（`turn/start` 的 `input.text`）：装配层改没改 prompt 只能在这里看。 */
+  const prompts: string[] = [];
   const record = (name: string): void => {
     calls.push(name);
   };
   return {
     calls,
+    prompts,
     async projectRegister() {
       record('project/register');
       return { projectId: 'project-1' };
@@ -194,9 +199,11 @@ function createFakeOps(order: string[]): TurnDriverOps & { readonly calls: strin
       record('events/subscribe');
       return {};
     },
-    async turnStart() {
+    async turnStart(params) {
       record('turn/start');
       order.push('turn');
+      // 提示词是交给宿主的**实际**内容：装配层改没改它，只能在这里看（tech-plan §4.3 第 4 步）
+      prompts.push(params.input.text);
       return { id: TURN_ID };
     },
     async turnInterrupt() {
@@ -360,6 +367,7 @@ function createHarness(options: HarnessOptions = {}): {
       ? {}
       : { timeoutForCommand: options.timeoutForCommand }),
     ...(options.allowPushBranch === undefined ? {} : { allowPushBranch: options.allowPushBranch }),
+    ...(options.promptEnricher === undefined ? {} : { promptEnricher: options.promptEnricher }),
     clock: () => 1_700_000_000_000,
     onStep: (step) => {
       if (step === 'validate' || step === 'execute') {
@@ -811,5 +819,99 @@ describe('重复输出熔断（plan §9.3）', () => {
     expect(report.outcome).toBe('succeeded');
     expect(harness.store.degeneracyHits).toHaveLength(0);
     expect(report.degeneracy?.textChars).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * M1：提示词装配钩子（`TaskRunnerDeps.promptEnricher`）。
+ *
+ * 背景（真 bug）：上游的 `prompt` 在 worktree 创建**之前**就拼好了，而 AGENTS.md 与仓库技能
+ * 文件都在 worktree 里 —— 所以 `renderSkillPrompt()` 从来没被调用过，技能正文没进提示词。
+ * 这里钉住三件事：不注入时行为完全不变；注入后被替换；装配失败不影响任务结局。
+ */
+describe('提示词装配钩子（M1）', () => {
+  it('没有注入 promptEnricher：交给宿主的 prompt 就是 input.prompt（行为不变）', async () => {
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([{ intent: 'comment', body: '收到，信息齐全。' }])),
+    });
+    const input = makeInput();
+
+    const report = await runTask(input, harness.deps);
+
+    expect(report.outcome).toBe('succeeded');
+    expect(harness.ops.prompts).toEqual([input.prompt]);
+  });
+
+  it('注入了 promptEnricher：拿到 worktree/basePrompt/command，返回值替换 prompt', async () => {
+    const seen: { worktreeDir?: string; basePrompt?: string; command?: string | null }[] = [];
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([])),
+      promptEnricher: async (input) => {
+        seen.push({ ...input });
+        return `${input.basePrompt}\n\n## 仓库约定（AGENTS.md）\n构建用 pnpm。`;
+      },
+    });
+    const input = makeInput();
+
+    const report = await runTask(input, harness.deps);
+
+    expect(report.outcome).toBe('succeeded');
+    // 时序：worktree 建好之后才装配（否则 worktreeDir 是空的）
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.worktreeDir).toBe(JOB_DIR);
+    expect(seen[0]?.basePrompt).toBe(input.prompt);
+    expect(seen[0]?.command).toBe('/issue-triage');
+    // 宿主收到的是装配后的提示词
+    expect(harness.ops.prompts).toHaveLength(1);
+    expect(harness.ops.prompts[0]).toContain('构建用 pnpm。');
+    expect(harness.ops.prompts[0]).toContain(input.prompt);
+  });
+
+  it('enricher 抛错：回退到 basePrompt，任务照常成功（九步不变）', async () => {
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([{ intent: 'comment', body: '收到。' }])),
+      promptEnricher: async () => {
+        throw new Error('装配炸了');
+      },
+    });
+    const input = makeInput();
+
+    const report = await runTask(input, harness.deps);
+
+    expect(report.outcome).toBe('succeeded');
+    expect(report.failureClass).toBeNull();
+    expect(report.steps).toEqual([...TASK_STEPS]);
+    expect(harness.ops.prompts).toEqual([input.prompt]);
+  });
+
+  it('enricher 返回空串：回退到 basePrompt（不把空提示词发给宿主）', async () => {
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([])),
+      promptEnricher: async () => '',
+    });
+    const input = makeInput();
+
+    const report = await runTask(input, harness.deps);
+
+    expect(report.outcome).toBe('succeeded');
+    expect(harness.ops.prompts).toEqual([input.prompt]);
+  });
+
+  it('setup 阶段失败（没建出 worktree）：不调用 enricher', async () => {
+    const harness = createHarness({ events: () => asyncFrom([]) });
+    let called = false;
+    const deps: TaskRunnerDeps = {
+      ...harness.deps,
+      worktree: createUnavailableWorktreePort(),
+      promptEnricher: async () => {
+        called = true;
+        return '不该被用到这里';
+      },
+    };
+
+    const report = await runTask(makeInput(), deps);
+
+    expect(called).toBe(false);
+    expect(report.steps).toEqual(['worktree', 'diff', 'validate', 'execute', 'dispose']);
   });
 });

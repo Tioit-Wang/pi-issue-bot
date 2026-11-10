@@ -7,8 +7,14 @@
  *
  * 明确不做的事：本包**不解析 YAML**（只依赖 zod，不引 yaml 库）。`skills/` 模块负责把 frontmatter
  * 解析成对象，再交给这里校验。JSON Schema 由 zod 生成，不手写第二份。
+ *
+ * 本文件有两段，别混：
+ * 1) 上半段：一个技能文件长什么样（`contract-skill.md` v1.0）；
+ * 2) 下半段（自 `skillScopeSchema` 起）：面板技能管理接口传什么
+ *    （`docs/spec/skill-management.md` §5/§6）。两段共用字段名，不另起一套。
  */
 import { z } from 'zod';
+import { isoDateTimeSchema } from './common.ts';
 import { MODEL_NAME_RE, SKILL_ALLOWED_TOOLS, SKILL_OUTPUTS } from './enums.ts';
 
 /** `^/[a-z][a-z0-9-]{1,30}$`（ASCII 小写，总长 ≤32，必须以 `/` 开头）。 */
@@ -131,3 +137,180 @@ export function toSkillEffectiveConfig(frontmatter: SkillFrontmatter): SkillEffe
     requiresRepoConfig: frontmatter['requires-repo-config'] ?? false,
   };
 }
+
+/**
+ * 技能管理（面板可写面）的 DTO —— `docs/spec/skill-management.md` §5/§6 的落地形状。
+ *
+ * 与既有 `contract-skill.md` 的关系：那份契约定义**一个技能文件长什么样**；
+ * 这份定义**面板接口传什么**。两者共用同一批字段名（`name` / `description` /
+ * `allowed-tools` / `outputs` …），不要在这里另起一套命名。
+ */
+
+export const skillScopeSchema = z.enum(['global', 'repo']);
+export type SkillScope = z.infer<typeof skillScopeSchema>;
+
+export const skillSourceSchema = z.enum(['builtin', 'repo-file', 'upload']);
+/** 注意：与 `apps/server/src/skills/types.ts` 的 `SkillSource`（`'builtin'|'repo'`）**不是**同一个东西，
+ *  那是加载期的来源、这是面板看到的三值来源，故意不同名以免误导入。 */
+export type SkillSourceKind = z.infer<typeof skillSourceSchema>;
+
+/** 技能目录里的一个文件（内容不在这里，按需读详情）。 */
+export const skillFileMetaSchema = z
+  .object({
+    path: z.string().min(1).max(300),
+    bytes: z.number().int().min(0).max(5_000_000),
+    sha256: z.string().length(64),
+  })
+  .strict();
+export type SkillFileMeta = z.infer<typeof skillFileMetaSchema>;
+
+/** 校验结果：`ok=false` 的版本不会生效（上传时就直接拒绝）。 */
+export const skillValidationSchema = z
+  .object({
+    ok: z.boolean(),
+    errors: z.array(z.string().max(500)).max(50),
+    warnings: z.array(z.string().max(500)).max(50),
+  })
+  .strict();
+export type SkillValidation = z.infer<typeof skillValidationSchema>;
+
+/** 列表行：一屏能扫完的字段，不含正文。 */
+export const skillListItemSchema = z
+  .object({
+    id: z.string().min(1).max(64),
+    /** 规范名：`/xxx`（入库归一，见 spec D2）。 */
+    name: z.string().min(2).max(33),
+    description: z.string().min(1).max(200),
+    scope: skillScopeSchema,
+    /** `scope='repo'` 时为 `owner/name`，否则 `null`。 */
+    repo: z.string().max(200).nullable(),
+    source: skillSourceSchema,
+    enabled: z.boolean(),
+    currentVersion: z.number().int().min(1),
+    /** 同 scope 下被更高优先级的同名技能覆盖时为覆盖者 id；否则 `null`。 */
+    overriddenBy: z.string().max(64).nullable(),
+    /** 目录总字节数（列表页展示「多大」）。 */
+    sizeBytes: z.number().int().min(0).max(50_000_000),
+    updatedAt: isoDateTimeSchema,
+  })
+  .strict();
+export type SkillListItem = z.infer<typeof skillListItemSchema>;
+
+export const skillsResponseSchema = z
+  .object({
+    generatedAt: isoDateTimeSchema,
+    skills: z.array(skillListItemSchema).max(500),
+  })
+  .strict()
+  .meta({ id: 'SkillsResponse' });
+export type SkillsResponse = z.infer<typeof skillsResponseSchema>;
+
+/** 详情：列表行 + frontmatter + 正文 + 文件清单 + 校验结果。 */
+export const skillDetailSchema = skillListItemSchema
+  .extend({
+    /** 解析后的 frontmatter（键与 `contract-skill.md` 一致）。 */
+    frontmatter: z.record(z.string(), z.unknown()),
+    /** 正文（已剥 frontmatter）；面板只读展示，编辑走 PATCH。 */
+    body: z.string().max(200_000),
+    files: z.array(skillFileMetaSchema).max(200),
+    validation: skillValidationSchema,
+    treeSha256: z.string().length(64),
+  })
+  .meta({ id: 'SkillDetail' });
+export type SkillDetail = z.infer<typeof skillDetailSchema>;
+
+export const skillVersionSchema = z
+  .object({
+    version: z.number().int().min(1),
+    treeSha256: z.string().length(64),
+    files: z.array(skillFileMetaSchema).max(200),
+    validation: skillValidationSchema,
+    createdAt: isoDateTimeSchema,
+  })
+  .strict();
+export type SkillVersion = z.infer<typeof skillVersionSchema>;
+
+export const skillVersionsResponseSchema = z
+  .object({
+    generatedAt: isoDateTimeSchema,
+    skillId: z.string().min(1).max(64),
+    versions: z.array(skillVersionSchema).max(100),
+  })
+  .strict()
+  .meta({ id: 'SkillVersionsResponse' });
+export type SkillVersionsResponse = z.infer<typeof skillVersionsResponseSchema>;
+
+/** 上传成功（或新版本）的返回。 */
+export const skillUploadResponseSchema = z
+  .object({
+    skill: skillListItemSchema,
+    version: z.number().int().min(1),
+    validation: skillValidationSchema,
+  })
+  .strict()
+  .meta({ id: 'SkillUploadResponse' });
+export type SkillUploadResponse = z.infer<typeof skillUploadResponseSchema>;
+
+/**
+ * 上传时可选的作用域（查询串）。缺省 `global`。
+ * `scope=repo` 时必须同时给 `repo=owner/name`。
+ */
+export const skillUploadQuerySchema = z
+  .object({
+    scope: skillScopeSchema.default('global'),
+    repo: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'repo 必须是 owner/name')
+      .optional(),
+    /** `enabled=false` 表示「传上来但先别启用」。缺省 `true`（上传即生效，spec D0）。 */
+    enabled: z.enum(['true', 'false']).default('true'),
+  })
+  .strict();
+export type SkillUploadQuery = z.infer<typeof skillUploadQuerySchema>;
+
+/**
+ * 局部更新：只允许改这三样。
+ * **`name` / `scope` / `repo` 不可改**（改了就是另一个技能，语义是「删了再传」）。
+ */
+export const skillPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    description: z.string().min(10).max(200).optional(),
+    /** 正文（不含 frontmatter）。给了就产生一个新版本。 */
+    body: z.string().max(200_000).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    '至少要改一个字段（enabled / description / body）',
+  );
+export type SkillPatch = z.infer<typeof skillPatchSchema>;
+
+/** 列表筛选（查询串）。 */
+export const skillsQuerySchema = z
+  .object({
+    scope: skillScopeSchema.optional(),
+    repo: z.string().max(200).optional(),
+    /** 缺省 = 不过滤（面板的「全部」）。给 `true` 只看启用的，给 `false` 只看停用的。 */
+    enabled: z.enum(['true', 'false']).optional(),
+    source: skillSourceSchema.optional(),
+  })
+  .strict();
+export type SkillsQuery = z.infer<typeof skillsQuerySchema>;
+
+/** 上传新版本（`POST /api/skills/:id/versions`）与回滚（`.../rollback`）共用的请求形状。 */
+export const skillVersionUploadQuerySchema = skillUploadQuerySchema.pick({ enabled: true });
+export type SkillVersionUploadQuery = z.infer<typeof skillVersionUploadQuerySchema>;
+
+/** 回滚请求体：指定要回到哪个版本（会新建一个指向旧内容的新版本，不改历史）。 */
+export const skillRollbackBodySchema = z
+  .object({ version: z.number().int().min(1) })
+  .strict();
+export type SkillRollbackBody = z.infer<typeof skillRollbackBodySchema>;
+
+/** 删除的结果（软删与硬删同一个形状，`hard` 说明这次是哪种）。 */
+export const skillDeleteResponseSchema = z
+  .object({ ok: z.boolean(), id: z.string().min(1).max(64), hard: z.boolean() })
+  .strict()
+  .meta({ id: 'SkillDeleteResponse' });
+export type SkillDeleteResponse = z.infer<typeof skillDeleteResponseSchema>;
