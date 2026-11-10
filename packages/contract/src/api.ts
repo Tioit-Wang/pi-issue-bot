@@ -846,6 +846,23 @@ export const issueListItemSchema = z
     autoTurns: countSchema,
     /** 机器人动作次数（`actions` 行数，含 label；与 `runs` 不是同一个口径）。 */
     botTurns: countSchema,
+    /**
+     * 最后一条**机器人回复**的时间（`actions.intent in ('comment','fallback')` 的 `applied_at` max）。
+     * dry-run 仓库不写 `actions` 行 → `null`，面板要当「未知」而不是「没回过」。
+     */
+    lastReplyAt: isoDateTimeSchema.nullable(),
+    /** 最后一次在 issue 里说话的人/机器人的 login（来自投递的 `sender`）；投递过期后为 `null`。 */
+    lastActorLogin: z.string().max(100).nullable(),
+    /** 「最后说话的是谁」：`human` = `sender.type === 'User'`，`bot` = 其余（Bot/Organization 等）。 */
+    lastActorKind: z.enum(['human', 'bot']).nullable(),
+    /**
+     * **我方欠一个回答**（唯一口径，见 `docs/spec/ux-issue-sessions.md` §3.1）：
+     * `state === 'open'` ∧ 最后说话的是人 ∧（没有回复 ∨ 回复早于他这次发言）。
+     *
+     * 为什么不复用 `issue_states.last_human_reply_at`：那个字段衡量「人欠机器人信息」（needs-info 关闭闸门），
+     * 与这里的「机器人欠人回答」是反方向；而且它当前没有任何写入点（恒 NULL）。
+     */
+    awaitingReply: z.boolean(),
     /** `bot_labels` 里未移除的标签。 */
     labels: z.array(labelNameSchema).max(50),
     outcomes: issueOutcomeCountsSchema,
@@ -855,6 +872,20 @@ export const issueListItemSchema = z
   .strict()
   .meta({ id: 'IssueListItem' });
 export type IssueListItem = z.infer<typeof issueListItemSchema>;
+
+/**
+ * 列表页的「派生状态」——**面板与服务端共用同一条定义**，别再各写一套：
+ *
+ *   running  ⇐ `outcomes.running > 0`
+ *   queued   ⇐ 上面不成立且 `outcomes.queued > 0`
+ *   failed   ⇐ 上面都不成立且 `failed > 0 && succeeded === 0`（「曾经成功、后来某次失败」不算）
+ *   answered ⇐ 上面都不成立且 `succeeded > 0`
+ *   idle     ⇐ 以上都没有（只有自动触发、还没跑出结果）
+ *
+ * 顺序即优先级；面板的 `deriveStatus()` 与 `queries/issues.ts` 的 WHERE 子句都照这个顺序写。
+ */
+export const issueStatusFilterSchema = z.enum(['running', 'queued', 'failed', 'answered', 'idle']);
+export type IssueStatusFilter = z.infer<typeof issueStatusFilterSchema>;
 
 /**
  * `GET /api/issues` 的查询参数。
@@ -867,6 +898,12 @@ export const issuesQuerySchema = z
     repo: repoFullNameSchema.optional(),
     /** 默认只看 issue；`pr` 是单独一组（spec §1.3 坑 3）。 */
     kind: targetKindSchema.default('issue'),
+    /** 派生状态筛选（见 `issueStatusFilterSchema` 的优先级定义）。 */
+    status: issueStatusFilterSchema.optional(),
+    /** issue 状态筛选；`unknown` 表示「取不到 issue 元数据」。 */
+    state: issueStateSchema.optional(),
+    /** 「我方欠一个回答」（`awaitingReply`）：服务端按同一口径过滤，面板摘要点进来就是它。 */
+    awaiting: z.enum(['true', 'false']).optional(),
     /** 1–100，默认 30（比其它列表小：一屏按会话读）。 */
     limit: z.coerce.number().int().min(1).max(100).default(30),
     cursor: pageCursorSchema,

@@ -44,8 +44,16 @@ const REPO_OTHER = 'other/lib';
  * 在样本里能省就省，由 `finalizeList` / `finalizeTurn` 统一补默认值——否则每加一个契约字段
  * 都要改十几处字面量，而漂移正是在这种地方长出来的。
  */
-type ListSeed = Omit<IssueListItem, 'stateStale' | 'autoTurns'> &
-  Partial<Pick<IssueListItem, 'stateStale' | 'autoTurns'>>;
+type ListSeed = Omit<
+  IssueListItem,
+  'stateStale' | 'autoTurns' | 'lastReplyAt' | 'lastActorLogin' | 'lastActorKind' | 'awaitingReply'
+> &
+  Partial<
+    Pick<
+      IssueListItem,
+      'stateStale' | 'autoTurns' | 'lastReplyAt' | 'lastActorLogin' | 'lastActorKind' | 'awaitingReply'
+    >
+  >;
 type TurnSeed = Omit<IssueTurn, 'commentId' | 'attempts' | 'truncated'> &
   Partial<Pick<IssueTurn, 'commentId' | 'attempts' | 'truncated'>>;
 
@@ -55,9 +63,17 @@ type IssueRecord = {
   turns: TurnSeed[];
 };
 
-/** 补齐列表行的契约字段（样本里默认可信：`stateStale=false`、`autoTurns=0`）。 */
+/** 补齐列表行的契约字段（样本里的默认：状态可信、无自动轮、没回复过、不欠回答）。 */
 function finalizeList(seed: ListSeed): IssueListItem {
-  return { ...seed, stateStale: seed.stateStale ?? false, autoTurns: seed.autoTurns ?? 0 };
+  return {
+    ...seed,
+    stateStale: seed.stateStale ?? false,
+    autoTurns: seed.autoTurns ?? 0,
+    lastReplyAt: seed.lastReplyAt ?? null,
+    lastActorLogin: seed.lastActorLogin ?? null,
+    lastActorKind: seed.lastActorKind ?? null,
+    awaitingReply: seed.awaitingReply ?? false,
+  };
 }
 
 /** 补齐轮次的契约字段（`commentId`/`attempts`/`truncated`）。 */
@@ -219,6 +235,10 @@ function storyEacces(now: number): IssueRecord {
       labels: ['bug', 'needs-info'],
       outcomes: { succeeded: 2, failed: 1 },
       lastPreview: previewOf(answerTwo),
+      // 服务端口径：最后说话的是人、且之后没有回复（不是「botTurns===0」那种代理）
+      awaitingReply: true,
+      lastActorKind: 'human',
+      lastActorLogin: 'alice',
     },
     participants: ['Tioit-Wang', 'alice', BOT_LOGIN],
     turns,

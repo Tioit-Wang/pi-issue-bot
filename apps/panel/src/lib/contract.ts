@@ -112,11 +112,16 @@ export type IssuesResponse = IssuesListResponse;
 export type IssuesQuery = {
   repo?: string;
   kind?: IssueKind;
+  /** 派生状态筛选（优先级定义见契约 `issueStatusFilterSchema`）。 */
+  status?: 'running' | 'queued' | 'failed' | 'answered' | 'idle';
+  /** issue 状态筛选；`unknown` = 取不到元数据。 */
+  state?: IssueListItem['state'];
+  /** 「我方欠一个回答」（服务端按 `state / 最后发言人 / 回复时间` 判定）。 */
+  awaiting?: 'true' | 'false';
   limit?: number;
   /** 不透明字符串，只能原样回传。 */
   cursor?: string;
 };
-
 /** 详情接口的路径参数：`repo` 含 `/`，所以拆成 `owner`/`name` 两段（spec §3.2）。 */
 export type IssueSessionParams = {
   owner: string;

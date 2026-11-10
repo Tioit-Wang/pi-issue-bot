@@ -326,4 +326,38 @@ describe('/issues 改版：派生状态 / 天分组 / 类型筛选 / 空态分�
       '还没有处理过的 Issue 会话',
     );
   });
+
+  it('摘要里的数字是「筛选」：点失败/待人回答都只改 URL 并发对应参数', async () => {
+    const user = userEvent.setup();
+    renderList();
+    await screen.findByTestId('issues-content');
+
+    await user.click(screen.getByTestId('issues-summary-failed'));
+    await waitFor(() => {
+      expect(requests.some((url) => url.includes('/api/issues') && url.includes('status=failed'))).toBe(true);
+    });
+    expect(screen.getByTestId('issues-summary-failed').getAttribute('aria-pressed')).toBe('true');
+
+    await user.click(screen.getByTestId('issues-summary-awaiting'));
+    await waitFor(() => {
+      expect(requests.some((url) => url.includes('/api/issues') && url.includes('awaiting=true'))).toBe(true);
+    });
+
+    // 再点一次同一个数字 = 取消筛选（URL 里那一项消失）
+    await user.click(screen.getByTestId('issues-summary-awaiting'));
+    await waitFor(() => {
+      expect(screen.getByTestId('issues-summary-awaiting').getAttribute('aria-pressed')).toBe('false');
+    });
+  });
+
+  it('「待人回答」用的是服务端 awaitingReply，不是 humanTurns/botTurns 的代理判断', async () => {
+    renderList();
+    const content = await screen.findByTestId('issues-content');
+    const row = within(content).getByTestId('issue-row-acme/widgets#issue17');
+    // mock 里 #17 的 awaitingReply 为 true → 有 chip；若退回旧代理口径，这条会因为 botTurns>0 而没有 chip
+    expect(row.textContent ?? '').toContain('待人回答');
+    // 而 other/lib#7（botTurns=0 但 awaitingReply=false）不该有 chip —— 旧口径会误报
+    const waiting = within(content).getByTestId('issue-row-other/lib#issue7');
+    expect(waiting.textContent ?? '').not.toContain('待人回答');
+  });
 });

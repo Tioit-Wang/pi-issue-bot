@@ -94,6 +94,7 @@
       "number": 17,
       "title": "…",                       // 取不到就 null
       "url": "https://github.com/.../issues/17",  // 取不到就 null
+
       "state": "open",                    // open|closed|unknown
       "lastActivityAt": "…",              // max(最后一条 task.queued_at, 最后一件 action.applied_at)
       "humanTurns": 4,                    // 人类触发次数（tasks 行数）
@@ -107,6 +108,20 @@
   "nextCursor": null
 }
 ```
+
+**（v2 增补，2026-11-10）列表行还带 4 个派生字段**，全部由服务端算好，面板不再自己拼：
+
+| 字段 | 含义 / 取法 |
+|---|---|
+| `lastReplyAt` | 最后一条机器人回复时间：`actions.intent in ('comment','fallback')` 的 `applied_at` max。dry-run 不写 `actions` → `null`（面板按「未知」显示） |
+| `lastActorLogin` / `lastActorKind` | 最后一次在 issue 里说话的人：取该 issue **最新一条 `issue_comment` 投递**的 `payload.sender`；`type==='User'` → `human`，其余 → `bot`，`sender` 缺失 → `null`（**不要**默认成 bot） |
+| `awaitingReply` | **我方欠一个回答**：`state==='open'` ∧ `lastActorKind==='human'` ∧（`lastReplyAt` 为空 ∨ 早于他这次发言）。`state` 非 `open`（含 `unknown`）一律 `false` |
+
+**查询参数（v2）**：`status=running|queued|failed|answered|idle`（优先级与面板 `deriveStatus` 逐条一致）、
+`state=open|closed|unknown`、`awaiting=true`。三者都在 `agg` 之后过滤（`state` 由投递派生，走不上索引）。
+
+**为什么不用 `issue_states.last_human_reply_at`**：那是 close-gate 的「人欠机器人信息」（needs-info 关闭闸门），
+方向相反，而且当前没有任何写入点（恒 NULL）。两条链不交叉。
 
 - 排序：`lastActivityAt` 降序。游标：`base64url(lastActivityAt + '|' + repo + '#' + kind + number)`，服务端按 `(lastActivityAt, repo, number)` 严格小于游标继续。
 - 聚合口径：先按 `tasks` 分组出 `(repo,target_kind,target_number)`（**只出现有人类触发过的**），再左连 `actions`/`bot_labels`/`runs`。
@@ -202,7 +217,12 @@ sessions 禁止：`pnpm add/install`、`git add/commit/push`、改 `docs/plan.md
 - 空态/错误/加载沿用 `AsyncSection` 的四态 id 约定：`issues-{loading,error,empty,content}`、`issue-detail-{loading,error,empty,content}`。
 - 轮询：列表 `15s`、详情 `5s`（复用 `REFETCH_INTERVAL.list/detail`）。
 
+- **待人回答 = 服务端 `awaitingReply`**（`state='open'` ∧ 最后一条 `issue_comment` 的 `sender.type='User'` ∧
+  `lastReplyAt` 为空或早于他这次发言）。**不要**用「`humanTurns>0 && botTurns===0`」当代理：
+  `botTurns` 数的是 `actions` 行数，机器人发过评论但没写 `actions` 时会被误判成「没回答」（真数据里的 #16）。
+
 ## 6. 已知道路风险
+
 
 1. `gh webhook forward` 进程会僵尸（转发静默失效，DB 里 `webhook_deliveries` 不再增长）。R1 的实测前先确认投递在增长。
 2. App bot 不可被 @（§1.5）。测试「@」触发时，正文里写 `@pi-issue-bot-tioit` 即可命中我们的字符串匹配，不必是蓝色链接。

@@ -105,7 +105,11 @@ type IssueRow = {
   bot_turns: number | string | null;
   labels: string[] | null;
   outcomes: unknown;
-  bot_preview: string | null;
+    bot_preview: string | null;
+  last_reply_at: Date | null;
+  last_actor_login: string | null;
+  last_actor_kind: string | null;
+  awaiting_reply: boolean | null;
   human_preview: string | null;
 };
 
@@ -128,7 +132,8 @@ function issueCte(params: Params, query: IssuesQuery): string {
     t.target_number as number,
     max(t.queued_at) as last_queued_at,
     count(*) filter (where t.source = 'command') as human_turns,
-    count(*) filter (where t.source <> 'command') as auto_turns
+    count(*) filter (where t.source <> 'command') as auto_turns,
+    max(t.queued_at) filter (where t.source = 'command') as last_human_at
   from tasks t
   where t.target_kind = ${kindParam}${repoCond}
   group by t.repo, t.target_kind, t.target_number
@@ -172,11 +177,25 @@ agg as (
     iss.url,
     coalesce(iss.state, case when st.closed_at is not null then 'closed' end) as state,
     (iss.state is null) as state_stale,
+    act.last_reply_at as last_reply_at,
+    la.login as last_actor_login,
+    la.kind as last_actor_kind,
+    (
+      coalesce(iss.state, case when st.closed_at is not null then 'closed' end) = 'open'
+      and la.kind = 'human'
+      and (
+        act.last_reply_at is null
+        or act.last_reply_at < greatest(coalesce(b.last_human_at, to_timestamp(0)), coalesce(la.at, to_timestamp(0)))
+      )
+    ) as awaiting_reply,
     bp.body as bot_preview,
     hp.body as human_preview
   from base b
   left join lateral (
-    select count(*) as bot_turns, max(a.applied_at) as last_action_at
+    select
+      count(*) as bot_turns,
+      max(a.applied_at) as last_action_at,
+      max(a.applied_at) filter (where a.intent in ('comment', 'fallback')) as last_reply_at
     from actions a
     join runs r on r.id = a.run_id
     join tasks t on t.id = r.task_id
@@ -242,6 +261,25 @@ agg as (
     order by t.queued_at desc
     limit 1
   ) hp on true
+  left join lateral (
+    select
+      d.payload -> 'sender' ->> 'login' as login,
+      case
+        -- sender 缺失（老投递/测试夹具）时必须留在 null，不能默认成 bot
+        when d.payload -> 'sender' ->> 'type' is null then null
+        when d.payload -> 'sender' ->> 'type' = 'User' then 'human'
+        else 'bot'
+      end as kind,
+      d.received_at as at
+    from webhook_deliveries d
+    where d.event = 'issue_comment'
+      and d.action = 'created'
+      and d.payload -> 'repository' ->> 'full_name' = b.repo
+      and jsonb_typeof(d.payload -> ${keyParam} -> 'number') = 'number'
+      and (d.payload -> ${keyParam} ->> 'number')::int = b.number
+    order by d.received_at desc
+    limit 1
+  ) la on true
 )`;
 }
 
@@ -323,6 +361,10 @@ function toListItem(row: IssueRow): IssueListItem {
     botTurns: intOf(row.bot_turns),
     labels: labelsOf(row.labels),
     outcomes: outcomesOf(row.outcomes),
+    lastReplyAt: isoOrNull(row.last_reply_at),
+    lastActorLogin: row.last_actor_login === null ? null : row.last_actor_login.slice(0, 100),
+    lastActorKind: row.last_actor_kind === 'human' || row.last_actor_kind === 'bot' ? row.last_actor_kind : null,
+    awaitingReply: row.awaiting_reply === true,
     lastPreview: oneLine(row.bot_preview, PREVIEW_CHARS) ?? oneLine(row.human_preview, PREVIEW_CHARS),
   };
 }
@@ -386,6 +428,44 @@ export async function queryIssues(
     const kind = params.add(cursor.kind);
     const number = params.add(cursor.number, 'int');
     where.push(`(a.last_activity_at, a.repo, a.kind, a.number) < (${at}, ${repo}, ${kind}, ${number})`);
+  }
+  // ── 派生状态筛选：顺序必须与 `issueStatusFilterSchema` 的优先级一致 ────────────
+  const statusFilter = query.status;
+  if (statusFilter !== undefined) {
+    const n = (key: string): string => `coalesce((a.outcomes ->> '${key}')::int, 0)`;
+    const running = `${n('running')} > 0`;
+    const queued = `${n('queued')} > 0`;
+    const failed = `${n('failed')} > 0`;
+    const succeeded = `${n('succeeded')} > 0`;
+    const notRunning = `not (${running})`;
+    const notQueued = `not (${queued})`;
+    switch (statusFilter) {
+      case 'running':
+        where.push(running);
+        break;
+      case 'queued':
+        where.push(`${notRunning} and ${queued}`);
+        break;
+      case 'failed':
+        where.push(`${notRunning} and ${notQueued} and ${failed} and not (${succeeded})`);
+        break;
+      case 'answered':
+        where.push(`${notRunning} and ${notQueued} and ${succeeded}`);
+        break;
+      case 'idle':
+        where.push(`${notRunning} and ${notQueued} and not (${failed}) and not (${succeeded})`);
+        break;
+    }
+  }
+
+  // ── issue 状态：`unknown` = 取不到元数据（agg.state is null）────────────────────
+  if (query.state !== undefined) {
+    where.push(query.state === 'unknown' ? 'a.state is null' : `a.state = ${params.add(query.state)}`);
+  }
+
+  // ── 我方欠一个回答：判定在 SQL 里算好（`awaiting_reply`），这里只筛这一列 ──────────
+  if (query.awaiting === 'true') {
+    where.push('a.awaiting_reply');
   }
   const whereSql = where.length === 0 ? '' : `\n  where ${where.join('\n    and ')}`;
   const limitParam = params.add(limit + 1, 'int');
