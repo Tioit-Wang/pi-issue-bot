@@ -22,7 +22,7 @@ export function AppLayout({ navItems }: AppLayoutProps) {
       <aside className="flex w-48 shrink-0 flex-col border-r border-border bg-card/40 px-3 py-4">
         <div className="px-2 pb-4">
           <div className="text-sm font-semibold tracking-tight">pi-issue-bot</div>
-          <div className="text-[11px] text-muted-foreground">控制面板 · 只读为主，技能可写</div>
+          <div className="text-[11px] text-muted-foreground">只读为主 · 技能可写</div>
         </div>
         <nav className="flex flex-col gap-0.5">
           {navItems.map((item) => (
