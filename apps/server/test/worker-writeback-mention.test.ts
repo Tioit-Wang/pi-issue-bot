@@ -9,8 +9,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { WriteTargetContext } from '../src/worker/types.ts';
-import { toWriteActions, withMention } from '../src/worker/writeback.ts';
+import type { ActionRecord, WriteTargetContext } from '../src/worker/types.ts';
+import { executeActions, isWriteBackAllowed, taskSourceOf, toWriteActions, withMention } from '../src/worker/writeback.ts';
+import { createFakeWriteApi } from './helpers/fake-github.ts';
 
 const TARGET: WriteTargetContext = { currentLabels: [], botLabels: [] };
 
@@ -48,6 +49,64 @@ describe('withMention', () => {
   });
 });
 
+describe('两条通道：只有人工触发才写回评论（plan §5 / W2-D 第 4 条）', () => {
+  it('taskSourceOf：显式传入优先；缺省按命令名推（auto:* → 自动通道）', () => {
+    expect(taskSourceOf({ source: 'command', command: 'auto:triage' })).toBe('command');
+    expect(taskSourceOf({ source: 'cron', command: '/issue-triage' })).toBe('cron');
+    expect(taskSourceOf({ command: 'auto:triage' })).toBe('webhook');
+    expect(taskSourceOf({ command: 'auto:compliance' })).toBe('webhook');
+    expect(taskSourceOf({ command: '/issue-triage' })).toBe('command');
+    expect(taskSourceOf({ command: '@answer' })).toBe('command');
+  });
+
+  it('isWriteBackAllowed：只有 comment 受 source 约束', () => {
+    expect(isWriteBackAllowed({ intent: 'comment', source: 'command' })).toBe(true);
+    expect(isWriteBackAllowed({ intent: 'comment', source: 'webhook' })).toBe(false);
+    expect(isWriteBackAllowed({ intent: 'comment', source: 'cron' })).toBe(false);
+    // 标签 / 新建 issue / 推分支在两条通道里都一样
+    expect(isWriteBackAllowed({ intent: 'label', source: 'webhook' })).toBe(true);
+    expect(isWriteBackAllowed({ intent: 'create_issue', source: 'cron' })).toBe(true);
+  });
+
+  it('执行侧：自动通道的 comment 被跳过（不打 GitHub、不写 actions 行），label 照常执行', async () => {
+    const api = createFakeWriteApi();
+    const records: ActionRecord[] = [];
+    const store = {
+      async beginRun() {},
+      async appendEvent() {},
+      async recordEnvelope() {},
+      async recordAction(record: ActionRecord) {
+        records.push(record);
+      },
+      async recordUsage() {},
+      async recordDegeneracyHit() {},
+      async finishRun() {},
+      async markTask() {},
+    };
+
+    const result = await executeActions({
+      runId: 'run-1',
+      repo: 'o/r',
+      targetNumber: 7,
+      actions: [
+        { intent: 'comment', body: '结论' },
+        { intent: 'label', add: ['bug'], remove: [] },
+      ] as never,
+      dryRun: false,
+      source: 'webhook',
+      api,
+      target: TARGET,
+      store,
+      clock: () => 1_700_000_000_000,
+    });
+
+    expect(result.outcomes.map((outcome) => outcome.status)).toEqual(['skipped', 'applied']);
+    expect(result.outcomes[0]?.reason).toContain('自动通道零评论');
+    // 只有 label 落了 actions 行
+    expect(records.map((record) => record.intent)).toEqual(['label']);
+    expect(api.calls.map((call) => call.method)).toEqual(['addLabels']);
+  });
+});
 describe('toWriteActions：comment 动作带 @，其它动作不受影响', () => {
   it('comment 正文被加前缀', () => {
     const actions = toWriteActions({ intent: 'comment', body: '根因是只读挂载。' } as never, contextFor('alice'));

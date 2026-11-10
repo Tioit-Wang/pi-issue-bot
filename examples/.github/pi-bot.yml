@@ -1,18 +1,42 @@
-# 示例仓库配置：`.github/pi-bot.yml`
+# 仓库配置示例（字段清单）
 #
-# 这份文件同时是 doctor / CI 的校验样本（`apps/server/test/skills-registry.test.ts` 会解析它）。
+# 注意：**这个文件不在运行时读取**。多仓库改造后 `.github/pi-bot.yml` 整体退役
+# （`docs/impl-multi-repo.md` §0.2）：配置只存在于 `repos.settings`（jsonb，面板写入），
+# 新建仓库时由部署默认 `PI_BOT_DEFAULT_SETTINGS` seed 一份（那个环境变量吃的是 **JSON**）。
+# 这里保留一份 YAML 只是为了人读字段清单，CI 用 `repoSettingsSchema` 校验它别写错
+# （`apps/server/test/skills-registry.test.ts`）。
+#
 # 三条要点写在这里，改配置的人不必去翻文档：
 #   1. `labels.map` 的**值必须是仓库里已经存在的标签**（tech-plan R4：沿用现有标签，不发明新的）；
-#      某个判定键没映射，就降级为「只评论不打标」并记 warn。
+#      某个判定键没映射，就降级为「只判定不打标」并记 warn。
 #   2. `dry_run: true` 是默认值，也是首周强制的（plan §11 M1）。改 false 之前先看一遍面板。
-#   3. `compliance.rules` 的 `id` 是 `missing_set_hash` 的输入，**改 id 等于换规则**：
-#      同一个 issue 会因此被判成「缺失项变了」，重新催一次。
+#   3. `compliance` 段已删除：issue 缺信息时只打 `needs-info` + `confused` reaction，
+#      判定依据写进 `prompt`（P1 项目人格层）或技能里。
 version: 1
 enabled: true
 dry_run: true
 model: anthropic/claude-sonnet-4
 
 labels:
+  # 词表：打标白名单 + 注入提示词的来源（`meaning` 会原样进 prompt）。
+  vocabulary:
+    - name: bug
+      meaning: 明确的缺陷（有复现路径或错误堆栈）
+      color: d73a4a
+      group: kind
+    - name: enhancement
+      meaning: 新功能或体验改进
+      color: a2eeef
+      group: kind
+    - name: question
+      meaning: 使用提问，不是缺陷
+      color: d876e3
+      group: kind
+    - name: needs-info
+      meaning: 缺复现步骤/版本/日志，需要作者补充
+      color: fbca04
+    - name: area/db
+      meaning: 涉及数据库层
   map:
     bug: bug
     feature: enhancement
@@ -22,17 +46,16 @@ labels:
     area/db: area/db
   # 白名单：给定时，映射结果不在其中一律不打（防手滑写错标签名）
   allow: [bug, enhancement, question, documentation, needs-info, area/db]
+  # 映射到仓库里不存在的标签时：warn（只记日志）/ create（自动建）/ ignore
+  missing: warn
+  # 一个 issue 上最多打几个（互斥组裁剪之后的硬上限）
+  max_per_issue: 6
 
-compliance:
+# P1 项目人格层：正文不在这里，只记「启用哪个版本」
+# （正文在 `prompt_versions` 表，面板 `/api/repos/:owner/:name/prompt` 编辑与回滚）。
+prompt:
   enabled: true
-  rules:
-    - id: repro-steps
-      description: 复现步骤
-    - id: version
-      description: 版本号
-    - id: logs
-      description: 相关日志
-      required: false
+  current_version: 0
 
 create_issue:
   enabled: false

@@ -16,7 +16,7 @@
  * });
  * ```
  *
- * 依赖方向（tech-plan §8.2）：`worker → runtime, sandbox, git(暂缺), envelope, github, degeneracy, queue, db`。
+ * 依赖方向（tech-plan §8.2）：`worker → runtime, sandbox, git(暂缺), envelope, github, feedback, degeneracy, queue, db`。
  * 唯一不能指向的是 `http/`（eslint 的 import-x 规则拦着，worker 不能反向依赖接入层）。
  */
 import { runTask as runTaskImpl } from './run-task.ts';
@@ -55,13 +55,18 @@ export {
 } from './ports.ts';
 
 export {
+  NEEDS_INFO_KEY,
   actionTargetOf,
   describeDropped,
+  describeLabelPlan,
   executeActions,
+  isWriteBackAllowed,
+  planLabelWriteback,
   previewLabelDelta,
+  taskSourceOf,
   toWriteActions,
 } from './writeback.ts';
-export type { ExecuteActionsInput, ExecuteActionsResult } from './writeback.ts';
+export type { ExecuteActionsInput, ExecuteActionsResult, LabelWritePlan, LabelWritebackPolicy } from './writeback.ts';
 
 export { envelopeRowOf, findEnvelopeText, prepareEnvelope } from './envelope.ts';
 export type { CapturedEvent, EnvelopeFilterOptions } from './envelope.ts';
@@ -93,7 +98,13 @@ export {
 } from './failure.ts';
 export type { CommandTimeoutObservation } from './failure.ts';
 
-export { ACTION_STATUSES, RUN_OUTCOMES, TASK_STEPS, WORKER_TASK_STATUS } from './types.ts';
+export {
+  ACTION_STATUSES,
+  RUN_OUTCOMES,
+  TASK_SOURCE_KINDS,
+  TASK_STEPS,
+  WORKER_TASK_STATUS,
+} from './types.ts';
 export type {
   ActionOutcome,
   ActionRecord,
@@ -113,6 +124,7 @@ export type {
   TaskRunReport,
   TaskRunner,
   TaskRunnerDeps,
+  TaskSourceKind,
   TaskStep,
   WorkerTaskStatus,
   WorktreeHandle,

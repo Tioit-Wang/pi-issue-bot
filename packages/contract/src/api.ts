@@ -10,6 +10,8 @@
 import { z } from 'zod';
 import { isoDateTimeSchema, isoDateSchema, usdAmountSchema, ratioSchema, countSchema, durationMsSchema, gitShaSchema, repoFullNameSchema, shortIdSchema, labelNameSchema, loginSchema, eventCursorSchema, pageInfoShape, pageLimitSchema, pageCursorSchema, timeRangeShape, timestamped, DEFAULT_PAGE_LIMIT } from './common.ts';
 import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
+// 仓库配置的形状（`repos.settings`）：`PUT /api/repos/*/settings` 的请求体就是它，所以两边必须同源。
+import { repoSettingsSchema } from './repo-config.ts';
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // 可复用的响应片段
@@ -139,9 +141,19 @@ export const overviewFailureCountSchema = z
   .strict()
   .meta({ id: 'OverviewFailureCount' });
 
-export const overviewQuerySchema = z.object({ ...timeRangeShape }).strict();
+/**
+ * `/api/overview` 的查询参数：时间窗 + 可选的 `repo`。
+ *
+ * 带 `repo` 时 `today.*` / `trend` / `outcomeDistribution` / `failureTop` 全部按该仓库口径算
+ * （`webhook_deliveries.repo`、`tasks.repo`）；`queue` 与 `doctor` 是全局量，不随仓库变化。
+ */
+export const overviewQuerySchema = z
+  .object({ ...timeRangeShape, repo: repoFullNameSchema.optional() })
+  .strict();
 
 export const overviewResponseSchema = timestamped({
+  /** 本次统计的仓库口径；`null` = 全部仓库（不带 `?repo=` 时）。 */
+  repo: repoFullNameSchema.nullable(),
   window: overviewWindowSchema,
   today: overviewTodaySchema,
   queue: overviewQueueSchema,
@@ -593,6 +605,44 @@ export const skillSummarySchema = z
   .strict()
   .meta({ id: 'SkillSummary' });
 
+/**
+ * `/api/system` 的仓库行（W3-H 起改读 `repos` 表，不再是 `.github/pi-bot.yml` 快照）。
+ *
+ * `settingsValid` / `settingsError` 是新名字；`configValid` / `configError` 是**同值别名**，
+ * 只为让还没迁移的面板读法（`lib/repos.ts` 的降级路径）继续工作（`docs/impl-multi-repo.md` §0.1：
+ * 不推翻既有形状，只加字段）。
+ */
+export const systemRepoSchema = z
+  .object({
+    repo: repoFullNameSchema,
+    /** `repos.enabled && archived_at is null` */
+    enabled: z.boolean(),
+    dryRun: z.boolean(),
+    /** `repos.settings` 能否被 `repoSettingsSchema` 解析。 */
+    settingsValid: z.boolean(),
+    settingsError: z.string().max(500).nullable(),
+    /** 仓库从哪来：面板手动添加 / GitHub App 安装事件。 */
+    source: z.enum(['manual', 'installation']),
+    /** 归档时刻；非空 = 不可用（不删行，保留审计与成本历史）。 */
+    archivedAt: isoDateTimeSchema.nullable(),
+    /** 最近一次活动（`tasks.queued_at` 与 `actions.applied_at` 的 max）；从没跑过为 `null`。 */
+    lastActivityAt: isoDateTimeSchema.nullable(),
+    /** @deprecated 用 `settingsValid`（同一值的别名，向后兼容保留）。 */
+    configValid: z.boolean(),
+    /** @deprecated 用 `settingsError`（同一值的别名，向后兼容保留）。 */
+    configError: z.string().max(500).nullable(),
+  })
+  .strict()
+  .meta({ id: 'SystemRepo' });
+
+/** `/api/system` 的查询参数：`repo` 只收窄 `repos` / `flags` 两段（其余是全局量）。 */
+export const systemQuerySchema = z
+  .object({
+    /** 只返回这个仓库的行；`flags` 也只留全局 + 该仓库的。 */
+    repo: repoFullNameSchema.optional(),
+  })
+  .strict();
+
 export const systemResponseSchema = timestamped({
   version: z
     .object({
@@ -662,25 +712,88 @@ export const systemResponseSchema = timestamped({
         .strict(),
     )
     .max(32),
-  repos: z
-    .array(
-      z
-        .object({
-          repo: repoFullNameSchema,
-          enabled: z.boolean(),
-          dryRun: z.boolean(),
-          /** `.github/pi-bot.yml` 是否通过 schema 校验。 */
-          configValid: z.boolean(),
-          configError: z.string().max(500).nullable(),
-        })
-        .strict(),
-    )
-    .max(200),
+  repos: z.array(systemRepoSchema).max(200),
   skills: z.array(skillSummarySchema).max(64),
 })
   .strict()
   .meta({ id: 'SystemResponse' });
 export type SystemResponse = z.infer<typeof systemResponseSchema>;
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 7b. 仓库写面 —— `/api/repos`（列表）、`/api/repos/:owner/:name/settings`（读 / 写）
+//
+// 多仓库改造后**配置的唯一写入口**（`.github/pi-bot.yml` 已退役，`docs/impl-multi-repo.md` §0.2）。
+// 只读的统计接口一律带 `?repo=`，写接口集中在这一组：面板不需要第二套形状。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/** `/api/repos` 的一行（`repos` 表的投影，字段与 `listRepos()` 一一对应）。 */
+export const repoSummarySchema = z
+  .object({
+    repo: repoFullNameSchema,
+    /** `enabled && archivedAt === null`（归档 = 不可用，但不删行）。 */
+    enabled: z.boolean(),
+    dryRun: z.boolean(),
+    settingsValid: z.boolean(),
+    settingsError: z.string().max(500).nullable(),
+    /** 最近一次写入 settings 的时刻；从没写过为 `null`。 */
+    settingsUpdatedAt: isoDateTimeSchema.nullable(),
+    source: z.enum(['manual', 'installation']),
+    /** GitHub installation id（bigint 以十进制字符串给出，避免精度丢失）；`manual` 来源为 `null`。 */
+    installationId: z.string().min(1).max(32).nullable(),
+    archivedAt: isoDateTimeSchema.nullable(),
+    /** 行更新时间。 */
+    updatedAt: isoDateTimeSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'RepoSummary' });
+export type RepoSummary = z.infer<typeof repoSummarySchema>;
+
+export const reposResponseSchema = z
+  .object({
+    /** 全部仓库（`repo_full_name` 升序；排序由面板决定展示顺序）。 */
+    items: z.array(repoSummarySchema).max(200),
+  })
+  .strict()
+  .meta({ id: 'ReposResponse' });
+export type ReposResponse = z.infer<typeof reposResponseSchema>;
+
+/**
+ * 单个仓库的配置视图。GET / PUT / POST 返回**同一个形状**，面板不用分三套解析。
+ *
+ * `settings` 在 `settingsValid = false` 时为 `null`：库里留着 last-known-good 的原文，
+ * 但它不是这个 schema 的形状，硬塞给面板只会让页面在渲染时才炸。
+ */
+export const repoSettingsResponseSchema = z
+  .object({
+    repo: repoFullNameSchema,
+    enabled: z.boolean(),
+    dryRun: z.boolean(),
+    settings: repoSettingsSchema.nullable(),
+    settingsValid: z.boolean(),
+    settingsError: z.string().max(500).nullable(),
+    source: z.enum(['manual', 'installation']),
+    installationId: z.string().min(1).max(32).nullable(),
+    archivedAt: isoDateTimeSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'RepoSettingsResponse' });
+export type RepoSettingsResponse = z.infer<typeof repoSettingsResponseSchema>;
+
+/**
+ * `PUT /api/repos/:owner/:name/settings` 的请求体：就是 settings 本身（校验失败不落库）。
+ *
+ * 直接用 `repoSettingsSchema`（不另包一层、也不换 meta id）：换 id 会在注册表里给同一个 schema
+ * 挂上第二个组件名，OpenAPI 生成时两者会互相覆盖。
+ */
+export const saveRepoSettingsRequestSchema = repoSettingsSchema;
+export type SaveRepoSettingsRequest = z.infer<typeof saveRepoSettingsRequestSchema>;
+
+/** `POST /api/repos` 的请求体：只给 `owner/name`，其余用部署默认（`PI_BOT_DEFAULT_SETTINGS`）。 */
+export const addRepoRequestSchema = z
+  .object({ repo: repoFullNameSchema })
+  .strict()
+  .meta({ id: 'AddRepoRequest' });
+export type AddRepoRequest = z.infer<typeof addRepoRequestSchema>;
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // 8. POST /webhook —— GitHub 投递（唯一写入口，但只入队）
@@ -764,6 +877,53 @@ export type IssueTurnRole = z.infer<typeof issueTurnRoleSchema>;
  * `name` 一定是字符串：真库的 `tool.progress` 没有稳定的工具名字段（`payload.tool` 还可能是对象），
  * 取不到时由查询层填 `unknown`——面板不用再判空。
  */
+/**
+ * 无感反馈台账（`issue_feedback`）的一行 —— 面板用它表达「我收到 / 我做完了 / 我卡住了」。
+ *
+ * `stage` 的取值来自写入侧（`feedback/stage.ts`）：`received` 是入队时的 `+eyes`，
+ * 其余四个是终态（成功 `+rocket`，失败/超时/取消 `+confused`，且都会先 `-eyes`）。
+ */
+export const issueFeedbackEventSchema = z
+  .object({
+    stage: z.enum(['received', 'succeeded', 'failed', 'timed-out', 'cancelled']),
+    /** reaction 的 content；库里有契约外取值时为 `null`（不猜、也不丢这一行）。 */
+    content: z.enum(['eyes', 'rocket', 'confused']).nullable(),
+    /** 实际打上 / 摘掉的时刻；dry-run 或计划了没落地为 `null`。 */
+    appliedAt: isoDateTimeSchema.nullable(),
+    /** 记台账的时刻（`issue_feedback.created_at`）。 */
+    at: isoDateTimeSchema,
+    /** 打在评论上时的评论 id；打在 issue / PR 主贴时为 `null`。 */
+    commentId: z.string().max(64).nullable(),
+  })
+  .strict()
+  .meta({ id: 'IssueFeedbackEvent' });
+export type IssueFeedbackEvent = z.infer<typeof issueFeedbackEventSchema>;
+
+/**
+ * 打标判定的摘要（`label_decisions`）。
+ *
+ * 契约里的 `labels` 是**已经落地的标签**；这里补的是「想要什么、为什么没打上」：
+ * `desired` 与 `applied` 的差集就是被拦下的部分，`blocked` 按 `blocked_reason` 聚合。
+ */
+export const issueLabelDecisionSummarySchema = z
+  .object({
+    /** 最近一次判定的时刻；从没判定过为 `null`。 */
+    lastAt: isoDateTimeSchema.nullable(),
+    /** 最近一次「想要打」的标签（词表过滤 → 1:N 展开 → 互斥组 → 上限之后）。 */
+    desired: z.array(labelNameSchema).max(50),
+    /** 最近一次真正打上的标签。 */
+    applied: z.array(labelNameSchema).max(50),
+    /** 最近一次面向人的一句话理由（面板直接展示）。 */
+    reason: z.string().max(500).nullable(),
+    /** 被拦原因计数（按 `blocked_reason` 聚合，数量降序，最多 20 条）。 */
+    blocked: z
+      .array(z.object({ reason: z.string().min(1).max(120), count: countSchema }).strict())
+      .max(20),
+  })
+  .strict()
+  .meta({ id: 'IssueLabelDecisionSummary' });
+export type IssueLabelDecisionSummary = z.infer<typeof issueLabelDecisionSummarySchema>;
+
 export const issueToolCallSchema = z
   .object({
     /** 工具名（`payload.tool.name` → `payload.tool`（字符串才用）→ `payload.name` → `payload.title`）；取不到为 `unknown`。 */
@@ -868,6 +1028,15 @@ export const issueListItemSchema = z
     outcomes: issueOutcomeCountsSchema,
     /** 最后一条机器人正文前 120 字；没有就用最后一条人类提问；都没有为 `null`。 */
     lastPreview: z.string().max(200).nullable(),
+    /**
+     * 这个 issue 当前的 reaction 状态（`issue_feedback` 里**最新一个终态**）；
+     * 没跑完 / 从没打过 reaction（dry-run）为 `null`。
+     */
+    reactionState: issueFeedbackEventSchema.nullable(),
+    /** 最近一轮打标的判定摘要；从没判定过为 `null`。 */
+    labelDecisions: issueLabelDecisionSummarySchema.nullable(),
+    /** 反馈时间线（升序，最多 20 条；含 `received` 与各终态）。 */
+    feedback: z.array(issueFeedbackEventSchema).max(20),
   })
   .strict()
   .meta({ id: 'IssueListItem' });
@@ -932,6 +1101,10 @@ export const issueSummarySchema = z
     labels: z.array(labelNameSchema).max(50),
     /** 参与者：人类触发者，以及能解析到的机器人自身（`repos.config.bot.login`，取不到就不列）。 */
     participants: z.array(actorHandleSchema).max(100),
+    /** 同 `IssueListItem.reactionState`：这个 issue 当前的 reaction 状态。 */
+    reactionState: issueFeedbackEventSchema.nullable(),
+    /** 已记台账但**还没落地**的反馈（`applied_at is null`：dry-run 计划 / 排队中），升序最多 20 条。 */
+    pendingFeedback: z.array(issueFeedbackEventSchema).max(20),
   })
   .strict()
   .meta({ id: 'IssueSummary' });

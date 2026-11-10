@@ -331,9 +331,14 @@ export function sqlActionStatus(alias: string): string {
     else 'skipped' end`;
 }
 
-/** 契约里能出现的 5 个 intent（`close_issue` 也在内）；契约外的行不返回。 */
+/**
+ * 契约里能出现的 intent（`close_issue` 与 W2-D 的 `reaction.*` 也在内）；契约外的行不返回。
+ *
+ * `reaction.add` / `reaction.remove` 是**无感反馈**写进 `actions` 的行
+ * （403 降级时的「未落地」留痕也用它），DB 侧没有 CHECK，只有这一个常量在收口。
+ */
 /** UTC 整点向下取整（趋势图的每个点是一个整点小时）。 */
 export function roundHourDown(at: Date): Date {
   return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), at.getUTCHours()));
 }
-export const ACTION_INTENTS_SQL = "('comment','label','create_issue','push_branch','close_issue')";
+export const ACTION_INTENTS_SQL = "('comment','label','create_issue','push_branch','close_issue','reaction.add','reaction.remove')";

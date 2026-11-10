@@ -1,74 +1,54 @@
-import { createColumnHelper } from '@tanstack/react-table';
-import { useNavigate } from 'react-router';
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { AsyncSection } from '../components/AsyncSection.tsx';
-import { chartColor } from '../components/charts/chart-colors.ts';
-import { StatCard } from '../components/charts/StatCard.tsx';
-import { DataTable } from '../components/tables/DataTable.tsx';
-import { panelTableFeatures } from '../components/tables/features.ts';
-import { Button } from '../components/ui/button.tsx';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.tsx';
-import type { CostsResponse } from '../lib/contract.ts';
-import { formatCount, formatPercent, formatTimeCell, formatTokens, formatUsd } from '../lib/format.ts';
-import { useCosts } from '../lib/queries.ts';
-import { PageShell } from './PageShell.tsx';
-
 /**
- * 成本（S4，数据源 `/api/costs`，每 15 秒轮询）。
+ * 成本（`/api/costs`，每 15s 轮询）：**一条筛选条 + 一张主图 + 三张明细表**。
  *
- * 呈现（tech-plan §9.3）：顶部合计（成本 / token / 定价覆盖率）→ 按仓库与按模型的**堆叠柱**
- * （输入 + 输出 token 同柱堆叠，长度之和就是该维度的 token 消耗）→ 按命令的条形（横排，长度 = 成本）
- * → 最贵 10 个任务的表（点行进 `/tasks/:id`，与任务列表共用同一套列格式）。
+ * 分工：
+ *  - 主图（唯一一张）：按天成本折线，选中某天看那天的构成；
+ *  - 明细表：按命令 / 仓库 / 模型三选一，每条带「占比」内联条（不用饼图）；
+ *  - 最贵任务表：能点进任务详情。
  *
- * 两个着色与格式约定：
- * - 颜色只从 `chartColor()` 取（背后是 `--chart-1..5`），页面里不出现色值字面量；
- * - 金额/token/百分比/时间**只**经 `lib/format.ts`；`endedAt` 为 `null`（还在跑）显示 `—`。
+ * 数字口径：金额/token/百分比只经 `lib/format.ts`；`pricingCoverage < 1` 时**必须**说出来
+ * （未命中价格表的 run 成本按 0 计，别当免费）。
  */
-const helper = createColumnHelper<typeof panelTableFeatures, CostsResponse['topTasks'][number]>();
+import { useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router';
+import { AsyncSection } from '../components/AsyncSection.tsx';
+import { Section } from '../components/Section.tsx';
+import { Toolbar } from '../components/Toolbar.tsx';
+import { PageHeader } from '../components/PageHeader.tsx';
+import { ShareBar } from '../components/charts/chart-kit.tsx';
+import { CostTrend } from '../components/charts/CostTrend.tsx';
+import { RepoFilterSelect } from '../components/repo-filter.tsx';
+import { Segmented } from '../components/ui/segmented.tsx';
+import { Select } from '../components/ui/select.tsx';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table.tsx';
+import type { CostsResponse } from '../lib/contract.ts';
+import { EMPTY, formatCount, formatPercent, formatTimeCell, formatTokens, formatUsd } from '../lib/format.ts';
+import { useCosts } from '../lib/queries.ts';
 
-const columns = helper.columns([
-  helper.accessor('taskId', {
-    header: '任务',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('repo', {
-    header: '仓库',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('command', {
-    header: '命令',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('inputTokens', {
-    header: 'token 入 / 出',
-    cell: (info) => (
-      <span className="tabular-nums text-xs">
-        {formatTokens(info.getValue())} / {formatTokens(info.row.original.outputTokens)}
-      </span>
-    ),
-  }),
-  helper.accessor('costUsd', {
-    header: '成本',
-    cell: (info) => <span className="tabular-nums text-xs">{formatUsd(info.getValue())}</span>,
-  }),
-  helper.accessor('endedAt', {
-    header: '结束',
-    cell: (info) => {
-      const cell = formatTimeCell(info.getValue());
-      return (
-        <time title={cell.title} className="text-xs text-muted-foreground">
-          {cell.text}
-        </time>
-      );
-    },
-  }),
-]);
+type Dimension = 'command' | 'repo' | 'model';
+
+/** 时间窗 → `from`（`to` 不传 = 服务端取到此刻）。 */
+const RANGE_DAYS: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90 };
 
 export function CostsPage() {
   const navigate = useNavigate();
-  const { data, error, isLoading, refetch } = useCosts({ top: 10 });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const repo = searchParams.get('repo') ?? '';
+  const range = searchParams.get('range') ?? '7d';
+  const command = searchParams.get('command') ?? '';
+  const [dimension, setDimension] = useState<Dimension>('command');
 
-  // 空态：窗口内既没花钱也没有任何一个维度出现（见 `costsEmptyFixture`）
+  const query = useMemo(() => {
+    const days = RANGE_DAYS[range] ?? null;
+    return {
+      top: 10,
+      ...(repo === '' ? {} : { repo }),
+      ...(days === null ? {} : { from: new Date(Date.now() - days * 86_400_000).toISOString() }),
+    };
+  }, [repo, range]);
+
+  const { data, error, isLoading, refetch } = useCosts(query);
+
   const isEmpty =
     data !== undefined &&
     data.total.costUsd === 0 &&
@@ -76,203 +56,253 @@ export function CostsPage() {
     data.byCommand.length === 0 &&
     data.topTasks.length === 0;
 
+  const setParam = (key: string, value: string): void => {
+    const next = new URLSearchParams(searchParams);
+    if (value === '') next.delete(key);
+    else next.set(key, value);
+    setSearchParams(next, { replace: true });
+  };
+
   return (
-    <PageShell
-      title="成本"
-      description="窗口内按仓库 / 模型 / 命令拆分，含最贵 10 个任务（每 15 秒刷新）"
-      actions={
-        error === null ? undefined : (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void refetch();
+    <div className="flex min-w-0 flex-col gap-4">
+      <PageHeader
+        title="成本"
+        description="钱花在哪：按天的总成本、按命令 / 仓库 / 模型的构成、最贵的 10 个任务（每 15 秒刷新）"
+        actions={
+          error === null ? undefined : (
+            <button
+              type="button"
+              onClick={() => {
+                void refetch();
+              }}
+              className="h-7 rounded-md border border-border px-2 text-xs text-foreground hover:bg-muted"
+            >
+              重试
+            </button>
+          )
+        }
+      />
+
+      <Toolbar
+        meta={command === '' ? undefined : '命令筛选只收窄展示：/api/costs 不支持 command 参数'}
+      >
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5" data-testid="costs-filters">
+          <RepoFilterSelect testId="costs-repo-filter" />
+          <Segmented
+            label="时间窗"
+            value={range}
+            onChange={(next) => {
+              setParam('range', next === '7d' ? '' : next);
             }}
-          >
-            重试
-          </Button>
-        )
-      }
-    >
+            options={[
+              { value: '7d', label: '7 天' },
+              { value: '30d', label: '30 天' },
+              { value: '90d', label: '90 天' },
+            ]}
+          />
+          <Select
+            aria-label="命令筛选"
+            options={(data?.byCommand ?? []).map((bucket) => ({ value: bucket.key, label: bucket.key }))}
+            placeholder="全部命令"
+            value={command}
+            onChange={(event) => {
+              setParam('command', event.target.value);
+            }}
+          />
+          {repo === '' ? null : <span className="text-2xs text-faint">{`只看 ${repo}`}</span>}
+        </span>
+      </Toolbar>
+
       <AsyncSection
         isLoading={isLoading}
         error={error}
         isEmpty={isEmpty}
         emptyText="窗口内没有用量记录（没跑过任务，或模型没回 usage）"
         testId="costs"
-        skeletonHeight="h-40"
+        skeletonRows={6}
       >
         {data === undefined ? null : (
           <CostsContent
             data={data}
+            commandFilter={command}
+            dimension={dimension}
+            onDimensionChange={setDimension}
             onOpenTask={(taskId) => {
               void navigate(`/tasks/${encodeURIComponent(taskId)}`);
             }}
           />
         )}
       </AsyncSection>
-    </PageShell>
-  );
-}
-
-function CostsContent({ data, onOpenTask }: { data: CostsResponse; onOpenTask: (taskId: string) => void }) {
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="总成本" value={formatUsd(data.total.costUsd)} hint={`币种 ${data.currency}`} />
-        <StatCard
-          label="输入 token"
-          value={formatTokens(data.total.inputTokens)}
-          hint={`输出 ${formatTokens(data.total.outputTokens)}`}
-        />
-        <StatCard
-          label="定价覆盖率"
-          value={formatPercent(data.total.pricingCoverage)}
-          tone={data.total.pricingCoverage < 1 ? 'warning' : 'success'}
-          hint="命中价格表的 run 占比；未命中时成本按 0 计，别当免费"
-        />
-        <StatCard
-          label="维度规模"
-          value={formatCount(data.byRepo.length)}
-          hint={`仓库 / 模型 ${formatCount(data.byModel.length)} · 命令 ${formatCount(data.byCommand.length)}`}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        <TokenStackChart
-          title="按仓库的 token"
-          description="输入 / 输出同柱堆叠，长度 = token 消耗（成本降序）"
-          buckets={data.byRepo}
-        />
-        <TokenStackChart
-          title="按模型的 token"
-          description="未命中价格表的模型成本记为 0（契约：0 ≠ null）"
-          buckets={data.byModel}
-        />
-      </div>
-
-      <CommandCostChart buckets={data.byCommand} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>最贵的 10 个任务</CardTitle>
-          <CardDescription>点任意一行进任务详情看回放</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            columns={columns}
-            data={data.topTasks}
-            getRowId={(row) => row.taskId}
-            onRowClick={(row) => {
-              onOpenTask(row.taskId);
-            }}
-            emptyText="窗口内没有用量"
-            testId="costs-top-tasks"
-          />
-        </CardContent>
-      </Card>
-
-      <p className="text-[11px] text-muted-foreground">
-        {`统计窗口 ${formatTimeCell(data.window.from).title} — ${formatTimeCell(data.window.to).title} · 生成于 ${formatTimeCell(data.generatedAt).text}`}
-      </p>
     </div>
   );
 }
 
-/** 横轴标签只留 `/` 之后的部分（`acme/widgets` → `widgets`），否则仓库/模型名会把 X 轴挤满。 */
-function shortKey(value: string): string {
-  const slash = value.indexOf('/');
-  return slash === -1 ? value : value.slice(slash + 1);
-}
-
-/** 堆叠柱：同一维度的输入 / 输出 token 叠在一根柱子上，便于比较「总量」与「读写比」。 */
-function TokenStackChart({
-  title,
-  description,
-  buckets,
+function CostsContent({
+  data,
+  commandFilter,
+  dimension,
+  onDimensionChange,
+  onOpenTask,
 }: {
-  title: string;
-  description: string;
-  buckets: CostsResponse['byRepo'];
+  data: CostsResponse;
+  commandFilter: string;
+  dimension: Dimension;
+  onDimensionChange: (next: Dimension) => void;
+  onOpenTask: (taskId: string) => void;
 }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {buckets.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">这个维度没有数据</p>
-        ) : (
-          <ResponsiveContainer width="100%" height={230}>
-            <BarChart data={buckets} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
-              <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="key" tickFormatter={shortKey} stroke="var(--muted-foreground)" fontSize={11} />
-              <YAxis
-                stroke="var(--muted-foreground)"
-                fontSize={11}
-                tickFormatter={(value: number) => formatTokens(value)}
-              />
-              <Tooltip
-                contentStyle={{ fontSize: 12 }}
-                formatter={(value) => formatTokens(typeof value === 'number' ? value : Number(value))}
-              />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="inputTokens" name="输入" stackId="tokens" fill={chartColor(0)} barSize={28} />
-              <Bar
-                dataKey="outputTokens"
-                name="输出"
-                stackId="tokens"
-                fill={chartColor(1)}
-                radius={[4, 4, 0, 0]}
-                barSize={28}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+  const totalCost = data.total.costUsd;
+  const buckets =
+    dimension === 'command' ? data.byCommand : dimension === 'repo' ? data.byRepo : data.byModel;
+  const rows = commandFilter === '' ? buckets : buckets.filter((bucket) => bucket.key === commandFilter);
+  const tasks = commandFilter === '' ? data.topTasks : data.topTasks.filter((task) => task.command === commandFilter);
+  const window = `${formatTimeCell(data.window.from).title} — ${formatTimeCell(data.window.to).title}`;
 
-/** 按命令的条形（横排）：刻度直接是金额，一眼能看出哪个命令在烧钱。 */
-function CommandCostChart({ buckets }: { buckets: CostsResponse['byCommand'] }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>按命令的成本</CardTitle>
-        <CardDescription>横轴是金额（USD，4 位小数）；重试会让 run 数大于任务数</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {buckets.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">这个维度没有数据</p>
-        ) : (
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={buckets} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 8 }}>
-              <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" horizontal={false} />
-              <XAxis
-                type="number"
-                stroke="var(--muted-foreground)"
-                fontSize={11}
-                tickFormatter={(value: number) => formatUsd(value)}
-              />
-              <YAxis
-                type="category"
-                dataKey="key"
-                width={120}
-                stroke="var(--muted-foreground)"
-                fontSize={11}
-              />
-              <Tooltip
-                contentStyle={{ fontSize: 12 }}
-                formatter={(value) => formatUsd(typeof value === 'number' ? value : Number(value))}
-              />
-              <Bar dataKey="costUsd" name="成本" fill={chartColor(2)} radius={[0, 4, 4, 0]} barSize={16} />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </CardContent>
-    </Card>
+    <div className="flex min-w-0 flex-col gap-6">
+      <Section
+        first
+        title="按天的成本"
+        description="按 UTC 自然日聚合（metrics_daily，明细保留 90 天）"
+      >
+        <CostTrend series={data.series} />
+        <p className="mt-1.5 text-xs text-muted-foreground" data-testid="costs-summary">
+          <span className="tabular text-foreground">{formatUsd(totalCost)}</span> 合计 · 输入{' '}
+          <span className="tabular">{formatTokens(data.total.inputTokens)}</span> / 输出{' '}
+          <span className="tabular">{formatTokens(data.total.outputTokens)}</span> token · 定价覆盖率{' '}
+          <span className="tabular">{formatPercent(data.total.pricingCoverage)}</span>
+          {data.total.pricingCoverage < 1 ? (
+            <span className="text-warn-fg">（未命中价格表的 run 成本按 0 计，别当免费）</span>
+          ) : null}
+        </p>
+      </Section>
+
+      <Section
+        title="明细"
+        description="一个任务重试多次会让 run 数大于任务数"
+        actions={
+          <Segmented
+            label="明细维度"
+            value={dimension}
+            onChange={(next) => {
+              onDimensionChange(next as Dimension);
+            }}
+            options={[
+              { value: 'command', label: '按命令' },
+              { value: 'repo', label: '按仓库' },
+              { value: 'model', label: '按模型' },
+            ]}
+          />
+        }
+      >
+        <Table stickyFirst>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{dimension === 'command' ? '命令' : dimension === 'repo' ? '仓库' : '模型'}</TableHead>
+              <TableHead className="text-right">任务 / run</TableHead>
+              <TableHead className="text-right">token 入 / 出</TableHead>
+              <TableHead className="text-right">成本</TableHead>
+              <TableHead className="w-40">占比</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5} className="py-6 text-center text-sm text-muted-foreground">
+                  这个维度没有数据
+                </TableCell>
+              </TableRow>
+            ) : (
+              rows.map((bucket) => {
+                const share = totalCost <= 0 ? null : bucket.costUsd / totalCost;
+                return (
+                  <TableRow key={bucket.key} data-testid={`costs-bucket-${bucket.key}`}>
+                    <TableCell className="font-mono text-xs">{bucket.key}</TableCell>
+                    <TableCell className="tabular text-right text-xs text-muted-foreground">
+                      {formatCount(bucket.tasks)} / {formatCount(bucket.runs)}
+                    </TableCell>
+                    <TableCell className="tabular text-right text-xs text-muted-foreground">
+                      {formatTokens(bucket.inputTokens)} / {formatTokens(bucket.outputTokens)}
+                    </TableCell>
+                    <TableCell className="tabular text-right text-xs">{formatUsd(bucket.costUsd)}</TableCell>
+                    <TableCell>
+                      <span className="flex items-center gap-2">
+                        <ShareBar ratio={share} label={`占比 ${formatPercent(share)}`} />
+                        <span className="tabular w-12 shrink-0 text-right text-2xs text-muted-foreground">
+                          {formatPercent(share)}
+                        </span>
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </Section>
+
+      <Section title="最贵的任务">
+        <Table stickyFirst>
+          <TableHeader>
+            <TableRow>
+              <TableHead>任务</TableHead>
+              <TableHead>仓库</TableHead>
+              <TableHead>命令</TableHead>
+              <TableHead className="text-right">token 入 / 出</TableHead>
+              <TableHead className="text-right">成本</TableHead>
+              <TableHead className="text-right">结束</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {tasks.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                  窗口内没有用量
+                </TableCell>
+              </TableRow>
+            ) : (
+              tasks.map((task) => {
+                const ended = formatTimeCell(task.endedAt);
+                return (
+                  <TableRow
+                    key={task.taskId}
+                    className="cursor-pointer"
+                    onClick={() => {
+                      onOpenTask(task.taskId);
+                    }}
+                  >
+                    <TableCell className="font-mono text-xs">
+                      <button
+                        type="button"
+                        className="hover:text-brand hover:underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenTask(task.taskId);
+                        }}
+                      >
+                        {task.taskId}
+                      </button>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{task.repo}</TableCell>
+                    <TableCell className="font-mono text-xs">{task.command}</TableCell>
+                    <TableCell className="tabular text-right text-xs text-muted-foreground">
+                      {formatTokens(task.inputTokens)} / {formatTokens(task.outputTokens)}
+                    </TableCell>
+                    <TableCell className="tabular text-right text-xs">{formatUsd(task.costUsd)}</TableCell>
+                    <TableCell className="text-right text-xs text-muted-foreground">
+                      {task.endedAt === null ? (
+                        <span className="text-faint">{EMPTY}</span>
+                      ) : (
+                        <time title={ended.title}>{ended.text}</time>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+        <p className="text-2xs text-faint">统计窗口 {window} · 生成于 {formatTimeCell(data.generatedAt).text} · 币种 {data.currency}</p>
+      </Section>
+    </div>
   );
 }

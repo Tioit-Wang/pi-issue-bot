@@ -5,20 +5,34 @@
  * 每个有副作用的动作只通过**注入的 client 方法**（`GithubWriteApi`）发生，
  * 于是单测可以用假实现记录调用，绝不打网络。
  *
- * 六个动作的幂等策略（tech-plan §5.4 那张表，逐条落到函数）：
- *  - `comment`      → 隐藏标记 `<!-- pi-bot:<repo>#<target>:<intent>:<body-hash> -->`（`buildMarker`/`findExisting`/`shouldPost`）
+ * 动作的幂等策略（tech-plan §5.4 那张表，逐条落到函数）：
+ *  - `comment`      → 隐藏标记 `<!-- pi-bot:<repo>#<target>:<intent>:<body-hash> -->`
+ *                     （`buildMarker`/`findExisting`/`shouldPost`）。**只有人工通道**
+ *                     （`@bot /命令`、`@bot 提问`：intent 是 `comment` / `fallback`）才靠标记去重；
+ *                     打标 / 反馈类评论（`triage` / `compliance` …）不再发评论，万一被调用也只发正文、
+ *                     不查重、不带标记（见 `usesMarkerDedupe()`）。
  *  - `label`        → 只增删 `bot_labels` 记过的标签（`planLabelDelta`）
  *  - `create_issue` → 去重键 `(repo, fingerprint)` + 日配额（`decideCreateIssue`）
  *  - `push_branch`  → 必须带 `paths: string[]`（`validatePushBranch`）；真实 push 归 `git/` owner
  *  - `open_pr`      → 只到 `bot/*` 分支（`validateOpenPr`）；真实开 PR 同上归 `git/` owner
  *  - `close_issue`  → **不在这里判定**：只接受外部传入的「确定性条件已满足」（`shouldCloseIssue`）
+ *  - `reaction.add` / `reaction.remove` → 无感反馈（W2-D）。同 content 重复 POST 幂等，
+ *                     所以加了就直接信任返回值；删只删自己打的（`pickOwnReactionIds`）
  *
  * 「没有合并权限」在代码层的落点：本文件与整个 `github/` 目录**没有任何合并动作**，
  * 连方法名都不存在。plan §7.1 的三层保险里，这一层是「代码层不存在」，
  * 另两层（分支保护、写操作审计对账）不在代码里。
  */
 import { createHash } from 'node:crypto';
-import type { CommentRef, GithubWriteApi, IssueComment } from './types.ts';
+import type {
+  CommentRef,
+  GithubReactionApi,
+  GithubWriteApi,
+  IssueComment,
+  ReactionContent,
+  ReactionEntry,
+} from './types.ts';
+import { classifyGithubError, toGithubError } from './errors.ts';
 
 /** 隐藏标记前缀（tech-plan §5.4）。 */
 export const MARKER_PREFIX = 'pi-bot';
@@ -141,6 +155,23 @@ export function shouldPost(
   return findExisting(input, comments) === undefined;
 }
 
+/**
+ * 靠隐藏标记去重的评论意图（**只有人工通道**）。
+ *
+ * 为什么要有这张表（`docs/impl-multi-repo.md` §0.4 / W2-D 第 4 条）：
+ * 「打标 / 反馈」类评论已经整体退役 —— 自动通道只留 reaction + 标签，零评论。
+ * 那些路径若还有残留调用，它们**不该**再依赖隐藏标记：标记的存在意义是
+ * 「同一句人读的话不重复催第二次」，而已经不存在的话没有第二次可言。
+ * 只有 `@bot /命令`、`@bot 提问` 的最终回答（intent `comment`）与兜底回答
+ * （intent `fallback`）需要去重，且必须去重（重投 / `/retry` 会再来一遍）。
+ */
+export const MARKER_DEDUPE_INTENTS = ['comment', 'fallback'] as const;
+
+/** 这个 intent 是否靠隐藏标记去重（不在表里 → 直接发正文、不查重、不带标记）。 */
+export function usesMarkerDedupe(intent: string): boolean {
+  return (MARKER_DEDUPE_INTENTS as readonly string[]).includes(intent);
+}
+
 /** `comment` 动作的判定结果。 */
 export type CommentDecision =
   | { readonly action: 'post'; readonly marker: string; readonly body: string }
@@ -162,31 +193,50 @@ export function planComment(
 /** `comment` 动作的执行结果。 */
 export type CommentOutcome = {
   readonly action: 'posted' | 'skipped';
+  /** 发出去的隐藏标记；`dedupe: 'none'` 时是空串（没写标记）。 */
   readonly marker: string;
   readonly commentId: number | null;
+  /** 去重方式：`marker` = 人工通道（隐藏标记），`none` = 打标/反馈类（不去重）。 */
+  readonly dedupe: 'marker' | 'none';
 };
 
 /**
- * 执行 `comment`：先拉现有评论 → 判定 → 需要时才发。
+ * 执行 `comment`。
  *
- * 「先查再写」而不是「写了再说」：GitHub 的评论接口没有幂等键，
- * 重复发的后果是用户看到两遍同样的话（plan §6.2「同一句话不催第二次」）。
+ * 两种形态，按 `usesMarkerDedupe()` 分：
+ *  1. **人工通道**（`comment` / `fallback`）：「先查再写」——GitHub 的评论接口没有幂等键，
+ *     重复发的后果是用户看到两遍同样的话（plan §6.2「同一句话不催第二次」）；
+ *  2. **其它 intent**（打标 / 反馈类）：直接发正文，**不列评论、不加标记**
+ *     （W2-D 第 4 条：这类评论不再存在，万一残留调用也不该把标记当幂等键）。
  */
 export async function executeComment(
   api: GithubWriteApi,
   input: CommentMarkerInput,
 ): Promise<CommentOutcome> {
+  if (!usesMarkerDedupe(input.intent)) {
+    const plain = await api.createIssueComment({
+      repo: input.repo,
+      issueNumber: input.target,
+      body: input.body.trim(),
+    });
+    return { action: 'posted', marker: '', commentId: plain.id, dedupe: 'none' };
+  }
   const comments = await api.listIssueComments({ repo: input.repo, issueNumber: input.target });
   const decision = planComment(input, comments);
   if (decision.action === 'skip') {
-    return { action: 'skipped', marker: decision.marker, commentId: decision.existingCommentId };
+    return {
+      action: 'skipped',
+      marker: decision.marker,
+      commentId: decision.existingCommentId,
+      dedupe: 'marker',
+    };
   }
   const created = await api.createIssueComment({
     repo: input.repo,
     issueNumber: input.target,
     body: decision.body,
   });
-  return { action: 'posted', marker: decision.marker, commentId: created.id };
+  return { action: 'posted', marker: decision.marker, commentId: created.id, dedupe: 'marker' };
 }
 
 /** 标签增删计划：只碰自己打过的（plan §6.1）。 */
@@ -595,6 +645,182 @@ export async function executeCloseIssue(
   return decision;
 }
 
+/* reaction：无感反馈的判定与执行（W2-D）。 */
+
+/** 一次 reaction 请求（commentId 给了就打评论级，否则打主贴）。 */
+export type ReactionRequest = {
+  readonly repo: string;
+  readonly issueNumber: number;
+  readonly content: ReactionContent;
+  readonly commentId?: number | null;
+};
+
+/** reaction 动作的执行结果。 */
+export type ReactionOutcome = {
+  /** added = 加成功；removed = 删成功；skipped = 没有可删的（本来就没有自己的）。 */
+  readonly action: 'added' | 'removed' | 'skipped';
+  readonly content: ReactionContent;
+  /** 加上去的 reaction id（added 时有值，落 issue_feedback.reaction_id）。 */
+  readonly reactionId: number | null;
+  /** 删掉的 reaction id 列表（终态先删 eyes 用的）。 */
+  readonly removed: readonly number[];
+  readonly reason: string;
+};
+
+/**
+ * 这个 login 是不是「本 App 自己」。
+ *
+ * GitHub 把 App 身份显示成 `<slug>[bot]`，而 GET .../reactions 返回的 user.login
+ * 就是这个串。判据取「以 [bot] 结尾」或「等于配置里的 App slug（含 [bot] 后缀）」：
+ * 只认这两条，人打的 reaction 一条都不会被删。
+ */
+export function isOwnReactionLogin(
+  login: string | null | undefined,
+  appSlug?: string | null,
+): boolean {
+  if (login === null || login === undefined) {
+    return false;
+  }
+  const lowered = login.trim().toLowerCase();
+  if (lowered === '') {
+    return false;
+  }
+  if (lowered.endsWith('[bot]')) {
+    return true;
+  }
+  const slug = (appSlug ?? '').trim().toLowerCase();
+  if (slug === '') {
+    return false;
+  }
+  return lowered === slug || lowered === `${slug}[bot]`;
+}
+
+/** 从一次列表结果里挑出「自己打的」reaction id（删之前必须过这一层）。 */
+export function pickOwnReactionIds(
+  entries: readonly ReactionEntry[],
+  appSlug?: string | null,
+): readonly number[] {
+  return entries
+    .filter((entry) => isOwnReactionLogin(entry.userLogin, appSlug))
+    .map((entry) => entry.id);
+}
+
+/**
+ * 加一个 reaction。**不做「先查再写」**：同 content 重复 POST 是幂等的
+ * （实测第一次 201、第二次 200，返回同一个 id），查一次只会多打一次 API。
+ */
+export async function executeAddReaction(
+  api: GithubReactionApi,
+  input: ReactionRequest,
+): Promise<ReactionOutcome> {
+  const ref = await api.addReaction({
+    repo: input.repo,
+    issueNumber: input.issueNumber,
+    ...(input.commentId === undefined ? {} : { commentId: input.commentId }),
+    content: input.content,
+  });
+  return {
+    action: 'added',
+    content: input.content,
+    reactionId: ref.id,
+    removed: [],
+    reason: `已打 ${input.content} reaction（id=${String(ref.id)}）`,
+  };
+}
+
+/**
+ * 删掉「自己打的」某个 content 的 reaction。
+ *
+ * 先 GET ...?content=&per_page=100 再按 user.login 过滤，只删自己的
+ * （plan §5「只碰自己的 reaction」）。一条都没删到不算失败：幂等重跑时它本该不存在。
+ */
+export async function executeRemoveOwnReactions(
+  api: GithubReactionApi,
+  input: ReactionRequest & { readonly appSlug?: string | null },
+): Promise<ReactionOutcome> {
+  const entries = await api.listReactions({
+    repo: input.repo,
+    issueNumber: input.issueNumber,
+    ...(input.commentId === undefined ? {} : { commentId: input.commentId }),
+    content: input.content,
+    perPage: 100,
+  });
+  const own = pickOwnReactionIds(entries, input.appSlug);
+  if (own.length === 0) {
+    return {
+      action: 'skipped',
+      content: input.content,
+      reactionId: null,
+      removed: [],
+      reason: `没有自己打的 ${input.content} reaction（列表 ${String(entries.length)} 条，都属他人）`,
+    };
+  }
+  const removed: number[] = [];
+  for (const reactionId of own) {
+    await api.removeReaction({
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+      ...(input.commentId === undefined ? {} : { commentId: input.commentId }),
+      reactionId,
+    });
+    removed.push(reactionId);
+  }
+  return {
+    action: 'removed',
+    content: input.content,
+    reactionId: null,
+    removed,
+    reason: `已删自己打的 ${input.content} reaction（${String(removed.length)} 条）`,
+  };
+}
+
+/** 429 / 5xx / 网络抖动 → 值得再试一次（docs/impl-multi-repo.md W2-D 第 6 条）。 */
+export function isTransientGithubFailure(info: {
+  readonly status: number | null;
+  readonly class: string;
+}): boolean {
+  if (info.status === 429) {
+    return true;
+  }
+  if (info.status !== null && info.status >= 500) {
+    return true;
+  }
+  return info.class === 'network';
+}
+
+/**
+ * 有限重试：**最多 1 次**（attempts 默认 2 = 首次 + 1 次重试），只对 429/5xx/网络抖动生效。
+ *
+ * 为什么不再深入：reaction 是「无感反馈」，为它阻塞或重投整轮任务不值得。
+ * 403（权限不足）**不重试**：那是 App 少了权限，重试多少次都一样，由调用方降级
+ * （置 runtime_flags{key:'reactions_disabled'} 并留 actions(applied_at=null)）。
+ */
+export async function withTransientRetry<T>(
+  operation: () => Promise<T>,
+  options: {
+    readonly attempts?: number;
+    readonly now?: () => number;
+    readonly onRetry?: (info: { readonly status: number | null; readonly attempt: number }) => void;
+  } = {},
+): Promise<T> {
+  const attempts = Math.max(1, options.attempts ?? 2);
+  const now = options.now ?? ((): number => Date.now());
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const info = classifyGithubError(error, now());
+      if (
+        attempt >= attempts ||
+        !isTransientGithubFailure({ status: info.status, class: info.class })
+      ) {
+        throw toGithubError(error, now());
+      }
+      options.onRetry?.({ status: info.status, attempt });
+    }
+  }
+  throw new Error('withTransientRetry: 不可达');
+}
 /**
  * 写回执：`actions` 表一行的最小内容（tech-plan §7.2 的 `actions`）。
  *
@@ -645,6 +871,21 @@ export type WriteAction =
       readonly target: number;
       readonly deterministicConditionSatisfied: boolean;
       readonly reason?: 'completed' | 'not_planned' | undefined;
+    }
+  | {
+      readonly kind: 'reaction.add';
+      readonly repo: string;
+      readonly target: number;
+      readonly content: ReactionContent;
+      readonly commentId?: number | null | undefined;
+    }
+  | {
+      readonly kind: 'reaction.remove';
+      readonly repo: string;
+      readonly target: number;
+      readonly content: ReactionContent;
+      readonly commentId?: number | null | undefined;
+      readonly appSlug?: string | null | undefined;
     };
 
 /** 分派结果：一类是「已执行的写操作」，一类是「交给 git/ owner 的计划」。 */
@@ -653,17 +894,24 @@ export type DispatchResult =
   | { readonly kind: 'label'; readonly outcome: LabelOutcome }
   | { readonly kind: 'create_issue'; readonly outcome: CreateIssueOutcome }
   | { readonly kind: 'close_issue'; readonly decision: CloseIssueDecision }
+  | { readonly kind: 'reaction'; readonly outcome: ReactionOutcome }
   | { readonly kind: 'delegated'; readonly plan: DelegatedPlan };
 
 /**
  * 把动作分派到具体执行路径。
  *
  * `push_branch` / `open_pr` 只产出委托计划，**不执行**（见 `DelegatedPlan` 的说明）；
- * `close_issue` 只接受外部判定结果。其余三个动作经注入的 `api` 执行。
+ * `close_issue` 只接受外部判定结果；`reaction.*` 走独立的 `reactions` 注入点。
+ * 其余动作经注入的 `api` 执行。
  */
 export async function dispatchWriteAction(
   action: WriteAction,
-  deps: { readonly api: GithubWriteApi; readonly ledger?: BotLabelLedger | undefined },
+  deps: {
+    readonly api: GithubWriteApi;
+    readonly ledger?: BotLabelLedger | undefined;
+    /** reaction 的写面（W2-D）；不注入时 `reaction.*` 明确失败，不静默跳过。 */
+    readonly reactions?: GithubReactionApi | undefined;
+  },
 ): Promise<DispatchResult> {
   switch (action.kind) {
     case 'comment': {
@@ -707,6 +955,27 @@ export async function dispatchWriteAction(
         ...(action.reason === undefined ? {} : { reason: action.reason }),
       });
       return { kind: 'close_issue', decision };
+    }
+    case 'reaction.add': {
+      const reactions = requireReactionApi(deps.reactions);
+      const outcome = await executeAddReaction(reactions, {
+        repo: action.repo,
+        issueNumber: action.target,
+        content: action.content,
+        ...(action.commentId === undefined ? {} : { commentId: action.commentId }),
+      });
+      return { kind: 'reaction', outcome };
+    }
+    case 'reaction.remove': {
+      const reactions = requireReactionApi(deps.reactions);
+      const outcome = await executeRemoveOwnReactions(reactions, {
+        repo: action.repo,
+        issueNumber: action.target,
+        content: action.content,
+        ...(action.commentId === undefined ? {} : { commentId: action.commentId }),
+        ...(action.appSlug === undefined ? {} : { appSlug: action.appSlug }),
+      });
+      return { kind: 'reaction', outcome };
     }
   }
 }
@@ -758,4 +1027,12 @@ function assertIntent(intent: string): string {
 
 function isBotBranch(branch: string): boolean {
   return branch.startsWith(BOT_BRANCH_PREFIX) && branch.length > BOT_BRANCH_PREFIX.length;
+}
+
+/** 取 reaction 写面：没注入就明确抛错（`writeback` 会把它转成 failed 信号并留痕）。 */
+function requireReactionApi(api: GithubReactionApi | undefined): GithubReactionApi {
+  if (api === undefined) {
+    throw new Error('reaction 写面未注入（TaskRunnerDeps.feedback.reactions / GithubReactionApi）');
+  }
+  return api;
 }

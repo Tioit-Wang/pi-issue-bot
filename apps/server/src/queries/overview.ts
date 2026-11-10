@@ -9,6 +9,9 @@
  *   `webhook_deliveries`（**含重复投递**，去重率不在这个接口里）；`tasks` 按 `tasks.queued_at`；
  *   `succeeded`/`failed` 数任务状态（`timed-out` 也算 failed，与面板列表同口径）；
  *   `successRate` 的分母是**有结论的任务**（succeeded + failed），分母为 0 时为 `null`。
+ * - **`?repo=`**：`today.*` / `p50/p95` / `trend` / `outcomeDistribution` / `failureTop` 全部按该仓库口径
+ *   （`tasks.repo`、`webhook_deliveries.repo`；run 的归属经 `tasks` 得到）。`queue` 与 `doctor`
+ *   是全局量，不随仓库变化；响应体里的 `repo` 回显本次口径（`null` = 全部仓库）。
  * - **p50/p95**：今日**已结束**任务的耗时（`ended_at - 最早 run 的 started_at`），
  *   样本为空时两个都是 `null`。
  * - **queue**：读 pg-boss 自己的 `pgboss.job`（契约注释要求的 `created`/`retry` 与 `active`）；
@@ -62,12 +65,17 @@ export async function queryOverview(runner: SqlRunner, now: Date, query: Overvie
   const dayStart = utcDayStart(now);
   const dayEnd = new Date(dayStart.getTime() + DAY_MS);
 
-  /* 1. 今日四个数字（+ 今日成本） */
+  /* 1. 今日四个数字（+ 今日成本）——带 `?repo=` 时全部按该仓库口径（`tasks.repo` / `webhook_deliveries.repo`） */
+  const todayParams = new Params();
+  const dayFrom = todayParams.add(dayStart.toISOString(), 'timestamptz');
+  const dayTo = todayParams.add(dayEnd.toISOString(), 'timestamptz');
+  const repoParam = query.repo === undefined ? null : todayParams.add(query.repo);
+  const repoCond = (alias: string): string => (repoParam === null ? '' : `\n             and ${alias}.repo = ${repoParam}`);
   const todayRows = (
     await runner.query(
       `select
          (select count(*) from webhook_deliveries d
-           where d.received_at >= $1::timestamptz and d.received_at < $2::timestamptz) as deliveries,
+           where d.received_at >= ${dayFrom} and d.received_at < ${dayTo}${repoCond('d')}) as deliveries,
          count(*) as tasks,
          count(*) filter (where t.status = 'succeeded') as succeeded,
          count(*) filter (where t.status in ('failed', 'timed-out')) as failed,
@@ -75,10 +83,10 @@ export async function queryOverview(runner: SqlRunner, now: Date, query: Overvie
             from usage_costs uc
             join runs r on r.id = uc.run_id
             join tasks t2 on t2.id = r.task_id
-           where t2.queued_at >= $1::timestamptz and t2.queued_at < $2::timestamptz) as cost_usd
+           where t2.queued_at >= ${dayFrom} and t2.queued_at < ${dayTo}${repoCond('t2')}) as cost_usd
        from tasks t
-       where t.queued_at >= $1::timestamptz and t.queued_at < $2::timestamptz`,
-      [dayStart.toISOString(), dayEnd.toISOString()],
+       where t.queued_at >= ${dayFrom} and t.queued_at < ${dayTo}${repoCond('t')}`,
+      todayParams.list(),
     )
   ).rows as TodayRow[];
   const today = todayRows[0];
@@ -87,6 +95,7 @@ export async function queryOverview(runner: SqlRunner, now: Date, query: Overvie
   const taskCount = intOf(today?.tasks);
 
   /* 2. 今日耗时分位数（样本为空 → null，不是 0） */
+  const percentileParams = new Params();
   const percentileRows = (
     await runner.query(
       `select
@@ -101,10 +110,12 @@ export async function queryOverview(runner: SqlRunner, now: Date, query: Overvie
          where t.ended_at is not null
            and first_run.started_at is not null
            and t.ended_at >= first_run.started_at
-           and t.queued_at >= $1::timestamptz
-           and t.queued_at < $2::timestamptz
+           and t.queued_at >= ${percentileParams.add(dayStart.toISOString(), 'timestamptz')}
+           and t.queued_at < ${percentileParams.add(dayEnd.toISOString(), 'timestamptz')}${
+             query.repo === undefined ? '' : `\n           and t.repo = ${percentileParams.add(query.repo)}`
+           }
        ) d`,
-      [dayStart.toISOString(), dayEnd.toISOString()],
+      percentileParams.list(),
     )
   ).rows as PercentileRow[];
   const percentiles = percentileRows[0];
@@ -115,6 +126,9 @@ export async function queryOverview(runner: SqlRunner, now: Date, query: Overvie
   /* 4. 24 小时趋势（整点，升序，空小时补 0） */
   const lastHour = roundHourDown(now);
   const firstHour = new Date(lastHour.getTime() - (TREND_POINTS - 1) * HOUR_MS);
+  const trendParams = new Params();
+  const trendRepoCond =
+    query.repo === undefined ? '' : `\n        and t.repo = ${trendParams.add(query.repo)}`;
   const trendRows = (
     await runner.query(
       `select
@@ -122,49 +136,68 @@ export async function queryOverview(runner: SqlRunner, now: Date, query: Overvie
          count(t.id) as tasks,
          count(t.id) filter (where t.status = 'succeeded') as succeeded,
          count(t.id) filter (where t.status in ('failed', 'timed-out')) as failed
-       from generate_series($1::timestamptz, $2::timestamptz, interval '1 hour') as gs
-       left join tasks t on t.queued_at >= gs and t.queued_at < gs + interval '1 hour'
+       from generate_series(${trendParams.add(firstHour.toISOString(), 'timestamptz')}, ${trendParams.add(
+         lastHour.toISOString(),
+         'timestamptz',
+       )}, interval '1 hour') as gs
+       left join tasks t on t.queued_at >= gs and t.queued_at < gs + interval '1 hour'${trendRepoCond}
        group by gs
        order by gs asc`,
-      [firstHour.toISOString(), lastHour.toISOString()],
+      trendParams.list(),
     )
   ).rows as TrendRow[];
 
-  /* 5. 结果分布（窗口内，按 run 的 started_at；没出现的 outcome 不占位） */
+  /*
+   * 5 / 6. 结果分布与失败 Top5（窗口内，按 run 的 started_at）。
+   * 带 `?repo=` 时 join `tasks` 过滤（run 属于哪个仓库只能经 task 得到）。
+   */
+  const runParams = new Params();
+  const runFrom = runParams.add(window.from, 'timestamptz');
+  const runTo = runParams.add(window.to, 'timestamptz');
+  const runRepoJoin =
+    query.repo === undefined
+      ? ''
+      : `\n         join tasks rt on rt.id = r.task_id and rt.repo = ${runParams.add(query.repo)}`;
   const outcomeRows = (
     await runner.query(
       `select s.outcome as key, count(*) as count
        from (
          select ${sqlOutcome('r.outcome')} as outcome
-         from runs r
-         where r.started_at >= $1::timestamptz and r.started_at < $2::timestamptz
+         from runs r${runRepoJoin}
+         where r.started_at >= ${runFrom} and r.started_at < ${runTo}
        ) s
        where s.outcome is not null
        group by s.outcome
        order by count desc, s.outcome asc`,
-      [window.from, window.to],
+      runParams.list(),
     )
   ).rows as CountKeyRow[];
 
-  /* 6. 失败分类 Top5（窗口内） */
+  const failureParams = new Params();
   const failureRows = (
     await runner.query(
       `select s.failure_class as key, count(*) as count
        from (
-          select ${sqlFailureClass('r.failure_class')} as failure_class
-         from runs r
-         where r.started_at >= $1::timestamptz and r.started_at < $2::timestamptz
+         select ${sqlFailureClass('r.failure_class')} as failure_class
+         from runs r${
+           query.repo === undefined
+             ? ''
+             : `\n         join tasks rt on rt.id = r.task_id and rt.repo = ${failureParams.add(query.repo)}`
+         }
+         where r.started_at >= ${failureParams.add(window.from, 'timestamptz')}
+           and r.started_at < ${failureParams.add(window.to, 'timestamptz')}
        ) s
        where s.failure_class is not null
        group by s.failure_class
        order by count desc, s.failure_class asc
        limit 5`,
-      [window.from, window.to],
+      failureParams.list(),
     )
   ).rows as CountKeyRow[];
 
   return {
     generatedAt: now.toISOString(),
+    repo: query.repo ?? null,
     window,
     today: {
       deliveries: intOf(today?.deliveries),

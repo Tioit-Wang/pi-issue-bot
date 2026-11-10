@@ -27,8 +27,13 @@ import type {
   IssuesResponse,
   OverviewQuery,
   OverviewResponse,
+  PromptResponse,
   QualityQuery,
+  RepoSettingsResponse,
+  ReposResponse,
   RevertsResponse,
+  SaveRepoSettingsRequest,
+  SystemQuery,
   SystemResponse,
   TaskDetailResponse,
   TasksQuery,
@@ -116,7 +121,7 @@ async function request<T>(path: string, query?: QueryValues): Promise<T> {
 export const CSRF_HEADER = 'X-Pi-Bot-CSRF';
 
 type WriteInit = {
-  method: 'POST' | 'PATCH' | 'DELETE';
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   /** 原始二进制（上传 zip）或 JSON 字符串。 */
   body?: BodyInit;
   contentType?: string;
@@ -144,6 +149,23 @@ async function write<T>(path: string, init: WriteInit, query?: QueryValues): Pro
 
   const text = await response.text();
   return (text === '' ? undefined : JSON.parse(text)) as T;
+}
+
+/** 仓库标识：`"owner/name"` 字符串，或已拆好的两段（路由里 `repo` 含 `/`，必须分两段编码）。 */
+export type RepoRef = string | { owner: string; name: string };
+
+function repoSegments(repo: RepoRef): { owner: string; name: string } {
+  if (typeof repo === 'string') {
+    const [owner = '', name = ''] = repo.split('/');
+    return { owner, name };
+  }
+  return repo;
+}
+
+/** `/api/repos/:owner/:name`（写面与提示词共用；`repo` 含 `/`，`encodeURIComponent` 不能省）。 */
+export function repoBasePath(repo: RepoRef): string {
+  const { owner, name } = repoSegments(repo);
+  return `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
 }
 
 export const api = {
@@ -174,7 +196,60 @@ export const api = {
 
   audit: (query: AuditQuery): Promise<AuditResponse> => request<AuditResponse>('/api/audit', { ...query }),
 
-  system: (): Promise<SystemResponse> => request<SystemResponse>('/api/system'),
+  system: (query: SystemQuery = {}): Promise<SystemResponse> =>
+    request<SystemResponse>('/api/system', { ...query }),
+
+  /* ── 仓库写面（`/api/repos/*`；契约见 `packages/contract/src/api.ts` §7b） ──────
+   * `repo` 含 `/`，路径一律拆成 `:owner/:name` 两段（`repoBasePath`）。
+   */
+
+  /** 全部仓库 + 状态（面板切换器 / 系统页 / 健康卡）。 */
+  repos: (): Promise<ReposResponse> => request<ReposResponse>('/api/repos'),
+
+  /** 单个仓库的配置视图（`settingsValid=false` 时 `settings` 为 `null`）。 */
+  repoSettings: (repo: RepoRef): Promise<RepoSettingsResponse> =>
+    request<RepoSettingsResponse>(`${repoBasePath(repo)}/settings`),
+
+  /** 保存配置（body 就是 settings 本身；校验失败服务端一个字都不写 → 400 + `details.issues`）。 */
+  saveRepoSettings: async (repo: RepoRef, settings: SaveRepoSettingsRequest): Promise<RepoSettingsResponse> =>
+    write<RepoSettingsResponse>(`${repoBasePath(repo)}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+      contentType: 'application/json',
+    }),
+
+  /** 手动添加仓库（其余用部署默认 settings seed，`source='manual'`）。 */
+  addRepo: async (repo: string): Promise<RepoSettingsResponse> =>
+    write<RepoSettingsResponse>('/api/repos', {
+      method: 'POST',
+      body: JSON.stringify({ repo }),
+      contentType: 'application/json',
+    }),
+
+  /**
+   * 项目提示词（P1）：当前版本 + 版本列表 + 预算预演 + 最终装配预览。
+   *
+   * 形状来自 W3-G 的 `http/api/prompt.ts`（`viewOf()`），**契约 schema 还没进
+   * `packages/contract`**，所以类型是 `lib/contract.ts` 里手写的那份；契约补上后
+   * 只需把那里的手写类型换成再导出，这里一行都不用改。
+   */
+  prompt: (repo: RepoRef): Promise<PromptResponse> => request<PromptResponse>(`${repoBasePath(repo)}/prompt`),
+
+  /** 保存提示词（保存即新建版本；超预算 400 + `details.budget`）。 */
+  savePrompt: async (repo: RepoRef, body: string, note?: string): Promise<PromptResponse> =>
+    write<PromptResponse>(`${repoBasePath(repo)}/prompt`, {
+      method: 'PUT',
+      body: JSON.stringify(note === undefined ? { body } : { body, note }),
+      contentType: 'application/json',
+    }),
+
+  /** 回滚（= 以旧版正文新建一个版本，历史不丢）。 */
+  rollbackPrompt: async (repo: RepoRef, version: number): Promise<PromptResponse> =>
+    write<PromptResponse>(`${repoBasePath(repo)}/prompt/rollback`, {
+      method: 'POST',
+      body: JSON.stringify({ version }),
+      contentType: 'application/json',
+    }),
 
   /** 审计 CSV 的下载地址（`limit` 被服务端忽略，上限固定 50000）。 */
   auditCsvUrl: (query: AuditQuery = {}): string => `/api/audit/export.csv${toSearch({ ...query })}`,

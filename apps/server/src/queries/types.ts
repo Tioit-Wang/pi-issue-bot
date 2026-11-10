@@ -19,6 +19,7 @@ import type {
   overviewResponseSchema,
   qualityQuerySchema,
   revertsResponseSchema,
+  systemQuerySchema,
   systemResponseSchema,
   taskDetailResponseSchema,
   tasksQuerySchema,
@@ -31,6 +32,8 @@ export type TasksQuery = z.infer<typeof tasksQuerySchema>;
 export type CostsQuery = z.infer<typeof costsQuerySchema>;
 export type QualityQuery = z.infer<typeof qualityQuerySchema>;
 export type AuditQuery = z.infer<typeof auditQuerySchema>;
+/** `/api/system` 的查询参数（`repo` 只收窄 repos / flags）。 */
+export type SystemQuery = z.infer<typeof systemQuerySchema>;
 
 /* ── 响应类型（返回值必须能被同名 `*ResponseSchema.parse()` 通过） ──────────────── */
 export type OverviewResponse = z.infer<typeof overviewResponseSchema>;

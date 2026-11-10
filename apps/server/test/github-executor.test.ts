@@ -17,22 +17,28 @@ import {
   decideCloseIssue,
   decideCreateIssue,
   dispatchWriteAction,
+  executeAddReaction,
   executeCloseIssue,
   executeComment,
   executeCreateIssue,
   executeLabelPlan,
+  executeRemoveOwnReactions,
   findExisting,
   hashCommentBody,
+  isOwnReactionLogin,
   normalizeCommentBody,
   parseMarkers,
+  pickOwnReactionIds,
   planComment,
   planLabelDelta,
   planPushBranch,
   shouldPost,
   validateOpenPr,
   validatePushBranch,
+  withTransientRetry,
 } from '../src/github/executor.ts';
 import type { BotLabelLedger, CloseIssueInput } from '../src/github/executor.ts';
+import type { GithubReactionApi, ReactionEntry } from '../src/github/types.ts';
 import { createFakeWriteApi } from './helpers/fake-github.ts';
 
 const REPO = 'acme/widgets';
@@ -88,10 +94,12 @@ describe('comment 隐藏标记与去重（tech-plan §5.4）', () => {
     expect(hashCommentBody(posted)).toBe(hashCommentBody(BODY));
   });
 
-  it('只发一次：同一动作重复执行时第二次跳过', async () => {
+  it('只发一次：同一动作重复执行时第二次跳过（人工通道 intent=comment）', async () => {
     const api = createFakeWriteApi();
-    const first = await executeComment(api, baseInput);
-    const second = await executeComment(api, baseInput);
+    // 去重只对**人工通道**生效（W2-D 第 4 条）：intent 是 `comment` / `fallback` 才走标记。
+    const humanInput = { ...baseInput, intent: 'comment' };
+    const first = await executeComment(api, humanInput);
+    const second = await executeComment(api, humanInput);
 
     expect(first.action).toBe('posted');
     expect(second.action).toBe('skipped');
@@ -289,16 +297,201 @@ describe('close_issue：只接受外部判定（tech-plan §7.2 的边界）', (
   });
 });
 
+/**
+ * 假的 reaction 写面（W2-D）：记录调用，`entries` 是 `listReactions` 的数据源。
+ *
+ * `failures` 让单测逐次注入失败（429 / 403 / 5xx），从而钉住「重试 1 次」与降级路径。
+ */
+function createFakeReactionApi(seed: {
+  readonly entries?: readonly ReactionEntry[];
+  readonly failures?: readonly unknown[];
+} = {}): GithubReactionApi & {
+  readonly calls: string[];
+  readonly addCalls: { issueNumber: number; content: string; commentId?: number | null }[];
+  readonly removed: number[];
+} {
+  const calls: string[] = [];
+  const addCalls: { issueNumber: number; content: string; commentId?: number | null }[] = [];
+  const removed: number[] = [];
+  const entries = [...(seed.entries ?? [])];
+  const failures = [...(seed.failures ?? [])];
+  let nextId = 9000;
+
+  const takeFailure = (): void => {
+    const failure = failures.shift();
+    if (failure !== undefined) {
+      throw failure;
+    }
+  };
+
+  return {
+    calls,
+    addCalls,
+    removed,
+    async addReaction(input) {
+      calls.push(`add:${input.content}`);
+      takeFailure();
+      nextId += 1;
+      addCalls.push({
+        issueNumber: input.issueNumber,
+        content: input.content,
+        ...(input.commentId === undefined ? {} : { commentId: input.commentId }),
+      });
+      return { id: nextId };
+    },
+    async listReactions(input) {
+      calls.push(`list:${input.content}`);
+      takeFailure();
+      return entries.filter((entry) => entry.content === input.content);
+    },
+    async removeReaction(input) {
+      calls.push(`remove:${String(input.reactionId)}`);
+      takeFailure();
+      removed.push(input.reactionId);
+    },
+  };
+}
+
+describe('reaction：无感反馈的判定与执行（W2-D）', () => {
+  it('归属判定：只看 [bot] 后缀与 App slug，人打的 reaction 不算自己的', () => {
+    expect(isOwnReactionLogin('pi-issue-bot[bot]', null)).toBe(true);
+    expect(isOwnReactionLogin('pi-issue-bot[bot]', 'pi-issue-bot')).toBe(true);
+    expect(isOwnReactionLogin('pi-issue-bot', 'pi-issue-bot')).toBe(true);
+    expect(isOwnReactionLogin('alice', 'pi-issue-bot')).toBe(false);
+    expect(isOwnReactionLogin(null, 'pi-issue-bot')).toBe(false);
+
+    const entries: ReactionEntry[] = [
+      { id: 1, content: 'eyes', userLogin: 'pi-issue-bot[bot]' },
+      { id: 2, content: 'eyes', userLogin: 'alice' },
+      { id: 3, content: 'eyes', userLogin: null },
+    ];
+    expect(pickOwnReactionIds(entries, 'pi-issue-bot')).toEqual([1]);
+  });
+
+  it('加 reaction 不先查（同 content 重复 POST 幂等）：只发一次 POST', async () => {
+    const api = createFakeReactionApi();
+    const outcome = await executeAddReaction(api, {
+      repo: REPO,
+      issueNumber: TARGET,
+      content: 'rocket',
+    });
+
+    expect(outcome.action).toBe('added');
+    expect(outcome.reactionId).toBe(9001);
+    expect(api.calls).toEqual(['add:rocket']);
+  });
+
+  it('删 reaction：只删自己打的，别人的留着；一条都没有就算 skipped', async () => {
+    const api = createFakeReactionApi({
+      entries: [
+        { id: 11, content: 'eyes', userLogin: 'pi-issue-bot[bot]' },
+        { id: 12, content: 'eyes', userLogin: 'alice' },
+      ],
+    });
+
+    const done = await executeRemoveOwnReactions(api, {
+      repo: REPO,
+      issueNumber: TARGET,
+      content: 'eyes',
+    });
+    expect(done.action).toBe('removed');
+    expect(done.removed).toEqual([11]);
+    expect(api.removed).toEqual([11]);
+
+    const empty = createFakeReactionApi({
+      entries: [{ id: 13, content: 'eyes', userLogin: 'alice' }],
+    });
+    const skipped = await executeRemoveOwnReactions(empty, {
+      repo: REPO,
+      issueNumber: TARGET,
+      content: 'eyes',
+    });
+    expect(skipped.action).toBe('skipped');
+    expect(empty.removed).toEqual([]);
+  });
+
+  it('429 / 5xx / 网络抖动只重试 1 次；403 与 4xx 不重试', async () => {
+    const transient = async (): Promise<string> => {
+      throw Object.assign(new Error('API rate limit exceeded'), { status: 429 });
+    };
+    let attempts = 0;
+    await expect(
+      withTransientRetry(async () => {
+        attempts += 1;
+        return transient();
+      }),
+    ).rejects.toMatchObject({ info: { status: 429 } });
+    expect(attempts).toBe(2);
+
+    const forbidden = async (): Promise<string> => {
+      throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+    };
+    let forbiddenAttempts = 0;
+    await expect(
+      withTransientRetry(async () => {
+        forbiddenAttempts += 1;
+        return forbidden();
+      }),
+    ).rejects.toMatchObject({ info: { class: 'auth', status: 403 } });
+    expect(forbiddenAttempts).toBe(1);
+  });
+
+  it('分派：reaction.add / reaction.remove 走注入的 reaction 写面；没注入则明确失败', async () => {
+    const api = createFakeWriteApi();
+    const reactions = createFakeReactionApi();
+
+    const added = await dispatchWriteAction(
+      { kind: 'reaction.add', repo: REPO, target: TARGET, content: 'rocket' },
+      { api, reactions },
+    );
+    expect(added.kind).toBe('reaction');
+    expect(reactions.addCalls).toEqual([{ issueNumber: TARGET, content: 'rocket' }]);
+    // 写面（评论/打标）一次都没被碰
+    expect(api.calls).toEqual([]);
+
+    const removed = await dispatchWriteAction(
+      { kind: 'reaction.remove', repo: REPO, target: TARGET, content: 'eyes' },
+      { api, reactions },
+    );
+    expect(removed.kind).toBe('reaction');
+
+    await expect(
+      dispatchWriteAction(
+        { kind: 'reaction.add', repo: REPO, target: TARGET, content: 'eyes' },
+        { api },
+      ),
+    ).rejects.toThrow(/reaction 写面未注入/);
+  });
+});
+
 describe('动作分派', () => {
-  it('comment 动作走注入的写接口，并带上标记', async () => {
+  it('comment 动作（人工通道）走注入的写接口，并带上标记', async () => {
     const api = createFakeWriteApi();
     const result = await dispatchWriteAction(
-      { kind: 'comment', repo: REPO, target: TARGET, intent: INTENT, body: BODY },
+      { kind: 'comment', repo: REPO, target: TARGET, intent: 'comment', body: BODY },
       { api },
     );
 
     expect(result.kind).toBe('comment');
     const created = api.calls.find((call) => call.method === 'createIssueComment');
-    expect(String(created?.input['body'])).toContain(buildMarker(baseInput));
+    expect(String(created?.input['body'])).toContain(buildMarker({ ...baseInput, intent: 'comment' }));
+  });
+
+  it('打标/反馈类评论（intent=triage）不带标记、也不列评论：这类评论已退役（W2-D 第 4 条）', async () => {
+    const api = createFakeWriteApi();
+    const result = await dispatchWriteAction(
+      { kind: 'comment', repo: REPO, target: TARGET, intent: 'triage', body: BODY },
+      { api },
+    );
+
+    expect(result.kind).toBe('comment');
+    if (result.kind !== 'comment') {
+      throw new Error('期望 comment 分派结果');
+    }
+    expect(result.outcome.dedupe).toBe('none');
+    expect(result.outcome.marker).toBe('');
+    // 一次写都没有「先查」：标记去重只属于人工通道
+    expect(api.calls.map((call) => call.method)).toEqual(['createIssueComment']);
+    expect(String(api.calls[0]?.input['body'])).toBe(BODY);
   });
 });

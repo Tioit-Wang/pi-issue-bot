@@ -15,12 +15,25 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getTableColumns, getTableName } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { ALL_TABLE_NAMES, issueStates, tasks } from '../src/db/schema.ts';
+import {
+  ALL_TABLE_NAMES,
+  botLabels,
+  issueFeedback,
+  issueStates,
+  labelDecisions,
+  promptVersions,
+  quotaCounters,
+  repos,
+  runtimeFlags,
+  tasks,
+  webhookDeliveries,
+} from '../src/db/schema.ts';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../../..');
 const MIGRATION_FILE = path.join(REPO_ROOT, 'migrations', '0000_init.sql');
 
-const EXPECTED_TABLES = [
+/** tech-plan §7.2 的 16 张表（0000_init.sql 建的那批）。 */
+const INIT_TABLES = [
   'webhook_deliveries',
   'repos',
   'tasks',
@@ -39,13 +52,21 @@ const EXPECTED_TABLES = [
   'panel_sessions',
 ] as const;
 
+/** 多仓库改造新增的四张表（`docs/impl-multi-repo.md` §2）。 */
+const MULTI_REPO_TABLES = ['issue_feedback', 'label_decisions', 'quota_counters', 'prompt_versions'] as const;
+
+const EXPECTED_TABLES = [...INIT_TABLES, ...MULTI_REPO_TABLES] as const;
+
+/** `0003_multi_repo.sql`：纯新增的列与表（`ALTER TABLE ADD COLUMN` / `CREATE TABLE`）。 */
+const MIGRATION_0003 = path.join(REPO_ROOT, 'migrations', '0003_multi_repo.sql');
+
 async function readMigration(): Promise<string> {
   return readFile(MIGRATION_FILE, 'utf8');
 }
 
-describe('db/schema：16 张表', () => {
-  it('表名清单与 tech-plan §7.2 完全一致（16 张，无多无少）', () => {
-    expect(ALL_TABLE_NAMES.length).toBe(16);
+describe('db/schema：20 张表', () => {
+  it('表名清单 = tech-plan §7.2 的 16 张 + 多仓库 4 张（无多无少）', () => {
+    expect(ALL_TABLE_NAMES.length).toBe(20);
     expect([...ALL_TABLE_NAMES].sort()).toEqual([...EXPECTED_TABLES].sort());
   });
 
@@ -90,9 +111,9 @@ describe('db/schema：16 张表', () => {
 });
 
 describe('migrations/0000_init.sql', () => {
-  it('离线生成的 0000_init.sql 覆盖全部 16 张表且带语句分隔符', async () => {
+  it('离线生成的 0000_init.sql 覆盖全部 16 张表且带语句分隔符（新增表在 0003，不回填 0000）', async () => {
     const sql = await readMigration();
-    for (const table of EXPECTED_TABLES) {
+    for (const table of INIT_TABLES) {
       expect(sql).toContain(`CREATE TABLE "${table}"`);
     }
     // 语句分隔符是迁移运行器切分语句的依据（不要按分号切：函数体里有分号）
@@ -136,5 +157,121 @@ describe('migrations/0000_init.sql', () => {
     );
     // bot_labels 的「当前持有」唯一索引必须是 partial（removed_at is null），否则重新打标会撞唯一键
     expect(sql).toContain('WHERE removed_at is null');
+  });
+});
+
+describe('多仓库改造的增量列（db/schema ↔ 0003_multi_repo.sql）', () => {
+  it('repos：settings 一族 + source / installation_id / archived_at 都在，旧 config 三列保留', () => {
+    const columns = getTableColumns(repos);
+    expect(Object.keys(columns)).toEqual(
+      expect.arrayContaining([
+        'repoFullName',
+        'enabled',
+        'dryRun',
+        'settings',
+        'settingsValid',
+        'settingsError',
+        'settingsUpdatedAt',
+        'source',
+        'installationId',
+        'archivedAt',
+        // 过渡期列（W1 之后不再读，W3 可删）
+        'config',
+        'configValid',
+        'configError',
+      ]),
+    );
+    expect(columns.settings.notNull).toBe(true);
+    expect(columns.settingsValid.notNull).toBe(true);
+    expect(columns.source.notNull).toBe(true);
+    // 归档时刻与 installation id 可空（手动添加的仓库没有 installation）
+    expect(columns.archivedAt.notNull).toBe(false);
+    expect(columns.installationId.notNull).toBe(false);
+  });
+
+  it('webhook_deliveries.repo / bot_labels 的四个新列 / runtime_flags.repo 都在', () => {
+    expect(getTableColumns(webhookDeliveries).repo.notNull).toBe(false);
+
+    const labelColumns = getTableColumns(botLabels);
+    expect(Object.keys(labelColumns)).toEqual(
+      expect.arrayContaining(['sourceKey', 'judgementHash', 'reason', 'runId']),
+    );
+
+    const flagColumns = getTableColumns(runtimeFlags);
+    // NULL = 全局 flag，所以 repo 必须可空
+    expect(flagColumns.repo.notNull).toBe(false);
+  });
+
+  it('四张新表的列与唯一键（幂等的前提）', () => {
+    expect(Object.keys(getTableColumns(issueFeedback))).toEqual(
+      expect.arrayContaining([
+        'id',
+        'repo',
+        'targetKind',
+        'targetNumber',
+        'commentId',
+        'stage',
+        'content',
+        'anchor',
+        'reactionId',
+        'appliedAt',
+        'audit',
+        'createdAt',
+      ]),
+    );
+    expect(Object.keys(getTableColumns(labelDecisions))).toEqual(
+      expect.arrayContaining([
+        'repo',
+        'targetNumber',
+        'judgementHash',
+        'desired',
+        'applied',
+        'blockedReason',
+        'reason',
+        'runId',
+      ]),
+    );
+    expect(Object.keys(getTableColumns(quotaCounters))).toEqual(
+      expect.arrayContaining(['repo', 'kind', 'windowStart', 'count']),
+    );
+    expect(Object.keys(getTableColumns(promptVersions))).toEqual(
+      expect.arrayContaining(['repo', 'version', 'body', 'note', 'createdAt']),
+    );
+  });
+
+  it('0003_multi_repo.sql 包含全部新增列与表，并用 statement-breakpoint 切句', async () => {
+    const sql = await readFile(MIGRATION_0003, 'utf8');
+    for (const column of [
+      'settings',
+      'settings_valid',
+      'settings_error',
+      'settings_updated_at',
+      'source',
+      'installation_id',
+      'archived_at',
+    ]) {
+      expect(sql).toContain(`ADD COLUMN IF NOT EXISTS "${column}"`);
+    }
+    for (const table of ['issue_feedback', 'label_decisions', 'quota_counters', 'prompt_versions']) {
+      expect(sql).toContain(`CREATE TABLE IF NOT EXISTS "${table}"`);
+    }
+    // runtime_flags 的 repo 列 + 两条 partial 唯一索引（NULL = 全局）
+    expect(sql).toContain('ALTER TABLE "runtime_flags" ADD COLUMN IF NOT EXISTS "repo" text');
+    expect(sql).toContain('"runtime_flags_global_uidx"');
+    expect(sql).toContain('"runtime_flags_repo_uidx"');
+    expect(sql).toContain('WHERE "repo" IS NULL');
+    // bot_labels 的四个新列
+    for (const column of ['source_key', 'judgement_hash', 'reason', 'run_id']) {
+      expect(sql).toContain(`ALTER TABLE "bot_labels" ADD COLUMN IF NOT EXISTS "${column}"`);
+    }
+    expect(sql).toContain('--> statement-breakpoint');
+  });
+
+  it('0003 不重写历史：文件里没有 DROP TABLE，也没有改 0000 的列', async () => {
+    const sql = await readFile(MIGRATION_0003, 'utf8');
+    expect(sql).not.toMatch(/DROP TABLE/i);
+    expect(sql).not.toMatch(/DROP COLUMN/i);
+    // 唯一允许的 DROP 是 runtime_flags 的旧主键（改由 handle 两条 partial 唯一索引承担）
+    expect(sql).toContain('DROP CONSTRAINT IF EXISTS "runtime_flags_pkey"');
   });
 });

@@ -18,9 +18,9 @@ export type StatCardProps = {
 
 const TONE_CLASS: Record<NonNullable<StatCardProps['tone']>, string> = {
   neutral: 'text-foreground',
-  success: 'text-emerald-600 dark:text-emerald-400',
-  warning: 'text-amber-600 dark:text-amber-400',
-  danger: 'text-destructive',
+  success: 'text-success-fg',
+  warning: 'text-warn-fg',
+  danger: 'text-danger-fg',
 };
 
 export function StatCard({ label, value, hint, tone = 'neutral', className, testId }: StatCardProps) {

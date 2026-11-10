@@ -68,7 +68,6 @@ describe('e2e 幂等：同一投递 20 次 + 换投递同任务', () => {
       metricsServer: stubMetricsServer(),
       ack: {
         addEyesReaction: async () => undefined,
-        postAckComment: async () => undefined,
       },
     });
     await app.start();

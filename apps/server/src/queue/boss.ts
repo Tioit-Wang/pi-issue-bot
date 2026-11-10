@@ -17,6 +17,8 @@ import { QUEUE, expireInSecondsForCommand, ensureQueues, queueSpecOf, registerSc
 import type { QueueAdminBoss, ScheduleAdminBoss } from './definitions.ts';
 import { toSendOptions } from './retry-policy.ts';
 import type { RetryDecision } from './retry-policy.ts';
+import { DEFAULT_CONCURRENCY_PER_REPO, RepoConcurrencyLimiter } from './repo-concurrency.ts';
+import type { RepoConcurrencyGate } from './repo-concurrency.ts';
 
 /** 建 boss 的参数：DSN 由入口传入（本模块不读 env）。 */
 export type CreateBossOptions = {
@@ -179,20 +181,58 @@ export type TaskJobHandler = (job: TaskJob) => Promise<void>;
 /**
  * 注册 `run-task` 的 worker。
  *
- * 并发取 `QUEUES` 里 `run-task` 的 `concurrency`（3），并把 pg-boss 的批量 handler 收窄成
- * 「一次一个任务」——批量并发在 pg-boss 内部已经是 `localConcurrency` 个 worker，
+ * 并发取 `QUEUES` 里 `run-task` 的 `concurrency`（3，**全局**），并把 pg-boss 的批量 handler
+ * 收窄成「一次一个任务」——批量并发在 pg-boss 内部已经是 `localConcurrency` 个 worker，
  * 再在 handler 里并行跑只会让容器并发失控（§6.1 每个容器 2 CPU / 2 GB 是硬约束）。
+ *
+ * `gate` 是**仓库级**并发（`settings.limits.concurrency_per_repo`，默认 2）：
+ * 每个任务开跑前问一次该仓库的上限，同一仓库超过上限就等别的任务释放槽位。
+ * 不注入 `gate` 就是老行为（只按全局并发），所以既有装配与测试不用改。
  */
+export type TaskWorkerOptions = {
+  /** 全局并发；缺省 `QUEUES.run-task` 的 3 */
+  readonly concurrency?: number;
+  /** 仓库级并发闸门；不注入 = 不限仓库 */
+  readonly gate?: RepoConcurrencyGate;
+  /** 信号量实例（测试注入；缺省内部建一个） */
+  readonly limiter?: RepoConcurrencyLimiter;
+};
+
 export async function registerTaskWorker(
   boss: WorkBoss,
   handler: TaskJobHandler,
-  concurrency: number = queueSpecOf(QUEUE.runTask).concurrency,
+  options: number | TaskWorkerOptions = {},
 ): Promise<string> {
+  // 兼容旧签名（第三个参数是数字）：装配层不必为了多一个参数改调用形状
+  const resolved: TaskWorkerOptions = typeof options === 'number' ? { concurrency: options } : options;
+  const concurrency = resolved.concurrency ?? queueSpecOf(QUEUE.runTask).concurrency;
+  const limiter = resolved.limiter ?? new RepoConcurrencyLimiter();
+  const gate = resolved.gate;
   return boss.work(QUEUE.runTask, { localConcurrency: concurrency }, async (jobs) => {
     for (const job of jobs) {
-      await handler({ id: job.id, data: job.data });
+      const taskJob: TaskJob = { id: job.id, data: job.data };
+      if (gate === undefined) {
+        await handler(taskJob);
+        continue;
+      }
+      const limit = await repoLimitOf(gate, job.data.repo);
+      await limiter.run(job.data.repo, limit, () => handler(taskJob));
     }
   });
+}
+
+/**
+ * 问闸门「这个仓库能同时跑几个」。
+ *
+ * 读库失败 → 回落到默认 2 而不是放行全部：宁可让一个仓库慢一点，
+ * 也不要因为一次查询抖动把三个全局槽位全给同一个仓库。
+ */
+async function repoLimitOf(gate: RepoConcurrencyGate, repo: string): Promise<number> {
+  try {
+    return await gate.limitFor(repo);
+  } catch {
+    return DEFAULT_CONCURRENCY_PER_REPO;
+  }
 }
 
 /** 注册定时任务队列的 worker（每次取到 job 就跑一次回调；并发固定 1，见 QUEUES）。 */

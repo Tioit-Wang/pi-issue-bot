@@ -19,7 +19,6 @@ import type { TestDb } from './helpers/queries-db.ts';
 const SECRET = 'test-secret';
 const ack = {
   addEyesReaction: async () => undefined,
-  postAckComment: async () => undefined,
 };
 
 describe('/api/skills（HTTP 层）', () => {

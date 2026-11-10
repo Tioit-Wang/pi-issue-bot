@@ -30,6 +30,7 @@ import type {
 import {
   Params,
   QueryError,
+  arrayOf,
   intOf,
   isoOf,
   isoOrNull,
@@ -105,12 +106,21 @@ type IssueRow = {
   bot_turns: number | string | null;
   labels: string[] | null;
   outcomes: unknown;
-    bot_preview: string | null;
+  bot_preview: string | null;
   last_reply_at: Date | null;
   last_actor_login: string | null;
   last_actor_kind: string | null;
   awaiting_reply: boolean | null;
   human_preview: string | null;
+  /** `issue_feedback` 的时间线（升序，最多 20 条；元素是 jsonb_build_object 的产物）。 */
+  feedback: unknown;
+  /** `label_decisions` 摘要：最近一行的 desired / applied / reason + 被拦原因计数。 */
+  label_last_at: Date | null;
+  label_desired: unknown;
+  label_applied: unknown;
+  label_reason: string | null;
+  label_blocked: unknown;
+  label_rows: number | string | null;
 };
 
 /**
@@ -189,7 +199,14 @@ agg as (
       )
     ) as awaiting_reply,
     bp.body as bot_preview,
-    hp.body as human_preview
+    hp.body as human_preview,
+    fbt.events as feedback,
+    ld.last_at as label_last_at,
+    ld.desired as label_desired,
+    ld.applied as label_applied,
+    ld.reason as label_reason,
+    ld.blocked as label_blocked,
+    ld.row_count as label_rows
   from base b
   left join lateral (
     select
@@ -280,6 +297,56 @@ agg as (
     order by d.received_at desc
     limit 1
   ) la on true
+  /*
+   * 无感反馈时间线（issue_feedback）：取最近 20 条再升序排，元素直接拼成契约的
+   * IssueFeedbackEvent 形状（stage/content/appliedAt/at/commentId）。
+   * reactionState 由 Node 侧从这条时间线里挑「最新终态」，不再多扫一次表。
+   */
+  left join lateral (
+    select jsonb_agg(
+             jsonb_build_object(
+               'stage', s.stage,
+               'content', s.content,
+               'appliedAt', s.applied_at,
+               'at', s.created_at,
+               'commentId', s.comment_id
+             )
+             order by s.created_at asc, s.id asc
+           ) as events
+    from (
+      select f.stage, f.content, f.applied_at, f.created_at, f.comment_id, f.id
+      from issue_feedback f
+      where f.repo = b.repo and f.target_kind = b.kind and f.target_number = b.number
+        and f.stage in ('received', 'succeeded', 'failed', 'timed-out', 'cancelled')
+      order by f.created_at desc, f.id desc
+      limit 20
+    ) s
+  ) fbt on true
+  /*
+   * 打标判定摘要（label_decisions）：最近一行的 desired/applied/reason（当天可读的结论）
+   * + 被拦原因计数（blocked_reason 聚合，数量降序，最多 20 条）。
+   */
+  left join lateral (
+    select
+      max(d.created_at) as last_at,
+      (array_agg(d.desired order by d.created_at desc, d.id desc))[1] as desired,
+      (array_agg(d.applied order by d.created_at desc, d.id desc))[1] as applied,
+      (array_agg(d.reason order by d.created_at desc, d.id desc))[1] as reason,
+      count(*) as row_count,
+      (
+        select jsonb_object_agg(k.blocked_reason, k.n)
+        from (
+          select d2.blocked_reason, count(*) as n
+          from label_decisions d2
+          where d2.repo = b.repo and d2.target_number = b.number and d2.blocked_reason is not null
+          group by d2.blocked_reason
+          order by count(*) desc, d2.blocked_reason asc
+          limit 20
+        ) k
+      ) as blocked
+    from label_decisions d
+    where d.repo = b.repo and d.target_number = b.number
+  ) ld on true
 )`;
 }
 
@@ -299,6 +366,69 @@ function labelsOf(raw: readonly string[] | null | undefined): string[] {
     if (seen.size >= 50) break;
   }
   return [...seen];
+}
+
+/* ── 无感反馈 / 打标判定（W3-H 给面板补的展示字段） ─────────────────────────── */
+
+/** 契约里 `IssueFeedbackEvent` 的形状（间接取自 `IssueListItem.reactionState`，不手抄 DTO）。 */
+type IssueFeedbackEvent = NonNullable<IssueListItem['reactionState']>;
+
+/** `issue_feedback.stage` 的 5 个契约取值（SQL 里已经过滤过一次，这里是第二道闸）。 */
+const FEEDBACK_STAGES = ['received', 'succeeded', 'failed', 'timed-out', 'cancelled'] as const;
+/** reaction 的 content 白名单；库里有别的 content 时给 `null`（不猜）。 */
+const REACTION_CONTENTS = ['eyes', 'rocket', 'confused'] as const;
+/** 时间线最多回多少条（契约 `feedback.max(20)`）。 */
+const MAX_FEEDBACK = 20;
+
+/** `issue_feedback` 的一行（jsonb 产物）→ 契约的 `IssueFeedbackEvent`；坏行返回 `null`。 */
+function feedbackEventOf(raw: unknown): IssueFeedbackEvent | null {
+  const record = recordOf(raw);
+  const stage = FEEDBACK_STAGES.find((value) => value === record['stage']);
+  const at = isoOrNull(record['at']);
+  if (stage === undefined || at === null) return null;
+  const content = REACTION_CONTENTS.find((value) => value === record['content']) ?? null;
+  const rawComment = record['commentId'];
+  const commentId =
+    typeof rawComment === 'string' && rawComment !== ''
+      ? rawComment.slice(0, 64)
+      : typeof rawComment === 'number'
+        ? String(rawComment).slice(0, 64)
+        : null;
+  return { stage, content, appliedAt: isoOrNull(record['appliedAt']), at, commentId };
+}
+
+/** 时间线（升序）：解析不了的行直接丢——一条脏数据不该让整个列表 500。 */
+function feedbackTimelineOf(raw: unknown): IssueFeedbackEvent[] {
+  return arrayOf(raw)
+    .map(feedbackEventOf)
+    .filter((item): item is IssueFeedbackEvent => item !== null)
+    .slice(-MAX_FEEDBACK);
+}
+
+/** 当前 reaction 状态 = 时间线里**最新一个终态**（`received` 只是「我收到了」，不算终态）。 */
+function reactionStateOf(timeline: readonly IssueFeedbackEvent[]): IssueFeedbackEvent | null {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index];
+    if (event !== undefined && event.stage !== 'received') return event;
+  }
+  return null;
+}
+
+/** `label_decisions` 的聚合列 → 契约的 `IssueLabelDecisionSummary`；一行都没有时返回 `null`。 */
+function labelDecisionSummaryOf(row: IssueRow): IssueListItem['labelDecisions'] {
+  if (intOf(row.label_rows) === 0) return null;
+  const blocked = recordOf(row.label_blocked);
+  const entries = Object.entries(blocked)
+    .map(([reason, count]) => ({ reason: reason.slice(0, 120), count: intOf(count) }))
+    .filter((entry) => entry.reason !== '' && entry.count > 0)
+    .slice(0, 20);
+  return {
+    lastAt: isoOrNull(row.label_last_at),
+    desired: labelsOf(arrayOf(row.label_desired).filter((value): value is string => typeof value === 'string')),
+    applied: labelsOf(arrayOf(row.label_applied).filter((value): value is string => typeof value === 'string')),
+    reason: oneLine(row.label_reason, 500),
+    blocked: entries,
+  };
 }
 
 /** 正文/摘要压成一行并截断（列表预览与工具摘要共用）。 */
@@ -347,6 +477,8 @@ function outcomesOf(raw: unknown): IssueListItem['outcomes'] {
 
 function toListItem(row: IssueRow): IssueListItem {
   const title = oneLine(row.title, 500);
+  // 反馈时间线算一次：`reactionState` 与 `feedback` 都从它派生（同源，不会自相矛盾）
+  const feedback = feedbackTimelineOf(row.feedback);
   return {
     repo: row.repo,
     kind: row.kind as IssueListItem['kind'],
@@ -366,6 +498,9 @@ function toListItem(row: IssueRow): IssueListItem {
     lastActorKind: row.last_actor_kind === 'human' || row.last_actor_kind === 'bot' ? row.last_actor_kind : null,
     awaitingReply: row.awaiting_reply === true,
     lastPreview: oneLine(row.bot_preview, PREVIEW_CHARS) ?? oneLine(row.human_preview, PREVIEW_CHARS),
+    reactionState: reactionStateOf(feedback),
+    labelDecisions: labelDecisionSummaryOf(row),
+    feedback,
   };
 }
 
@@ -506,6 +641,8 @@ type MetaRow = {
   labels: string[] | null;
   participants: string[] | null;
   bot_login: string | null;
+  /** `issue_feedback` 时间线（升序，最多 20 条）。 */
+  feedback: unknown;
 };
 
 type TaskTurnRow = {
@@ -735,7 +872,8 @@ export async function queryIssueSession(
              group by 1
            ) x
          ) as participants,
-         (select rp.config -> 'bot' ->> 'login' from repos rp where rp.repo_full_name = $1) as bot_login
+         (select rp.config -> 'bot' ->> 'login' from repos rp where rp.repo_full_name = $1) as bot_login,
+        fbt.events as feedback
        from (select 1) z
       left join lateral (
         select
@@ -752,7 +890,31 @@ export async function queryIssueSession(
         select s.closed_at
         from issue_states s
         where s.repo = $1 and s.issue_number = $3
-      ) st on true`,
+      ) st on true
+     /*
+      * 无感反馈：时间线 + 待落地项（applied_at is null：dry-run 计划 / 排队中）。
+      * 与列表同一条 SQL 形状，reactionState 由 Node 侧挑「最新终态」。
+      */
+     left join lateral (
+       select jsonb_agg(
+                jsonb_build_object(
+                  'stage', s.stage,
+                  'content', s.content,
+                  'appliedAt', s.applied_at,
+                  'at', s.created_at,
+                  'commentId', s.comment_id
+                )
+                order by s.created_at asc, s.id asc
+              ) as events
+       from (
+         select f.stage, f.content, f.applied_at, f.created_at, f.comment_id, f.id
+         from issue_feedback f
+         where f.repo = $1 and f.target_kind = $2 and f.target_number = $3
+           and f.stage in ('received', 'succeeded', 'failed', 'timed-out', 'cancelled')
+         order by f.created_at desc, f.id desc
+         limit 20
+       ) s
+     ) fbt on true`,
       // $5 是编号的字符串形态：$3 已被 issue_number / target_number 推成整数，
       // 同一个参数再写 `$3::text` 会让 PG 报 operator 不存在（integer = text）。
       [repo, kind, number, key, String(number)],
@@ -913,6 +1075,8 @@ export async function queryIssueSession(
     .map((login) => login.slice(0, 100));
   if (botLogin !== null && !participants.includes(botLogin)) participants.push(botLogin);
 
+  // 反馈时间线：`reactionState` = 最新终态；`pendingFeedback` = 记了台账但 `applied_at` 还空着的
+  const feedback = feedbackTimelineOf(meta?.feedback);
   return {
     generatedAt: now.toISOString(),
     issue: {
@@ -925,6 +1089,8 @@ export async function queryIssueSession(
       stateStale: meta?.state_stale !== false,
       labels: labelsOf(meta?.labels),
       participants: participants.slice(0, 100),
+      reactionState: reactionStateOf(feedback),
+      pendingFeedback: feedback.filter((event) => event.appliedAt === null),
     },
     turns,
   };

@@ -17,7 +17,7 @@
  * 且会让人以为防住了。这里的立场是：正文只是数据，它被包在一个它无法破坏的结构里。
  */
 import { SKILL_NAME_RE, SKILL_OUTPUT_INTENTS } from '../../../../packages/contract/src/index.ts';
-import type { RepoConfig, SkillOutput } from '../../../../packages/contract/src/index.ts';
+import type { LabelVocabularyEntry, SkillOutput } from '../../../../packages/contract/src/index.ts';
 import type { SkillDefinition } from './types.ts';
 
 /** 各类不可信输入的字符上限。数字是刻意的保守值：既够判定，又不至于把上下文吃掉。 */
@@ -34,6 +34,11 @@ export const PROMPT_LIMITS = {
   inputValue: 200,
   /** 最终 prompt 的硬上限（超过就截断并记 warn，绝不让一次任务把上下文撑爆）。 */
   prompt: 20_000,
+  /**
+   * 注入提示词的标签词表条目上限（`labels.vocabulary` 最多 200 条）。
+   * 60 条足够覆盖绝大多数仓库，再多就会把上下文预算花在罗列标签上。
+   */
+  vocabularyEntries: 60,
 } as const;
 
 /** 不可信内容块的哨兵前缀。正文里以它开头的行会被剥掉（见文件头第 3 条）。 */
@@ -50,10 +55,23 @@ export type SkillPromptContext = {
   readonly headSha?: string | null;
   /** PR 的 base sha（`/review-pr` 的 diff 起点）。 */
   readonly baseSha?: string | null;
-  /** 仓库配置快照；只用来把「仓库标准」告诉 agent，不参与判定阈值。 */
-  readonly config?: RepoConfig | null;
+  /**
+   * 仓库配置快照——提示词只用到其中的**标签词表**（`labels.vocabulary`）。
+   * 所以这里的类型是结构子集：整份 `RepoSettings`、或注册表只需要的那几段都能传。
+   */
+  config?: SkillPromptConfig | null;
 };
 
+/**
+ * 提示词需要的仓库配置切片：只有标签词表。
+ *
+ * 用结构子集而不是整份 `RepoSettings` 有两个好处：Worker 侧（`app/worker-deps.ts` 的
+ * `PromptEnricherOptions.config`）只有注册表那几段，能直接传进来；`skills/` 也不必
+ * 依赖配置的其余段（依赖越少，越不会因为契约加字段而被迫改这里）。
+ */
+export type SkillPromptConfig = {
+  readonly labels: { readonly vocabulary: readonly LabelVocabularyEntry[] };
+};
 export type RenderSkillPromptInput = {
   readonly skill: SkillDefinition;
   /** 解析期已校验过的命令参数（`key=value`）。 */
@@ -172,7 +190,60 @@ function formatLabels(labels: readonly string[] | undefined): string {
     .filter((label) => label !== '')
     .join(', ');
 }
+/**
+ * 项目标签词表 → 提示词里的一段（`docs/impl-multi-repo.md` §4 W2-E 第 2 条）。
+ *
+ * 为什么要注入而不是让模型自己猜：仓库标签名是**项目私有词汇**（`area/db`、`缺少信息`……），
+ * 模型不可能知道；过去的做法是在提示词里写死一组示范标签（`bug / feature / needs-info …`），
+ * 结果是每个仓库都收到同一套「平台词汇」，和面板里配的词表毫无关系。
+ *
+ * 词表为空时给一句「只能用已有标签」的说明：**不能什么都不说**——那会让模型回到猜标签的老路。
+ *
+ * 每个条目里的文本都会压成单行并截断：词表是面板写入的可信数据，但它仍然是「会进提示词的字符串」，
+ * 换行能让一行变成伪指令，值得顺手挡住。
+ */
+export function renderLabelVocabulary(vocabulary: readonly LabelVocabularyEntry[] | undefined | null): string {
+  const entries = (vocabulary ?? []).slice(0, PROMPT_LIMITS.vocabularyEntries);
+  if (entries.length === 0) {
+    return [
+      '## 项目标签',
+      '',
+      '本仓库没有配置标签词表：**只能用该 issue 上已经存在的标签名**，不要发明新标签。',
+    ].join('\n');
+  }
+  const lines = [
+    '## 项目标签（`verdict.labels` 只能从这里选，写标签名本身而不是判定键）',
+    '',
+  ];
+  for (const entry of entries) {
+    const name = oneLine(entry.name, PROMPT_LIMITS.labelItem);
+    if (name === '') {
+      continue;
+    }
+    const parts: string[] = [];
+    if (entry.meaning !== undefined) {
+      parts.push(oneLine(entry.meaning, 120));
+    }
+    if (entry.group !== undefined) {
+      parts.push(`互斥组：${oneLine(entry.group, 40)}（同组只打一个）`);
+    }
+    lines.push(parts.length === 0 ? `- \`${name}\`` : `- \`${name}\`：${parts.join('；')}`);
+  }
+  lines.push(
+    '',
+    '不在上表里的标签名一律不要打；拿不准就不打，把理由写进 `verdict.evidence`。',
+  );
+  return lines.join('\n');
+}
 
+/** 压成单行 + 截断（提示词里任何「一行」都不该由数据决定长度）。 */
+function oneLine(raw: string, maxChars: number): string {
+  return raw
+    .replace(/\s+/gu, ' ')
+    .replace(/[{}]/gu, '')
+    .trim()
+    .slice(0, maxChars);
+}
 /** 技能声明允许产出的 intent 列表（`outputs` → intent，契约 §2 的映射表）。 */
 export function allowedIntentsOf(outputs: readonly SkillOutput[]): readonly string[] {
   const intents: string[] = [];
@@ -211,8 +282,9 @@ function envelopeInstruction(skill: SkillDefinition): string {
 /**
  * 渲染技能 prompt。
  *
- * 结构固定为「技能身份 → 正文（已插值）→ 任务上下文（不可信块）→ 输出契约」：
+ * 结构固定为「技能身份 → 正文（已插值）→ 项目标签词表 → 任务上下文（不可信块）→ 输出契约」：
  * 输出契约放在最后是有意的——它是模型读到的最后一段文字，且不在任何不可信块之内。
+ * 词表放在不可信块**之外**：它是仓库配置（可信），不能被正文里的伪造块「盖住」。
  */
 export function renderSkillPrompt(input: RenderSkillPromptInput): RenderSkillPromptResult {
   const { skill, context } = input;
@@ -301,6 +373,9 @@ export function renderSkillPrompt(input: RenderSkillPromptInput): RenderSkillPro
     '## 指令',
     '',
     rendered.trim(),
+    '',
+    // 标签词表（`settings.labels.vocabulary`）——替掉旧版写死在提示词里的示范标签集
+    renderLabelVocabulary(context.config?.labels.vocabulary),
     '',
     '## 任务上下文',
     '',

@@ -56,44 +56,74 @@ beforeEach(async () => {
   await resetTables();
 });
 
-/** 让仓库「开机」：写一行 `repos`，`dry_run` 由用例决定。 */
-async function enableRepo(options: { readonly dryRun: boolean; readonly enabled?: boolean; readonly config?: unknown }): Promise<void> {
+/** 写一行 `repos`（配置走 `settings`；`installationId` 给安装准入的用例）。 */
+async function seedRepo(
+  repo: string,
+  options: {
+    readonly dryRun?: boolean;
+    readonly enabled?: boolean;
+    readonly settings?: unknown;
+    readonly installationId?: string | null;
+  } = {},
+): Promise<void> {
   await db.pool.query(
-    `insert into repos (repo_full_name, enabled, dry_run, config, config_valid)
-     values ($1, $2, $3, $4::jsonb, true)`,
-    [REPO, options.enabled ?? true, options.dryRun, JSON.stringify(options.config ?? { version: 1 })],
+    `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid, installation_id)
+     values ($1, $2, $3, $4::jsonb, true, $5)`,
+    [
+      repo,
+      options.enabled ?? true,
+      options.dryRun ?? true,
+      JSON.stringify(options.settings ?? { version: 1 }),
+      options.installationId ?? null,
+    ],
   );
+}
+
+/** 让 `REPO`「开机」：写一行 `repos`（`dry_run` 由用例决定）。 */
+async function enableRepo(options: {
+  readonly dryRun: boolean;
+  readonly enabled?: boolean;
+  readonly config?: unknown;
+  readonly installationId?: string | null;
+}): Promise<void> {
+  await seedRepo(REPO, {
+    dryRun: options.dryRun,
+    ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
+    ...(options.config === undefined ? {} : { settings: options.config }),
+    ...(options.installationId === undefined ? {} : { installationId: options.installationId }),
+  });
 }
 
 type Harness = {
   readonly deps: WebhookDeps;
-  /** 调用顺序："enqueue" / "reaction" / "comment"，用来断言「应答在 handler 内」。 */
+  /** 调用顺序："enqueue" / "reaction" / "any-reaction"，用来断言「应答在 handler 内」。 */
   readonly events: string[];
   readonly sends: Array<Record<string, unknown>>;
   readonly reactions: Array<Record<string, unknown>>;
-  readonly comments: Array<Record<string, unknown>>;
+  /** 通用 reaction（`confused` 等），与 eyes 分开记，断言「闸门/失败只用 confused」。 */
+  readonly anyReactions: Array<Record<string, unknown>>;
 };
 
 function harness(options: { readonly verify?: boolean } = {}): Harness {
   const events: string[] = [];
   const sends: Array<Record<string, unknown>> = [];
   const reactions: Array<Record<string, unknown>> = [];
-  const comments: Array<Record<string, unknown>> = [];
+  const anyReactions: Array<Record<string, unknown>> = [];
   const ack: WebhookAck = {
     addEyesReaction: async (input) => {
       events.push('reaction');
       reactions.push({ ...input });
     },
-    postAckComment: async (input) => {
-      events.push('comment');
-      comments.push({ ...input });
+    addReaction: async (input) => {
+      events.push('any-reaction');
+      anyReactions.push({ ...input });
     },
   };
   return {
     events,
     sends,
     reactions,
-    comments,
+    anyReactions,
     deps: {
       // 验签成功只看签名串：默认 "good-signature"，其余一律失败
       verify: async (input) => (options.verify ?? true) && input.signature === 'good-signature',
@@ -270,7 +300,8 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(h.events).toEqual(['enqueue', 'reaction']);
     // 评论级回执：reaction 打在那条评论（id=555）上，不是 issue 上
     expect(h.reactions).toEqual([{ repo: REPO, issueNumber: 12, commentId: 555 }]);
-    expect(h.comments).toHaveLength(0);
+    // 零评论（§0.4）：命令通道也只有 reaction
+    expect(h.anyReactions).toHaveLength(0);
     const body = result.body as { action: string; ackComment: string | null; taskId: string | null };
     expect(body.action).toBe('enqueued');
     expect(body.ackComment).toBeNull();
@@ -301,7 +332,7 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(result.body).toMatchObject({ action: 'enqueued', ackComment: null });
     expect(h.events).toEqual(['enqueue']);
     expect(h.reactions).toHaveLength(0);
-    expect(h.comments).toHaveLength(0);
+    expect(h.anyReactions).toHaveLength(0);
     expect(await countRows('tasks')).toBe(1);
   });
 
@@ -493,7 +524,6 @@ describe('webhook 纯函数', () => {
           actorLogin: 'alice',
           association: 'NONE',
           commentId: null,
-          ackStyle: 'reaction',
         },
         null,
       ),
@@ -518,7 +548,6 @@ describe('webhook 纯函数', () => {
       actorLogin: 'bob',
       association: 'CONTRIBUTOR',
       commentId: 555,
-      ackStyle: 'comment' as const,
     };
     const denied = checkCommandGate(plan, { ...config });
     expect(denied.allowed).toBe(false);
@@ -536,11 +565,367 @@ describe('webhook 纯函数', () => {
       actorLogin: 'alice',
       association: null,
       commentId: null,
-      ackStyle: 'reaction' as const,
     };
     const key = idempotencyKeyFor({ ...base, command: 'auto:triage' }, REPO);
     expect(key).toHaveLength(32);
     expect(idempotencyKeyFor({ ...base, command: 'auto:triage' }, REPO)).toBe(key);
     expect(idempotencyKeyFor({ ...base, command: 'auto:triage', targetNumber: 8 }, REPO)).not.toBe(key);
+  });
+});
+
+/* ── 第 4.5 步：项目解析 / 安装事件 / 两级暂停 ─────────────────────────────── */
+
+/** 安装事件载荷：**没有 `repository`**，只有 `installation` + 仓库数组。 */
+function installationPayload(
+  action: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    action,
+    installation: { id: 42, account: { login: 'acme' } },
+    sender: { login: 'alice', type: 'User' },
+    ...overrides,
+  };
+}
+
+/** issue 事件 + installation（验证 installation 准入与安装级暂停）。 */
+function issueOpenedFromInstallation(installationId: number, number = 70): Record<string, unknown> {
+  return {
+    action: 'opened',
+    repository: { full_name: REPO },
+    installation: { id: installationId },
+    sender: { login: 'alice', type: 'User' },
+    issue: { number, updated_at: '2026-05-31T00:00:00Z', author_association: 'OWNER' },
+  };
+}
+
+async function repoRow(repo: string): Promise<Record<string, unknown> | undefined> {
+  const rows = await db.sql(
+    'select enabled, dry_run, source, installation_id, settings from repos where repo_full_name = $1',
+    [repo],
+  );
+  return rows[0];
+}
+
+async function countRepos(): Promise<number> {
+  const rows = await db.sql('select count(*)::int as n from repos');
+  return Number(rows[0]?.['n'] ?? 0);
+}
+
+async function deliveryRepo(deliveryId: string): Promise<unknown> {
+  const rows = await db.sql('select repo from webhook_deliveries where delivery_id = $1', [deliveryId]);
+  return rows[0]?.['repo'];
+}
+
+describe('安装事件（payload 没有 repository）', () => {
+  it('installation.created → 为每个仓库建行，但不开工（enabled=false, dry_run=true）', async () => {
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-created',
+      event: 'installation',
+      rawBody: JSON.stringify(
+        installationPayload('created', {
+          repositories: [{ full_name: 'acme/a' }, { full_name: 'acme/b' }],
+        }),
+      ),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    expect(result.status).toBe(200);
+    // 契约响应枚举里没有「installation」一档：安装事件统一报 ignored（它确实没建任务）
+    expect(result.body).toMatchObject({ action: 'ignored', taskId: null });
+    expect(await countRows('tasks')).toBe(0);
+    expect(h.sends).toHaveLength(0);
+    for (const repo of ['acme/a', 'acme/b']) {
+      expect(await repoRow(repo)).toMatchObject({
+        enabled: false,
+        dry_run: true,
+        source: 'installation',
+        installation_id: '42',
+      });
+    }
+    // 安装事件没有 repository：审计列仍然是 NULL
+    expect(await deliveryRepo('dlv-install-created')).toBeNull();
+  });
+
+  it('installation_repositories.added → 建行；已有行不被覆盖（面板配置不丢）', async () => {
+    await seedRepo('acme/existing', {
+      enabled: true,
+      dryRun: false,
+      installationId: '42',
+      settings: { version: 1, limits: { queue_wait_minutes: 3 } },
+    });
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-added',
+      event: 'installation_repositories',
+      rawBody: JSON.stringify(
+        installationPayload('added', {
+          repositories_added: [{ full_name: 'acme/existing' }, { full_name: 'acme/new-one' }],
+        }),
+      ),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    expect(result.body).toMatchObject({ action: 'ignored' });
+    // 新仓库：建了行、没开工
+    expect(await repoRow('acme/new-one')).toMatchObject({
+      enabled: false,
+      dry_run: true,
+      source: 'installation',
+      installation_id: '42',
+    });
+    // 老仓库：开关与 settings 都没被安装事件改掉（重新安装不该冲掉面板配置）
+    const existing = await repoRow('acme/existing');
+    expect(existing).toMatchObject({ enabled: true, dry_run: false });
+    expect((existing?.['settings'] as { limits?: { queue_wait_minutes?: number } }).limits?.queue_wait_minutes).toBe(3);
+  });
+
+  it('installation_repositories.removed → 只禁用被移除的那个仓库', async () => {
+    await seedRepo('acme/kept', { installationId: '42' });
+    await seedRepo('acme/dropped', { installationId: '42' });
+    const h = harness();
+    await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-removed',
+      event: 'installation_repositories',
+      rawBody: JSON.stringify(
+        installationPayload('removed', { repositories_removed: [{ full_name: 'acme/dropped' }] }),
+      ),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    expect((await repoRow('acme/dropped'))?.['enabled']).toBe(false);
+    expect((await repoRow('acme/kept'))?.['enabled']).toBe(true);
+    // 行还在（禁用不是删除：成本与审计历史要留）
+    expect(await countRepos()).toBe(2);
+  });
+
+  it('installation.deleted → 按 installation_id 批量禁用，不影响别人', async () => {
+    await seedRepo('acme/a', { installationId: '42' });
+    await seedRepo('acme/b', { installationId: '42' });
+    await seedRepo('other/manual', { installationId: null });
+    const h = harness();
+    await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-deleted',
+      event: 'installation',
+      rawBody: JSON.stringify(installationPayload('deleted')),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    expect((await repoRow('acme/a'))?.['enabled']).toBe(false);
+    expect((await repoRow('acme/b'))?.['enabled']).toBe(false);
+    // 手动添加的仓库不属于这个 installation：不受影响
+    expect((await repoRow('other/manual'))?.['enabled']).toBe(true);
+    expect(await countRepos()).toBe(3);
+  });
+
+  it('installation.suspend → 写 pause:installation:<id>（repo NULL）；suspend 期间投递只记不入队', async () => {
+    const h = harness();
+    await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-suspend',
+      event: 'installation',
+      rawBody: JSON.stringify(installationPayload('suspend')),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    const flags = await db.sql(`select key, value, until, repo from runtime_flags where key = 'pause:installation:42'`);
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toMatchObject({ value: '1', until: null, repo: null });
+
+    await enableRepo({ dryRun: false, installationId: '42' });
+    const paused = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-while-suspended',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedFromInstallation(42)),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(paused.body).toMatchObject({ action: 'paused' });
+    expect(await countRows('tasks')).toBe(0);
+  });
+
+  it('installation.unsuspend → value=0（写过去时间而不是删行），之后恢复接活', async () => {
+    const h = harness();
+    await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-suspend-2',
+      event: 'installation',
+      rawBody: JSON.stringify(installationPayload('suspend')),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-unsuspend',
+      event: 'installation',
+      rawBody: JSON.stringify(installationPayload('unsuspend')),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    const flags = await db.sql(`select value, until from runtime_flags where key = 'pause:installation:42'`);
+    expect(flags[0]?.['value']).toBe('0');
+    expect((flags[0]?.['until'] as Date).getTime()).toBeLessThan(FIXED_NOW.getTime());
+
+    await enableRepo({ dryRun: false, installationId: '42' });
+    const resumed = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-after-unsuspend',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedFromInstallation(42, 71)),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(resumed.body).toMatchObject({ action: 'enqueued' });
+    expect(await countRows('tasks')).toBe(1);
+  });
+
+  it('白名单外的事件（如 installation_repositories 的未知 action）不写库', async () => {
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-install-unknown',
+      event: 'installation_repositories',
+      rawBody: JSON.stringify(installationPayload('transferred', { repositories_added: [{ full_name: 'acme/a' }] })),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(result.body).toMatchObject({ action: 'ignored' });
+    expect(await countRepos()).toBe(0);
+  });
+});
+
+describe('installation 准入与未知仓库审计', () => {
+  it('installation 不匹配 → 200 ignored，不建任务', async () => {
+    await enableRepo({ dryRun: false, installationId: '111' });
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-installation-mismatch',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedFromInstallation(222)),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ action: 'ignored', taskId: null });
+    expect(await countRows('tasks')).toBe(0);
+    expect(h.sends).toHaveLength(0);
+    // 投递仍然落库（审计），并且带 repo
+    expect(await deliveryRepo('dlv-installation-mismatch')).toBe(REPO);
+  });
+
+  it('installation 一致 → 正常建任务', async () => {
+    await enableRepo({ dryRun: false, installationId: '111' });
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-installation-ok',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedFromInstallation(111)),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(result.body).toMatchObject({ action: 'enqueued' });
+    expect(await countRows('tasks')).toBe(1);
+  });
+
+  it('仓库行没有 installation_id（面板手动添加）→ 不因 installation 缺失被挡', async () => {
+    await enableRepo({ dryRun: false, installationId: null });
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-manual-repo',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedFromInstallation(999)),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(result.body).toMatchObject({ action: 'enqueued' });
+  });
+
+  it('未知仓库：200 ignored，但 repo 写进 webhook_deliveries.repo（不再静默）', async () => {
+    const h = harness();
+    const result = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-unknown-repo-audit',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedPayload()),
+      signature: 'good-signature',
+      source: 'live',
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ action: 'ignored' });
+    expect(await countRows('tasks')).toBe(0);
+    expect(await deliveryRepo('dlv-unknown-repo-audit')).toBe(REPO);
+  });
+});
+
+describe('两级暂停：仓库级熔断不拖累别的仓库', () => {
+  it('runtime_flags 的仓库行只停这个仓库（全局行不存在时别的仓库照常建任务）', async () => {
+    await enableRepo({ dryRun: false });
+    await seedRepo('other/lib', { dryRun: false });
+    await db.pool.query(
+      `insert into runtime_flags (key, repo, value, until)
+       values ('rate_limit_pause', $1, '1', '2026-06-01T12:10:00Z')`,
+      [REPO],
+    );
+
+    const h = harness();
+    const paused = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-repo-paused',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedPayload()),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(paused.body).toMatchObject({ action: 'paused' });
+
+    const other = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-other-repo',
+      event: 'issues',
+      rawBody: JSON.stringify({
+        action: 'opened',
+        repository: { full_name: 'other/lib' },
+        sender: { login: 'bob', type: 'User' },
+        issue: { number: 5, updated_at: '2026-05-31T00:00:00Z', author_association: 'OWNER' },
+      }),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(other.body).toMatchObject({ action: 'enqueued' });
+    expect(await countRows('tasks')).toBe(1);
+  });
+
+  it('全局行（repo IS NULL）停全部仓库；仓库级的行不会被当成全局', async () => {
+    await enableRepo({ dryRun: false });
+    await db.pool.query(
+      `insert into runtime_flags (key, repo, value, until)
+       values ('rate_limit_pause', $1, '0', '2026-05-01T00:00:00Z')`,
+      [REPO],
+    );
+    const h = harness();
+    // 仓库行 value=0（且已过期）→ 不暂停
+    const alive = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-repo-flag-off',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedPayload()),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(alive.body).toMatchObject({ action: 'enqueued' });
+
+    // 再写全局行 → 停
+    await db.pool.query(
+      `insert into runtime_flags (key, repo, value, until)
+       values ('rate_limit_pause', null, '1', '2026-06-01T12:10:00Z')`,
+    );
+    const paused = await handleWebhook(h.deps, {
+      deliveryId: 'dlv-global-flag-on',
+      event: 'issues',
+      rawBody: JSON.stringify(issueOpenedPayload({ updated_at: '2026-06-01T09:00:00Z' })),
+      signature: 'good-signature',
+      source: 'live',
+    });
+    expect(paused.body).toMatchObject({ action: 'paused' });
   });
 });

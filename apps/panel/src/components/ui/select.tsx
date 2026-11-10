@@ -2,8 +2,9 @@ import type { SelectHTMLAttributes } from 'react';
 import { cn } from '../../lib/utils.ts';
 
 /**
- * 下拉选择：原生 `<select>`（可访问性与键盘行为免费拿到，内网工具没必要自研 listbox）。
- * 选项用 `options` 传，省掉 `<option>` 的重复样板。
+ * 下拉选择：原生 `<select>`（键盘、可访问性、移动端选择器全部免费）。
+ *
+ * 高 32px 与按钮 `md` 对齐；只给 hairline 描边，**不用阴影**。
  */
 export type SelectOption = { value: string; label: string };
 
@@ -17,8 +18,10 @@ export function Select({ className, options, placeholder = '全部', ...props }:
   return (
     <select
       className={cn(
-        'h-9 rounded-md border border-input bg-card px-2 text-sm text-foreground shadow-xs outline-none',
-        'focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        'h-8 min-w-0 rounded-md border border-input bg-card px-2 text-sm text-foreground',
+        'transition-[border-color,background-color] duration-[120ms] ease-out-quint',
+        'hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+        'disabled:opacity-50',
         className,
       )}
       {...props}

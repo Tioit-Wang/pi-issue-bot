@@ -16,7 +16,7 @@ import {
   parseRetryAfterMs,
 } from '../src/github/headers.ts';
 import { GithubError } from '../src/github/errors.ts';
-import { createGithubClient, createGithubWriteApi } from '../src/github/octokit.ts';
+import { createGithubClient, createGithubReactionApi, createGithubWriteApi } from '../src/github/octokit.ts';
 import type { RateLimitSignal } from '../src/github/types.ts';
 import { createFakeOctokit } from './helpers/fake-github.ts';
 
@@ -246,6 +246,70 @@ describe('createGithubWriteApi：REST 细节集中在一处', () => {
     await expect(
       createGithubWriteApi(client).listIssueComments({ repo: 'widgets', issueNumber: 1 }),
     ).rejects.toThrow(/owner\/name/);
+  });
+});
+
+describe('createGithubReactionApi：reaction 的 REST 细节（W2-D）', () => {
+  const buildClient = (data: unknown): {
+    client: ReturnType<typeof createGithubClient>;
+    fake: ReturnType<typeof createFakeOctokit>;
+  } => {
+    const fake = createFakeOctokit(() => ({ status: 200, headers: {}, data }));
+    const client = createGithubClient({ OctokitCtor: fake.OctokitCtor, authToken: 'test-token' });
+    return { client, fake };
+  };
+
+  it('主贴：POST /issues/{n}/reactions（PR 主贴同端点），参数带 content', async () => {
+    const { client, fake } = buildClient({ id: 4242, content: 'rocket' });
+    const ref = await createGithubReactionApi(client).addReaction({
+      repo: 'acme/widgets',
+      issueNumber: 42,
+      content: 'rocket',
+    });
+
+    expect(ref.id).toBe(4242);
+    expect(fake.requests[0]?.route).toBe('POST /repos/{owner}/{repo}/issues/{issue_number}/reactions');
+    expect(fake.requests[0]?.params).toMatchObject({ owner: 'acme', repo: 'widgets', issue_number: 42, content: 'rocket' });
+  });
+
+  it('评论级：给了 commentId 就打 /issues/comments/{id}/reactions', async () => {
+    const { client, fake } = buildClient([{ id: 7, content: 'eyes', user: { login: 'pi-issue-bot[bot]' } }]);
+    const entries = await createGithubReactionApi(client).listReactions({
+      repo: 'acme/widgets',
+      issueNumber: 42,
+      commentId: 9001,
+      content: 'eyes',
+    });
+
+    expect(entries).toEqual([{ id: 7, content: 'eyes', userLogin: 'pi-issue-bot[bot]' }]);
+    expect(fake.requests[0]?.route).toBe('GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions');
+    expect(fake.requests[0]?.params).toMatchObject({ comment_id: 9001, content: 'eyes', per_page: 100 });
+  });
+
+  it('删：DELETE .../reactions/{reaction_id}（主贴与评论两条路都带 reaction_id）', async () => {
+    const { client, fake } = buildClient({});
+    const api = createGithubReactionApi(client);
+
+    await api.removeReaction({ repo: 'acme/widgets', issueNumber: 42, reactionId: 5 });
+    await api.removeReaction({ repo: 'acme/widgets', issueNumber: 42, commentId: 9, reactionId: 6 });
+
+    expect(fake.requests.map((request) => request.route)).toEqual([
+      'DELETE /repos/{owner}/{repo}/issues/{issue_number}/reactions/{reaction_id}',
+      'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+    ]);
+    expect(fake.requests[0]?.params).toMatchObject({ reaction_id: 5 });
+    expect(fake.requests[1]?.params).toMatchObject({ comment_id: 9, reaction_id: 6 });
+  });
+
+  it('列表里缺少 user.login 的条目 → userLogin=null（归属判定会把它排除）', async () => {
+    const { client } = buildClient([{ id: 1, content: 'eyes' }, { id: 2, content: 'eyes', user: {} }]);
+    const entries = await createGithubReactionApi(client).listReactions({
+      repo: 'acme/widgets',
+      issueNumber: 1,
+      content: 'eyes',
+    });
+
+    expect(entries.map((entry) => entry.userLogin)).toEqual([null, null]);
   });
 });
 

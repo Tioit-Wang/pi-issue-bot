@@ -206,7 +206,6 @@ describe('写操作（spec R11：PATCH / POST / DELETE 都要带 CSRF 头）', (
 
   it('删除：confirm 之后发 DELETE（带 CSRF），行从列表消失', async () => {
     const user = userEvent.setup();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const deletes: { url: string; csrf: string | null }[] = [];
     server.use(
       http.delete('/api/skills/:id', ({ request }) => {
@@ -218,6 +217,9 @@ describe('写操作（spec R11：PATCH / POST / DELETE 都要带 CSRF 头）', (
     renderSkills();
     await screen.findByTestId('skills-content');
     await user.click(screen.getByTestId(`skill-delete-${ID_TRIAGE}`));
+    // 二次确认走 Dialog（不是 window.confirm）：确认才发 DELETE
+    expect(await screen.findByTestId('skill-delete-confirm-panel')).toBeTruthy();
+    await user.click(screen.getByTestId('skill-delete-confirm-yes'));
 
     await waitFor(() => {
       expect(deletes).toHaveLength(1);

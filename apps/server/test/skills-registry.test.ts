@@ -12,15 +12,28 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { skillSummarySchema, skillFrontmatterSchema } from '../../../packages/contract/src/index.ts';
-import { decodeRepoConfig } from '../src/config/repo-config.ts';
+import { parseRepoSettings, skillFrontmatterSchema, skillSummarySchema } from '../../../packages/contract/src/index.ts';
+import type { RepoSettings } from '../../../packages/contract/src/index.ts';
+import { parseYamlSubset } from '../src/config/yaml.ts';
 import { parseSkillFile, splitFrontmatter } from '../src/skills/frontmatter.ts';
 import { createSkillRegistry, REPO_SKILLS_DIR, UNNAMED_SKILL } from '../src/skills/index.ts';
+import type { SkillRepoConfig } from '../src/skills/registry.ts';
 
 const EXAMPLES_DIR = fileURLToPath(new URL('../../../examples/', import.meta.url));
 
 function readExample(path: string): string {
   return readFileSync(`${EXAMPLES_DIR}${path}`, 'utf8');
+}
+
+/**
+ * 造一份仓库配置：**一律过契约 schema**（`repoSettingsSchema`），不手写字面量。
+ *
+ * 理由：手写的字面量会随契约漂移（`compliance` 段删掉后，本文件原来的两处字面量就编译不过了）。
+ * 走 `parseRepoSettings()` 之后，测试只声明「我关心哪些字段」，其余用契约默认值。
+ */
+function skillConfig(patch: Record<string, unknown> = {}): SkillRepoConfig {
+  const settings: RepoSettings = parseRepoSettings(patch);
+  return settings;
 }
 
 /** 一份最小合法技能（各用例在此基础上改一处）。 */
@@ -208,17 +221,25 @@ describe('注册表：覆盖、冲突与禁用可见性', () => {
     const missing = createSkillRegistry({ repoSkills: [{ path: `${REPO_SKILLS_DIR}/nc.md`, text }] });
     expect(missing.get('/needs-config')?.summary.disabledReason).toBe('repo-config-missing');
 
-    const withConfig = createSkillRegistry({
+    // 有词表（`labels.vocabulary`）也算「仓库配置齐了」：`compliance.rules` 删除后它是判定输入
+    const withVocabulary = createSkillRegistry({
       repoSkills: [{ path: `${REPO_SKILLS_DIR}/nc.md`, text }],
-      config: { labels: { map: { bug: 'bug' } }, compliance: { enabled: true, rules: [] }, skills: { repo_skills: true } },
+      config: skillConfig({ labels: { vocabulary: [{ name: 'bug', meaning: '缺陷' }] } }),
     });
-    expect(withConfig.resolve('/needs-config')).toBeDefined();
+    expect(withVocabulary.resolve('/needs-config')).toBeDefined();
+
+    // 只有映射也算（两条代理口径都要成立）
+    const withMap = createSkillRegistry({
+      repoSkills: [{ path: `${REPO_SKILLS_DIR}/nc.md`, text }],
+      config: skillConfig({ labels: { map: { bug: 'bug' } } }),
+    });
+    expect(withMap.resolve('/needs-config')).toBeDefined();
   });
 
   it('skills.repo_skills=false 时仓库技能整批不生效，内置仍然可用', () => {
     const registry = createSkillRegistry({
       repoSkills: [{ path: `${REPO_SKILLS_DIR}/x.md`, text: MINIMAL }],
-      config: { labels: { map: {} }, compliance: { enabled: true, rules: [] }, skills: { repo_skills: false } },
+      config: skillConfig({ skills: { repo_skills: false } }),
     });
     expect(registry.resolve('/demo-cmd')).toBeUndefined();
     expect(registry.resolve('/issue-triage')).toBeDefined();
@@ -244,14 +265,21 @@ describe('注册表：覆盖、冲突与禁用可见性', () => {
 });
 
 describe('examples/ 是 CI 的校验样本', () => {
-  it('示例 .github/pi-bot.yml 能通过 repoConfigSchema', () => {
-    const decoded = decodeRepoConfig(readExample('.github/pi-bot.yml'));
-    expect(decoded.ok).toBe(true);
-    if (!decoded.ok) {
-      return;
-    }
-    expect(decoded.config.compliance.rules.length).toBeGreaterThan(0);
-    expect(decoded.config.commands.allowed).toContain('/review-pr');
+  it('示例配置能通过 repoSettingsSchema，且不再带 compliance 段（yml 已整体退役）', () => {
+    // `.github/pi-bot.yml` 不在运行时读（配置只存在于 `repos.settings`），
+    // 但它仍是人读的字段清单：CI 用契约 schema 校验它别写错、别留下已删除的段。
+    const parsed = parseYamlSubset(readExample('.github/pi-bot.yml'));
+    const settings = parseRepoSettings(parsed);
+
+    expect(settings.version).toBe(1);
+    expect(settings.commands.allowed).toContain('/review-pr');
+    expect(settings.labels.map['bug']).toBe('bug');
+    expect(settings.labels.vocabulary.length).toBeGreaterThan(0);
+    expect(settings.labels.missing).toBe('warn');
+    // P1 段：正文不在配置里，只记启用哪个版本
+    expect(settings.prompt.current_version).toBe(0);
+    // 已删除的段不许再出现（`strict()` 也不会放过它，这里再显式钉一条可读的意图）
+    expect(parsed).not.toHaveProperty('compliance');
   });
 
   it('示例技能 md 全部合法，且与内置技能的声明一致（防文档漂移）', () => {

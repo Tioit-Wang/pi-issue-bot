@@ -87,7 +87,6 @@ describe('e2e 信封不合规：envelopes.valid=false · actions 0 行 · failur
       metricsServer: stubMetricsServer(),
       ack: {
         addEyesReaction: async () => undefined,
-        postAckComment: async () => undefined,
       },
     });
     await app.start();

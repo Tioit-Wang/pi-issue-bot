@@ -190,4 +190,43 @@ describe('queries/overview（真库）', () => {
     expect(response.outcomeDistribution).toEqual([]);
     expect(response.failureTop).toEqual([]);
   });
+
+  it('`?repo=`：today / 趋势 / 分布全部按仓库口径，未带 `repo` 时 `repo` 为 null', async () => {
+    const all = await db.queries.overview({});
+    expect(all.repo).toBeNull();
+
+    const scoped = await db.queries.overview({ repo: 'acme/widgets' });
+    expect(() => overviewResponseSchema.parse(scoped)).not.toThrow();
+    expect(scoped.repo).toBe('acme/widgets');
+
+    // 种子里 acme/widgets 有 3 个任务（t-succ-1 / t-fail-1 / t-old-1），窗口内的 3 次投递全是它
+    const [hand] = await db.sql(
+      `select
+         count(*) as tasks,
+         count(*) filter (where status = 'succeeded') as succeeded,
+         count(*) filter (where status in ('failed', 'timed-out')) as failed
+       from tasks
+       where repo = 'acme/widgets'
+         and queued_at >= '2026-06-01T00:00:00Z' and queued_at < '2026-06-02T00:00:00Z'`,
+    );
+    expect(scoped.today.tasks).toBe(Number(hand?.['tasks']));
+    expect(scoped.today.succeeded).toBe(Number(hand?.['succeeded']));
+    expect(scoped.today.failed).toBe(Number(hand?.['failed']));
+    expect(scoped.today.tasks).toBeLessThan(all.today.tasks);
+
+    // 趋势 = 最近 24h（含昨天 13:00 的 t-old-1），今日 4 个数字只算 UTC 自然日
+    expect(scoped.trend.reduce((sum, point) => sum + point.tasks, 0)).toBe(3);
+    // 分布只算这个仓库的 run（seed 里 acme/widgets 有 r1/r5 两次 success 与 r2 一次 timed-out）
+    expect(scoped.outcomeDistribution).toEqual([
+      { outcome: 'success', count: 2 },
+      { outcome: 'timed-out', count: 1 },
+    ]);
+  });
+
+  it('`?repo=` 指向不存在的仓库：回零值（不是错误）', async () => {
+    const response = await db.queries.overview({ repo: 'nobody/nothing' });
+    expect(response.repo).toBe('nobody/nothing');
+    expect(response.today).toMatchObject({ deliveries: 0, tasks: 0, succeeded: 0, failed: 0 });
+    expect(response.outcomeDistribution).toEqual([]);
+  });
 });

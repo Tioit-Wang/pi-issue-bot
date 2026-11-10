@@ -105,9 +105,6 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
         addEyesReaction: async () => {
           throw new Error('dry-run 不该打 reaction');
         },
-        postAckComment: async () => {
-          throw new Error('dry-run 不该发确认评论');
-        },
       },
     });
     await app.start();

@@ -1,15 +1,16 @@
 /**
- * webhook 接收管线（B10，tech-plan §5.3 的九步 + 七个要点）。
+ * webhook 接收管线（B10，tech-plan §5.3 的九步 + 七个要点；多仓库见 `docs/impl-multi-repo.md` §4 W1-B）。
  *
  * ```
  * 1. 原始 body（Fastify raw body parser，不能用 JSON parser，否则 HMAC 对不上）
  * 2. 验签 → 失败 401 且记审计
  * 3. INSERT webhook_deliveries … ON CONFLICT DO NOTHING   ← 主幂等点
  * 4. rowCount = 0 → 200 duplicate（GitHub 重投是常态，不是异常）
- * 5. 判定是否需要处理（事件/action 白名单 + 仓库开关 + dry-run）
+ * 4.5 ★ 项目解析：安装事件白名单 → repos 行 → installation 准入 → 未知仓库审计
+ * 5. 判定是否需要处理（事件/action 白名单 + 仓库开关 + 两级熔断/暂停）
  * 6. INSERT tasks（command / actor_login / queued_at 在这一步写死，F9）
  * 7. boss.send('run-task', …)（singletonKey = taskId）
- * 8. ★ 10 秒应答在 handler 内：入队成功后立刻打 eyes reaction（评论场景换一行「已收到」）
+ * 8. ★ 10 秒应答在 handler 内：入队成功后立刻打 eyes reaction
  * 9. 200，全程 < 2s
  * ```
  *
@@ -17,19 +18,38 @@
  *  - **幂等只在数据库**：投递级（`webhook_deliveries.delivery_id`）+ 任务级（`tasks.idempotency_key`）
  *    两个唯一索引，没有内存去重表。
  *  - **第 8 步不排队**：`await` 在 handler 里完成，失败只 `warn`（回应失败不该让 GitHub 重投一次）。
- *  - **dry-run 不产生任何写动作**：`repos.dry_run` 为真（或 `replay` 强制）时只建任务、不打 reaction、
- *    不发确认评论。
+ *  - **无感反馈**（§0.4）：回执只有 reaction，「已收到」评论与 `ackStyle` 分支已删除；
+ *    dry-run 时一个 GitHub 写动作都不发。
+ *
+ * 多仓库改造后的两条关键判定（都在第 4.5 步，`docs/impl-multi-repo.md` §4 W1-B 第 1/2 条）：
+ *  - **installation 准入**：仓库行上的 `installation_id` 与载荷里的 `installation.id` 不一致 →
+ *    `ignored:installation-mismatch`。这挡住「同一个仓库被另一个 App 安装接管」的串台；
+ *  - **未知仓库不静默**：`repos` 没有这一行时记 warn，并把 `repo` 写进 `webhook_deliveries.repo`
+ *    （0003 新增的审计列），仍然回 200 `ignored`（GitHub 只认 2xx）。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { Webhooks } from '@octokit/webhooks';
-import type { ErrorBody, RepoConfig, WebhookAcceptedResponse } from '../../../../packages/contract/src/index.ts';
+import {
+  DEFAULT_TRIGGER_ALIASES,
+  parseTriggerBody,
+  resolveTriggerAliases,
+  type ErrorBody,
+  type RepoConfig,
+  type WebhookAcceptedResponse,
+} from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import type { FastifyRequest } from 'fastify';
-import { readRepoPolicy } from '../config/repo-config.ts';
+import { readRepoPolicy, upsertRepo } from '../config/repo-config.ts';
 import type { RepoPolicy, SqlRunner } from '../config/repo-config.ts';
 import { splitRepo } from '../github/index.ts';
 import type { GithubClient } from '../github/index.ts';
-import { RUNTIME_FLAG_SQL, buildIdempotencyKey, enqueueTask, isPauseFlagActive } from '../queue/index.ts';
+import {
+  RUNTIME_FLAG_SQL,
+  buildIdempotencyKey,
+  enqueueTask,
+  installationPauseKey,
+  isPauseFlagActive,
+} from '../queue/index.ts';
 import type { QueueBoss, RunTaskJobData } from '../queue/index.ts';
 import { errorBodyOf } from './errors.ts';
 import type { ZodFastify } from './types.ts';
@@ -37,9 +57,12 @@ import type { ZodFastify } from './types.ts';
 export const WEBHOOK_SQL = {
   /**
    * 投递级幂等。`signature_valid` 由调用方给：验签失败也落库（审计要求），但不入队。
+   *
+   * `repo`（$4）是**第 4.5 步的审计列**：载荷里有 `repository.full_name` 就写进来，
+   * 包括「repos 没有这一行」的未知仓库投递——排查「哪一次投递没被处理」时只能靠它。
    */
-  insertDelivery: `INSERT INTO "webhook_deliveries" ("delivery_id", "event", "action", "payload", "signature_valid")
-VALUES ($1, $2, $3, $4::jsonb, $5)
+  insertDelivery: `INSERT INTO "webhook_deliveries" ("delivery_id", "event", "action", "repo", "payload", "signature_valid")
+VALUES ($1, $2, $3, $4, $5::jsonb, $6)
 ON CONFLICT ("delivery_id") DO NOTHING
 RETURNING "delivery_id"`,
   readDelivery: `SELECT "signature_valid" FROM "webhook_deliveries" WHERE "delivery_id" = $1`,
@@ -52,6 +75,16 @@ RETURNING "id"`,
   findTaskByIdempotencyKey: `SELECT "id" FROM "tasks" WHERE "idempotency_key" = $1`,
   /** `replay` 的数据源：原文 90 天内都在（§5.3 第 3 步）。 */
   readPayload: `SELECT "event", "payload" FROM "webhook_deliveries" WHERE "delivery_id" = $1`,
+  /** 安装事件：按 installation 批量禁用（`installation.deleted` / `installation_repositories.removed`）。 */
+  disableInstallationRepos: `UPDATE "repos"
+SET "enabled" = false, "updated_at" = now()
+WHERE "installation_id" = $1 AND "repo_full_name" = ANY($2::text[])
+RETURNING "repo_full_name"`,
+  /** 安装事件：整个 installation 的仓库全禁用（`installation.deleted`）。 */
+  disableInstallationAll: `UPDATE "repos"
+SET "enabled" = false, "updated_at" = now()
+WHERE "installation_id" = $1
+RETURNING "repo_full_name"`,
 } as const;
 
 /** 请求头（我们只依赖这三个，见契约 §9）。 */
@@ -61,18 +94,6 @@ export const WEBHOOK_HEADERS = {
   signature: 'x-hub-signature-256',
 } as const;
 
-/**
- * 新 issue 的「接管」评论（`PI_BOT_GREET` 开时发送）。
- *
- * 文案只讲三件事：我叫什么、怎么 @ 我、我会做什么。不承诺做不到的事。
- */
-export const ISSUE_GREETING_BODY = [
-  '我是 **pi-issue-bot**，这个 issue 由我接管。',
-  '',
-  '- 想让我做判定/复现/审查：`@pi-issue-bot-tioit /issue-triage`、`/issue-repro`、`/review-pr`',
-  '',
-  '判定结果会以标签 + 一条说明评论回帖；只在拿到可信结论时才写。',
-].join('\n');
 
 /**
  * 自由问答（`@bot 你的问题`，**不带** `/命令`）在 `tasks.command` 里的前缀。
@@ -110,24 +131,32 @@ export function decodeFreeQuestion(command: string): string | null {
 }
 
 /**
- * 从评论里取「纯 @ 提问」的正文：@ 到了句柄、**没有** `/命令`、正文非空。
+ * 触发别名集合：接受单个句柄（兼容旧签名）或别名数组。
+ *
+ * 判定统一交给 `parseTriggerBody()`（`packages/contract/src/trigger.ts`）：大小写不敏感、
+ * 代码块内不触发、`foo@ibot` 不误命中、命令参数不丢。
+ */
+export function triggerAliasList(input: string | readonly string[] | undefined): readonly string[] {
+  if (input === undefined) {
+    return [DEFAULT_BOT_MENTION];
+  }
+  return typeof input === 'string' ? [input] : input;
+}
+
+/**
+ * 从评论里取「纯 @ 提问」的正文：@ 到了别名、**没有** `/命令`、正文非空。
  *
  * 返回 `null` 表示这条评论不是自由提问（交给命令通道或直接忽略）。
  */
-export function extractFreeQuestion(body: unknown, mention: string = DEFAULT_BOT_MENTION): string | null {
+export function extractFreeQuestion(
+  body: unknown,
+  aliases: string | readonly string[] = DEFAULT_BOT_MENTION,
+): string | null {
   if (typeof body !== 'string') {
     return null;
   }
-  const escaped = escapeRegExp(mention);
-  const mentionPattern = new RegExp(`(?:^|\\s)@${escaped}\\b`, 'u');
-  if (!mentionPattern.test(body)) {
-    return null;
-  }
-  if (commandMentionPattern(mention).test(body)) {
-    return null;
-  }
-  const question = body.replace(new RegExp(`(?:^|\\s)@${escaped}\\b`, 'gu'), ' ').trim();
-  return question.length === 0 ? null : question.slice(0, 4000);
+  const parsed = parseTriggerBody(body, triggerAliasList(aliases));
+  return parsed.kind === 'question' ? parsed.question : null;
 }
 /** 缺省句柄：App 名为 `pi-bot` 的部署用它（其它 App 用 `PI_BOT_MENTION` 覆盖）。 */
 export const DEFAULT_BOT_MENTION = 'pi-bot';
@@ -164,7 +193,15 @@ export type WebhookVerify = (input: {
 /** 入队。默认实现是 `queue/enqueueTask`；测试注入假 boss。 */
 export type TaskEnqueuer = (data: RunTaskJobData) => Promise<string | null>;
 
-/** 「收到了」这一步（第 8 步）的 GitHub 写动作。干跑时**一个都不调**。 */
+/** 要打的 reaction 内容（GitHub 支持的四种；`confused` 用于失败/超时/取消）。 */
+export type ReactionContent = 'eyes' | 'rocket' | 'confused' | 'heart';
+
+/**
+ * 「收到了」这一步（第 8 步）的 GitHub 写动作。干跑时**一个都不调**。
+ *
+ * **只有 reaction，没有评论**（`docs/impl-multi-repo.md` §0.4「无感反馈」）：
+ * 原来的 `postAckComment`（「已收到 …，排队中……」）已删除，`ackStyle` 分支随之消失。
+ */
 export type WebhookAck = {
   /** `POST /repos/:o/:r/issues/:n/reactions { content: 'eyes' }` */
   addEyesReaction(input: {
@@ -173,11 +210,20 @@ export type WebhookAck = {
     /** 触发评论的 databaseId；给了就打评论级 reaction，缺省回落 issue 级。 */
     readonly commentId?: number | null;
   }): Promise<void>;
-  /** 评论场景的等价物：一行「已收到」。 */
-  postAckComment(input: {
+  /**
+   * 任意 reaction（同一条 REST 通道，只是 `content` 不同）。
+   *
+   * 为什么做成**可选**方法：完整的 reaction 状态机（入队 eyes → 终态 rocket/confused、
+   * `issue_feedback` 幂等台账）归 W2-D 的 `feedback/`；W1-B 只在闸门/超时这类
+   * 「任务没跑起来」的路径上需要打 `confused`。可选 = 老装配不必立刻实现，
+   * 缺它时调用方降级成 warn（不是错误）。形状与 `queue/queue-gate.ts` 的
+   * `QueueGateReactionPort.addReaction` 一致，真实的 ack 对象可以两处复用。
+   */
+  addReaction?(input: {
     readonly repo: string;
     readonly issueNumber: number;
-    readonly body: string;
+    readonly commentId?: number | null;
+    readonly content: ReactionContent;
   }): Promise<void>;
 };
 
@@ -196,18 +242,20 @@ export type WebhookDeps = {
    * 只允许产出 comment（不打标、不写回）。
    */
   readonly freeMention?: boolean;
-  /** 熔断/暂停判定。默认读 `runtime_flags.rate_limit_pause`。 */
-  readonly isPaused?: () => Promise<boolean>;
-  /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
-  readonly mention?: string;
   /**
-   * 新 issue 是否发一条「接管」评论（`PI_BOT_GREET`，默认开）。
+   * 熔断/暂停判定（两级 + 安装级）。默认实现读 `runtime_flags`：
+   *  - 全局行 `rate_limit_pause`（`repo IS NULL`）→ 停全部；
+   *  - 仓库行 `rate_limit_pause`（`repo = 'owner/name'`）→ 只停这个仓库；
+   *  - `pause:installation:<id>`（全局行）→ 停整个安装（`installation.suspend` 写的）。
    *
-   * 为什么需要它：GitHub 的 @ 补全只列「仓库协作者 + 该 thread 的参与者」，App 的 bot
-   * 不在协作者里；它在这个 issue 里说过话之后，用户才能在下拉里 @ 到它。这条评论
-   * 同时也是使用说明，所以它解决的是「所有 issue 都能 @ 到 bot」。
+   * 注入时收到已解析出的仓库（安装事件 / 仓库未解析时是 `null`）；
+   * 零参数实现照样可赋值（老签名兼容）。
    */
-  readonly greet?: boolean;
+  readonly isPaused?: (repo: string | null) => Promise<boolean>;
+  /** 部署默认触发别名（仓库配置里的 `triggers` 与它按规则合并）。 */
+  readonly aliases?: readonly string[];
+  /** 兼容旧签名：单个句柄（等价于只给一个别名）。 */
+  readonly mention?: string;
   /**
    * 当前可用的上传技能名（`['/demo']`）。`/命令` 的门禁靠它放行面板上传的技能；
    * 不注入 → 只认仓库配置 `commands.allowed`。
@@ -255,8 +303,6 @@ export type WebhookTaskPlan = {
   readonly association: string | null;
   /** 触发评论的 databaseId（评论级回执用；issue/PR 事件为 `null`）。 */
   readonly commentId: number | null;
-  /** 第 8 步用哪种回应：issue/PR 事件打 reaction，评论命令回一行评论。 */
-  readonly ackStyle: 'reaction' | 'comment';
   /** 自由问答的问题正文（落 `tasks.prompt_text`；其它任务为 `undefined`）。 */
   readonly promptText?: string;
 };
@@ -292,13 +338,16 @@ export function issueVersionHash(updatedAt: unknown): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 }
 
-/** 从评论正文里取命令（`@pi-bot /review-pr`）；没有则 `null`。 */
-export function extractCommand(body: unknown, mention: string = DEFAULT_BOT_MENTION): string | null {
+/** 从评论正文里取命令（`@ibot /review-pr`）；没有则 `null`。 */
+export function extractCommand(
+  body: unknown,
+  aliases: string | readonly string[] = DEFAULT_BOT_MENTION,
+): string | null {
   if (typeof body !== 'string') {
     return null;
   }
-  const matched = commandMentionPattern(mention).exec(body);
-  return matched?.[1] ?? null;
+  const parsed = parseTriggerBody(body, triggerAliasList(aliases));
+  return parsed.kind === 'command' ? parsed.command : null;
 }
 
 /** 机器人账号（`type: 'Bot'`）无论 association 一律忽略（plan §6.4）。 */
@@ -318,14 +367,15 @@ export function decideWebhookTask(input: {
   readonly event: string;
   readonly action: string | null;
   readonly payload: unknown;
-  /** 评论里 @ 的句柄（App slug）；缺省 `pi-bot`。 */
-
+  /** 触发别名（裸名，大小写不敏感）；缺省用部署默认 `pi-bot`。 */
+  readonly aliases?: readonly string[];
+  /** 兼容旧签名：单个句柄。与 `aliases` 同时给时以 `aliases` 为准。 */
+  readonly mention?: string;
   /**
    * 是否把「纯 @ 提问」（不带 `/命令`）也当成任务（`PI_BOT_FREE_MENTION`，默认开）。
-   * 关掉时只有 `@bot /命令` 会建任务。
+   * 关掉时只有 `@别名 /命令` 会建任务。
    */
   readonly freeMention?: boolean;
-  readonly mention?: string;
 }): WebhookDecision {
   const payload = asRecord(input.payload);
   const actorUser = asRecord(payload?.['sender']);
@@ -346,14 +396,14 @@ export function decideWebhookTask(input: {
     const isPullRequest = asRecord(issue?.['pull_request']) !== null;
     const commentUser = asRecord(comment?.['user']);
     const login = readString(commentUser, 'login') ?? readString(actorUser, 'login') ?? 'unknown';
-    const mention = input.mention ?? DEFAULT_BOT_MENTION;
+    const aliases = triggerAliasList(input.aliases ?? input.mention);
 
-    const command = extractCommand(comment?.['body'], mention);
-    // 纯 @ 提问（没有 `/命令`）：走自由问答通道，问题正文编码进 `command`（见上面的说明）
+    const command = extractCommand(comment?.['body'], aliases);
+    // 纯 @ 提问（没有 `/命令`）：走自由问答通道，问题正文落 `tasks.prompt_text`
     const question =
-      command === null && input.freeMention === true ? extractFreeQuestion(comment?.['body'], mention) : null;
+      command === null && input.freeMention === true ? extractFreeQuestion(comment?.['body'], aliases) : null;
     if (command === null && question === null) {
-      return { action: 'ignore', reason: `评论里没有 @${mention} 命令` };
+      return { action: 'ignore', reason: `评论里没有 @${aliases.join(' / @')} 命令` };
     }
 
     const base = {
@@ -366,8 +416,7 @@ export function decideWebhookTask(input: {
       actorLogin: login,
       association: readString(comment, 'author_association'),
       commentId: readNumber(comment, 'id'),
-      // 回执统一走 eyes reaction：不发「已收到」评论，避免每个命令都多一条噪声
-      ackStyle: 'reaction' as const,
+      // 回执统一走 eyes reaction（§0.4：自动通道零评论，没有第二种回执形态）
     };
 
     if (command === null) {
@@ -422,7 +471,6 @@ export function decideWebhookTask(input: {
         actorLogin,
         association: readString(issue, 'author_association'),
         commentId: null,
-        ackStyle: 'reaction',
       },
     };
   }
@@ -506,22 +554,269 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 默认的暂停判定：读 `runtime_flags.rate_limit_pause`（§7.4）。 */
-async function defaultIsPaused(db: SqlRunner, now: Date): Promise<boolean> {
-  const result = await db.query(RUNTIME_FLAG_SQL.read, ['rate_limit_pause']);
+/* ── 第 4.5 步：项目解析 / 暂停 / 安装事件 ─────────────────────────────────── */
+
+/** 全局熔断/暂停的 flag key（`runtime_flags.key`，与 `RUNTIME_FLAG_KEY.rateLimitPause` 同值）。 */
+const PAUSE_FLAG_KEY = 'rate_limit_pause';
+
+/** 载荷里的「哪个项目、哪个安装」。两个都可能缺（安装事件没有仓库，手动事件可能没有安装）。 */
+export type ProjectRef = {
+  /** `repository.full_name`（`owner/name`） */
+  readonly repo: string | null;
+  /** `installation.id`，十进制字符串（与 `repos.installation_id` 的 bigint 同型） */
+  readonly installationId: string | null;
+};
+
+/** bigint 型 id → 十进制字符串（pg 给字符串，webhook 载荷给数字，两种都要收）。 */
+function idStringOf(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    return value.trim();
+  }
+  return null;
+}
+
+/**
+ * 从载荷里取项目与安装（**第 4.5 步的唯一入口**）。
+ *
+ * 只认 `repository.full_name`（§0.1：项目 = 仓库，不引入 projects 表）；
+ * 安装事件没有 `repository`，它们的仓库列表在 `repositories*` 数组里，由
+ * `applyInstallationEvent()` 自己遍历。
+ */
+export function projectRefOf(payload: unknown): ProjectRef {
+  const record = asRecord(payload);
+  return {
+    repo: readString(asRecord(record?.['repository']), 'full_name'),
+    installationId: idStringOf(asRecord(record?.['installation'])?.['id']),
+  };
+}
+
+/** 一次读多条**全局**flag（`repo IS NULL`），返回 key → row。 */
+async function readGlobalFlags(
+  db: SqlRunner,
+  keys: readonly string[],
+): Promise<Map<string, { value: string; until: Date | null }>> {
+  const flags = new Map<string, { value: string; until: Date | null }>();
+  if (keys.length === 0) {
+    return flags;
+  }
+  const result = await db.query(RUNTIME_FLAG_SQL.readMany, [keys]);
+  for (const item of result.rows) {
+    const row = item as Record<string, unknown>;
+    const key = row['key'];
+    if (typeof key !== 'string') {
+      continue;
+    }
+    flags.set(key, {
+      value: typeof row['value'] === 'string' ? row['value'] : '',
+      until: row['until'] instanceof Date ? row['until'] : null,
+    });
+  }
+  return flags;
+}
+
+/** 仓库级暂停（`runtime_flags` 的仓库行：迁移 0003 新增的 `repo` 列）。 */
+async function repoPauseFlag(
+  db: SqlRunner,
+  repo: string,
+): Promise<{ value: string; until: Date | null } | null> {
+  const result = await db.query(RUNTIME_FLAG_SQL.readRepo, [PAUSE_FLAG_KEY, repo]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (row === undefined) {
+    return null;
+  }
+  return {
+    value: typeof row['value'] === 'string' ? row['value'] : '',
+    until: row['until'] instanceof Date ? row['until'] : null,
+  };
+}
+
+/**
+ * 现在谁在暂停：`global` / `installation` / `repo` / `null`（没暂停）。
+ *
+ * 三级都读 `runtime_flags`（全局行一次查完，仓库行只在必要时多查一次）：
+ *  - `rate_limit_pause` + `repo IS NULL` → 全局熔断（5 次/15min 触发）；
+ *  - `pause:installation:<id>` + `repo IS NULL` → 安装被 suspend（GitHub 侧或人工停用）；
+ *  - `rate_limit_pause` + `repo = 'owner/name'` → 单仓库熔断（3 次/10min 触发）。
+ */
+async function pauseScopeOf(
+  db: SqlRunner,
+  now: Date,
+  project: ProjectRef,
+): Promise<'global' | 'installation' | 'repo' | null> {
+  const keys: string[] = [PAUSE_FLAG_KEY];
+  if (project.installationId !== null) {
+    keys.push(installationPauseKey(project.installationId));
+  }
+  const flags = await readGlobalFlags(db, keys);
+  if (isPauseFlagActive(flags.get(PAUSE_FLAG_KEY) ?? null, now)) {
+    return 'global';
+  }
+  if (
+    project.installationId !== null &&
+    isPauseFlagActive(flags.get(installationPauseKey(project.installationId)) ?? null, now)
+  ) {
+    return 'installation';
+  }
+  if (project.repo !== null && isPauseFlagActive(await repoPauseFlag(db, project.repo), now)) {
+    return 'repo';
+  }
+  return null;
+}
+
+/**
+ * 安装事件白名单（§4 W1-B 第 2 条）。
+ *
+ * 这些事件的 payload **没有 `repository`**，只能按 `installation.id` 定位仓库：
+ *  - `installation.created` → 把载荷里的 `repositories[]` 建成 `repos` 行；
+ *  - `installation_repositories.added` → 同上，列表字段是 `repositories_added[]`；
+ *  - `installation_repositories.removed` / `installation.deleted` → 按 installation_id 批量 `enabled=false`；
+ *  - `installation.suspend|unsuspend` → 写 `runtime_flags{pause:installation:<id>, repo:NULL}`。
+ */
+export const INSTALLATION_EVENTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  installation: Object.freeze(['created', 'deleted', 'suspend', 'unsuspend']),
+  installation_repositories: Object.freeze(['added', 'removed']),
+});
+
+/** `event.action` 是否在安装事件白名单里。 */
+export function isInstallationEvent(event: string, action: string | null): boolean {
+  if (action === null) {
     return false;
   }
-  const until = row['until'];
-  return isPauseFlagActive(
-    {
-      key: 'rate_limit_pause',
-      value: typeof row['value'] === 'string' ? row['value'] : '',
-      until: until instanceof Date ? until : null,
-    },
-    now,
-  );
+  const actions = INSTALLATION_EVENTS[event];
+  return actions !== undefined && actions.includes(action);
+}
+
+/** 安装事件载荷里的仓库数组 → `owner/name` 列表（元素形如 `{ full_name }`）。 */
+function fullNamesOf(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const names: string[] = [];
+  for (const item of value) {
+    const name = readString(asRecord(item), 'full_name');
+    if (name !== null) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+/** 安装事件的处理结果（进日志；安装事件不建任务，所以不参与响应体的 action）。 */
+export type InstallationOutcome = {
+  /** 是否是可识别的安装事件（否则调用方按普通忽略处理） */
+  readonly handled: boolean;
+  /** 一句话结论（`created:2` / `deleted:5` / `suspend:pause:installation:42` …） */
+  readonly detail: string;
+  /** 影响的仓库行数（`repos`）/ flag 行数（`runtime_flags`） */
+  readonly changed: number;
+};
+
+/**
+ * 处理安装事件：建行 / 禁用 / 暂停。
+ *
+ * 三条刻意的取舍：
+ *  - **新装的仓库 `enabled=false, dry_run=true`**（§4 W1-B 第 2 条）：装了 App 不等于马上自动开工，
+ *    面板里把开关打开才接活；默认 settings 来自 `PI_BOT_DEFAULT_SETTINGS`（`upsertRepo` 内部 seed）；
+ *  - **重建行不覆盖已有配置**：`upsertRepo` 的 `ON CONFLICT` 只补 `source/installation_id`，
+ *    重新安装 App 不该把面板里调好的 triggers/labels 冲掉；
+ *  - **removed/deleted 只禁不删**：删行会丢成本与审计历史（禁用即可，历史仍可查）。
+ */
+async function applyInstallationEvent(
+  deps: WebhookDeps,
+  args: {
+    readonly event: string;
+    readonly action: string | null;
+    readonly payload: unknown;
+    readonly installationId: string | null;
+    readonly now: Date;
+    readonly log: Logger;
+  },
+): Promise<InstallationOutcome> {
+  const { event, action, payload, installationId, now, log } = args;
+  if (installationId === null) {
+    log.warn({ event, action }, '安装事件缺少 installation.id，忽略');
+    return { handled: true, detail: 'missing-installation-id', changed: 0 };
+  }
+  const record = asRecord(payload);
+
+  // added / created → 建行（enabled=false, dry_run=true, source='installation'）
+  if (action === 'created' || action === 'added') {
+    const list = action === 'added' ? record?.['repositories_added'] : record?.['repositories'];
+    const repos = fullNamesOf(list);
+    let changed = 0;
+    for (const repo of repos) {
+      try {
+        const result = await upsertRepo(deps.db, {
+          repo,
+          source: 'installation',
+          installationId,
+          enabled: false,
+          dryRun: true,
+        });
+        if (!result.ok) {
+          // 默认 settings 不合法是部署问题（`PI_BOT_DEFAULT_SETTINGS` 写错），不是这条事件的问题
+          log.error({ repo, err: result.error }, '安装事件建行失败：默认配置不合法');
+          continue;
+        }
+        changed += 1;
+      } catch (error) {
+        log.error({ repo, err: describeError(error) }, '安装事件建行失败');
+      }
+    }
+    return { handled: true, detail: `${String(action)}:${String(changed)}`, changed };
+  }
+
+  // removed → 只禁掉这次被移除的那几个仓库
+  if (action === 'removed') {
+    const repos = fullNamesOf(record?.['repositories_removed']);
+    if (repos.length === 0) {
+      // 载荷没给列表时保守处理：整个 installation 一并禁用（宁可多禁，也别让已卸载的仓库继续接活）
+      const result = await deps.db.query(WEBHOOK_SQL.disableInstallationAll, [installationId]);
+      return { handled: true, detail: 'removed:all', changed: result.rowCount ?? result.rows.length };
+    }
+    const result = await deps.db.query(WEBHOOK_SQL.disableInstallationRepos, [installationId, repos]);
+    return {
+      handled: true,
+      detail: `removed:${String(repos.length)}`,
+      changed: result.rowCount ?? result.rows.length,
+    };
+  }
+
+  // deleted → 整个 installation 的仓库全禁用（不删行：成本与审计历史要留）
+  if (action === 'deleted') {
+    const result = await deps.db.query(WEBHOOK_SQL.disableInstallationAll, [installationId]);
+    return { handled: true, detail: 'deleted', changed: result.rowCount ?? result.rows.length };
+  }
+
+  // suspend / unsuspend → 全局作用域的安装级暂停开关（repo = NULL）
+  const key = installationPauseKey(installationId);
+  const active = action === 'suspend';
+  await deps.db.query(RUNTIME_FLAG_SQL.upsert, [
+    key,
+    active ? '1' : '0',
+    // suspend 不过期（人工开关，`until = null` 在读侧等于「一直有效」）；
+    // unsuspend 写一个过去时间而不是删行（`runtime_flags` 只增不删）
+    active ? null : new Date(now.getTime() - 1000),
+  ]);
+  return { handled: true, detail: `${String(action)}:${key}`, changed: 1 };
+}
+
+/**
+ * installation 准入（§4 W1-B 第 1 条）：仓库行属于某个安装、投递却来自另一个安装 → 拒绝。
+ *
+ * 三种不该拦的情况：
+ *  - 仓库行没有 `installation_id`（`source='manual'`，面板手动加的仓库）：谁投递都收；
+ *  - 投递里没有 `installation`（老格式 / replay 的旧原文）：放行，不因为缺信息就丢事件；
+ *  - 两边一致：正常路径。
+ */
+function installationMismatch(policy: RepoPolicy, incoming: string | null): string | null {
+  if (policy.installationId === null || incoming === null || policy.installationId === incoming) {
+    return null;
+  }
+  return `installation 不匹配：仓库记录 installation_id=${policy.installationId}，本次投递来自 ${incoming}`;
 }
 
 /**
@@ -556,6 +851,8 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
 
   const action = readString(asRecord(payload), 'action');
 
+  // 载荷里的「哪个项目、哪个安装」：第 4.5 步的判定依据，也进投递行的 `repo` 审计列
+  const project = projectRefOf(payload);
   if (input.source === 'live') {
     const signature = input.signature;
     if (signature === null) {
@@ -582,6 +879,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
         input.deliveryId,
         input.event,
         action,
+        project.repo,
         payload,
         false,
       ]);
@@ -596,6 +894,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
       input.deliveryId,
       input.event,
       action,
+      project.repo,
       payload,
       true,
     ]);
@@ -612,18 +911,41 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     }
   }
 
-  // ── 第 5 步：熔断 / 仓库开关 / 白名单 ────────────────────────────────────
-  const paused =
-    deps.isPaused === undefined ? await defaultIsPaused(deps.db, now()) : await deps.isPaused();
-  if (paused) {
+  // ── 第 4.5 步 ⓐ：安装事件白名单 ──────────────────────────────────────────
+  // 这些事件的 payload **没有 `repository`**，所以必须在 `repo === null` 分支之前拦下，
+  // 否则「装了两个仓库」永远落不了库（GitHub 只在安装时才发这几条事件）。
+  if (isInstallationEvent(input.event, action)) {
+    const outcome = await applyInstallationEvent(deps, {
+      event: input.event,
+      action,
+      payload,
+      installationId: project.installationId,
+      now: now(),
+      log,
+    });
+    // 契约的响应枚举里没有「installation」一档：安装事件统一回 200 `ignored`
+    // （它确实没建任务），审计靠 `webhook_deliveries` 与日志里的 detail。
+    log.info({ action, detail: outcome.detail, changed: outcome.changed }, '安装事件已处理');
+    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
+  }
+
+  // ── 第 5 步：熔断 / 暂停（全局 → 安装 → 仓库，三级依次看）─────────────────
+  const pauseScope =
+    deps.isPaused === undefined
+      ? await pauseScopeOf(deps.db, now(), project)
+      : (await deps.isPaused(project.repo))
+        ? 'external'
+        : null;
+  if (pauseScope !== null) {
     // 不丢事件、不占并发（契约 §9）：投递已落库，恢复后可用 replay 重放
-    log.warn('熔断中，本次只记投递不入队');
+    log.warn({ repo: project.repo, scope: pauseScope }, '熔断/暂停中，本次只记投递不入队');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'paused', taskId: null, duplicate: false, ackComment: null }));
   }
 
-  const repo = readString(asRecord(asRecord(payload)?.['repository']), 'full_name');
+  // ── 第 4.5 步 ⓑ：项目解析（`repos` 行 + installation 准入）─────────────────
+  const repo = project.repo;
   if (repo === null) {
-    log.warn('载荷缺少 repository.full_name');
+    log.warn({ event: input.event, action }, '载荷缺少 repository.full_name（且不是安装事件），忽略');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
@@ -634,20 +956,49 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     log.error({ repo, err: describeError(error) }, '读取仓库策略失败');
     return finish(500, errorBodyOf('internal', '读取仓库配置失败'));
   }
+
+  // 未知仓库**不再静默**：`repo` 已在第 3 步写进 `webhook_deliveries.repo`，
+  // 这里再记一条 warn，运维照 `delivery_id` 就能找到「哪次投递没被处理、属于哪个仓库」。
   if (!policy.known) {
-    log.info({ repo }, '仓库尚未同步配置（repos 无此行），忽略本次投递');
-    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-  }
-  if (!policy.enabled || !policy.configValid) {
-    log.warn({ repo, enabled: policy.enabled, configValid: policy.configValid }, '仓库已禁用或配置非法，忽略');
+    log.warn({ repo, reason: 'unknown-repo' }, '未知仓库（repos 没有这一行）：已记审计，忽略本次投递');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
+  // installation 准入：仓库属于 A 安装、投递却来自 B 安装 → 拒绝（否则会用错 token 干活）
+  const mismatch = installationMismatch(policy, project.installationId);
+  if (mismatch !== null) {
+    log.warn(
+      {
+        repo,
+        reason: 'installation-mismatch',
+        expected: policy.installationId,
+        actual: project.installationId,
+      },
+      mismatch,
+    );
+    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
+  }
+
+  if (!policy.enabled || !policy.settingsValid) {
+    log.warn(
+      { repo, enabled: policy.enabled, settingsValid: policy.settingsValid, reason: 'repo-unusable' },
+      '仓库已禁用或配置非法，忽略',
+    );
+    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
+  }
+
+  const deploymentAliases =
+    deps.aliases ??
+    [...DEFAULT_TRIGGER_ALIASES, DEFAULT_BOT_MENTION, ...(deps.mention === undefined ? [] : [deps.mention])];
+  const aliases = resolveTriggerAliases({
+    configured: policy.settings?.triggers,
+    deployment: deploymentAliases,
+  });
   const decision = decideWebhookTask({
     event: input.event,
     action,
     payload,
-    ...(deps.mention === undefined ? {} : { mention: deps.mention }),
+    aliases,
     ...(deps.freeMention === undefined ? {} : { freeMention: deps.freeMention }),
   });
   if (decision.action === 'ignore') {
@@ -662,7 +1013,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     plan.source === 'command' && deps.listSkills !== undefined
       ? await deps.listSkills(repo)
       : [];
-  const gate = checkCommandGate(plan, policy.config, knownSkills);
+  const gate = checkCommandGate(plan, policy.settings, knownSkills);
   if (!gate.allowed) {
     log.warn({ repo, command: plan.command, reason: gate.reason }, '命令门禁不通过');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'unauthorized', taskId: null, duplicate: false, ackComment: null }));
@@ -734,45 +1085,28 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment: null }));
   }
 
-  let ackComment: string | null = null;
+  // ── 第 8 步：★ 10 秒应答就在 handler 内（不经过队列）──────────────────────
+  if (dryRun) {
+    taskLog.info('dry-run：跳过 reaction（不产生任何 GitHub 写动作）');
+    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment: null }));
+  }
+
+  // 回执**只有 reaction**（§0.4）：命令 / 判定 / 自由问答一律 eyes 角标；
+  // 「已收到 …，排队中……」的评论与 `ackStyle` 分支已经删除（自动通道零评论）
   try {
-    if (plan.ackStyle === 'reaction') {
-      await deps.ack.addEyesReaction({
-        repo,
-        issueNumber: plan.targetNumber,
-        commentId: plan.commentId,
-      });
-      taskLog.info({ commentId: plan.commentId }, '已打 eyes reaction');
-    } else {
-      // 保底分支（决策层当前恒为 reaction）：文案里**不带任务编号**——用户在 GitHub 上
-      // 不需要看到内部 id，排查靠 `delivery_id`/日志。
-      const ackLabel = isFreeAnswerCommand(plan.command) ? '你的提问' : plan.command;
-      ackComment = `已收到 ${ackLabel}，排队中……`;
-      await deps.ack.postAckComment({ repo, issueNumber: plan.targetNumber, body: ackComment });
-      taskLog.info('已回「已收到」评论');
-    }
+    await deps.ack.addEyesReaction({
+      repo,
+      issueNumber: plan.targetNumber,
+      commentId: plan.commentId,
+    });
+    taskLog.info({ commentId: plan.commentId }, '已打 eyes reaction');
   } catch (error) {
     // 回应失败只记 warn：不该让 GitHub 因此重投一次（§5.3 七要点第三条）
     taskLog.warn({ err: describeError(error) }, '回应 GitHub 失败（不影响 200）');
-    ackComment = null;
-  }
-
-  // ── 第 8.5 步：新 issue 的「接管」评论（`PI_BOT_GREET`，默认开）────────────
-  //
-  // 为什么单独发一条：GitHub 的 @ 补全只列「协作者 + 该 thread 的参与者」，机器人在这个
-  // issue 里说过话之后用户才能在下拉里 @ 到它；这条评论同时就是使用说明。
-  // 只对 `issues.opened` 的自动分类发一次；失败只记 warn（不能让 GitHub 重投）。
-  if (deps.greet === true && plan.command === 'auto:triage' && action === 'opened') {
-    try {
-      await deps.ack.postAckComment({ repo, issueNumber: plan.targetNumber, body: ISSUE_GREETING_BODY });
-      taskLog.info('已发「接管」评论');
-    } catch (error) {
-      taskLog.warn({ err: describeError(error) }, '接管评论发送失败（不影响 200）');
-    }
   }
 
   // ── 第 9 步：200 ─────────────────────────────────────────────────────────
-  return finish(200, accepted({ deliveryId: input.deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment }));
+  return finish(200, accepted({ deliveryId: input.deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment: null }));
 }
 
 /**
@@ -825,38 +1159,37 @@ export function createQueueEnqueuer(boss: QueueBoss): TaskEnqueuer {
   return (data) => enqueueTask(boss, data);
 }
 
-/** 真实 reaction / 确认评论实现（走 `GithubClient.request`，不引入写执行器）。 */
+/** 真实 reaction 实现（走 `GithubClient.request`，不引入写执行器）。 */
 export function createGithubWebhookAck(client: GithubClient): WebhookAck {
+  /** 评论级优先、issue 级兜底的 reaction 通道（`eyes` 与 `confused` 共用）。 */
+  const react = async (input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly commentId?: number | null;
+    readonly content: ReactionContent;
+  }): Promise<void> => {
+    const { owner, repo } = splitRepo(input.repo);
+    // 评论触发时打到**那条评论**上（用户看自己评论的角标就能确认「收到了」）；
+    // issue/PR 事件没有评论可打，回落到 issue 级 reaction。
+    if (input.commentId !== undefined && input.commentId !== null) {
+      await client.request('POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+        owner,
+        repo,
+        comment_id: input.commentId,
+        content: input.content,
+      });
+      return;
+    }
+    await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/reactions', {
+      owner,
+      repo,
+      issue_number: input.issueNumber,
+      content: input.content,
+    });
+  };
   return {
-    async addEyesReaction(input) {
-      const { owner, repo } = splitRepo(input.repo);
-      // 评论触发时打到**那条评论**上（用户看自己评论的角标就能确认「收到了」）；
-      // issue/PR 事件没有评论可打，回落到 issue 级 reaction。
-      if (input.commentId !== undefined && input.commentId !== null) {
-        await client.request('POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
-          owner,
-          repo,
-          comment_id: input.commentId,
-          content: 'eyes',
-        });
-        return;
-      }
-      await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/reactions', {
-        owner,
-        repo,
-        issue_number: input.issueNumber,
-        content: 'eyes',
-      });
-    },
-    async postAckComment(input) {
-      const { owner, repo } = splitRepo(input.repo);
-      await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner,
-        repo,
-        issue_number: input.issueNumber,
-        body: input.body,
-      });
-    },
+    addEyesReaction: (input) => react({ ...input, content: 'eyes' }),
+    addReaction: react,
   };
 }
 

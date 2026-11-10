@@ -22,10 +22,16 @@ import {
   issueSessionResponseSchema,
   issuesListResponseSchema,
   issuesQuerySchema,
+  loginSchema,
   overviewQuerySchema,
   overviewResponseSchema,
   qualityQuerySchema,
+  repoFullNameSchema,
+  repoSettingsResponseSchema,
+  repoSettingsSchema,
+  reposResponseSchema,
   revertsResponseSchema,
+  systemQuerySchema,
   systemResponseSchema,
   taskDetailResponseSchema,
   tasksQuerySchema,
@@ -34,11 +40,15 @@ import {
 import { z } from 'zod';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Logger } from '../../../../../packages/shared/src/index.ts';
+import type { RepoSettingsResponse } from '../../../../../packages/contract/src/index.ts';
+import { listRepos, readRepoPolicy, updateRepoSettings, upsertRepo } from '../../config/repo-config.ts';
+import type { RepoPolicy, SqlRunner } from '../../config/repo-config.ts';
 import type { RequireAuth } from './auth.ts';
 import type { Queries } from './queries.ts';
 import type { SkillStore } from '../../skills/store.ts';
 import { registerSkillRoutes } from './skills.ts';
 import type { SkillWriteMode } from './skills.ts';
+import { registerPromptRoutes } from './prompt.ts';
 import { httpError } from '../errors.ts';
 import type { ZodFastify } from '../types.ts';
 
@@ -49,13 +59,26 @@ export type SkillApiWiring = {
 };
 
 /**
- * 装配面板路由需要的东西：查询面 + 鉴权钩子 + （可选）技能写面。其余都从 contract 取。
+ * 仓库写面（`/api/repos/*`）的依赖：只用来读写 `repos` 表。
+ *
+ * 与只读查询面（`queries`）分开注入是有意的：面板的 8 条只读接口不该有能力改配置。
+ * **不注入 = 这组路由整体不挂载**（`serve` 传 `{ db: pool }`），这样老的装配与单测不用改。
+ */
+export type RepoApiWiring = {
+  /** 真实实现是 `pg.Pool`，测试实现是几行假函数。 */
+  readonly db: SqlRunner;
+};
+
+/**
+ * 装配面板路由需要的东西：查询面 + 鉴权钩子 + （可选）技能写面 + （可选）仓库写面。
+ * 其余都从 contract 取。
  */
 export type ApiDeps = {
   readonly queries: Queries;
   readonly requireAuth: RequireAuth;
   readonly logger?: Logger;
   readonly skills?: SkillApiWiring;
+  readonly repos?: RepoApiWiring;
 };
 
 /** `/api/tasks/:id` 的路径参数。`shortIdSchema` 的长度上限是 64（`common.ts`）。 */
@@ -166,14 +189,14 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
     },
   );
 
-  // ── 8. GET /api/system ──────────────────────────────────────────────────────
+  // ── 8. GET /api/system（`?repo=` 只收窄 repos / flags 两段）────────────────────
   app.get(
     '/api/system',
     {
-      schema: { response: { 200: systemResponseSchema } },
+      schema: { querystring: systemQuerySchema, response: { 200: systemResponseSchema } },
       preHandler: guard,
     },
-    async () => deps.queries.system(),
+    async (request) => deps.queries.system(request.query),
   );
 
   // ── 9. GET /api/issues（按 issue 聚合的列表，`lastActivityAt` 倒序 + keyset 游标）─────
@@ -205,7 +228,13 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
     },
   );
 
-  // ── 11. /api/skills（技能管理：读 3 条 + 写 5 条，写面带 CSRF/来源校验）─────────
+  // ── 11. /api/repos（仓库配置写面：列表 / 读 settings / 写 settings / 手动添加）────────
+  // 不注入 `deps.repos` 就不挂载：老的装配与只读测试不需要 `repos` 表的写权限。
+  if (deps.repos !== undefined) {
+    registerRepoRoutes(app, deps.repos, guard);
+  }
+
+  // ── 12. /api/skills（技能管理：读 3 条 + 写 5 条，写面带 CSRF/来源校验）─────────
   // 不注入 `deps.skills` 就不挂载：读路由的测试与最小装配不需要建技能存储。
   if (deps.skills !== undefined) {
     registerSkillRoutes(app, {
@@ -215,6 +244,128 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
       ...(deps.skills.writeMode === undefined ? {} : { writeMode: deps.skills.writeMode }),
     });
   }
+
+  // ── 13. /api/repos/:owner/:name/prompt（W3-G：P1 项目人格层：读 / 保存新版本 / 回滚）──────
+  // 需要 `repos` 的 db（读 settings + 写 current_version），所以挂在 `deps.repos` 这一支下面；
+  // 写面策略与 `/api/skills` 共用同一个 `writeMode`（不注入则默认 loopback）。
+  if (deps.repos !== undefined) {
+    registerPromptRoutes(app, {
+      db: deps.repos.db,
+      requireAuth: deps.requireAuth,
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+      ...(deps.skills?.writeMode === undefined ? {} : { writeMode: deps.skills.writeMode }),
+    });
+  }
+}
+
+/* ── 仓库配置路由（`/api/repos/*`）────────────────────────────────────────────── */
+
+/** 路径参数：`owner/name` 两段（`repo` 含 `/`，用 `:repo` 会吞掉后面的段）。 */
+const repoParamsSchema = z
+  .object({
+    owner: loginSchema,
+    name: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/u),
+  })
+  .strict();
+
+/** 手动添加仓库的请求体：只给 `owner/name`，其余用部署默认（`PI_BOT_DEFAULT_SETTINGS`）。 */
+const addRepoBodySchema = z.object({ repo: repoFullNameSchema }).strict();
+
+type RouteGuard = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+
+/**
+ * 一个仓库的配置视图（读与写返回同一个形状，面板不用分两套）。
+ *
+ * 返回类型就是契约的 `RepoSettingsResponse`：`settingsValid = false` 时 `settings` 为 `null`
+ * （库里留着 last-known-good 原文，但它不符合 schema，硬塞给面板只会让页面在渲染时才炸）。
+ */
+function repoView(repo: string, policy: RepoPolicy): RepoSettingsResponse {
+  return {
+    repo,
+    enabled: policy.enabled,
+    dryRun: policy.dryRun,
+    settings: policy.settings,
+    settingsValid: policy.settingsValid,
+    settingsError: policy.settingsError,
+    source: policy.source ?? 'manual',
+    installationId: policy.installationId,
+    archivedAt: policy.archivedAt,
+  };
+}
+
+/**
+ * 仓库配置的四条路由（`docs/impl-multi-repo.md` §4 W1-A / W3-H 补契约）。
+ *
+ * 错误语义沿用 `errors.ts` 的统一映射：body 非法 → 400 + `details.issues`（zod 自动给出），
+ * 配置不符合 schema → 400 + issues，仓库不存在 → 404。
+ */
+function registerRepoRoutes(app: ZodFastify, deps: RepoApiWiring, guard: RouteGuard): void {
+  // ── GET /api/repos：全部仓库 + 状态（面板仓库切换器 / 系统页）──
+  // 响应挂契约 schema：多出来的字段会被裁掉、少字段会暴露成错误（面板拿到的是契约形状）。
+  app.get(
+    '/api/repos',
+    { schema: { response: { 200: reposResponseSchema } }, preHandler: guard },
+    async () => ({ items: [...(await listRepos(deps.db))] }),
+  );
+
+  // ── GET /api/repos/:owner/:name/settings ──
+  app.get(
+    '/api/repos/:owner/:name/settings',
+    {
+      schema: { params: repoParamsSchema, response: { 200: repoSettingsResponseSchema } },
+      preHandler: guard,
+    },
+    async (request) => {
+      const repo = `${request.params.owner}/${request.params.name}`;
+      const policy = await readRepoPolicy(deps.db, repo);
+      if (!policy.known) {
+        throw httpError('not-found', `仓库不存在：${repo}（先用 POST /api/repos 添加）`);
+      }
+      return repoView(repo, policy);
+    },
+  );
+
+  // ── PUT /api/repos/:owner/:name/settings：body 就是 settings ──
+  app.put(
+    '/api/repos/:owner/:name/settings',
+    {
+      schema: {
+        params: repoParamsSchema,
+        body: repoSettingsSchema,
+        response: { 200: repoSettingsResponseSchema },
+      },
+      preHandler: guard,
+    },
+    async (request) => {
+      const repo = `${request.params.owner}/${request.params.name}`;
+      const result = await updateRepoSettings(deps.db, repo, request.body);
+      if (!result.ok) {
+        // 非法配置不写库（last-known-good 继续生效），错误原因回给面板
+        throw result.notFound
+          ? httpError('not-found', result.error)
+          : httpError('bad-request', result.error, { issues: result.issues });
+      }
+      const policy = await readRepoPolicy(deps.db, repo);
+      return repoView(repo, policy);
+    },
+  );
+
+  // ── POST /api/repos：手动添加（部署默认 settings seed，source='manual'）──
+  app.post(
+    '/api/repos',
+    {
+      schema: { body: addRepoBodySchema, response: { 201: repoSettingsResponseSchema } },
+      preHandler: guard,
+    },
+    async (request, reply) => {
+      const result = await upsertRepo(deps.db, { repo: request.body.repo, source: 'manual' });
+      if (!result.ok) {
+        throw httpError('bad-request', result.error, { issues: result.issues });
+      }
+      const policy = await readRepoPolicy(deps.db, result.repo);
+      return reply.status(201).send(repoView(result.repo, policy));
+    },
+  );
 }
 
 /** CSV 的数据行数（去掉表头与空行）；只用于判断是否达到导出口径。 */

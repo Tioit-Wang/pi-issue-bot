@@ -65,10 +65,11 @@ export async function openTestDb(now: Date = FIXED_NOW): Promise<TestDb> {
   const truncate = async (): Promise<void> => {
     await pool.query(
       `truncate table
-         tasks, runs, run_events, envelopes, actions, bot_labels, issue_fingerprints, issue_states,
-         usage_costs, degeneracy_hits, metrics_daily, repos, webhook_deliveries, runtime_flags,
-         panel_sessions, host_credentials
-       cascade`,
+        tasks, runs, run_events, envelopes, actions, bot_labels, issue_fingerprints, issue_states,
+        usage_costs, degeneracy_hits, metrics_daily, repos, webhook_deliveries, runtime_flags,
+        panel_sessions, host_credentials, issue_feedback, label_decisions, quota_counters,
+        prompt_versions
+      cascade`,
     );
     // pg-boss 的表由库自己建：job 表清空（队列配置本身保留，system 要读它）
     const hasJobs = await pool.query("select to_regclass('pgboss.job') is not null as present");
@@ -104,10 +105,10 @@ export async function seedStandard(db: TestDb): Promise<void> {
   const { pool } = db;
 
   await pool.query(`
-    insert into repos (repo_full_name, enabled, dry_run, config, config_valid, config_error)
+    insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid, settings_error, source)
     values
-      ('acme/widgets', true, false, '{}'::jsonb, true, null),
-      ('other/lib', true, true, '{}'::jsonb, false, 'outputs 越界：pr 但没有 paths')
+      ('acme/widgets', true, false, '{"version":1}'::jsonb, true, null, 'manual'),
+      ('other/lib', true, true, '{"version":1}'::jsonb, false, 'outputs 越界：pr 但没有 paths', 'installation')
   `);
 
   await pool.query(`

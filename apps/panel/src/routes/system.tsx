@@ -1,65 +1,30 @@
+/**
+ * 系统（`/api/system`，每 15s 轮询）—— 一屏三块 + 两条清单：
+ *
+ *  1. **版本与协议**（含 pi-host 状态与「降级条件」逐条展开）；
+ *  2. **doctor 逐项**（按 fail → warn → ok → skip 分组，失败项把 detail 摊开）；
+ *  3. **队列与保留策略**（队列是真在排队的量，保留期是 cron 的清理窗口）；
+ *  4. **仓库**（对象行，只读；写入口链接到设置页）；
+ *  5. **能力（skills）**（契约里唯一的技能清单）。
+ *
+ * 面板只做展示、不做判断：`version.host` 为 `null`、doctor 没跑过，都如实显示 `—` / `还没跑过`，
+ * 不假装正常（tech-plan §11 R10 的「半升级状态」就靠这里暴露）。
+ */
+import { Link, useSearchParams } from 'react-router';
 import { AsyncSection } from '../components/AsyncSection.tsx';
+import { Section } from '../components/Section.tsx';
+import { PageHeader } from '../components/PageHeader.tsx';
+import { Toolbar } from '../components/Toolbar.tsx';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx';
-import { Badge } from '../components/ui/badge.tsx';
-import { Button } from '../components/ui/button.tsx';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.tsx';
+import { Badge, StatusDot } from '../components/ui/badge.tsx';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table.tsx';
+import { RepoFilterSelect } from '../components/repo-filter.tsx';
 import type { SystemResponse } from '../lib/contract.ts';
 import { EMPTY, formatCount, formatDuration, formatTimeCell } from '../lib/format.ts';
 import { useSystem } from '../lib/queries.ts';
+import { repoSettingsPath } from '../lib/repo-route.ts';
 import { cn } from '../lib/utils.ts';
-import { PageShell } from './PageShell.tsx';
 
-/**
- * 系统（S7，数据源 `/api/system`，每 15 秒轮询）—— 也是**四态代表页**（空 / 载 / 错 / 慢）。
- *
- * 契约里这份响应把「机器还行不行」的东西集中在一处（contract-api.md §8）：
- * 版本与协议 → host 状态 → doctor 逐项 → 队列与保留期 → 仓库开关 → 能力（skills）。
- * 面板只做展示，不做判断：`version.host` 为 `null`、doctor 没跑过，都**如实**显示为 `—` / `还没跑过`，
- * 不假装正常（tech-plan §11 R10 的「半升级状态」就靠这里暴露）。
- *
- * 「降级横幅条件」这一块是 `layout/DegradedBanner.tsx` 的判断依据的**展开版**：
- * 横幅只显示「有降级」，这页说清楚**是哪几条**成立，运维不用去翻代码猜。
- */
-export function SystemPage() {
-  const { data, error, isLoading, refetch } = useSystem();
-
-  // 空态：没有任何仓库 / 队列 / flag（服务刚启动，pg-boss 还没建队列）
-  const isEmpty =
-    data !== undefined && data.repos.length === 0 && data.queue.length === 0 && data.flags.length === 0;
-
-  return (
-    <PageShell
-      title="系统"
-      description="版本与协议、pi-host 状态、doctor 逐项检查、队列与保留期（每 15 秒刷新）"
-      actions={
-        error === null ? undefined : (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void refetch();
-            }}
-          >
-            重试
-          </Button>
-        )
-      }
-    >
-      <AsyncSection
-        isLoading={isLoading}
-        error={error}
-        isEmpty={isEmpty}
-        emptyText="还没有任何仓库与队列配置（服务刚启动？）"
-        testId="system"
-        skeletonHeight="h-40"
-      >
-        {data === undefined ? null : <SystemContent data={data} />}
-      </AsyncSection>
-    </PageShell>
-  );
-}
-
-/** host 状态的中文文案（`unknown` 是「没协商过」，不是「正常」，所以单独一个词）。 */
 const HOST_LABEL: Record<SystemResponse['host']['status'], string> = {
   ok: '正常',
   degraded: '降级',
@@ -77,21 +42,72 @@ const DOCTOR_LABEL: Record<SystemResponse['doctor']['status'], string> = {
 
 type CheckStatus = SystemResponse['doctor']['checks'][number]['status'];
 
-const CHECK_LABEL: Record<CheckStatus, string> = {
-  ok: '通过',
-  warn: '告警',
-  fail: '失败',
-  skip: '跳过',
-};
-
-const CHECK_VARIANT: Record<CheckStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
+const CHECK_LABEL: Record<CheckStatus, string> = { ok: '通过', warn: '告警', fail: '失败', skip: '跳过' };
+const CHECK_TONE: Record<CheckStatus, 'success' | 'warn' | 'danger' | 'neutral'> = {
   ok: 'success',
-  warn: 'warning',
+  warn: 'warn',
   fail: 'danger',
-  skip: 'muted',
+  skip: 'neutral',
 };
 
-function SystemContent({ data }: { data: SystemResponse }) {
+/** 分组顺序 = 出事时的阅读顺序（fail 先看）。 */
+const CHECK_ORDER: readonly CheckStatus[] = ['fail', 'warn', 'ok', 'skip'];
+
+export function SystemPage() {
+  const [searchParams] = useSearchParams();
+  const repoFilter = searchParams.get('repo') ?? '';
+  const { data, error, isLoading, refetch } = useSystem();
+
+  const isEmpty =
+    data !== undefined && data.repos.length === 0 && data.queue.length === 0 && data.flags.length === 0;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <PageHeader
+        title="系统"
+        actions={
+          error === null ? undefined : (
+            <button
+              type="button"
+              onClick={() => {
+                void refetch();
+              }}
+              className="h-7 rounded-md border border-border px-2 text-xs text-foreground hover:bg-muted"
+            >
+              重试
+            </button>
+          )
+        }
+      />
+
+      {data === undefined ? null : (
+        <Toolbar meta="仓库筛选只影响「仓库」这一块">
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5" data-testid="system-filters">
+            <RepoFilterSelect testId="system-repo-filter" options={data.repos.map((repo) => repo.repo)} />
+            <span className="text-2xs text-faint">
+              {repoFilter === '' ? '全部仓库' : `只看 ${repoFilter}`}
+            </span>
+          </span>
+        </Toolbar>
+      )}
+
+      <AsyncSection
+        isLoading={isLoading}
+        error={error}
+        isEmpty={isEmpty}
+        emptyText="还没有任何仓库与队列配置（服务刚启动？）"
+        emptyHint="服务第一次启动时会建队列并种子仓库配置；如果是刚部署，等十几秒再刷新。"
+        testId="system"
+        skeletonRows={7}
+      >
+        {data === undefined ? null : <SystemContent data={data} repoFilter={repoFilter} />}
+      </AsyncSection>
+    </div>
+  );
+}
+
+function SystemContent({ data, repoFilter }: { data: SystemResponse; repoFilter: string }) {
+  const repos = repoFilter === '' ? data.repos : data.repos.filter((repo) => repo.repo === repoFilter);
   const paused = data.flags.find((flag) => flag.key === 'rate_limit_pause');
 
   // 与 `DegradedBanner` 同一套判据，这里是「逐条展开」
@@ -110,236 +126,260 @@ function SystemContent({ data }: { data: SystemResponse }) {
   }
   if (!data.retention.metricsForever) conditions.push('指标保留期配置异常（契约要求永久保留）');
 
+  const groups = CHECK_ORDER.map((status) => ({
+    status,
+    checks: data.doctor.checks.filter((check) => check.status === status),
+  })).filter((group) => group.checks.length > 0);
+
   return (
-    <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>版本与协议</CardTitle>
-          <CardDescription>契约版本用于发现「后端换契约了」；协议是 RACP 的 WS 路径与子协议</CardDescription>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-2 text-xs">
-          <Field label="应用" value={data.version.app} />
-          <Field label="契约" value={data.version.contract} />
-          {/* 契约：未连上就是 null —— 这里显示 `—`，不用 0 或假版本号糊过去 */}
-          <Field label="pi-host 版本" value={data.version.host ?? EMPTY} />
-          <Field label="PIN 校验" value={data.version.hostPinned ? '通过' : '未通过'} />
-          <Field label="WS 路径" value={data.protocol.wsPath} mono />
-          <Field label="子协议" value={data.protocol.wsSubprotocol} mono />
-        </CardContent>
-      </Card>
+    <div className="flex min-w-0 flex-col gap-6">
+      <div className="grid min-w-0 gap-6 xl:grid-cols-2">
+        <Section first title="版本与协议">
+          <div className="flex flex-col gap-2">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+              <Kv label="应用" value={data.version.app} mono />
+              <Kv label="契约" value={data.version.contract} mono />
+              <Kv label="pi-host 版本" value={data.version.host ?? EMPTY} mono />
+              <Kv label="PIN 校验" value={data.version.hostPinned ? '通过' : '未通过'} tone={data.version.hostPinned ? 'success' : 'danger'} />
+              <Kv label="WS 路径" value={data.protocol.wsPath} mono />
+              <Kv label="子协议" value={data.protocol.wsSubprotocol} mono />
+            </dl>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>降级横幅条件</CardTitle>
-          <CardDescription>命中任一条件时，页面顶部会出现全局降级横幅</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Alert
-            variant={conditions.length === 0 ? 'default' : 'warning'}
-            data-testid="system-degraded"
-            className="px-3 py-2"
-          >
-            <AlertTitle>{conditions.length === 0 ? '当前没有降级条件' : `命中 ${String(conditions.length)} 条`}</AlertTitle>
-            <AlertDescription>
-              {conditions.length === 0 ? (
-                '熔断、host、PIN、doctor、保留期五项都正常'
-              ) : (
-                conditions.map((condition, index) => (
-                  <span key={condition}>
-                    {index === 0 ? '' : '；'}
-                    {condition}
-                  </span>
-                ))
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="inline-flex items-center gap-1.5" data-testid="system-host">
+                <StatusDot
+                  tone={data.host.status === 'ok' ? 'success' : data.host.status === 'unknown' ? 'neutral' : 'danger'}
+                  label={HOST_LABEL[data.host.status]}
+                />
+                <span className="text-muted-foreground">pi-host</span>
+                <span className="text-foreground">{HOST_LABEL[data.host.status]}</span>
+              </span>
+              <span className="tabular text-muted-foreground">会话 {formatCount(data.host.sessions)}</span>
+              <span className="text-faint">心跳 {formatTimeCell(data.host.lastPingAt).text}</span>
+            </div>
+
+            <Alert tone={conditions.length === 0 ? 'success' : 'warn'} data-testid="system-degraded">
+              <AlertTitle>{conditions.length === 0 ? '当前没有降级条件' : `命中 ${String(conditions.length)} 条降级条件`}</AlertTitle>
+              {conditions.length === 0 ? null : (
+                <AlertDescription>
+                  <ul className="list-disc pl-4">
+                    {conditions.map((condition) => (
+                      <li key={condition}>{condition}</li>
+                    ))}
+                  </ul>
+                </AlertDescription>
               )}
-            </AlertDescription>
-          </Alert>
-        </CardContent>
-      </Card>
+            </Alert>
+          </div>
+        </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>pi-host 状态</CardTitle>
-          <CardDescription>{`最近心跳 ${formatTimeCell(data.host.lastPingAt).text}`}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-center gap-3 text-xs">
-          <Badge variant={data.host.status === 'ok' ? 'success' : data.host.status === 'unknown' ? 'muted' : 'danger'}>
-            {HOST_LABEL[data.host.status]}
-          </Badge>
-          <span className="text-muted-foreground">{`会话 ${formatCount(data.host.sessions)} 个`}</span>
-          <span className="text-muted-foreground">{`doctor ${DOCTOR_LABEL[data.doctor.status]}`}</span>
-          <span className="text-muted-foreground">{`体检时间 ${formatTimeCell(data.doctor.checkedAt).text}`}</span>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>队列配置</CardTitle>
-          <CardDescription>`expireIn` 是 job 存活上限，**不是**排队时长（tech-plan §5.3 F5）</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {data.queue.length === 0 ? (
-            <p className="text-xs text-muted-foreground">pg-boss 还没有建队列</p>
-          ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="py-1">队列</th>
-                  <th className="py-1 text-right">排队</th>
-                  <th className="py-1 text-right">执行中</th>
-                  <th className="py-1 text-right">重试上限</th>
-                  <th className="py-1 text-right">存活上限</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.queue.map((queue) => (
-                  <tr key={queue.name} className="border-t border-border">
-                    <td className="py-1 font-mono">{queue.name}</td>
-                    <td className="py-1 text-right tabular-nums">{formatCount(queue.pending)}</td>
-                    <td className="py-1 text-right tabular-nums">{formatCount(queue.active)}</td>
-                    <td className="py-1 text-right tabular-nums">{formatCount(queue.retryLimit)}</td>
-                    <td className="py-1 text-right tabular-nums">{formatDuration(queue.expireInMs)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="xl:col-span-2">
-        <CardHeader>
-          <CardTitle>doctor 逐项检查</CardTitle>
-          <CardDescription>
-            {`共 ${formatCount(data.doctor.checks.length)} 项 · 整体 ${DOCTOR_LABEL[data.doctor.status]}；fail 整行高亮`}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+        <Section
+          title="doctor 逐项检查"
+          description={`共 ${formatCount(data.doctor.checks.length)} 项 · 整体 ${DOCTOR_LABEL[data.doctor.status]} · 体检时间 ${formatTimeCell(data.doctor.checkedAt).text}`}
+        >
           {data.doctor.checks.length === 0 ? (
-            <p className="text-xs text-muted-foreground">doctor 还没跑过（`pi-bot doctor` 或启动自检后才有结果）</p>
+            <p className="text-xs text-muted-foreground">doctor 还没跑过（`pi-bot doctor` 或启动自检后才有结果）。</p>
           ) : (
-            <ul className="flex flex-col gap-1 text-xs">
-              {data.doctor.checks.map((check) => (
-                <li
-                  key={check.id}
-                  data-testid={`doctor-${check.id}`}
-                  className={cn(
-                    'flex flex-wrap items-center gap-2 rounded-md px-2 py-1',
-                    check.status === 'fail' ? 'bg-destructive/10 text-destructive' : null,
-                    check.status === 'warn' ? 'bg-muted' : null,
-                  )}
-                >
-                  <Badge variant={CHECK_VARIANT[check.status]}>{CHECK_LABEL[check.status]}</Badge>
-                  <span className="font-mono">{check.id}</span>
-                  <span className="text-muted-foreground">{check.detail ?? EMPTY}</span>
-                </li>
+            <div className="flex flex-col gap-2">
+              {groups.map((group) => (
+                <div key={group.status} className="flex min-w-0 flex-col gap-1">
+                  <p className="micro-label flex items-center gap-1.5">
+                    <span aria-hidden className={cn('size-1.5 rounded-full', group.status === 'fail' ? 'bg-danger' : group.status === 'warn' ? 'bg-warn' : group.status === 'ok' ? 'bg-success' : 'bg-neutral')} />
+                    {CHECK_LABEL[group.status]}（{group.checks.length}）
+                  </p>
+                  <ul className="flex flex-col divide-y divide-border">
+                    {group.checks.map((check) => (
+                      <li
+                        key={check.id}
+                        data-testid={`doctor-${check.id}`}
+                        data-tone={CHECK_TONE[check.status]}
+                        className={cn(
+                          'flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 px-1.5 py-1',
+                          check.status === 'fail' && 'rounded-sm bg-danger-bg',
+                        )}
+                      >
+                        <Badge tone={CHECK_TONE[check.status]}>{CHECK_LABEL[check.status]}</Badge>
+                        <span className="font-mono text-xs text-foreground">{check.id}</span>
+                        <span
+                          className={cn(
+                            'min-w-0 flex-1 text-xs',
+                            check.status === 'fail' ? 'text-danger-fg' : 'text-muted-foreground',
+                            check.status === 'ok' || check.status === 'skip' ? 'truncate' : 'break-words',
+                          )}
+                          title={check.detail ?? undefined}
+                        >
+                          {check.detail ?? EMPTY}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
-        </CardContent>
-      </Card>
+        </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>保留期与 runtime flags</CardTitle>
-          <CardDescription>指标永久保留；其余按天清理（retention 任务是 cron）</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-xs">
-          <Field
-            label="保留期"
-            value={`webhook ${formatCount(data.retention.webhookDays)} 天 · 事件 ${formatCount(data.retention.runEventDays)} 天 · transcript ${formatCount(data.retention.transcriptDays)} 天 · 指标${data.retention.metricsForever ? '永久' : '有期限'}`}
-          />
-          <div className="flex flex-col gap-1">
-            <span className="text-[11px] text-muted-foreground">runtime flags</span>
-            {data.flags.length === 0 ? (
-              <span className="text-muted-foreground">没有生效中的 flag</span>
+        <Section title="队列与保留策略" description="expireIn 是 job 存活上限，不是排队时长；保留期只有 metrics 是永久。">
+          <div className="flex flex-col gap-3">
+            {data.queue.length === 0 ? (
+              <p className="text-xs text-muted-foreground">pg-boss 还没有建队列。</p>
             ) : (
-              data.flags.map((flag) => (
-                <span key={flag.key} className="font-mono">
-                  {`${flag.key} = ${flag.value}`}
-                  {flag.until === null ? '' : `（至 ${formatTimeCell(flag.until).title}）`}
-                </span>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>队列</TableHead>
+                    <TableHead className="text-right">排队</TableHead>
+                    <TableHead className="text-right">执行中</TableHead>
+                    <TableHead className="text-right">重试上限</TableHead>
+                    <TableHead className="text-right">存活上限</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.queue.map((queue) => (
+                    <TableRow key={queue.name}>
+                      <TableCell className="font-mono text-xs">{queue.name}</TableCell>
+                      <TableCell className="tabular text-right text-xs">{formatCount(queue.pending)}</TableCell>
+                      <TableCell className="tabular text-right text-xs">{formatCount(queue.active)}</TableCell>
+                      <TableCell className="tabular text-right text-xs">{formatCount(queue.retryLimit)}</TableCell>
+                      <TableCell className="tabular text-right text-xs">{formatDuration(queue.expireInMs)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+
+            <p className="text-xs text-muted-foreground">
+              webhook {formatCount(data.retention.webhookDays)} 天 · 事件 {formatCount(data.retention.runEventDays)} 天 · transcript{' '}
+              {formatCount(data.retention.transcriptDays)} 天 · 指标{data.retention.metricsForever ? '永久' : '有期限'}
+            </p>
+
+            <div className="flex flex-col gap-1">
+              <p className="micro-label">runtime flags</p>
+              {data.flags.length === 0 ? (
+                <span className="text-xs text-muted-foreground">没有生效中的 flag</span>
+              ) : (
+                <ul className="flex flex-col gap-0.5">
+                  {data.flags.map((flag) => (
+                    <li key={flag.key} className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="font-mono text-foreground">
+                        {flag.key} = {flag.value}
+                      </span>
+                      {flag.until === null ? null : (
+                        <span className="text-2xs text-faint">至 {formatTimeCell(flag.until).title}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </Section>
+
+        <Section
+          title="仓库"
+          description={`共 ${formatCount(data.repos.length)} 个${repoFilter === '' ? '' : `，当前只看 ${repoFilter}`}`}
+          actions={<Badge tone="neutral">只读</Badge>}
+        >
+          <ul className="flex flex-col divide-y divide-border" data-testid="system-repos">
+            {repos.length === 0 ? (
+              <li className="py-2 text-xs text-muted-foreground">
+                {repoFilter === '' ? '还没有仓库配置' : `没有 ${repoFilter} 这个仓库（或它不在清单里）`}
+              </li>
+            ) : (
+              repos.map((repo) => (
+                <li
+                  key={repo.repo}
+                  data-testid={`system-repo-${repo.repo}`}
+                  className="grid min-w-0 grid-cols-1 gap-x-3 gap-y-0.5 py-1.5 md:grid-cols-[minmax(0,1fr)_auto]"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      to={repoSettingsPath(repo.repo, 'general')}
+                      className="font-mono text-xs text-foreground underline-offset-2 hover:text-brand hover:underline"
+                      title={`打开 ${repo.repo} 的设置`}
+                    >
+                      {repo.repo}
+                    </Link>
+                    <p className="text-2xs text-faint">
+                      最近活动{' '}
+                      {repo.lastActivityAt === null ? EMPTY : formatTimeCell(repo.lastActivityAt).text}
+                      {repo.archivedAt === null ? '' : ` · 归档于 ${formatTimeCell(repo.archivedAt).text}`}
+                      {repo.settingsError === null ? '' : ` · ${repo.settingsError}`}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1 md:justify-end">
+                    <Badge tone={repo.enabled ? 'success' : 'neutral'} dot>
+                      {repo.enabled ? '启用' : '停用'}
+                    </Badge>
+                    <Badge tone={repo.dryRun ? 'warn' : 'success'} dot>
+                      {repo.dryRun ? '干跑' : '真写'}
+                    </Badge>
+                    <Badge tone={repo.settingsValid ? 'success' : 'danger'} dot>
+                      {repo.settingsValid ? '配置合法' : '配置非法'}
+                    </Badge>
+                    {repo.archivedAt === null ? null : <Badge tone="neutral">已归档</Badge>}
+                  </div>
+                </li>
               ))
             )}
-          </div>
-        </CardContent>
-      </Card>
+          </ul>
+        </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>仓库开关</CardTitle>
-          <CardDescription>{`共 ${formatCount(data.repos.length)} 个仓库；配置无效的仓库不会被调度`}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-1.5 text-xs">
-          {data.repos.length === 0 ? (
-            <p className="text-muted-foreground">还没有仓库配置</p>
-          ) : (
-            data.repos.map((repo) => (
-              <div key={repo.repo} className="flex flex-wrap items-center gap-2">
-                <span className="font-mono">{repo.repo}</span>
-                <Badge variant={repo.enabled ? 'success' : 'muted'}>{repo.enabled ? '启用' : '停用'}</Badge>
-                {repo.dryRun ? <Badge variant="outline">dry-run</Badge> : null}
-                {repo.configValid ? null : <Badge variant="danger">配置无效</Badge>}
-                {repo.configError === null ? null : <span className="text-muted-foreground">{repo.configError}</span>}
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="xl:col-span-2">
-        <CardHeader>
-          <CardTitle>能力（skills）</CardTitle>
-          <CardDescription>
-            契约只有 skills 这一份能力清单（没有单独的 capabilities 字段）：`outputs` 是允许的写回类型，
-            `timeoutMs` 已被截断到 30m 上限
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+        <Section title="能力（skills）" description="outputs = 允许的写回类型；超时已截断到 30 分钟上限">
           {data.skills.length === 0 ? (
-            <p className="text-xs text-muted-foreground">还没有加载任何技能（skills/ 目录为空）</p>
+            <p className="text-xs text-muted-foreground">还没有加载任何技能（skills/ 目录为空）。</p>
           ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="py-1">技能</th>
-                  <th className="py-1">来源</th>
-                  <th className="py-1">状态</th>
-                  <th className="py-1">outputs</th>
-                  <th className="py-1 text-right">超时</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>技能</TableHead>
+                  <TableHead>来源</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>outputs</TableHead>
+                  <TableHead className="text-right">超时</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {data.skills.map((skill) => (
-                  <tr key={skill.name} className="border-t border-border">
-                    <td className="py-1 font-mono">{skill.name}</td>
-                    <td className="py-1 font-mono text-muted-foreground">{skill.source}</td>
-                    <td className="py-1">
-                      <Badge variant={skill.enabled ? 'success' : 'danger'}>
+                  <TableRow key={skill.name}>
+                    <TableCell className="font-mono text-xs">{skill.name}</TableCell>
+                    <TableCell className="font-mono text-2xs text-muted-foreground">{skill.source}</TableCell>
+                    <TableCell className="text-xs">
+                      <Badge tone={skill.enabled ? 'success' : 'danger'}>
                         {skill.enabled ? '已启用' : (skill.disabledReason ?? '已禁用')}
                       </Badge>
-                    </td>
-                    <td className="py-1 font-mono text-muted-foreground">{skill.outputs.join(' · ')}</td>
-                    <td className="py-1 text-right tabular-nums">{formatDuration(skill.timeoutMs)}</td>
-                  </tr>
+                    </TableCell>
+                    <TableCell className="font-mono text-2xs text-muted-foreground">{skill.outputs.join(' · ')}</TableCell>
+                    <TableCell className="tabular text-right text-xs">{formatDuration(skill.timeoutMs)}</TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           )}
-        </CardContent>
-      </Card>
-
-      <p className="text-[11px] text-muted-foreground xl:col-span-2">
-        {`生成于 ${formatTimeCell(data.generatedAt).text}（${formatTimeCell(data.generatedAt).title}）`}
-      </p>
+          <p className="mt-1 text-2xs text-faint">生成于 {formatTimeCell(data.generatedAt).text}（{formatTimeCell(data.generatedAt).title}）</p>
+        </Section>
+      </div>
     </div>
   );
 }
 
-function Field({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function Kv({
+  label,
+  value,
+  mono = false,
+  tone,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  tone?: 'success' | 'danger';
+}) {
   return (
-    <div className="flex flex-col">
-      <span className="text-[11px] text-muted-foreground">{label}</span>
-      <span className={mono ? 'font-mono' : undefined}>{value}</span>
+    <div className="flex min-w-0 flex-col">
+      <dt className="text-2xs text-faint">{label}</dt>
+      <dd className={cn('truncate text-xs', mono && 'font-mono', tone === 'success' ? 'text-success-fg' : tone === 'danger' ? 'text-danger-fg' : 'text-foreground')} title={value}>
+        {value}
+      </dd>
     </div>
   );
 }

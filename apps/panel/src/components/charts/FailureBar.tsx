@@ -1,4 +1,5 @@
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { usePrefersReducedMotion } from './chart-kit.tsx';
 import type { OverviewResponse } from '../../lib/contract.ts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card.tsx';
 import { chartColor } from './chart-colors.ts';
@@ -15,6 +16,7 @@ export type FailureBarProps = {
 };
 
 export function FailureBar({ data, height = 180 }: FailureBarProps) {
+  const reduced = usePrefersReducedMotion();
   return (
     <Card>
       <CardHeader>
@@ -36,7 +38,7 @@ export function FailureBar({ data, height = 180 }: FailureBarProps) {
                 width={96}
               />
               <Tooltip contentStyle={{ fontSize: 12 }} />
-              <Bar dataKey="count" name="次数" fill={chartColor(0)} radius={[0, 4, 4, 0]} barSize={14} />
+              <Bar dataKey="count" name="次数" fill={chartColor(0)} radius={[0, 4, 4, 0]} barSize={14} isAnimationActive={!reduced} />
             </BarChart>
           </ResponsiveContainer>
         )}

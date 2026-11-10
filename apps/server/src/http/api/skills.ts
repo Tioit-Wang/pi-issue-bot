@@ -85,21 +85,26 @@ const originHostOf = (origin: string): string | null => {
   }
 };
 
-export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
-  const mode: SkillWriteMode = deps.writeMode ?? 'loopback';
+/* ── 读写守卫（技能与项目提示词共用一份）───────────────────────────────────── */
 
-  // 原始 zip 字节：不引入 `@fastify/multipart`（spec §6 的「不引入新依赖」）。
-  app.addContentTypeParser(
-    'application/zip',
-    { parseAs: 'buffer', bodyLimit: SKILL_UPLOAD_MAX_BYTES },
-    (_request, body, done) => {
-      done(null, body);
-    },
-  );
+/**
+ * 「读接口鉴权 + 写接口三道写面约束」的唯一实现。
+ *
+ * 为什么提出来：`/api/skills` 与 `/api/repos/:owner/:name/prompt` 的写面策略必须**完全一致**
+ * （同一份 CSRF/来源/loopback 规则）。各写一份的话，两边迟早会漂——而漂的方向通常是「少了一道检查」。
+ */
+export function createApiGuards(input: {
+  readonly requireAuth: RequireAuth;
+  readonly writeMode?: SkillWriteMode;
+}): {
+  readonly guard: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  readonly writeGuard: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+} {
+  const mode: SkillWriteMode = input.writeMode ?? 'loopback';
 
   /** 读接口：鉴权 + 禁止缓存（与既有 `/api/*` 一致）。 */
   const guard = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    await deps.requireAuth(request);
+    await input.requireAuth(request);
     reply.header('cache-control', 'no-store');
   };
 
@@ -112,10 +117,10 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
   const writeGuard = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     await guard(request, reply);
     if (mode === 'off') {
-      throw httpError('forbidden', '技能写接口已关闭（PI_BOT_PANEL_WRITE=off）');
+      throw httpError('forbidden', '写接口已关闭（PI_BOT_PANEL_WRITE=off）');
     }
     if (mode === 'loopback' && !isLoopbackAddress(request.raw.socket.remoteAddress ?? undefined)) {
-      throw httpError('forbidden', '技能写接口只接受本机来源（PI_BOT_PANEL_WRITE=loopback）');
+      throw httpError('forbidden', '写接口只接受本机来源（PI_BOT_PANEL_WRITE=loopback）');
     }
 
     // `Sec-Fetch-Site: cross-site` 是浏览器自己给的信号，比 Origin 更难伪造。
@@ -138,6 +143,24 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
       throw httpError('forbidden', '缺少 X-Pi-Bot-CSRF: 1 头（写接口的 CSRF 防护）');
     }
   };
+
+  return { guard, writeGuard };
+}
+
+export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
+  const { guard, writeGuard } = createApiGuards({
+    requireAuth: deps.requireAuth,
+    ...(deps.writeMode === undefined ? {} : { writeMode: deps.writeMode }),
+  });
+
+  // 原始 zip 字节：不引入 `@fastify/multipart`（spec §6 的「不引入新依赖」）。
+  app.addContentTypeParser(
+    'application/zip',
+    { parseAs: 'buffer', bodyLimit: SKILL_UPLOAD_MAX_BYTES },
+    (_request, body, done) => {
+      done(null, body);
+    },
+  );
 
   /** 存储层的错误 → 契约错误码。集中一处，路由里不再各写各的。 */
   const mapStoreError = (error: unknown): never => {

@@ -135,7 +135,7 @@ function buildLifecycleApp(order: Recorder): { app: Application; queue: FakeQueu
     },
     metrics: createMetrics({ defaultMetrics: false }),
     metricsServer: createRecordingMetricsServer(order),
-    ack: { addEyesReaction: async () => undefined, postAckComment: async () => undefined },
+    ack: { addEyesReaction: async () => undefined },
     skipSchedules: true,
   });
 

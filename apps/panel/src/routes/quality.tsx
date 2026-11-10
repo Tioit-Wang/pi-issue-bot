@@ -1,265 +1,286 @@
-import { createColumnHelper } from '@tanstack/react-table';
-import { useNavigate } from 'react-router';
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+/**
+ * 质量（`/api/quality/reverts`，每 15s 轮询）：**一条筛选条 + 一张主图 + 明细**。
+ *
+ * 面板唯一的「干得好不好」信号：自动执行后**被人改回**的比例（tech-plan §7.5）。
+ * 口径由契约的 zod `refine` 强制：`rate = reverted / applied`，`applied = 0` 时 `rate` 必须是 `null`，
+ * 所以页面**不能**把 null 画成 0% —— 标题旁的口径必须带上真实分母，桶里 null 显示 `—`。
+ */
+import { useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router';
 import { AsyncSection } from '../components/AsyncSection.tsx';
-import { chartColor } from '../components/charts/chart-colors.ts';
-import { DataTable } from '../components/tables/DataTable.tsx';
-import { panelTableFeatures } from '../components/tables/features.ts';
+import { Section } from '../components/Section.tsx';
+import { PageHeader } from '../components/PageHeader.tsx';
+import { Toolbar } from '../components/Toolbar.tsx';
+import { BarList } from '../components/charts/BarList.tsx';
+import { RepoFilterSelect } from '../components/repo-filter.tsx';
 import { Badge } from '../components/ui/badge.tsx';
-import { Button } from '../components/ui/button.tsx';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.tsx';
+import { Segmented } from '../components/ui/segmented.tsx';
+import { Select } from '../components/ui/select.tsx';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table.tsx';
 import type { RevertsResponse } from '../lib/contract.ts';
 import { formatCount, formatPercent, formatTimeCell } from '../lib/format.ts';
 import { useReverts } from '../lib/queries.ts';
-import { PageShell } from './PageShell.tsx';
 
-/**
- * 质量（S5，数据源 `/api/quality/reverts`，每 15 秒轮询）。
- *
- * 面板唯一的「干得好不好」信号：**自动执行后被人改回的比例**（tech-plan §7.5）。
- * 口径由契约的 zod `refine` 强制：`rate = reverted / applied`；`applied = 0` 时 `rate` 必须是 `null`。
- * 所以页面这里**不能**把 null 画成 0%：`formatPercent(null) === '—'`，`/summarize` 那一行就是这样。
- *
- * 三段呈现（tech-plan §9.3）：改回率大数字 → 按命令分组的堆叠条形（应用 vs 改回）
- * → 逐条改回记录（点行进 `/tasks/:taskId`，`revertKind` 用徽章标出「怎么被改回的」）。
- */
-const helper = createColumnHelper<typeof panelTableFeatures, RevertsResponse['records'][number]>();
+const RANGE_DAYS: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90 };
 
-const columns = helper.columns([
-  helper.accessor('taskId', {
-    header: '任务',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('repo', {
-    header: '仓库',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('command', {
-    header: '命令',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('intent', {
-    header: '写的是什么',
-    cell: (info) => <span className="font-mono text-xs">{info.getValue()}</span>,
-  }),
-  helper.accessor('revertKind', {
-    header: '改回方式',
-    cell: (info) => (
-      <Badge variant="outline" className="font-mono">
-        {info.getValue()}
-      </Badge>
-    ),
-  }),
-  helper.accessor('appliedAt', {
-    header: '落地',
-    cell: (info) => {
-      const cell = formatTimeCell(info.getValue());
-      return (
-        <time title={cell.title} className="text-xs text-muted-foreground">
-          {cell.text}
-        </time>
-      );
-    },
-  }),
-  helper.accessor('revertedAt', {
-    header: '被改回',
-    cell: (info) => {
-      const cell = formatTimeCell(info.getValue());
-      return (
-        <time title={cell.title} className="text-xs">
-          {cell.text}
-        </time>
-      );
-    },
-  }),
-]);
+/** 改回方式的中文（契约枚举值照旧显示在括号里，便于对日志）。 */
+const REVERT_KIND_LABEL: Record<string, string> = {
+  'label-removed': '摘标签',
+  'changes-requested': '被请求改动',
+  'pr-closed': '关 PR',
+  'comment-deleted': '删评论',
+  'revert-commit': '回滚提交',
+};
 
 export function QualityPage() {
   const navigate = useNavigate();
-  const { data, error, isLoading, refetch } = useReverts({ limit: 50 });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const repo = searchParams.get('repo') ?? '';
+  const command = searchParams.get('command') ?? '';
+  const range = searchParams.get('range') ?? '7d';
+  const [dimension, setDimension] = useState<'command' | 'repo'>('command');
 
-  // 空态：窗口内一个动作都没落地（此时 rate 必为 null）
+  const query = useMemo(() => {
+    const days = RANGE_DAYS[range] ?? null;
+    return {
+      limit: 50,
+      ...(repo === '' ? {} : { repo }),
+      ...(command === '' ? {} : { command }),
+      ...(days === null ? {} : { from: new Date(Date.now() - days * 86_400_000).toISOString() }),
+    };
+  }, [repo, command, range]);
+
+  const { data, error, isLoading, refetch } = useReverts(query);
   const isEmpty = data !== undefined && data.overall.applied === 0;
 
+  const setParam = (key: string, value: string): void => {
+    const next = new URLSearchParams(searchParams);
+    if (value === '') next.delete(key);
+    else next.set(key, value);
+    setSearchParams(next, { replace: true });
+  };
+
   return (
-    <PageShell
-      title="质量"
-      description="改回率 = 被改回的动作 / 已应用的动作（窗口内，每 15 秒刷新）"
-      actions={
-        error === null ? undefined : (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void refetch();
+    <div className="flex min-w-0 flex-col gap-4">
+      <PageHeader
+        title="质量"
+        actions={
+          error === null ? undefined : (
+            <button
+              type="button"
+              onClick={() => {
+                void refetch();
+              }}
+              className="h-7 rounded-md border border-border px-2 text-xs text-foreground hover:bg-muted"
+            >
+              重试
+            </button>
+          )
+        }
+      />
+
+      <Toolbar>
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5" data-testid="quality-filters">
+          <RepoFilterSelect testId="quality-repo-filter" />
+          <Segmented
+            label="时间窗"
+            value={range}
+            onChange={(next) => {
+              setParam('range', next === '7d' ? '' : next);
             }}
-          >
-            重试
-          </Button>
-        )
-      }
-    >
+            options={[
+              { value: '7d', label: '7 天' },
+              { value: '30d', label: '30 天' },
+              { value: '90d', label: '90 天' },
+            ]}
+          />
+          <Select
+            aria-label="命令筛选"
+            options={(data?.byCommand ?? []).map((bucket) => ({ value: bucket.key, label: bucket.key }))}
+            placeholder="全部命令"
+            value={command}
+            onChange={(event) => {
+              setParam('command', event.target.value);
+            }}
+          />
+          {repo === '' ? null : <span className="text-2xs text-faint">{`只看 ${repo}`}</span>}
+        </span>
+      </Toolbar>
+
       <AsyncSection
         isLoading={isLoading}
         error={error}
         isEmpty={isEmpty}
         emptyText="窗口内没有已应用的动作（没有可评估的样本）"
         testId="quality"
-        skeletonHeight="h-40"
+        skeletonRows={5}
       >
         {data === undefined ? null : (
           <QualityContent
             data={data}
+            dimension={dimension}
+            onDimensionChange={setDimension}
             onOpenTask={(taskId) => {
               void navigate(`/tasks/${encodeURIComponent(taskId)}`);
             }}
           />
         )}
       </AsyncSection>
-    </PageShell>
-  );
-}
-
-function QualityContent({ data, onOpenTask }: { data: RevertsResponse; onOpenTask: (taskId: string) => void }) {
-  const { overall } = data;
-
-  return (
-    <div className="flex flex-col gap-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>改回率</CardTitle>
-          <CardDescription>
-            口径：改回数 / 已应用动作数；`applied = 0` 时为 null，显示 `—`（不是 0%）
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-end gap-8">
-          <div>
-            <div className="text-4xl font-semibold tabular-nums" data-testid="quality-rate">
-              {formatPercent(overall.rate)}
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {`被改回 ${formatCount(overall.reverted)} / 已应用 ${formatCount(overall.applied)}`}
-            </p>
-          </div>
-          <dl className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
-            <dt className="text-muted-foreground">已应用动作</dt>
-            <dd className="tabular-nums">{formatCount(overall.applied)}</dd>
-            <dt className="text-muted-foreground">被改回</dt>
-            <dd className="tabular-nums">{formatCount(overall.reverted)}</dd>
-            <dt className="text-muted-foreground">命令 / 仓库分组</dt>
-            <dd className="tabular-nums">
-              {formatCount(data.byCommand.length)} / {formatCount(data.byRepo.length)}
-            </dd>
-          </dl>
-        </CardContent>
-      </Card>
-
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-        <div className="xl:col-span-2">
-          <CommandRevertChart buckets={data.byCommand} />
-        </div>
-        <Card>
-          <CardHeader>
-            <CardTitle>按仓库</CardTitle>
-            <CardDescription>同一口径，按仓库分组</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-1.5 text-xs">
-            {data.byRepo.length === 0 ? (
-              <p className="text-muted-foreground">窗口内没有已应用的动作</p>
-            ) : (
-              data.byRepo.map((bucket) => (
-                <div key={bucket.key} className="flex items-center justify-between gap-2">
-                  <span className="font-mono">{bucket.key}</span>
-                  <span className="tabular-nums text-muted-foreground">
-                    {`${formatCount(bucket.reverted)} / ${formatCount(bucket.applied)} · ${formatPercent(bucket.rate)}`}
-                  </span>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>逐条改回记录</CardTitle>
-          <CardDescription>
-            按改回时间倒序，点行进任务详情；`revertKind` 是「怎么被改回的」（摘标签 / 请求改动 / 关 PR / 删评论 / 回滚提交）
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {data.hasMore ? (
-            <p className="text-[11px] text-muted-foreground">
-              {`还有更多记录（当前展示 ${formatCount(data.records.length)} 条，游标分页）`}
-            </p>
-          ) : null}
-          <DataTable
-            columns={columns}
-            data={data.records}
-            getRowId={(row) => row.actionId}
-            onRowClick={(row) => {
-              onOpenTask(row.taskId);
-            }}
-            emptyText="窗口内没有被改回的动作"
-            testId="quality-records"
-          />
-        </CardContent>
-      </Card>
-
-      <p className="text-[11px] text-muted-foreground">
-        {`统计窗口 ${formatTimeCell(data.window.from).title} — ${formatTimeCell(data.window.to).title} · 生成于 ${formatTimeCell(data.generatedAt).text}`}
-      </p>
     </div>
   );
 }
 
-/**
- * 按命令的堆叠条形：应用数（长）与改回数（短）叠在一根上，右边的比率是逐命令口径。
- * `rate` 为 null 的桶（applied = 0）如实显示 `—`。
- */
-function CommandRevertChart({ buckets }: { buckets: RevertsResponse['byCommand'] }) {
+function QualityContent({
+  data,
+  dimension,
+  onDimensionChange,
+  onOpenTask,
+}: {
+  data: RevertsResponse;
+  dimension: 'command' | 'repo';
+  onDimensionChange: (next: 'command' | 'repo') => void;
+  onOpenTask: (taskId: string) => void;
+}) {
+  const { overall } = data;
+  const buckets = dimension === 'command' ? data.byCommand : data.byRepo;
+  const kinds = new Map<string, number>();
+  for (const record of data.records) kinds.set(record.revertKind, (kinds.get(record.revertKind) ?? 0) + 1);
+  const kindRows = [...kinds.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([kind, count]) => ({
+      key: `${REVERT_KIND_LABEL[kind] ?? kind}（${kind}）`,
+      value: count,
+      display: `${formatCount(count)} 条`,
+      tone: 'warn' as const,
+    }));
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>按命令的改回分布</CardTitle>
-        <CardDescription>横轴是动作数；旁边比率 = 改回 / 应用（`—` 表示窗口内没有已应用的动作）</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        {buckets.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">窗口内没有已应用的动作</p>
-        ) : (
-          <>
-            <ResponsiveContainer width="100%" height={Math.max(120, buckets.length * 42)}>
-              <BarChart data={buckets} layout="vertical" margin={{ top: 0, right: 16, bottom: 0, left: 8 }}>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" allowDecimals={false} stroke="var(--muted-foreground)" fontSize={11} />
-                <YAxis type="category" dataKey="key" width={112} stroke="var(--muted-foreground)" fontSize={11} />
-                <Tooltip contentStyle={{ fontSize: 12 }} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="applied" name="已应用" stackId="reverts" fill={chartColor(1)} barSize={16} />
-                <Bar
-                  dataKey="reverted"
-                  name="被改回"
-                  stackId="reverts"
-                  fill={chartColor(0)}
-                  radius={[0, 4, 4, 0]}
-                  barSize={16}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-            <ul className="flex flex-col gap-1 text-xs">
-              {buckets.map((bucket) => (
-                <li key={bucket.key} className="flex items-center justify-between gap-2">
-                  <span className="font-mono">{bucket.key}</span>
-                  <span className="tabular-nums text-muted-foreground">
-                    {`${formatCount(bucket.reverted)} / ${formatCount(bucket.applied)} · ${formatPercent(bucket.rate)}`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </CardContent>
-    </Card>
+    <div className="flex min-w-0 flex-col gap-6">
+      <Section
+        first
+        title="被改回率"
+        description={`口径：被改回 ${formatCount(overall.reverted)} / 已应用 ${formatCount(overall.applied)} 个动作（窗口内）；分母为 0 时显示 —，不是 0%。`}
+        actions={
+          <Segmented
+            label="分组维度"
+            value={dimension}
+            onChange={(next) => {
+              onDimensionChange(next as 'command' | 'repo');
+            }}
+            options={[
+              { value: 'command', label: '按命令' },
+              { value: 'repo', label: '按仓库' },
+            ]}
+          />
+        }
+      >
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span className="tabular text-xl font-semibold text-foreground" data-testid="quality-rate">
+              {formatPercent(overall.rate)}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              被改回 <span className="tabular text-foreground">{formatCount(overall.reverted)}</span> / 已应用{' '}
+              <span className="tabular text-foreground">{formatCount(overall.applied)}</span>
+              <span className="text-faint"> · 命令 {formatCount(data.byCommand.length)} 组 · 仓库 {formatCount(data.byRepo.length)} 组</span>
+            </span>
+          </div>
+
+          <BarList
+            testId="quality-buckets"
+            max={1}
+            emptyText="窗口内没有已应用的动作"
+            items={buckets.map((bucket) => ({
+              key: bucket.key,
+              value: bucket.rate ?? 0,
+              display: bucket.rate === null ? '—' : formatPercent(bucket.rate),
+              note: `改回 ${formatCount(bucket.reverted)} / 应用 ${formatCount(bucket.applied)}`,
+              tone: bucket.rate === null ? 'neutral' : bucket.rate >= 0.2 ? 'danger' : bucket.rate >= 0.1 ? 'warn' : 'success',
+            }))}
+          />
+          <p className="text-2xs text-faint">条形满格 = 100%；判色 ≥20% 红 / ≥10% 黄（只是阅读辅助）</p>
+        </div>
+      </Section>
+
+      <Section
+        title="改回方式分布"
+      >
+        <BarList testId="quality-kinds" emptyText="窗口内没有被改回的记录" items={kindRows} />
+        <p className="mt-1 text-2xs text-faint">
+          共 {formatCount(data.records.length)} 条记录
+          {data.hasMore ? '（还有更多，游标分页；用筛选缩小范围更能说明问题）' : ''}
+        </p>
+      </Section>
+
+      <Section title="逐条改回记录">
+        <Table stickyFirst>
+          <TableHeader>
+            <TableRow>
+              <TableHead>任务</TableHead>
+              <TableHead>仓库</TableHead>
+              <TableHead>命令</TableHead>
+              <TableHead>写的是什么</TableHead>
+              <TableHead>改回方式</TableHead>
+              <TableHead className="text-right">落地</TableHead>
+              <TableHead className="text-right">被改回</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.records.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                  窗口内没有被改回的动作
+                </TableCell>
+              </TableRow>
+            ) : (
+              data.records.map((record) => {
+                const applied = formatTimeCell(record.appliedAt);
+                const reverted = formatTimeCell(record.revertedAt);
+                return (
+                  <TableRow
+                    key={record.actionId}
+                    className="cursor-pointer"
+                    onClick={() => {
+                      onOpenTask(record.taskId);
+                    }}
+                  >
+                    <TableCell className="font-mono text-xs">{record.taskId}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{record.repo}</TableCell>
+                    <TableCell className="font-mono text-xs">{record.command}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{record.intent}</TableCell>
+                    <TableCell>
+                      <Badge tone="warn">{record.revertKind}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right text-xs text-muted-foreground">
+                      <time title={applied.title}>{applied.text}</time>
+                    </TableCell>
+                    <TableCell className="text-right text-xs">
+                      <time title={reverted.title}>{reverted.text}</time>
+                      {record.url === null ? null : (
+                        <a
+                          href={record.url}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="ml-1.5 text-brand underline underline-offset-2"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                          }}
+                        >
+                          GitHub
+                        </a>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+        <p className="text-2xs text-faint">
+          统计窗口 {formatTimeCell(data.window.from).title} — {formatTimeCell(data.window.to).title} · 生成于{' '}
+          {formatTimeCell(data.generatedAt).text}
+        </p>
+      </Section>
+    </div>
   );
 }

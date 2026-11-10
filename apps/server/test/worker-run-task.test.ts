@@ -80,6 +80,8 @@ interface HarnessOptions {
   readonly allowPushBranch?: boolean;
   /** 提示词装配钩子（不传 = 不装配，用来钉住「注入前后行为」两种形态）。 */
   readonly promptEnricher?: TaskRunnerDeps['promptEnricher'];
+  /** 无感反馈端口（W2-D）；不传 = 不打 reaction。 */
+  readonly feedback?: TaskRunnerDeps['feedback'];
 }
 
 /** 内存 `RunStore`：断言落库内容用。 */
@@ -368,6 +370,7 @@ function createHarness(options: HarnessOptions = {}): {
       : { timeoutForCommand: options.timeoutForCommand }),
     ...(options.allowPushBranch === undefined ? {} : { allowPushBranch: options.allowPushBranch }),
     ...(options.promptEnricher === undefined ? {} : { promptEnricher: options.promptEnricher }),
+    ...(options.feedback === undefined ? {} : { feedback: options.feedback }),
     clock: () => 1_700_000_000_000,
     onStep: (step) => {
       if (step === 'validate' || step === 'execute') {
@@ -913,5 +916,133 @@ describe('提示词装配钩子（M1）', () => {
 
     expect(called).toBe(false);
     expect(report.steps).toEqual(['worktree', 'diff', 'validate', 'execute', 'dispose']);
+  });
+});
+
+describe('无感反馈：终态 reaction（W2-D）', () => {
+  /** 内存台账：唯一键 = (stage, anchor)，与 PG 唯一索引同构。 */
+  function createFakeFeedback(): {
+    readonly deps: NonNullable<TaskRunnerDeps['feedback']>;
+    readonly claims: { stage: string; anchor: string }[];
+    readonly applied: { reactionId: number | null; appliedAt: Date }[];
+    readonly calls: string[];
+    readonly added: string[];
+    readonly removed: number[];
+  } {
+    const claims: { stage: string; anchor: string }[] = [];
+    const applied: { reactionId: number | null; appliedAt: Date }[] = [];
+    const calls: string[] = [];
+    const added: string[] = [];
+    const removed: number[] = [];
+    const rows = new Map<string, { id: number; appliedAt: Date | null; reactionId: number | null }>();
+    let nextId = 500;
+
+    return {
+      claims,
+      applied,
+      calls,
+      added,
+      removed,
+      deps: {
+        ledger: {
+          async claim(input) {
+            claims.push({ stage: input.stage, anchor: input.anchor });
+            const key = `${input.stage}/${input.anchor}`;
+            const existing = rows.get(key);
+            if (existing !== undefined) {
+              return { inserted: false, row: { id: existing.id, content: input.content, reactionId: existing.reactionId, appliedAt: existing.appliedAt } };
+            }
+            nextId += 1;
+            const row = { id: nextId, appliedAt: null, reactionId: null };
+            rows.set(key, row);
+            return { inserted: true, row: { id: row.id, content: input.content, reactionId: null, appliedAt: null } };
+          },
+          async markApplied(input) {
+            applied.push({ reactionId: input.reactionId, appliedAt: input.appliedAt });
+            for (const row of rows.values()) {
+              if (row.id === input.id) {
+                row.appliedAt = input.appliedAt;
+                row.reactionId = input.reactionId;
+              }
+            }
+          },
+          async markFailed() {},
+        },
+        reactions: {
+          async addReaction(input) {
+            calls.push(`add:${input.content}`);
+            added.push(input.content);
+            nextId += 1;
+            return { id: nextId };
+          },
+          async listReactions(input) {
+            calls.push(`list:${input.content}`);
+            // 入队阶段打过 eyes（本 App），终态就该删掉它
+            return input.content === 'eyes'
+              ? [{ id: 77, content: 'eyes', userLogin: 'pi-issue-bot[bot]' }]
+              : [];
+          },
+          async removeReaction(input) {
+            calls.push(`remove:${String(input.reactionId)}`);
+            removed.push(input.reactionId);
+          },
+        },
+      },
+    };
+  }
+
+  it('成功 → 先删 eyes 再加 rocket，台账回填 reaction_id（锚点取 idempotencyKey）', async () => {
+    const feedback = createFakeFeedback();
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([{ intent: 'comment', body: '收到，信息齐全。' }])),
+      feedback: feedback.deps,
+    });
+
+    const report = await runTask(makeInput({ idempotencyKey: 'idem-abc' }), harness.deps);
+
+    expect(report.outcome).toBe('succeeded');
+    expect(report.feedback?.status).toBe('applied');
+    expect(report.feedback?.stage).toBe('succeeded');
+    expect(feedback.calls).toEqual(['list:eyes', 'remove:77', 'add:rocket']);
+    expect(feedback.claims).toEqual([{ stage: 'succeeded', anchor: 'idem-abc' }]);
+    expect(feedback.applied).toHaveLength(1);
+    expect(feedback.applied[0]?.reactionId).toBe(report.feedback?.reactionId);
+    // run_events 里留下「打了什么」
+    expect(harness.store.runEvents.some((item) => item.kind === 'feedback.result')).toBe(true);
+  });
+
+  it('超时 → confused（失败路径同样有收尾）', async () => {
+    const feedback = createFakeFeedback();
+    const harness = createHarness({
+      events: () => hangingEvents(),
+      timeoutForCommand: () => 20,
+      feedback: feedback.deps,
+    });
+
+    const report = await runTask(makeInput({ command: '/review-pr', idempotencyKey: 'idem-timeout' }), harness.deps);
+
+    expect(report.outcome).toBe('timed-out');
+    expect(report.feedback?.stage).toBe('timed-out');
+    expect(report.feedback?.content).toBe('confused');
+    expect(feedback.calls).toEqual(['list:eyes', 'remove:77', 'add:confused']);
+    expect(feedback.claims).toEqual([{ stage: 'timed-out', anchor: 'idem-timeout' }]);
+  });
+
+  it('dry-run：一个 reaction 都不打、不写台账，只落 feedback.planned', async () => {
+    const feedback = createFakeFeedback();
+    const harness = createHarness({
+      events: () => asyncFrom(successEvents([{ intent: 'comment', body: '收到。' }])),
+      feedback: feedback.deps,
+    });
+
+    const report = await runTask(makeInput({ dryRun: true }), harness.deps);
+
+    expect(report.feedback?.status).toBe('planned');
+    expect(feedback.calls).toEqual([]);
+    expect(feedback.claims).toEqual([]);
+    const planned = harness.store.runEvents.find((item) => item.kind === 'feedback.planned');
+    expect(planned).toBeDefined();
+    // 零副作用口径不变：actions 一行都没有
+    expect(harness.store.actions).toHaveLength(0);
   });
 });

@@ -4,6 +4,7 @@ import { costsHandlers } from './costs.ts';
 import { issueSessionHandlers, issuesHandlers } from './issues.ts';
 import { overviewHandlers } from './overview.ts';
 import { qualityHandlers } from './quality.ts';
+import { reposHandlers } from './repos.ts';
 import { skillsHandlers } from './skills.ts';
 import { systemHandlers } from './system.ts';
 import { taskDetailHandlers } from './task-detail.ts';
@@ -29,6 +30,9 @@ export function createHandlers(): HttpHandler[] {
     ...qualityHandlers,
     ...auditHandlers,
     ...skillsHandlers,
+    // 仓库写面（`/api/repos`、`/api/repos/:owner/:name/settings|prompt`）：四段路径在 createHandlers 里
+    // 已经按「具体 → 宽泛」排好（`reposHandlers` 内部也是这个顺序）。
+    ...reposHandlers,
     ...systemHandlers,
   ];
 }

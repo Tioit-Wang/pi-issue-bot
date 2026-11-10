@@ -57,23 +57,49 @@ beforeEach(() => {
   requests.length = 0;
   downloaded.length = 0;
   downloads.length = 0;
+  // 仓库清单（`lib/repos.ts` 认 `{ repos: [...] }`；W3-H 的 `/api/repos` mock 落地后可删）
+  server.use(
+    http.get('/api/repos', () =>
+      HttpResponse.json({
+        repos: [
+          { repo: 'acme/widgets', enabled: true, dryRun: false, settingsValid: true },
+          { repo: 'other/lib', enabled: false, dryRun: false, settingsValid: true },
+        ],
+      }),
+    ),
+  );
 });
 
 describe('/audit 审计', () => {
-  it('渲染表格：谁触发 / 仓库 / 命令 / sha / 写了什么 / 时间 / 审批判定', async () => {
+  it('默认时间轴：按分钟聚簇，展开看行（intent / status 的 tone、目标链接、cron 行）', async () => {
     renderWithProviders(<AuditPage />, { route: '/audit' });
+
+    expect(await screen.findByTestId('audit-content')).toBeTruthy();
+    const timeline = screen.getByTestId('audit-timeline');
+    expect(timeline).toBeTruthy();
+
+    // 聚簇：同一分钟的 3 小时步长数据会落进不同桶，至少有一个桶展开着行（默认展开第一个）
+    expect(screen.getAllByTestId(/^audit-cluster-/).length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId(/^audit-row-/).length).toBeGreaterThan(0);
+
+    // 触发人 + association 徽章
+    expect(screen.getAllByText('alice').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('MEMBER').length).toBeGreaterThan(0);
+    // cron 触发的行：触发人是 null，显示成「—（cron）」而不是空白
+    expect(screen.getAllByText('—（cron）').length).toBeGreaterThan(0);
+  });
+
+  it('切到表格：八列表头齐全（谁触发 / 仓库 / 命令 / sha / 写了什么 / 结果 / 审批）', async () => {
+    renderWithProviders(<AuditPage />, { route: '/audit?view=table' });
 
     expect(await screen.findByTestId('audit-content')).toBeTruthy();
     for (const header of ['时间', '触发人', '仓库', '命令', '提交 sha', '写了什么', '结果', '审批判定']) {
       expect(screen.getByRole('columnheader', { name: header })).toBeTruthy();
     }
-    // 触发人带 association 徽章
-    expect(screen.getAllByText('alice').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('MEMBER').length).toBeGreaterThan(0);
-    // cron 触发的行：触发人是 null，显示成「—（cron）」而不是 0 或空白
-    expect(screen.getAllByText('—（cron）').length).toBeGreaterThan(0);
+    // 表格视图里同样能看到 status 与审批判定
+    expect(screen.getAllByText('applied').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/allow-tests/).length).toBeGreaterThan(0);
   });
-
   it('筛选改变会重新请求（repo / intent 落到契约参数上）', async () => {
     const user = userEvent.setup();
     renderWithProviders(<AuditPage />, { route: '/audit' });
@@ -159,5 +185,21 @@ describe('/audit 审计', () => {
 
     const error = await screen.findByTestId('audit-error');
     expect(error.textContent).toContain('会话已过期或未登录');
+  });
+});
+
+describe('/audit 仓库筛选（进 URL）', () => {
+  it('选仓库后 `?repo=` 落到 /api/audit，并进 URL（刷新不丢）', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />, { route: '/audit' });
+
+    await screen.findByTestId('audit-content');
+    requests.length = 0;
+
+    await user.selectOptions(screen.getByLabelText('仓库筛选'), 'other/lib');
+
+    await waitFor(() => {
+      expect(requests.some((url) => url.includes('/api/audit') && url.includes('repo=other%2Flib'))).toBe(true);
+    });
   });
 });

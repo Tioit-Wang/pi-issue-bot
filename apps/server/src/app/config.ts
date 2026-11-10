@@ -59,7 +59,6 @@ export const APP_ENV_KEYS = {
   /** 强制 dry-run（首周默认 true，plan §11 M1） */
   dryRun: 'PI_BOT_DRY_RUN',
   /** 新 issue 的「接管」评论开关（默认开；关掉就只在被 @ 时出声） */
-  greet: 'PI_BOT_GREET',
   /** 纯 @ 提问（不带 `/命令`）的开关（默认开） */
   freeMention: 'PI_BOT_FREE_MENTION',
   /** 面板鉴权：`off`（直接放行，只用于 loopback）/ `session`（cookie 会话） */
@@ -109,7 +108,6 @@ export const APP_DEFAULTS = {
   dryRun: true,
   allowPushBranch: false,
   /** 新 issue 默认发「接管」评论：它同时也让 bot 进入该 thread 的参与者，@ 补全才看得到 */
-  greet: true,
   /** 纯 @ 提问默认开：`@bot 这个问题怎么解？` 也会得到回答 */
   freeMention: true,
   /** 缺省句柄：App 名叫 `pi-bot` 的部署不用配 `PI_BOT_MENTION` */
@@ -124,8 +122,6 @@ export interface AppConfig {
   readonly logLevel: string;
   /** 强制干跑：为真时 worker 一次 GitHub 写都不做（M0 的 ⛔ 项） */
   readonly dryRun: boolean;
-  /** 新 issue 的「接管」评论（`PI_BOT_GREET`） */
-  readonly greet: boolean;
   /** 纯 @ 提问（不带 `/命令`）也跑一次 turn（`PI_BOT_FREE_MENTION`） */
   readonly freeMention: boolean;
   /** 面板鉴权模式；缺省 loopback 上是 `off`，其它地址上是 `session` */
@@ -354,7 +350,6 @@ export function readAppConfig(env: EnvLike): AppConfig {
     migrationsDir: readString(env, APP_ENV_KEYS.migrationsDir) ?? defaultMigrationsDir(),
     logLevel: readString(env, APP_ENV_KEYS.logLevel) ?? APP_DEFAULTS.logLevel,
     dryRun: readBoolean(env, APP_ENV_KEYS.dryRun, APP_DEFAULTS.dryRun),
-    greet: readBoolean(env, APP_ENV_KEYS.greet, APP_DEFAULTS.greet),
     freeMention: readBoolean(env, APP_ENV_KEYS.freeMention, APP_DEFAULTS.freeMention),
     panelAuth,
     panelWrite,

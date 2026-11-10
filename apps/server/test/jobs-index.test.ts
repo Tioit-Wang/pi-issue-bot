@@ -65,18 +65,20 @@ const fakeDocker: SandboxDocker = {
 };
 
 describe('jobs/index：队列 ↔ 作业映射', () => {
-  it('四个作业覆盖 queue/SCHEDULES 里对应的四个队列', () => {
+  it('五个作业覆盖 queue/SCHEDULES 里对应的五个队列（排队闸门排最前）', () => {
     const scheduledQueues = SCHEDULES.map((spec) => spec.queue);
     for (const entry of JOB_SCHEDULES) {
       expect(scheduledQueues).toContain(entry.queue);
     }
     expect(JOB_SCHEDULES.map((entry) => entry.queue)).toEqual([
+      QUEUE.queueGate,
       QUEUE.metricsRollup,
       QUEUE.reconcile,
       QUEUE.retentionCleanup,
       QUEUE.lifecycleCleanup,
     ]);
     expect(JOB_SCHEDULES.map((entry) => entry.job)).toEqual([
+      'queue-gate',
       'metrics-rollup',
       'reconcile-reverts',
       'retention-cleanup',
@@ -84,7 +86,7 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
     ]);
   });
 
-  it('依赖齐全时注册四个队列的 worker，并把结果写进日志', async () => {
+  it('依赖齐全时注册五个队列的 worker，并把结果写进日志', async () => {
     const { boss, queues } = createFakeBoss();
     const lines: string[] = [];
     const logger = {
@@ -107,6 +109,7 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
     });
 
     expect(registered).toEqual([
+      QUEUE.queueGate,
       QUEUE.metricsRollup,
       QUEUE.reconcile,
       QUEUE.retentionCleanup,
@@ -131,8 +134,9 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
       },
     });
 
-    expect(registered).toEqual([QUEUE.metricsRollup, QUEUE.retentionCleanup]);
-    expect(queues).toEqual([QUEUE.metricsRollup, QUEUE.retentionCleanup]);
+    // 排队闸门不依赖 github/docker：没有它们也照注册（闸门必须始终能取消超时任务）
+    expect(registered).toEqual([QUEUE.queueGate, QUEUE.metricsRollup, QUEUE.retentionCleanup]);
+    expect(queues).toEqual([QUEUE.queueGate, QUEUE.metricsRollup, QUEUE.retentionCleanup]);
     expect(warnings).toHaveLength(2);
     expect(warnings.join('\n')).toContain('未注入 github');
     expect(warnings.join('\n')).toContain('未注入 docker');

@@ -61,3 +61,42 @@ export function toSqlRunner(pool: PgLikePool): SqlRunner {
 
 /** 记录调用的假实现（单测用；生产不用它）。 */
 export type RecordedQuery = { readonly text: string; readonly values: readonly unknown[] };
+
+/**
+ * reaction 端口（`docs/impl-multi-repo.md` §0.4「无感反馈」）。
+ *
+ * 为什么在 `workflows/` 里自己声明而不是直接用 `github/` 的类型：`github/**` 归 W2-D，
+ * 它的 `GithubWriteApi` 目前只含「写评论 / 打标 / 关 issue / 开 issue」。
+ * 缺信息时我们只需要「打一个 `confused`」，一个方法就够——按端口注入，
+ * 于是 `github/` 还没接上时本层照样能编译、能单测（缺端口 = 跳过并记 warn）。
+ */
+export type ReactionContent = 'confused' | 'eyes' | 'rocket';
+
+export type ReactionPort = {
+  add(input: {
+    readonly repo: string;
+    readonly targetKind: 'issue' | 'pr';
+    readonly targetNumber: number;
+    readonly content: ReactionContent;
+  }): Promise<void>;
+};
+
+/**
+ * 标签目录端口（`labels.missing` 的策略需要它）。
+ *
+ * 两件事都需要真实 GitHub 支持，但都不在 `GithubWriteApi` 里：
+ *  - `list`：仓库里当前有哪些标签（判断「map 里映射到的标签其实不存在」）；
+ *  - `create`：按词表的 `color` / `description` 建标签（`labels.missing: 'create'`）。
+ *
+ * 两个方法都可缺：缺 `list` 时按「词表就是事实」处理（不判 missing），
+ * 缺 `create` 时 `create` 策略降级为 `warn` 并记进 `label_decisions.blocked_reason`。
+ */
+export type LabelCatalogPort = {
+  list?(input: { readonly repo: string }): Promise<readonly string[]>;
+  create?(input: {
+    readonly repo: string;
+    readonly name: string;
+    readonly color?: string;
+    readonly description?: string;
+  }): Promise<void>;
+};

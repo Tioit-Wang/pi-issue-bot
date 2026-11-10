@@ -221,6 +221,15 @@ function errorResponse(status: number): Json {
   };
 }
 
+/** 只有 `$ref` 一项且指向自己 → 这是「收集 $defs 时先占位」的 stub，要用真实定义覆盖。 */
+function isSelfRef(name: string, value: Json): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const keys = Object.keys(value);
+  return keys.length === 1 && value['$ref'] === `#/components/schemas/${name}`;
+}
+
 function buildDocument(): Json {
   const defs = new Map<string, Json>();
   const components = {} as Record<string, Json>;
@@ -289,7 +298,8 @@ function buildDocument(): Json {
 
   // `$defs` 里收集到的子 schema 也要进组件表（排序保证确定性）。
   for (const name of [...defs.keys()].sort()) {
-    if (components[name] === undefined) {
+    const current = components[name];
+    if (current === undefined || isSelfRef(name, current)) {
       components[name] = defs.get(name) as Json;
     }
   }

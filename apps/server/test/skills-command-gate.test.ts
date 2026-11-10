@@ -23,7 +23,6 @@ const basePlan: WebhookTaskPlan = {
   actorLogin: 'alice',
   association: 'OWNER',
   commentId: 1,
-  ackStyle: 'reaction',
 };
 
 /** 最小可用配置：命令开、白名单只有 `/review-pr`、所有者可触发。 */

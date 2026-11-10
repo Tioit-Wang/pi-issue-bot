@@ -7,10 +7,10 @@
  *  2. **URL 侧**：`MemoryRouter` 不写 `window.location`，所以挂一个 `LocationProbe`
  *     把 `useLocation().search` 渲染出来——刷新后筛选是否还在，就看它。
  */
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { setupServer } from 'msw/node';
-import { useLocation } from 'react-router';
+import { Route, Routes, useLocation } from 'react-router';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHandlers } from '../../mocks/handlers/index.ts';
 import { renderWithProviders } from '../../../test/render.tsx';
@@ -47,16 +47,13 @@ function LocationProbe() {
 }
 
 describe('/tasks 列表', () => {
-  it('渲染 7 列，并按契约默认每页 50 条', async () => {
+  it('渲染对象行，并按契约默认每页 50 条', async () => {
     renderWithProviders(<TasksPage />, { route: '/tasks' });
 
     expect(await screen.findByTestId('tasks-content')).toBeTruthy();
-    for (const header of ['时间', '仓库', '类型 / 命令', '状态', '耗时', '成本', '失败分类']) {
-      expect(screen.getByRole('columnheader', { name: header })).toBeTruthy();
-    }
+    // 对象行：状态点 / 命令 / 目标 / 耗时 / 成本 / 时间 —— 一行一次运行
+    expect(screen.getAllByTestId(/^tasks-row-/)).toHaveLength(50);
     expect(screen.getAllByText('acme/widgets').length).toBeGreaterThan(0);
-    // 表头 1 行 + 数据 50 行
-    expect(screen.getAllByRole('row')).toHaveLength(51);
     // 第一页请求带 limit=50、不带 cursor
     const listUrl = requests.find((url) => url.includes('/api/tasks?'));
     expect(listUrl).toContain('limit=50');
@@ -119,22 +116,22 @@ describe('/tasks 列表', () => {
     renderWithProviders(<TasksPage />, { route: '/tasks' });
 
     await screen.findByTestId('tasks-content');
-    expect(screen.getAllByRole('row')).toHaveLength(51);
+    expect(screen.getAllByTestId(/^tasks-row-/)).toHaveLength(50);
 
     await user.click(screen.getByTestId('tasks-load-more'));
 
     await waitFor(() => {
-      expect(screen.getAllByRole('row')).toHaveLength(101);
+      expect(screen.getAllByTestId(/^tasks-row-/)).toHaveLength(100);
     });
     expect(requests.some((url) => url.includes('cursor='))).toBe(true);
     expect(screen.getByTestId('tasks-load-more').textContent).toContain('已显示 100 条');
   });
 
-  it('空态：给出「没有匹配的任务」与清除筛选动作', async () => {
+  it('空态：给出「没有匹配的运行」与清除筛选动作', async () => {
     renderWithProviders(<TasksPage />, { route: '/tasks?mock=empty&status=cancelled' });
 
     const empty = await screen.findByTestId('tasks-empty');
-    expect(empty.textContent).toContain('没有匹配的任务');
+    expect(empty.textContent).toContain('没有匹配的运行');
     expect(screen.getByTestId('tasks-empty-clear')).toBeTruthy();
   });
 
@@ -157,5 +154,47 @@ describe('/tasks 列表', () => {
 
     expect(await screen.findByTestId('tasks-loading')).toBeTruthy();
     expect(await screen.findByTestId('tasks-content', undefined, { timeout: 5000 })).toBeTruthy();
+  });
+});
+
+/**
+ * 仓库锁定模式（`/repos/:repo/runs` 用 `repoLock` 复用这一页）。
+ *
+ * 与上面「全局任务列表」的区别只有三点，也正是要钉住的契约：
+ * 标题变「运行」、仓库下拉消失（切仓库走左栏切换器）、请求固定带 `repo`、
+ * 点行进的是**该仓库**的运行详情而不是旧的 `/tasks/:id`。
+ */
+describe('/repos/:repo/runs（仓库锁定）', () => {
+  function renderRuns() {
+    return renderWithProviders(
+      <Routes>
+        <Route path="/repos/:repo/runs" element={<TasksPage repoLock="acme/widgets" />} />
+        <Route path="/repos/:repo/runs/:id" element={<p>运行详情桩</p>} />
+      </Routes>,
+      { route: '/repos/acme__widgets/runs' },
+    );
+  }
+
+  it('标题是「运行」、没有仓库下拉、请求固定带 repo', async () => {
+    renderRuns();
+
+    expect(await screen.findByTestId('tasks-content')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: '运行' })).toBeTruthy();
+    expect(screen.queryByLabelText('仓库筛选')).toBeNull();
+    expect(requests.find((url) => url.includes('/api/tasks?'))).toContain('repo=acme%2Fwidgets');
+  });
+
+  it('点一行进该仓库的运行详情', async () => {
+    const user = userEvent.setup();
+    renderRuns();
+
+    await screen.findByTestId('tasks-content');
+    const firstRow = screen.getAllByTestId(/^tasks-row-/)[0];
+    if (firstRow === undefined) throw new Error('没有数据行');
+    // 整行是链接：点行即进详情（真实 URL，刷新/分享可用）
+    const rowLink = within(firstRow).getByRole('link');
+    await user.click(rowLink);
+
+    expect(await screen.findByText('运行详情桩')).toBeTruthy();
   });
 });

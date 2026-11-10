@@ -14,7 +14,9 @@
  * 单测必须能在「不起进程、不碰 docker、不打网络」的前提下断言**调用序列**与**落库内容**。
  */
 import type { DegeneracyHit, DegeneracyMonitorOptions, DegeneracyStats } from '../degeneracy/index.ts';
+import type { FeedbackDeps, FeedbackOutcome } from '../feedback/index.ts';
 import type { BotLabelLedger, GithubWriteApi } from '../github/index.ts';
+import type { LabelWritebackPolicy } from './writeback.ts';
 import type { FailureClass, FailureSignal, RetryDecision } from '../queue/index.ts';
 import type { TurnDriverOps } from '../runtime/turn-driver.ts';
 import type { TurnUsageReader } from '../cost/index.ts';
@@ -212,6 +214,17 @@ export interface RunStore {
 /** `runs.outcome` 的取值（比 `failure_class` 粗一档，面板按它分组）。 */
 export const RUN_OUTCOMES = ['succeeded', 'failed', 'timed-out', 'cancelled', 'degenerate-output'] as const;
 
+
+/**
+ * `tasks.source` 的取值（与 `db/schema.ts` 的 `TASK_SOURCE` 同值，**刻意不 import**：
+ * worker 不该为了三个字面量去依赖 db 层）。
+ *
+ * `command` = 人工通道（`@bot /命令`、`@bot 提问`）→ 允许一条最终回答；
+ * `webhook` / `cron` = 自动通道 → 只留 reaction + 标签，零评论（plan §5）。
+ */
+export const TASK_SOURCE_KINDS = ['webhook', 'command', 'cron'] as const;
+
+export type TaskSourceKind = (typeof TASK_SOURCE_KINDS)[number];
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 
 /** `tasks.status` 的取值（复用 db 常量的字面量，避免各写一份）。 */
@@ -276,12 +289,35 @@ export interface TaskRunInput {
   readonly dryRun?: boolean;
   /** 上层取消（SIGTERM / 人工取消）。 */
   readonly parent?: AbortSignal;
-}
+  /**
+   * `tasks.idempotency_key`：无感反馈的幂等锚点（`issue_feedback.anchor`）。
+   *
+   * **不要用 taskId 代它**：重投 / `/retry` / 超时重跑都会产生新 taskId，
+   * 用它当锚点等于没有幂等（同一阶段会被反复记账、反复打 reaction）。
+   */
+  readonly idempotencyKey?: string;
+  /**
+   * `tasks.source`：决定「这一轮能不能写回评论」。
+   *
+   * 只有 `command`（`@bot /命令`、`@bot 提问`）是人工通道；`webhook` / `cron` 属于自动通道，
+   * 按 plan §5 只留 reaction + 标签、零评论。缺省由 `writeback.ts::taskSourceOf()`
+   * 从 `command` 推（`auto:*` 判定类命令 → `webhook`），保证「不传也安全」。
+   */
+  readonly source?: TaskSourceKind;
+};
 
 /* ── 依赖 ──────────────────────────────────────────────────────────────────── */
 
 export interface TaskRunnerDeps {
   readonly worktree: WorktreePort;
+
+  /**
+   * 无感反馈的端口（W2-D）：不注入 = 完全不打 reaction（单测 / 未装 App 的部署）。
+   *
+   * 装配层（`app/worker-deps.ts`）把 PG 台账 + App 认证的 reaction 写面 + 降级开关拼进来；
+   * worker 自己不认识 `db/` 与 REST。
+   */
+  readonly feedback?: FeedbackDeps;
   readonly docker: SandboxDocker;
   readonly proxy: ExecProxyPort;
   readonly host: HostPort;
@@ -294,6 +330,13 @@ export interface TaskRunnerDeps {
   /** 写执行器依赖的 GitHub 写入面。 */
   readonly github: GithubWriteApi;
   readonly ledger?: BotLabelLedger;
+  /**
+   * 项目打标策略（W2-E 的接线点）：给了就在写 `label` 动作之前归一化 desired，
+   * 并落 `label_decisions`（词表 / 1:N / 互斥组 / 上限 / 人工否决 / `labels.missing`）。
+   *
+   * 不注入 = 照信封给的 `add` / `remove` 直接写（接线前的行为）。
+   */
+  readonly labelPolicy?: LabelWritebackPolicy | undefined;
   readonly targets?: TargetContextPort;
   /**
    * 读某一轮的真实用量（token）。装配层注入 pi-host 的 sqlite 读取器；
@@ -402,6 +445,12 @@ export interface TaskRunReport {
    * 面板/统计才能把「模型交了合法信封」与「我们替它兜了一句」分开数。
    */
   readonly fallback: ActionOutcome | null;
+  /**
+   * 本轮终态的无感反馈结果（`null` = 没注入 `feedback` 端口，什么都没打）。
+   *
+   * 永远不参与 run 结论：`status === 'failed'` 时只多一条 `actions(applied_at=null)` 留痕。
+   */
+  readonly feedback: FeedbackOutcome | null;
   readonly dryRun: boolean;
   /** 容器销毁前采到的状态（OOM/ExitCode 的唯一来源）。 */
   readonly containerState: ContainerStateSnapshot | null;

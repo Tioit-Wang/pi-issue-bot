@@ -7,10 +7,13 @@
  */
 import type { z } from 'zod';
 import {
+  addRepoRequestSchema,
   auditQuerySchema,
   auditResponseSchema,
   costsQuerySchema,
   costsResponseSchema,
+  issueFeedbackEventSchema,
+  issueLabelDecisionSummarySchema,
   issueSessionParamsSchema,
   issueSessionResponseSchema,
   issuesListResponseSchema,
@@ -18,7 +21,13 @@ import {
   overviewQuerySchema,
   overviewResponseSchema,
   qualityQuerySchema,
+  repoSummarySchema,
+  repoSettingsResponseSchema,
+  reposResponseSchema,
   revertsResponseSchema,
+  saveRepoSettingsRequestSchema,
+  systemQuerySchema,
+  systemRepoSchema,
   systemResponseSchema,
   taskDetailResponseSchema,
   tasksQuerySchema,
@@ -26,8 +35,9 @@ import {
   webhookAcceptedResponseSchema,
 } from './api.ts';
 import { errorBodySchema } from './common.ts';
-import { repoConfigSchema } from './repo-config.ts';
+import { labelsConfigSchema, promptConfigSchema, repoSettingsSchema } from './repo-config.ts';
 import { skillFrontmatterSchema } from './skills.ts';
+import { triggersConfigSchema } from './trigger.ts';
 
 /** 响应体 schema（OpenAPI `components.schemas` 的成员）。 */
 export const responseSchemas = {
@@ -43,9 +53,32 @@ export const responseSchemas = {
   /** 按 issue 的会话视图（`docs/spec/ux-issue-sessions.md` §3）。 */
   IssuesListResponse: issuesListResponseSchema,
   IssueSessionResponse: issueSessionResponseSchema,
-  /** 仓库配置与技能 frontmatter 不是 HTTP 响应，但面板要展示字段说明，一并发布。 */
-  RepoConfig: repoConfigSchema,
+  /** 无感反馈与打标判定的两个子形状（W3-H：面板统计/详情要用，单列出来便于引用）。 */
+  IssueFeedbackEvent: issueFeedbackEventSchema,
+  IssueLabelDecisionSummary: issueLabelDecisionSummarySchema,
+  /**
+   * 仓库配置（`repos.settings` 的 jsonb 形状）与它的两个子段：面板要展示字段说明，一并发布。
+   * `RepoConfig` 这个组件名随 `repoConfigSchema → repoSettingsSchema` 更名而退役（`docs/impl-multi-repo.md` §3）。
+   */
+  RepoSettings: repoSettingsSchema,
+  RepoLabels: labelsConfigSchema,
+  RepoPromptConfig: promptConfigSchema,
+  /** 触发体系（`triggers` 段）：面板要展示字段说明。 */
+  TriggersConfig: triggersConfigSchema,
   SkillFrontmatter: skillFrontmatterSchema,
+  /**
+   * 仓库写面（`/api/repos/*`，W3-H 补的契约）。
+   *
+   * `SaveRepoSettingsRequest` 是 `RepoSettings` 的**别名**（请求体就是 settings 本身）：
+   * 组件里会生成 `{$ref: '#/components/schemas/RepoSettings'}`，不复制第二份形状。
+   */
+  RepoSummary: repoSummarySchema,
+  ReposResponse: reposResponseSchema,
+  RepoSettingsResponse: repoSettingsResponseSchema,
+  SaveRepoSettingsRequest: saveRepoSettingsRequestSchema,
+  AddRepoRequest: addRepoRequestSchema,
+  /** `SystemResponse.repos[]` 的行（`repos` 表的投影 + 老字段别名）。 */
+  SystemRepo: systemRepoSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 /** 查询参数 schema（OpenAPI 的 `parameters` 由它推导，不手写第二份）。 */
@@ -57,6 +90,8 @@ export const querySchemas = {
   auditQuery: auditQuerySchema,
   /** `/api/issues` 的筛选与分页（`kind` 默认 `issue`、`limit` 默认 30）。 */
   issuesQuery: issuesQuerySchema,
+  /** `/api/system` 的 `?repo=`（只收窄 `repos` 与 `flags`）。 */
+  systemQuery: systemQuerySchema,
 } as const satisfies Record<string, z.ZodType>;
 
 /**

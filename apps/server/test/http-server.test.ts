@@ -35,7 +35,6 @@ function sign(secret: string, body: string): string {
 
 const ack: WebhookAck = {
   addEyesReaction: async () => undefined,
-  postAckComment: async () => undefined,
 };
 
 function makeServer(requireAuth: ReturnType<typeof createAllowAllAuth> | (() => Promise<never>)): ZodFastify {
@@ -200,6 +199,114 @@ describe('面板只读 API', () => {
       expect(response.statusCode, url).toBe(200);
     }
   });
+
+  it('★ /api/repos 已挂载（buildServer 把池子接给仓库写面）：列表 → 手动添加 → 读写 settings', async () => {
+    const empty = await app.inject({ method: 'GET', url: '/api/repos' });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ items: [] });
+
+    // 手动添加（部署默认 settings seed，source='manual'）
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/repos',
+      payload: { repo: REPO },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ repo: REPO, source: 'manual' });
+
+    // 读 settings：默认 concurrency_per_repo=2 / queue_wait_minutes=10（多仓库改造的两个新阈值）
+    const read = await app.inject({ method: 'GET', url: `/api/repos/${REPO}/settings` });
+    expect(read.statusCode).toBe(200);
+    const view = read.json() as {
+      repo: string;
+      enabled: boolean;
+      settings: { limits: { concurrency_per_repo: number; queue_wait_minutes: number } };
+    };
+    expect(view.repo).toBe(REPO);
+    expect(view.enabled).toBe(true);
+    expect(view.settings.limits.concurrency_per_repo).toBe(2);
+    expect(view.settings.limits.queue_wait_minutes).toBe(10);
+
+    // 写 settings：改一个阈值后再读出来
+    const write = await app.inject({
+      method: 'PUT',
+      url: `/api/repos/${REPO}/settings`,
+      payload: {
+        ...view.settings,
+        limits: { ...view.settings.limits, concurrency_per_repo: 4, queue_wait_minutes: 3 },
+      },
+    });
+    expect(write.statusCode).toBe(200);
+    const reread = await app.inject({ method: 'GET', url: `/api/repos/${REPO}/settings` });
+    const after = reread.json() as {
+      settings: { limits: { concurrency_per_repo: number; queue_wait_minutes: number } };
+    };
+    expect(after.settings.limits).toMatchObject({ concurrency_per_repo: 4, queue_wait_minutes: 3 });
+  });
+
+  it('★ /api/system 的 repos[] 读 `repos` 表：新字段齐 + 老字段别名同值 + `?repo=` 只回一行', async () => {
+    await db.pool.query(
+      `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid, source, archived_at)
+       values
+         ('acme/widgets', true, false, '{"version":1}'::jsonb, true, 'installation', null),
+         ('other/lib', true, true, '{"version":1}'::jsonb, false, 'manual', '2026-05-01T00:00:00Z')`,
+    );
+    // 让 acme/widgets 有「最近活动」（tasks.queued_at 的 max）
+    await db.pool.query(
+      `insert into tasks (id, source, repo, target_kind, target_number, command, actor_login, idempotency_key, queued_at, status, created_at, updated_at)
+       values ('t-sys-1', 'webhook', 'acme/widgets', 'issue', 3, 'auto:triage', 'alice', 'k-sys-1',
+               '2026-06-01T10:00:00Z', 'succeeded', '2026-06-01T10:00:00Z', '2026-06-01T10:00:00Z')`,
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/api/system' });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { repos: Array<Record<string, unknown>> };
+    const byRepo = new Map(body.repos.map((item) => [String(item['repo']), item]));
+
+    expect(byRepo.get('acme/widgets')).toMatchObject({
+      enabled: true,
+      dryRun: false,
+      settingsValid: true,
+      settingsError: null,
+      configValid: true,
+      configError: null,
+      source: 'installation',
+      archivedAt: null,
+      lastActivityAt: '2026-06-01T10:00:00.000Z',
+    });
+    // 归档 = 不可用（enabled 被压成 false），但行还在
+    expect(byRepo.get('other/lib')).toMatchObject({
+      enabled: false,
+      settingsValid: false,
+      configValid: false,
+      source: 'manual',
+      archivedAt: '2026-05-01T00:00:00.000Z',
+    });
+
+    // `?repo=` 只收窄 repos / flags 两段
+    const scoped = await app.inject({ method: 'GET', url: '/api/system?repo=acme/widgets' });
+    expect(scoped.statusCode).toBe(200);
+    expect((scoped.json() as { repos: Array<{ repo: string }> }).repos.map((item) => item.repo)).toEqual([
+      'acme/widgets',
+    ]);
+  });
+
+  it('/api/repos 与 /api/overview 的 `?repo=`：响应通过契约 schema', async () => {
+    await db.pool.query(
+      `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid)
+       values ('acme/widgets', true, true, '{"version":1}'::jsonb, true)`,
+    );
+    const repos = await app.inject({ method: 'GET', url: '/api/repos' });
+    expect(repos.statusCode).toBe(200);
+    const body = repos.json() as { items: Array<Record<string, unknown>> };
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ repo: 'acme/widgets', settingsValid: true, source: 'manual' });
+
+    const overview = await app.inject({ method: 'GET', url: '/api/overview?repo=acme/widgets' });
+    expect(overview.statusCode).toBe(200);
+    const parsed = overviewResponseSchema.parse(overview.json());
+    expect(parsed.repo).toBe('acme/widgets');
+  });
 });
 
 describe('鉴权语义（401 vs 403）', () => {
@@ -224,7 +331,7 @@ describe('鉴权语义（401 vs 403）', () => {
 describe('POST /webhook', () => {
   async function seedRepo(dryRun: boolean): Promise<void> {
     await db.pool.query(
-      `insert into repos (repo_full_name, enabled, dry_run, config, config_valid)
+      `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid)
        values ($1, true, $2, '{"version":1}'::jsonb, true)`,
       [REPO, dryRun],
     );

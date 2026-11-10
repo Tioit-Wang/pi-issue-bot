@@ -16,7 +16,7 @@
  * 这是与「跳过这个文件继续跑」最本质的区别。
  */
 import { toSkillEffectiveConfig, effectiveSkillTimeout } from '../../../../packages/contract/src/index.ts';
-import type { RepoConfig } from '../../../../packages/contract/src/index.ts';
+import type { RepoSettings } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import { BUILTIN_SKILL_FILES } from './builtin.ts';
 import { normalizeSkillName, parseSkillFile } from './frontmatter.ts';
@@ -28,8 +28,13 @@ export const REPO_SKILLS_DIR = '.github/pi-bot/skills';
 /** 非法技能在面板里的占位名（`skillSummarySchema` 要求 name 非空且 ≤33 字符）。 */
 export const UNNAMED_SKILL = '(未命名)';
 
-/** 注册表只关心仓库配置的三段（`skills` / `labels` / `compliance`）；拿整份 `RepoConfig` 也兼容。 */
-export type SkillRepoConfig = Pick<RepoConfig, 'skills' | 'labels' | 'compliance'>;
+/**
+ * 注册表只关心仓库配置的两段（`skills` / `labels`）；拿整份 `RepoSettings` 也兼容。
+ *
+ * `compliance` 段已随 `docs/impl-multi-repo.md` §0.3 删除（合规缺失项改由提示词/技能控制），
+ * 所以这里不再要它，也就不会再出现「注册表还指着一个不存在的配置段」这种编译期错误。
+ */
+export type SkillRepoConfig = Pick<RepoSettings, 'skills' | 'labels'>;
 
 export type SkillRegistryOptions = {
   /** 内置技能文件（默认 `BUILTIN_SKILL_FILES`；单测可注入自己的）。 */
@@ -43,7 +48,8 @@ export type SkillRegistryOptions = {
    * `requires-repo-config: true` 的判定实现。
    * 契约 §2 只说「仓库配置里必须存在该技能所需的配置段」，而**技能本身不携带段名**
    * （frontmatter 里没有这个字段）。所以默认实现取一个可判定的代理：仓库配置存在，
-   * 且 `labels.map` 或 `compliance.rules` 至少有一段非空——这两段正是判定类技能唯一的输入。
+   * 且 `labels.map` 或 `labels.vocabulary` 至少有一段非空——这两段正是判定类技能唯一的输入
+   * （`compliance.rules` 已删除，词表 `labels.vocabulary` 是它的替代）。
    * 需要更严格的口径时由调用方注入。
    */
   readonly requiresRepoConfigSatisfied?: (skill: SkillDefinition, config: SkillRepoConfig | null) => boolean;
@@ -83,8 +89,8 @@ export function defaultRequiresRepoConfigSatisfied(
     return false;
   }
   const hasLabels = Object.keys(config.labels.map).length > 0;
-  const hasRules = config.compliance.rules.length > 0;
-  return hasLabels || hasRules;
+  const hasVocabulary = config.labels.vocabulary.length > 0;
+  return hasLabels || hasVocabulary;
 }
 
 /** 归一化命令名（容忍调用方传 `review-pr` / `/Review-PR`）。 */
@@ -209,7 +215,7 @@ export function createSkillRegistry(options: SkillRegistryOptions = {}): SkillRe
     };
 
     if (effective.requiresRepoConfig && !satisfied(skill, config)) {
-      const detail = `${file.path}: 该命令要求仓库配置（labels.map 或 compliance.rules），当前配置缺失，命令不可用`;
+      const detail = `${file.path}: 该命令要求仓库配置（labels.map 或 labels.vocabulary），当前配置缺失，命令不可用`;
       record({ level: 'warn', code: 'repo-config-missing', message: detail, path: file.path, name: parsed.name });
       return { name: parsed.name, entry: disabledEntry({ name: parsed.name, source, reason: 'repo-config-missing', detail }) };
     }

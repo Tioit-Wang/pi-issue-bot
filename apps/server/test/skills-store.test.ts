@@ -10,12 +10,32 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import type { Pool } from 'pg';
+import { upsertRepo } from '../src/config/repo-config.ts';
+import type { SqlRunner } from '../src/config/repo-config.ts';
+import {
+  CONSERVATIVE_OTHER_LAYERS_CHARS,
+  PROMPT_BUDGET_CHARS,
+  getPrompt,
+  listPromptVersions,
+  readLastAssembleStats,
+  recordAssembleStats,
+  rollbackPrompt,
+  savePrompt,
+} from '../src/prompt/index.ts';
 import { SkillStoreError, createSkillStore, treeHashOf } from '../src/skills/store.ts';
 import type { SkillStore } from '../src/skills/store.ts';
 import type { SkillBundle } from '../src/skills/bundle.ts';
 import { FIXED_NOW, openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
 
+/** `pg.Pool` → `SqlRunner`（`values` 的可变/只读数组形状差异，包一层最省事）。 */
+const runnerOf = (pool: Pool): SqlRunner => ({
+  query: (text, values) => pool.query(text, values as unknown[]),
+});
+
+/** P1 测试用的仓库（`prompt_versions` 的 `repo` 是纯文本，不需要 `repos` 外键）。 */
+const PROMPT_REPO = 'acme/widgets';
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 
 /** 直接造一个「技能包」：本测试不经过 zip（zip → bundle 由 `skills-bundle.test.ts` 覆盖）。 */
@@ -60,7 +80,9 @@ describe('skills/store（真库 + 临时目录）', () => {
   });
 
   beforeEach(async () => {
-    await db.sql('truncate table skills, skill_versions, skills_audit cascade');
+    // P1（`prompt_versions`）与它的预算输入（`runtime_flags`）、仓库行（`repos`）一起清：
+    // 同一个文件里跑两组存储测试，各组的表互不影响。
+    await db.sql('truncate table skills, skill_versions, skills_audit, prompt_versions, runtime_flags, repos cascade');
     dataDir = await mkdtemp(join(tmpdir(), 'pi-skills-'));
     store = createSkillStore({ pool: db.pool, dataDir, now: () => FIXED_NOW });
   });
@@ -275,5 +297,160 @@ describe('skills/store（真库 + 临时目录）', () => {
     ).rejects.toBeInstanceOf(SkillStoreError);
 
     expect(await store.list({})).toHaveLength(0);
+  });
+});
+
+/**
+ * P1「项目人格层」的存储（W3-G）：`prompt_versions` + `repos.settings.prompt`。
+ *
+ * 断言的是「库里几行、指针指哪儿、历史有没有被改写」——形状由 zod 契约保证。
+ * 放在本文件里而不是另建一个：两者都是「PG 存储层」的真库测试，共用一套夹具与 advisory lock。
+ */
+describe('prompt/store（真库）：保存即新版本、回滚不改历史、超预算拒写', () => {
+  let db: TestDb;
+  let runner: SqlRunner;
+
+  beforeAll(async () => {
+    db = await openTestDb();
+    runner = runnerOf(db.pool);
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  beforeEach(async () => {
+    await db.sql('truncate table prompt_versions, runtime_flags, repos cascade');
+    // 建仓库行：settings 走部署默认（`repoSettingsSchema.parse({})`），`prompt` 段默认 `current_version: 0`
+    const created = await upsertRepo(runner, { repo: PROMPT_REPO });
+    expect(created.ok).toBe(true);
+  });
+
+  /** `repos.settings.prompt.current_version` 的当前值（指针只有一处真源）。 */
+  const currentVersionInDb = async (): Promise<number> => {
+    const rows = await db.sql('select settings from repos where repo_full_name = $1', [PROMPT_REPO]);
+    const settings = (rows[0] as { settings: { prompt: { current_version: number } } }).settings;
+    return settings.prompt.current_version;
+  };
+
+  it('保存即新建版本：v1 → v2，settings.prompt.current_version 跟着走', async () => {
+    // 还没有版本时：getPrompt 返回 0 / 空正文，而不是抛错
+    expect(await getPrompt(runner, PROMPT_REPO)).toEqual({
+      version: 0,
+      body: '',
+      enabled: true,
+      present: false,
+    });
+    expect(await currentVersionInDb()).toBe(0);
+
+    const first = await savePrompt(runner, PROMPT_REPO, '项目背景 v1', '首版');
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.version).toBe(1);
+    expect(await currentVersionInDb()).toBe(1);
+
+    const second = await savePrompt(runner, PROMPT_REPO, '项目背景 v2');
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.version).toBe(2);
+
+    expect(await getPrompt(runner, PROMPT_REPO)).toEqual({
+      version: 2,
+      body: '项目背景 v2',
+      enabled: true,
+      present: true,
+    });
+
+    const versions = await listPromptVersions(runner, PROMPT_REPO);
+    expect(versions.map((version) => version.version)).toEqual([2, 1]);
+    // 历史行原样保留（正文与备注都不动）
+    expect(versions[0]?.body).toBe('项目背景 v2');
+    expect(versions[1]?.body).toBe('项目背景 v1');
+    expect(versions[1]?.note).toBe('首版');
+
+    const rows = await db.sql('select count(*)::int as n from prompt_versions where repo = $1', [PROMPT_REPO]);
+    expect((rows[0] as { n: number }).n).toBe(2);
+  });
+
+  it('回滚：新建一版指向旧内容，旧行一个字都不改', async () => {
+    await savePrompt(runner, PROMPT_REPO, 'v1 正文', '首版');
+    await savePrompt(runner, PROMPT_REPO, 'v2 正文');
+
+    const rolled = await rollbackPrompt(runner, PROMPT_REPO, 1);
+    expect(rolled.ok).toBe(true);
+    if (!rolled.ok) return;
+    expect(rolled.version).toBe(3);
+
+    const state = await getPrompt(runner, PROMPT_REPO);
+    expect(state.version).toBe(3);
+    expect(state.body).toBe('v1 正文');
+    expect(await currentVersionInDb()).toBe(3);
+
+    const versions = await listPromptVersions(runner, PROMPT_REPO);
+    expect(versions.map((version) => version.version)).toEqual([3, 2, 1]);
+    expect(versions[0]?.body).toBe('v1 正文');
+    expect(versions[0]?.note).toBe('回滚到 v1');
+    // 历史不变：v2 还是 v2 的正文
+    expect(versions[1]?.body).toBe('v2 正文');
+
+    // 不存在的版本 → 不写库
+    const missing = await rollbackPrompt(runner, PROMPT_REPO, 99);
+    expect(missing.ok).toBe(false);
+    if (missing.ok) return;
+    expect(missing.code).toBe('version-not-found');
+    expect(await listPromptVersions(runner, PROMPT_REPO)).toHaveLength(3);
+  });
+
+  it('超预算保存被拒：返回 {available, requested}，一行都不写', async () => {
+    // 没有历史装配统计 → 保守估算 2400（12000 − 9600）
+    const tooLong = 'x'.repeat(3_000);
+    const rejected = await savePrompt(runner, PROMPT_REPO, tooLong);
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.budget?.available).toBe(PROMPT_BUDGET_CHARS - CONSERVATIVE_OTHER_LAYERS_CHARS);
+    expect(rejected.budget?.requested).toBeGreaterThan(3_000);
+
+    expect(await listPromptVersions(runner, PROMPT_REPO)).toHaveLength(0);
+    expect(await currentVersionInDb()).toBe(0);
+
+    // 预算内的照常成功
+    const accepted = await savePrompt(runner, PROMPT_REPO, 'x'.repeat(1_000));
+    expect(accepted.ok).toBe(true);
+  });
+
+  it('最近一次装配统计会挤掉 P1 的可用额度（实测优先于估算）', async () => {
+    // 估算下 2300 能存（≤ 2400）
+    expect((await savePrompt(runner, PROMPT_REPO, 'y'.repeat(2_300))).ok).toBe(true);
+
+    // 记一次「很满」的装配：别的层占 10000 → P1 只剩 2000
+    await recordAssembleStats(
+      runner,
+      PROMPT_REPO,
+      { baseChars: 6_000, promptChars: 0, agentsChars: 3_000, skillChars: 1_000, totalChars: 10_000, truncated: [] },
+      { now: FIXED_NOW },
+    );
+    const stats = await readLastAssembleStats(runner, PROMPT_REPO);
+    expect(stats?.baseChars).toBe(6_000);
+    expect(stats?.at).toBe(FIXED_NOW.toISOString());
+
+    const rejected = await savePrompt(runner, PROMPT_REPO, 'y'.repeat(2_000)); // 2000 + 标题 > 2000
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.budget?.available).toBe(2_000);
+
+    // 2000 以内照常
+    expect((await savePrompt(runner, PROMPT_REPO, 'y'.repeat(1_900))).ok).toBe(true);
+  });
+
+  it('空正文被拒；仓库不存在时明确说「先建行」', async () => {
+    const empty = await savePrompt(runner, PROMPT_REPO, '   ');
+    expect(empty.ok).toBe(false);
+    if (empty.ok) return;
+    expect(empty.code).toBe('empty-body');
+
+    const unknown = await savePrompt(runner, 'nobody/nothing', '正文');
+    expect(unknown.ok).toBe(false);
+    if (unknown.ok) return;
+    expect(unknown.code).toBe('repo-not-found');
   });
 });

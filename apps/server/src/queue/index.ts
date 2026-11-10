@@ -58,39 +58,60 @@ export {
 } from './retry-policy.ts';
 export type { RetryContext, RetryDecision, RetrySendOptions } from './retry-policy.ts';
 
-export {
-  MISSING_ANCHOR,
-  MISSING_SET_ANCHOR_KINDS,
-  anchorFor,
-  buildIdempotencyKey,
-  idempotencyParts,
-  usesMissingSetAnchor,
-} from './idempotency.ts';
+export { MISSING_ANCHOR, anchorFor, buildIdempotencyKey, idempotencyParts } from './idempotency.ts';
 export type { IdempotencyInput } from './idempotency.ts';
 
 export {
   QUEUE_GATE_BATCH_LIMIT,
   QUEUE_GATE_CANCEL_SQL,
-  QUEUE_GATE_COMMENT,
+  QUEUE_GATE_REACTION,
   QUEUE_GATE_SQL,
   QUEUE_WAIT_LIMIT_MINUTES,
   QUEUE_WAIT_LIMIT_SECONDS,
   isQueueTimedOut,
   queueGateActions,
+  queueWaitMinutesOf,
   queueWaitSeconds,
+  resolveQueueWaitMinutes,
+  smallestQueueWaitSeconds,
 } from './queue-gate.ts';
-export type { QueueGateAction, QueueGateCandidate } from './queue-gate.ts';
+export type {
+  QueueGateAction,
+  QueueGateCandidate,
+  QueueGateReactionPort,
+  QueueWaitLimit,
+} from './queue-gate.ts';
 
 export {
+  DEFAULT_CONCURRENCY_PER_REPO,
+  MAX_CONCURRENCY_PER_REPO,
+  MIN_CONCURRENCY_PER_REPO,
+  RepoConcurrencyLimiter,
+  concurrencyPerRepoOf,
+} from './repo-concurrency.ts';
+export type { RepoConcurrencyGate } from './repo-concurrency.ts';
+
+export {
+  CircuitBreaker,
   RATE_LIMIT_PAUSE_SECONDS,
   RATE_LIMIT_TRIP_THRESHOLD,
+  REPO_RATE_LIMIT_TRIP_THRESHOLD,
+  REPO_RATE_LIMIT_WINDOW_SECONDS,
   RUNTIME_FLAG_SQL,
-  RateLimitBreaker,
+  RateLimitWindowBreaker,
   breakerFlagRow,
+  installationPauseKey,
   isPauseFlagActive,
   pauseRedeliverSeconds,
 } from './circuit-breaker.ts';
-export type { BreakerState, RateLimitBreakerOptions, RuntimeFlagRow } from './circuit-breaker.ts';
+export type {
+  BreakerLevel,
+  BreakerOptions,
+  BreakerState,
+  CircuitBreakerOptions,
+  PauseFlagRow,
+  RuntimeFlagRow,
+} from './circuit-breaker.ts';
 
 export {
   bootstrapQueue,
@@ -112,5 +133,6 @@ export type {
   RunTaskJobData,
   TaskJob,
   TaskJobHandler,
+  TaskWorkerOptions,
   WorkBoss,
 } from './boss.ts';

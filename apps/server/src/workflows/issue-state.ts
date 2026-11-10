@@ -6,7 +6,9 @@
  *  - plan §7「关闭」——要记住这批缺失项是什么时候出现的、人有没有再说话。
  *
  * 写入点只有两处，别的路径一律不许写这张表：
- *  1. 合规判定产出之后（`applyMissingSet` / `markNudged`，由 `workflows/compliance.ts` 调）；
+ *  1. 判定产出之后（`applyMissingSet` / `markNudged`）。**2026-11 起缺信息不再算「缺失项集合」**：
+ *     合规评论已删除（`docs/impl-multi-repo.md` §0.3），`missing_set_hash` 目前只由
+ *     历史数据与关闭判定使用，新流程不再写入；保留这两个函数是为了让关闭闸门能重放旧数据。
  *  2. 收到**人**的 `issue_comment.created`（`recordHumanReply`）。
  *
  * `first_seen_at` 的语义是「**当前这批**缺失项首次出现的时刻」，所以：

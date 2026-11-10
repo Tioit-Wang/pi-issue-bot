@@ -1,32 +1,23 @@
 /**
- * 仓库配置 `.github/pi-bot.yml` 的加载与落库（B11，tech-plan §8.2 的 `config/` 模块）。
+ * 仓库行（`repos`）的读写 —— 多仓库改造后**配置的唯一载体**（`docs/impl-multi-repo.md` §2/§4）。
  *
- * 三段职责，都做成可注入：
- *  1. **拉取** —— 从 GitHub 读文件（`contents` API）。注入 `RepoConfigFetcher`，单测不碰网络。
- *  2. **校验** —— YAML 子集解析（`yaml.ts`）→ `parseRepoConfig()`（契约包的 zod）。
- *  3. **落库 + 通知** —— 写 `repos.config / config_valid / config_error / enabled / dry_run`；
- *     非法配置**禁用该仓库并通知 owner**（plan §10），不用默认值继续跑。
+ * 与旧的 `repo-config.ts`（`.github/pi-bot.yml` 拉取 → 校验 → 落库 + 通知）相比，这里：
+ *  - **不读仓库里的配置文件**（yaml 整体退役，§0.2），配置只从 `repos.settings`（jsonb）来；
+ *  - **不拉取、不通知**：所有写发生在面板（`PUT /api/repos/:owner/:name/settings`）；
+ *  - 仍保留「非法配置 = 该仓库不可用」的语义：`settings_valid=false` + `settings_error`，
+ *    读侧返回 `settings: null`（`known: true`），webhook 据此忽略该仓库的投递。
  *
  * 三条硬规则：
- *  - 校验失败不是「用默认值继续」：`config_valid=false` + `enabled=false` + 通知。
- *  - `dry_run` 缺省 `true`（契约 schema 里就是 `default(true)`，这里不写第二份默认值）。
- *  - 文件不存在 → 视为「用默认配置」：`config_valid=true`、`enabled=true`、`dry_run=true`，
- *    不通知。理由：没写配置和写错配置是两件事，前者是常态（第一次接入）。
+ *  - **写库前必校验**：`updateRepoSettings()` 校验不通过就一个字都不写，库里始终留着最后一次合法值
+ *    （last-known-good），所以一次手滑不会把线上机器人弄哑。
+ *  - **默认值只有一处**：`repoSettingsSchema.parse({})`（契约包），`PI_BOT_DEFAULT_SETTINGS` 只是
+ *    「在默认值上覆写」的部署入口；建行（`upsertRepo`）时 seed 一次，之后只认库里的值。
+ *  - **归档不可用**：`archived_at` 非空一律按 `enabled=false` 返回（不删行，保留审计与成本历史）。
  */
-// 说明：本仓库的 workspace 包目前**没有**链进 `apps/server/node_modules`
-// （`apps/server/package.json` 未声明 `@pi-issue-bot/*`，E9 又禁止本 session 跑 install），
-// 因此这里与并行 session（`queries/`）的写法一致：用相对路径引到 packages 源码。
-// TODO(owner: PM)：把 `"@pi-issue-bot/{contract,shared}": "workspace:*"` 加进
-// `apps/server/package.json` 并统一 `pnpm install`，之后把这些相对路径改回包名。
-import { repoConfigSchema } from '../../../../packages/contract/src/index.ts';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { DEFAULT_REPO_SETTINGS, repoSettingsSchema } from '../../../../packages/contract/src/index.ts';
 import type { RepoConfig } from '../../../../packages/contract/src/index.ts';
-import type { Logger } from '../../../../packages/shared/src/index.ts';
-import { splitRepo } from '../github/index.ts';
-import type { GithubClient } from '../github/index.ts';
-import { parseYamlSubset, YamlSubsetError } from './yaml.ts';
-
-/** 配置文件路径（仓库根相对）。 */
-export const REPO_CONFIG_PATH = '.github/pi-bot.yml';
 
 /** 只要 `query` 就行——真实实现是 `pg.Pool`，测试实现是几行假函数。 */
 export type SqlRunner = {
@@ -36,297 +27,403 @@ export type SqlRunner = {
   }>;
 };
 
-/* ── 1. 拉取 ──────────────────────────────────────────────────────────────── */
-
-export type RepoConfigFetchResult = {
-  /** 文件是否存在。不存在不是错误（见文件头第三条）。 */
-  readonly found: boolean;
-  readonly yaml: string | null;
-  /** 文件 blob sha；用于「同一提交不重复解析」。 */
-  readonly sha: string | null;
-};
-
-export type RepoConfigFetcher = (input: {
-  readonly repo: string;
-  readonly path: string;
-  readonly ref?: string;
-}) => Promise<RepoConfigFetchResult>;
-
-type ContentsResponse = {
-  readonly content?: unknown;
-  readonly encoding?: unknown;
-  readonly sha?: unknown;
-};
+/* ── 1. 部署默认 settings ──────────────────────────────────────────────────── */
 
 /**
- * 用 `GithubClient` 实现拉取。
+ * 部署默认配置的 env 名：**文件路径或内联 JSON**。
  *
- * 404 单独识别（`classifyGithubError` 把 404 归到 `not_found`），其余错误照常抛：
- * 网络/权限错误不该被当成「没有配置文件」，否则一次抖动就会把所有仓库的配置清空。
+ * - 空 / 未设置 → 契约默认值（`repoSettingsSchema.parse({})`）；
+ * - 以 `{` 开头 → 当内联 JSON 解析；
+ * - 其它 → 当文件路径（相对路径按进程 cwd 解析）读 UTF-8 后按 JSON 解析。
+ *
+ * 解析失败一律**抛明确错误**（启动即失败，不静默降级成默认值）：部署写错了配置却照常跑，
+ * 等于把错误配置的后果推给所有仓库。
  */
-export function createGithubRepoConfigFetcher(client: GithubClient): RepoConfigFetcher {
-  return async (input) => {
-    const { owner, repo } = splitRepo(input.repo);
-    const params: Record<string, unknown> = { owner, repo, path: input.path };
-    if (input.ref !== undefined) {
-      params['ref'] = input.ref;
-    }
+export const REPO_SETTINGS_ENV = 'PI_BOT_DEFAULT_SETTINGS';
+
+/** 默认 settings 的读取器（注入点：单测不读真文件）。 */
+export type FileReader = (filePath: string) => string;
+
+const readFileUtf8: FileReader = (filePath) => readFileSync(filePath, 'utf8');
+
+/**
+ * 解析部署默认配置（`PI_BOT_DEFAULT_SETTINGS`）。
+ *
+ * @param source env 原文；`undefined` / 空串 = 用契约默认值
+ * @param readFile 读文件实现（默认 `fs.readFileSync`，单测注入假实现）
+ */
+export function loadDefaultRepoSettings(
+  source: string | undefined = process.env[REPO_SETTINGS_ENV],
+  readFile: FileReader = readFileUtf8,
+): RepoConfig {
+  const raw = (source ?? '').trim();
+  if (raw === '') {
+    return DEFAULT_REPO_SETTINGS;
+  }
+
+  let text = raw;
+  let origin = `${REPO_SETTINGS_ENV}（内联 JSON）`;
+  if (!raw.startsWith('{')) {
+    const filePath = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+    origin = `${REPO_SETTINGS_ENV}=${raw}`;
     try {
-      const response = await client.request<ContentsResponse>(
-        'GET /repos/{owner}/{repo}/contents/{path}',
-        params,
-      );
-      const data = response.data;
-      const raw = decodeContents(data);
-      return {
-        found: raw !== null,
-        yaml: raw,
-        sha: typeof data.sha === 'string' ? data.sha : null,
-      };
+      text = readFile(filePath);
     } catch (error) {
-      if (isNotFound(error)) {
-        return { found: false, yaml: null, sha: null };
-      }
-      throw error;
+      throw new Error(
+        `读取部署默认仓库配置失败（${origin} → ${filePath}）：${describeError(error)}`,
+        { cause: error },
+      );
     }
-  };
-}
-
-function isNotFound(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) {
-    return false;
   }
-  const status = (error as { status?: unknown }).status;
-  if (status === 404) {
-    return true;
-  }
-  const info = (error as { info?: { status?: unknown } }).info;
-  return info?.status === 404;
-}
 
-/** contents API 的 `content` 是 base64（可能带换行）；也容忍直接给 UTF-8 文本。 */
-function decodeContents(data: ContentsResponse): string | null {
-  if (typeof data.content !== 'string') {
-    return null;
-  }
-  if (data.encoding === 'base64' || data.encoding === undefined) {
-    const normalized = data.content.replace(/\s+/gu, '');
-    return Buffer.from(normalized, 'base64').toString('utf8');
-  }
-  return data.content;
-}
-
-/* ── 2. 校验 ──────────────────────────────────────────────────────────────── */
-
-export type RepoConfigParseResult =
-  | { readonly ok: true; readonly config: RepoConfig }
-  | { readonly ok: false; readonly error: string; readonly issues: readonly string[] };
-
-/** YAML 文本 → `RepoConfig`。错误消息控制在 500 字内（`repos.config_error` 列宽 + 面板展示）。 */
-export function decodeRepoConfig(yamlText: string): RepoConfigParseResult {
   let parsed: unknown;
   try {
-    parsed = parseYamlSubset(yamlText);
+    parsed = JSON.parse(text);
   } catch (error) {
-    const message = error instanceof YamlSubsetError ? error.message : describeError(error);
-    return { ok: false, error: `YAML 解析失败：${message}`, issues: [message] };
+    throw new Error(`部署默认仓库配置不是合法 JSON（${origin}）：${describeError(error)}`, {
+      cause: error,
+    });
   }
 
-  const result = repoConfigSchema.safeParse(parsed);
+  const validated = validateRepoSettings(parsed);
+  if (!validated.ok) {
+    throw new Error(`部署默认仓库配置不符合 repoSettingsSchema（${origin}）：${validated.error}`);
+  }
+  return validated.settings;
+}
+
+/** 进程内缓存：第一次用到时解析，失败即抛（调用方：启动路径 / 建行）。 */
+let cachedDefault: RepoConfig | null = null;
+
+/** 部署默认 settings（首次使用时从 `PI_BOT_DEFAULT_SETTINGS` 解析，之后走缓存）。 */
+export function defaultRepoSettings(): RepoConfig {
+  cachedDefault ??= loadDefaultRepoSettings();
+  return cachedDefault;
+}
+
+/** 清缓存（单测用：换 env 后要让下一次调用重新解析）。 */
+export function resetDefaultRepoSettingsCache(): void {
+  cachedDefault = null;
+}
+
+/* ── 2. 校验 ───────────────────────────────────────────────────────────────── */
+
+export type SettingsValidation =
+  | { readonly ok: true; readonly settings: RepoConfig }
+  | { readonly ok: false; readonly error: string; readonly issues: readonly string[] };
+
+/** `settings` 的 zod 校验。错误消息控制在 500 字内（`repos.settings_error` 列的可读长度）。 */
+export function validateRepoSettings(input: unknown): SettingsValidation {
+  const result = repoSettingsSchema.safeParse(input);
   if (result.success) {
-    return { ok: true, config: result.data };
+    return { ok: true, settings: result.data };
   }
   const issues = result.error.issues.map((issue) => {
-    const path = issue.path.map((part) => String(part)).join('.');
-    return path === '' ? issue.message : `${path}: ${issue.message}`;
+    const at = issue.path.map((part) => String(part)).join('.');
+    return at === '' ? issue.message : `${at}: ${issue.message}`;
   });
   return {
     ok: false,
-    error: `配置不符合 schema：${issues.join('; ')}`.slice(0, 500),
+    error: `配置不符合 repoSettingsSchema：${issues.join('; ')}`.slice(0, 500),
     issues,
   };
 }
+
+/* ── 3. 读 ─────────────────────────────────────────────────────────────────── */
+
+export const REPO_SQL = {
+  /** $1 = repo_full_name */
+  selectOne: `SELECT "enabled", "dry_run", "archived_at", "settings", "settings_valid", "settings_error", "source", "installation_id", "settings_updated_at", "updated_at"
+FROM "repos" WHERE "repo_full_name" = $1`,
+  /** 列表：面板的仓库切换器与「所有仓库」视图 */
+  selectAll: `SELECT "repo_full_name", "enabled", "dry_run", "archived_at", "settings_valid", "settings_error", "source", "installation_id", "settings_updated_at", "updated_at"
+FROM "repos" ORDER BY "repo_full_name"`,
+  /**
+   * 建行（或补全安装信息）。参数：$1 repo, $2 enabled, $3 dry_run, $4 settings(jsonb), $5 source, $6 installation_id。
+   *
+   * 冲突时**不覆盖 settings / enabled / dry_run**：重新安装 App 不该把面板里调好的配置冲掉。
+   * 只补 `source` / `installation_id`、清掉 `archived_at`（重新安装 = 复活）。
+   */
+  upsert: `INSERT INTO "repos" ("repo_full_name", "enabled", "dry_run", "settings", "settings_valid", "settings_error", "settings_updated_at", "source", "installation_id", "updated_at")
+VALUES ($1, $2, $3, $4::jsonb, true, null, now(), $5, $6, now())
+ON CONFLICT ("repo_full_name") DO UPDATE
+SET "source" = EXCLUDED."source",
+    "installation_id" = COALESCE(EXCLUDED."installation_id", "repos"."installation_id"),
+    "archived_at" = null,
+    "updated_at" = now()`,
+  /**
+   * 写 settings。参数：$1 repo, $2 settings(jsonb), $3 enabled, $4 dry_run。
+   * `enabled` / `dry_run` 两列与 settings 里的同名开关**同步**（webhook 与队列读列，不解析 jsonb）。
+   */
+  updateSettings: `UPDATE "repos"
+SET "settings" = $2::jsonb,
+    "settings_valid" = true,
+    "settings_error" = null,
+    "settings_updated_at" = now(),
+    "enabled" = $3,
+    "dry_run" = $4,
+    "updated_at" = now()
+WHERE "repo_full_name" = $1`,
+} as const;
+
+/** 仓库来源：面板手动添加 / GitHub App 安装事件。 */
+export type RepoSource = 'manual' | 'installation';
+
+/**
+ * 仓库策略（webhook 第 5 步、任务执行前读它）。
+ *
+ * `settings / settingsValid / settingsError` 是新名字；`config / configValid / configError`
+ * 是过渡期别名（同一个值），只为让还没迁移的调用点（`http/webhook.ts`、`app/compose.ts`）继续编译。
+ */
+export type RepoPolicy = {
+  /** `repos` 里有这一行 */
+  readonly known: boolean;
+  /** 开关：`enabled` 列 && 未归档 */
+  readonly enabled: boolean;
+  readonly dryRun: boolean;
+  /** `settings` 能否解析；false 时 `settings` 为 null（webhook 忽略该仓库） */
+  readonly settingsValid: boolean;
+  /** 解析成功后的配置；非法 / 列标记为不可用时为 null */
+  readonly settings: RepoConfig | null;
+  /** 非法原因（面板展示） */
+  readonly settingsError: string | null;
+  readonly source: RepoSource | null;
+  /** GitHub installation id（bigint 以字符串给出，避免精度问题）；`manual` 来源为 null */
+  readonly installationId: string | null;
+  /** 归档时刻（ISO）；非空 = 不可用 */
+  readonly archivedAt: string | null;
+  /** @deprecated 用 `settings` */
+  readonly config: RepoConfig | null;
+  /** @deprecated 用 `settingsValid` */
+  readonly configValid: boolean;
+  /** @deprecated 用 `settingsError` */
+  readonly configError: string | null;
+};
+
+/** 没有 `repos` 行时的默认策略：不开工（未知仓库一律忽略）。 */
+export const UNKNOWN_REPO_POLICY: RepoPolicy = Object.freeze({
+  known: false,
+  enabled: false,
+  dryRun: true,
+  settingsValid: false,
+  settings: null,
+  settingsError: null,
+  source: null,
+  installationId: null,
+  archivedAt: null,
+  config: null,
+  configValid: false,
+  configError: null,
+});
+
+/** 读一个仓库的策略（含 settings 解析与 last-known-good 语义）。 */
+export async function readRepoPolicy(db: SqlRunner, repo: string): Promise<RepoPolicy> {
+  const result = await db.query(REPO_SQL.selectOne, [repo]);
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  if (row === undefined) {
+    return UNKNOWN_REPO_POLICY;
+  }
+
+  const columnValid = row['settings_valid'] !== false;
+  const parsed = parseStoredSettings(row['settings']);
+  const settingsValid = columnValid && parsed.ok;
+
+  // 两种「不可用」：列被标成 false（面板/人写坏了），或列说合法但 JSON 解析不出来（手改库）
+  let settingsError: string | null = null;
+  if (!columnValid) {
+    settingsError =
+      asString(row['settings_error']) ?? (parsed.ok ? null : parsed.error) ?? '配置不可用（settings_valid=false）';
+  } else if (!parsed.ok) {
+    settingsError = parsed.error;
+  }
+  const archivedAt = asIsoString(row['archived_at']);
+
+  const settings = settingsValid ? parsed.settings : null;
+  const policy: RepoPolicy = {
+    known: true,
+    // 归档 = 不可用（不删行）
+    enabled: row['enabled'] === true && archivedAt === null,
+    dryRun: row['dry_run'] !== false,
+    settingsValid,
+    settings,
+    settingsError,
+    source: asSource(row['source']),
+    installationId: asIdString(row['installation_id']),
+    archivedAt,
+    config: settings,
+    configValid: settingsValid,
+    configError: settingsError,
+  };
+  return policy;
+}
+
+/** 库里的 jsonb → `RepoConfig`。手改过库、或版本升级后旧结构都是这条路径失败。 */
+function parseStoredSettings(
+  value: unknown,
+): { readonly ok: true; readonly settings: RepoConfig } | { readonly ok: false; readonly error: string } {
+  if (value === null || value === undefined) {
+    // 列 NOT NULL，理论到不了；真到了就当「用默认值」而不是「配置坏了」
+    return { ok: true, settings: DEFAULT_REPO_SETTINGS };
+  }
+  const validated = validateRepoSettings(value);
+  if (validated.ok) {
+    return { ok: true, settings: validated.settings };
+  }
+  return { ok: false, error: validated.error };
+}
+
+/** 仓库列表的一行（面板切换器 / 系统页）。 */
+export type RepoSummary = {
+  readonly repo: string;
+  readonly enabled: boolean;
+  readonly dryRun: boolean;
+  readonly settingsValid: boolean;
+  readonly settingsError: string | null;
+  readonly settingsUpdatedAt: string | null;
+  readonly source: RepoSource;
+  /** bigint 以字符串给出 */
+  readonly installationId: string | null;
+  readonly archivedAt: string | null;
+  readonly updatedAt: string | null;
+};
+
+/** 全部仓库（按 `repo_full_name` 升序；面板自己决定展示顺序）。 */
+export async function listRepos(db: SqlRunner): Promise<readonly RepoSummary[]> {
+  const result = await db.query(REPO_SQL.selectAll);
+  return result.rows.map((item) => {
+    const row = item as Record<string, unknown>;
+    const archivedAt = asIsoString(row['archived_at']);
+    return {
+      repo: String(row['repo_full_name']),
+      enabled: row['enabled'] === true && archivedAt === null,
+      dryRun: row['dry_run'] !== false,
+      settingsValid: row['settings_valid'] !== false,
+      settingsError: asString(row['settings_error']),
+      settingsUpdatedAt: asIsoString(row['settings_updated_at']),
+      source: asSource(row['source']) ?? 'manual',
+      installationId: asIdString(row['installation_id']),
+      archivedAt,
+      updatedAt: asIsoString(row['updated_at']),
+    };
+  });
+}
+
+/* ── 4. 写 ─────────────────────────────────────────────────────────────────── */
+
+export type UpsertRepoInput = {
+  readonly repo: string;
+  /** 缺省 `manual` */
+  readonly source?: RepoSource;
+  readonly installationId?: number | string | null;
+  /** 缺省用 `settings.enabled` */
+  readonly enabled?: boolean;
+  /** 缺省用 `settings.dry_run` */
+  readonly dryRun?: boolean;
+  /** 缺省用部署默认（`defaultRepoSettings()`） */
+  readonly settings?: unknown;
+};
+
+export type UpsertRepoResult =
+  | { readonly ok: true; readonly repo: string; readonly settings: RepoConfig }
+  | { readonly ok: false; readonly error: string; readonly issues: readonly string[] };
+
+/**
+ * 建行 / 补全安装信息。**只在建行时写 settings**（冲突时不覆盖，见 `REPO_SQL.upsert`）。
+ *
+ * 配置非法 → 不写库，返回错误（调用方决定的 HTTP 状态：面板 400、安装事件日志 + 跳过）。
+ */
+export async function upsertRepo(db: SqlRunner, input: UpsertRepoInput): Promise<UpsertRepoResult> {
+  const validated =
+    input.settings === undefined ? { ok: true as const, settings: defaultRepoSettings() } : validateRepoSettings(input.settings);
+  if (!validated.ok) {
+    return { ok: false, error: validated.error, issues: validated.issues };
+  }
+  const settings = validated.settings;
+  const enabled = input.enabled ?? settings.enabled;
+  const dryRun = input.dryRun ?? settings.dry_run;
+  await db.query(REPO_SQL.upsert, [
+    input.repo,
+    enabled,
+    dryRun,
+    JSON.stringify(settings),
+    input.source ?? 'manual',
+    input.installationId === null || input.installationId === undefined
+      ? null
+      : String(input.installationId),
+  ]);
+  return { ok: true, repo: input.repo, settings };
+}
+
+export type UpdateSettingsResult =
+  | { readonly ok: true; readonly repo: string; readonly settings: RepoConfig }
+  | {
+      readonly ok: false;
+      /** `true` = 没有这一行（HTTP 404），`false` = 配置非法（HTTP 400） */
+      readonly notFound: boolean;
+      readonly error: string;
+      readonly issues: readonly string[];
+    };
+
+/**
+ * 覆盖一个仓库的 settings。
+ *
+ * **校验失败不写库**：库里的值保持最后一次合法状态（last-known-good），webhook 继续按它工作。
+ */
+export async function updateRepoSettings(
+  db: SqlRunner,
+  repo: string,
+  settings: unknown,
+): Promise<UpdateSettingsResult> {
+  const validated = validateRepoSettings(settings);
+  if (!validated.ok) {
+    return { ok: false, notFound: false, error: validated.error, issues: validated.issues };
+  }
+  const result = await db.query(REPO_SQL.updateSettings, [
+    repo,
+    JSON.stringify(validated.settings),
+    validated.settings.enabled,
+    validated.settings.dry_run,
+  ]);
+  if ((result.rowCount ?? 0) === 0) {
+    return {
+      ok: false,
+      notFound: true,
+      error: `仓库不存在：${repo}（先用 POST /api/repos 添加）`,
+      issues: [],
+    };
+  }
+  return { ok: true, repo, settings: validated.settings };
+}
+
+/* ── 5. 小工具 ─────────────────────────────────────────────────────────────── */
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/* ── 3. 落库 + 通知 ───────────────────────────────────────────────────────── */
-
-export const REPO_CONFIG_SQL = {
-  /** UPSERT `repos` 一行；$1 repo, $2 enabled, $3 dryRun, $4 config(jsonb|null), $5 valid, $6 error */
-  upsert: `INSERT INTO "repos" ("repo_full_name", "enabled", "dry_run", "config", "config_valid", "config_error", "updated_at")
-VALUES ($1, $2, $3, $4::jsonb, $5, $6, now())
-ON CONFLICT ("repo_full_name") DO UPDATE
-SET "enabled" = EXCLUDED."enabled",
-    "dry_run" = EXCLUDED."dry_run",
-    "config" = EXCLUDED."config",
-    "config_valid" = EXCLUDED."config_valid",
-    "config_error" = EXCLUDED."config_error",
-    "updated_at" = now()`,
-  /** webhook 判定用：$1 repo → { enabled, dry_run, config, config_valid } */
-  readPolicy: `SELECT "enabled", "dry_run", "config", "config_valid", "config_error" FROM "repos" WHERE "repo_full_name" = $1`,
-} as const;
-
-/** 仓库策略（webhook 第 5 步读它：开关 + dry-run + 配置快照）。 */
-export type RepoPolicy = {
-  /** `repos` 里有这一行 */
-  readonly known: boolean;
-  readonly enabled: boolean;
-  readonly dryRun: boolean;
-  readonly configValid: boolean;
-  readonly config: RepoConfig | null;
-  readonly configError: string | null;
-};
-
-/** 没有 `repos` 行时的默认策略：不开工（配置还没同步过）。 */
-export const UNKNOWN_REPO_POLICY: RepoPolicy = Object.freeze({
-  known: false,
-  enabled: false,
-  dryRun: true,
-  configValid: false,
-  config: null,
-  configError: null,
-});
-
-export async function readRepoPolicy(db: SqlRunner, repo: string): Promise<RepoPolicy> {
-  const result = await db.query(REPO_CONFIG_SQL.readPolicy, [repo]);
-  const row = result.rows[0] as Record<string, unknown> | undefined;
-  if (row === undefined) {
-    return UNKNOWN_REPO_POLICY;
-  }
-  const stored = row['config'];
-  const parsed = stored === null || stored === undefined ? null : safeParseRepoConfig(stored);
-  return {
-    known: true,
-    enabled: row['enabled'] === true,
-    dryRun: row['dry_run'] !== false,
-    configValid: row['config_valid'] === true,
-    config: parsed,
-    configError: typeof row['config_error'] === 'string' ? row['config_error'] : null,
-  };
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
-/** 快照里存的已经是校验过的结构；这里再走一遍 zod 是为了对付「列被手改了」。 */
-function safeParseRepoConfig(input: unknown): RepoConfig | null {
-  const result = repoConfigSchema.safeParse(input);
-  return result.success ? result.data : null;
+function asSource(value: unknown): RepoSource | null {
+  return value === 'manual' || value === 'installation' ? value : null;
 }
 
-/** 非法配置时通知 owner（plan §10）。注入实现：GitHub 评论 / 邮件 / 告警都行。 */
-export type RepoConfigNotifier = (input: {
-  readonly repo: string;
-  readonly error: string;
-  readonly issues: readonly string[];
-}) => Promise<void>;
-
-export type SyncRepoConfigDeps = {
-  readonly fetch: RepoConfigFetcher;
-  readonly db: SqlRunner;
-  readonly logger?: Logger;
-  /** 不传则只落库不通知（`config_valid=false` 仍然会让 webhook 跳过该仓库）。 */
-  readonly notify?: RepoConfigNotifier;
-  /** 读哪个 ref（默认仓库默认分支）。 */
-  readonly ref?: string;
-  readonly now?: () => Date;
-};
-
-export type SyncRepoConfigResult = {
-  readonly repo: string;
-  readonly found: boolean;
-  readonly valid: boolean;
-  readonly enabled: boolean;
-  readonly dryRun: boolean;
-  readonly error: string | null;
-  readonly sha: string | null;
-  readonly notified: boolean;
-};
-
-/**
- * 拉一次配置并落库。
- *
- * 顺序有意：**先落库再通知**。通知失败（GitHub 挂了）不该让「仓库已禁用」这个结论丢掉。
- */
-export async function syncRepoConfig(
-  deps: SyncRepoConfigDeps,
-  repo: string,
-): Promise<SyncRepoConfigResult> {
-  const fetched = await deps.fetch({
-    repo,
-    path: REPO_CONFIG_PATH,
-    ...(deps.ref === undefined ? {} : { ref: deps.ref }),
-  });
-
-  if (!fetched.found) {
-    const defaults = repoConfigSchema.parse({ version: 1 });
-    await deps.db.query(REPO_CONFIG_SQL.upsert, [
-      repo,
-      defaults.enabled,
-      defaults.dry_run,
-      null,
-      true,
-      null,
-    ]);
-    deps.logger?.info({ repo, path: REPO_CONFIG_PATH }, '仓库没有 pi-bot.yml，按默认配置入库');
-    return {
-      repo,
-      found: false,
-      valid: true,
-      enabled: defaults.enabled,
-      dryRun: defaults.dry_run,
-      error: null,
-      sha: null,
-      notified: false,
-    };
+/** timestamptz（pg 给 Date，假实现可能给字符串）→ ISO 字符串。 */
+function asIsoString(value: unknown): string | null {
+  if (value instanceof Date) {
+    return value.toISOString();
   }
+  return typeof value === 'string' && value !== '' ? value : null;
+}
 
-  const decoded = decodeRepoConfig(fetched.yaml ?? '');
-  if (!decoded.ok) {
-    // 非法：禁用 + 落错误原因 + 通知 owner
-    await deps.db.query(REPO_CONFIG_SQL.upsert, [repo, false, true, null, false, decoded.error]);
-    deps.logger?.warn({ repo, issues: decoded.issues }, '仓库配置非法，已禁用该仓库并准备通知 owner');
-    let notified = false;
-    if (deps.notify !== undefined) {
-      try {
-        await deps.notify({ repo, error: decoded.error, issues: decoded.issues });
-        notified = true;
-      } catch (error) {
-        deps.logger?.error(
-          { repo, err: describeError(error) },
-          '通知 owner 失败（仓库仍保持禁用）',
-        );
-      }
-    }
-    return {
-      repo,
-      found: true,
-      valid: false,
-      enabled: false,
-      dryRun: true,
-      error: decoded.error,
-      sha: fetched.sha,
-      notified,
-    };
+/** bigint（pg 默认给字符串）→ 十进制字符串。 */
+function asIdString(value: unknown): string | null {
+  if (typeof value === 'string' && value !== '') {
+    return value;
   }
-
-  const config = decoded.config;
-  await deps.db.query(REPO_CONFIG_SQL.upsert, [
-    repo,
-    config.enabled,
-    config.dry_run,
-    config,
-    true,
-    null,
-  ]);
-  deps.logger?.info({ repo, enabled: config.enabled, dryRun: config.dry_run }, '仓库配置已加载');
-  return {
-    repo,
-    found: true,
-    valid: true,
-    enabled: config.enabled,
-    dryRun: config.dry_run,
-    error: null,
-    sha: fetched.sha,
-    notified: false,
-  };
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  return null;
 }

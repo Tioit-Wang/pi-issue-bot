@@ -3,8 +3,9 @@
  *
  * 分工：
  *  - `env.ts` —— 进程级 env（只在 CLI 入口读取，其余模块吃注入对象）
- *  - `repo-config.ts` —— `.github/pi-bot.yml` 的拉取 → 校验 → 落库 + 通知
- *  - `yaml.ts` —— 受限 YAML 子集解析（只服务仓库配置；见该文件头的取舍说明）
+ *  - `repo-config.ts` —— `repos` 表的读写（settings / 开关 / 来源 / 归档），部署默认 settings
+ *  - `yaml.ts` —— 受限 YAML 子集解析。`.github/pi-bot.yml` 退役后**已无生产调用者**，
+ *    仅保留给仍在用它的测试与历史数据解析；W3 之后可整体删除。
  */
 export {
   DEFAULT_BODY_LIMIT_BYTES,
@@ -21,23 +22,28 @@ export {
 export type { EnvLike, ServeConfig } from './env.ts';
 
 export {
-  REPO_CONFIG_PATH,
-  REPO_CONFIG_SQL,
+  REPO_SETTINGS_ENV,
+  REPO_SQL,
   UNKNOWN_REPO_POLICY,
-  createGithubRepoConfigFetcher,
-  decodeRepoConfig,
+  defaultRepoSettings,
+  listRepos,
+  loadDefaultRepoSettings,
   readRepoPolicy,
-  syncRepoConfig,
+  resetDefaultRepoSettingsCache,
+  updateRepoSettings,
+  upsertRepo,
+  validateRepoSettings,
 } from './repo-config.ts';
 export type {
-  RepoConfigFetchResult,
-  RepoConfigFetcher,
-  RepoConfigNotifier,
-  RepoConfigParseResult,
+  FileReader,
   RepoPolicy,
+  RepoSource,
+  RepoSummary,
+  SettingsValidation,
   SqlRunner,
-  SyncRepoConfigDeps,
-  SyncRepoConfigResult,
+  UpdateSettingsResult,
+  UpsertRepoInput,
+  UpsertRepoResult,
 } from './repo-config.ts';
 
 export { YamlSubsetError, parseYamlSubset } from './yaml.ts';

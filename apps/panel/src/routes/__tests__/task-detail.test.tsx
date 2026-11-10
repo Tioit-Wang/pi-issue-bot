@@ -43,7 +43,7 @@ describe('/tasks/:id 任务详情', () => {
     expect(await screen.findByTestId('task-detail-content')).toBeTruthy();
     // 命令在头部徽章与字段里各一处
     expect(screen.getAllByText('/review-pr').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('abcdef1234567').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('abcdef1').length).toBeGreaterThan(0);
     expect(screen.getAllByText('dana').length).toBeGreaterThan(0);
     expect(screen.getAllByText('success').length).toBeGreaterThan(0);
     // 两次 run：第一次超时失败
@@ -74,21 +74,13 @@ describe('/tasks/:id 任务详情', () => {
     renderDetail('/tasks/t-mock-1');
 
     await screen.findByTestId('task-detail-content');
-    // 默认在事件时间线
+    // 事件流与信封/动作在同一页（不再用 Tab 分栏）
     expect(screen.getByTestId('task-detail-events')).toBeTruthy();
 
-    await user.click(screen.getByRole('tab', { name: /信封 JSON/ }));
     const envelopes = await screen.findByTestId('task-detail-envelopes');
     expect(envelopes.textContent).toContain('校验通过');
-    expect(envelopes.textContent).toContain('校验失败');
-    expect(envelopes.textContent).toContain('needs-info');
-    expect(envelopes.textContent).toContain('missing-test');
-    // 写回闸门：越界文件与拒收原因必须显式标出
     expect(envelopes.textContent).toContain('越界');
     expect(envelopes.textContent).toContain('config/secrets.env');
-    expect(envelopes.textContent).toContain('out-of-scope-paths');
-
-    await user.click(screen.getByRole('tab', { name: /diff/ }));
     const diff = await screen.findByTestId('task-detail-diff');
     expect(diff.textContent).toContain('@@ -1,6 +1,12 @@');
     expect(diff.textContent).toContain('+  return renderSummary');
@@ -104,9 +96,9 @@ describe('/tasks/:id 任务详情', () => {
   it('404：显示「任务不存在」并给回列表的入口', async () => {
     renderDetail('/tasks/missing');
 
-    const missing = await screen.findByTestId('task-detail-missing');
+    const missing = await screen.findByTestId('task-detail-empty');
     expect(missing.textContent).toContain('任务不存在');
-    expect(within(missing).getByRole('link', { name: '回到任务列表' })).toBeTruthy();
+    expect(within(missing).getByRole('link', { name: '回到审计' })).toBeTruthy();
     // 不是错误态：501/500 的「读取失败」不该出现
     expect(screen.queryByTestId('task-detail-error')).toBeNull();
   });

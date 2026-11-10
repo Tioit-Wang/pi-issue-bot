@@ -354,6 +354,67 @@ describe('queries/issues（真库）', () => {
     expect(response.hasMore).toBe(false);
     expect(response.nextCursor).toBeNull();
   });
+
+  it('列表/会话的新字段：reactionState 取最新终态、labelDecisions 按 blocked_reason 聚合', async () => {
+    // `issue_feedback`：入队 eyes → 成功 rocket（旧）→ 失败 confused（最新）；再补一条没落地的
+    await db.sql(
+      `insert into issue_feedback (repo, target_kind, target_number, stage, content, anchor, applied_at, created_at)
+       values
+         ('acme/widgets', 'issue', 7, 'received',  'eyes',     'k1', '2026-06-01T03:00:00Z', '2026-06-01T03:00:00Z'),
+         ('acme/widgets', 'issue', 7, 'succeeded', 'rocket',   'k1', '2026-06-01T03:05:00Z', '2026-06-01T03:05:00Z'),
+         ('acme/widgets', 'issue', 7, 'failed',    'confused', 'k2', '2026-06-01T04:35:00Z', '2026-06-01T04:35:00Z'),
+         ('acme/widgets', 'issue', 7, 'received',  'eyes',     'k3', null,                   '2026-06-01T04:36:00Z')`,
+    );
+    await db.sql(
+      `insert into label_decisions (repo, target_number, judgement_hash, desired, applied, blocked_reason, reason, created_at)
+       values
+         ('acme/widgets', 7, 'h1', '["bug","needs-info"]'::jsonb, '["bug"]'::jsonb,
+          'not-in-vocabulary', 'needs-info 不在词表', '2026-06-01T03:10:00Z'),
+         ('acme/widgets', 7, 'h2', '["bug"]'::jsonb, '["bug"]'::jsonb,
+          null, '本轮到齐', '2026-06-01T04:00:00Z')`,
+    );
+
+    const list = await db.queries.issues({ kind: 'issue', limit: 30 });
+    expect(() => issuesListResponseSchema.parse(list)).not.toThrow();
+    const item = list.issues.find((issue) => issue.repo === 'acme/widgets' && issue.number === 7);
+    expect(item).toBeDefined();
+    // 最新终态（`received` 不算终态）：failed / confused
+    expect(item?.reactionState).toEqual({
+      stage: 'failed',
+      content: 'confused',
+      appliedAt: '2026-06-01T04:35:00.000Z',
+      at: '2026-06-01T04:35:00.000Z',
+      commentId: null,
+    });
+    // 时间线升序、4 条
+    expect(item?.feedback.map((event) => event.stage)).toEqual([
+      'received',
+      'succeeded',
+      'failed',
+      'received',
+    ]);
+    // 最近一轮判定 + 被拦原因计数
+    expect(item?.labelDecisions).toMatchObject({
+      lastAt: '2026-06-01T04:00:00.000Z',
+      desired: ['bug'],
+      applied: ['bug'],
+      reason: '本轮到齐',
+      blocked: [{ reason: 'not-in-vocabulary', count: 1 }],
+    });
+
+    // 没有反馈/判定数据的 issue：两个字段都是 null / 空数组（不是缺字段）
+    const other = list.issues.find((issue) => issue.repo === 'acme/widgets' && issue.number === 9);
+    expect(other?.reactionState).toBeNull();
+    expect(other?.labelDecisions).toBeNull();
+    expect(other?.feedback).toEqual([]);
+
+    // 详情：reactionState 同源；pendingFeedback 只含 `applied_at is null` 的那条
+    const session = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'issue', number: 7 });
+    expect(session).not.toBeNull();
+    expect(session?.issue.reactionState?.stage).toBe('failed');
+    expect(session?.issue.pendingFeedback).toHaveLength(1);
+    expect(session?.issue.pendingFeedback[0]).toMatchObject({ stage: 'received', appliedAt: null });
+  });
 });
 
 /* ── 种子数据 ─────────────────────────────────────────────────────────────── */

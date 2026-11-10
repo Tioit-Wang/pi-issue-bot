@@ -312,16 +312,39 @@ describe('queries/system（真库）', () => {
       { key: 'rate_limit_pause', value: '1', until: '2026-06-01T12:15:00.000Z' },
     ]);
 
-    expect(response.repos).toEqual([
-      { repo: 'acme/widgets', enabled: true, dryRun: false, configValid: true, configError: null },
-      {
-        repo: 'other/lib',
-        enabled: true,
-        dryRun: true,
-        configValid: false,
-        configError: 'outputs 越界：pr 但没有 paths',
-      },
-    ]);
+    // repos：读 `repos` 表（settings_valid / archived_at / source 是新的真源，`configValid` 是同值别名）
+    expect(response.repos).toHaveLength(2);
+    expect(response.repos[0]).toMatchObject({
+      repo: 'acme/widgets',
+      enabled: true,
+      dryRun: false,
+      settingsValid: true,
+      settingsError: null,
+      configValid: true,
+      configError: null,
+      source: 'manual',
+      archivedAt: null,
+    });
+    expect(response.repos[1]).toMatchObject({
+      repo: 'other/lib',
+      enabled: true,
+      dryRun: true,
+      settingsValid: false,
+      settingsError: 'outputs 越界：pr 但没有 paths',
+      configValid: false,
+      configError: 'outputs 越界：pr 但没有 paths',
+      source: 'installation',
+      archivedAt: null,
+    });
+    // lastActivityAt = max(tasks.queued_at, actions.applied_at)：acme 最晚是 close_issue 的写回，
+    // other/lib 最晚是排队中的 t-queue-1
+    expect(response.repos[0]?.lastActivityAt).toBe('2026-06-01T02:21:00.000Z');
+    expect(response.repos[1]?.lastActivityAt).toBe('2026-06-01T11:00:00.000Z');
+
+    // `?repo=`：repos 只留该仓库（flags 也按「全局 + 该仓库」收窄）
+    const scoped = await db.queries.system({ repo: 'other/lib' });
+    expect(scoped.repos.map((item) => item.repo)).toEqual(['other/lib']);
+    expect(scoped.flags.map((flag) => flag.key)).toEqual(['rate_limit_pause']);
   });
 
   it('空库：零值而非 null（契约允许空数组）', async () => {

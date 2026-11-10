@@ -1,5 +1,5 @@
 /**
- * 数据模型唯一事实源 —— docs/tech-plan.md §7.2 的 16 张表。
+ * 数据模型唯一事实源 —— docs/tech-plan.md §7.2 的 16 张表 + 多仓库改造新增的 4 张表（§2）。
  *
  * 约定（本文件是后续 `queries/`、`worker/`、`http/` 的共同底座，改列名等于改契约）：
  *  - 列名 snake_case，TS 字段 camelCase；时间列一律 `timestamptz`（§7.2「时间列一律带时区」）。
@@ -13,6 +13,7 @@
  */
 import { getTableName, sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   date,
@@ -25,6 +26,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from 'drizzle-orm/pg-core';
 
 /** 任务状态取值（写库处引用这些常量，避免各模块各写一份字符串）。 */
@@ -89,6 +91,11 @@ export const webhookDeliveries = pgTable(
     event: text('event').notNull(),
     /** payload 里的 `action`，如 `opened`；部分事件没有 */
     action: text('action'),
+    /**
+     * 投递属于哪个仓库（`owner/name`）。
+     * 可空：载荷里没有仓库、或还没解析出来时留 NULL；**未知仓库的投递也写这一列**（W1-B 排查用）。
+     */
+    repo: text('repo'),
     /** 原始 payload 原文，replay 直接用它重放（plan §10「本地可复现」） */
     payload: jsonb('payload').notNull(),
     /** 验签结果：验签失败也落库（审计要求），但不入队 */
@@ -100,25 +107,62 @@ export const webhookDeliveries = pgTable(
     index('webhook_deliveries_received_at_idx').on(t.receivedAt),
     // 面板审计按事件类型过滤
     index('webhook_deliveries_event_action_idx').on(t.event, t.action),
+    // 「这个仓库最近的投递」：安装/调试面板按仓库翻审计
+    index('webhook_deliveries_repo_received_at_idx').on(t.repo, t.receivedAt),
   ],
 );
 
-/** 仓库开关与 `.github/pi-bot.yml` 快照。 */
+/**
+ * 仓库行 —— 多仓库改造后的**配置与开关的唯一载体**。
+ *
+ * `.github/pi-bot.yml` 已整体退役（`docs/impl-multi-repo.md` §0.2）：配置只存在于 `settings`（jsonb，
+ * 形状 = `repoSettingsSchema`），由面板写入；新建仓库时用部署默认（`PI_BOT_DEFAULT_SETTINGS`）seed。
+ *
+ * `config / config_valid / config_error` 是过渡期列（W1 之后不再读，W3 可删），保留它们是为了让
+ * 尚未迁移的查询侧（`queries/system.ts` 等）继续编译与读数据。
+ */
 export const repos = pgTable('repos', {
   /** `owner/name`，全库唯一 */
   repoFullName: text('repo_full_name').primaryKey(),
-  /** 机器人对该仓库是否启用（非法配置禁用，plan §10） */
+  /** 机器人对该仓库是否启用（`settings_valid=false` 或归档都视为不可用） */
   enabled: boolean('enabled').notNull().default(true),
-  /** 首周强制 dry-run（plan §11 M1 观察期） */
+  /** 首周强制 dry-run（plan §11 M1 观察期）；与 `settings.dry_run` 保持同步（写 settings 时一并更新） */
   dryRun: boolean('dry_run').notNull().default(true),
-  /** `.github/pi-bot.yml` 解析后的原文快照 */
+  /** 仓库归档时刻；非空 = 不可用（不删行，保留审计与成本历史） */
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  /** 全部配置（`repoSettingsSchema` 的形状）。缺省 `{}` = 全默认值 */
+  settings: jsonb('settings').notNull().default({}),
+  /** `settings` 是否能被 schema 解析；false 时 webhook 忽略该仓库的投递 */
+  settingsValid: boolean('settings_valid').notNull().default(true),
+  /** 解析失败的原因（面板展示；截断到 500 字） */
+  settingsError: text('settings_error'),
+  /** 最近一次写入 `settings` 的时刻 */
+  settingsUpdatedAt: timestamp('settings_updated_at', { withTimezone: true }),
+  /** 仓库从哪来：`manual`（面板手动添加）/ `installation`（GitHub App 安装事件） */
+  source: text('source').notNull().default('manual'),
+  /** GitHub App 的 installation id（`installation` 来源才有） */
+  installationId: bigint('installation_id', { mode: 'number' }),
+  /** @deprecated 过渡期列：旧 `.github/pi-bot.yml` 快照，W1 之后不再读写 */
   config: jsonb('config'),
-  /** schema 校验是否通过；false 时该仓库的机器人禁用并通知 owner */
+  /** @deprecated 过渡期列：旧配置是否合法 */
   configValid: boolean('config_valid').notNull().default(false),
-  /** 配置校验失败原因（面板展示用） */
+  /** @deprecated 过渡期列：旧配置错误原因 */
   configError: text('config_error'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  // 安装生命周期事件按 installation_id 批量停用（W1-B）
+  index('repos_installation_id_idx').on(t.installationId),
+  // 面板列表默认按更新时间倒序
+  index('repos_updated_at_idx').on(t.updatedAt),
+]);
+
+/** `repos.source` 的取值。 */
+export const REPO_SOURCE = {
+  /** 面板手动添加（`POST /api/repos`） */
+  manual: 'manual',
+  /** GitHub App 安装事件带进来的 */
+  installation: 'installation',
+} as const;
 
 /**
  * 任务主体。**入队即定型**：`command` / `actor_login` / `queued_at` 由 webhook handler
@@ -287,6 +331,14 @@ export const botLabels = pgTable(
     repo: text('repo').notNull(),
     issueNumber: integer('issue_number').notNull(),
     label: text('label').notNull(),
+    /** `labels.map` 里的判定键（回溯「这个标签是按哪条判定打的」） */
+    sourceKey: text('source_key'),
+    /** 当时的判定快照哈希（同一判定重复打标幂等） */
+    judgementHash: text('judgement_hash'),
+    /** 面向人的一句话理由（面板展示；不是评论） */
+    reason: text('reason'),
+    /** 产出这条结论的 run id（uuid，与 `run_events` / `envelopes` 关联） */
+    runId: uuid('run_id'),
     appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
     removedAt: timestamp('removed_at', { withTimezone: true }),
   },
@@ -416,16 +468,39 @@ export const hostCredentials = pgTable('host_credentials', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-/** 全局熔断 / 暂停开关（§7.4）。`until` 过了即视为关断，不需要额外清理任务。 */
-export const runtimeFlags = pgTable('runtime_flags', {
-  /** 如 `rate_limit_pause` */
-  key: text('key').primaryKey(),
-  /** 字符串值（`'1'` / ISO 时间等），避免为每种 flag 加列 */
-  value: text('value').notNull(),
-  /** 该 flag 的失效时刻；NULL = 不过期 */
-  until: timestamp('until', { withTimezone: true }),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+/**
+ * 熔断 / 暂停开关（§7.4）。`until` 过了即视为关断，不需要额外清理任务。
+ *
+ * 多仓库后**按仓库区分**：`repo` 为 NULL = 全局 flag（如全局 429 熔断），非空 = 该仓库的独立状态。
+ * 唯一性因此拆成两条 partial 索引（PG 的唯一索引把 NULL 视为互不相等，不能直接 (key, repo)）：
+ * - 全局：`(key) WHERE repo IS NULL`
+ * - 仓库级：`(key, repo) WHERE repo IS NOT NULL`
+ *
+ * 迁移段提示（`apps/server/src/queue/circuit-breaker.ts` 的 `ON CONFLICT`）：写成
+ * `ON CONFLICT ("key") WHERE "repo" IS NULL`（全局）或 `ON CONFLICT ("key","repo")`（仓库级）。
+ */
+export const runtimeFlags = pgTable(
+  'runtime_flags',
+  {
+    /** 如 `rate_limit_pause` / `pause:installation:<id>` */
+    key: text('key').notNull(),
+    /** 归属仓库；NULL = 全局 */
+    repo: text('repo'),
+    /** 字符串值（`'1'` / ISO 时间等），避免为每种 flag 加列 */
+    value: text('value').notNull(),
+    /** 该 flag 的失效时刻；NULL = 不过期 */
+    until: timestamp('until', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('runtime_flags_global_uidx')
+      .on(t.key)
+      .where(sql`repo is null`),
+    uniqueIndex('runtime_flags_repo_uidx')
+      .on(t.key, t.repo)
+      .where(sql`repo is not null`),
+  ],
+);
 
 /** 面板会话（服务端存，便于吊销）。 */
 export const panelSessions = pgTable(
@@ -439,6 +514,99 @@ export const panelSessions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('panel_sessions_expires_at_idx').on(t.expiresAt)],
+);
+/* ── 多仓库改造新增的四张表（`docs/impl-multi-repo.md` §2）──────────────────── */
+
+/**
+ * 无感反馈台账（`docs/impl-multi-repo.md` §0.4 / W2-D）。
+ *
+ * 一个 (目标, 阶段, 锚点) 只应该有一次终态反馈，所以唯一键把这三者与 `repo` 一起钉住。
+ * `anchor` 用空串而不是 NULL：PG 的唯一索引把 NULL 视为互不相等，用 NULL 就等于没有唯一约束。
+ */
+export const issueFeedback = pgTable(
+  'issue_feedback',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    repo: text('repo').notNull(),
+    /** issue / pr */
+    targetKind: text('target_kind').notNull(),
+    targetNumber: integer('target_number').notNull(),
+    /** 评论 id（`+eyes` 打在评论上时有值） */
+    commentId: bigint('comment_id', { mode: 'number' }),
+    /** 阶段：`queued` / `succeeded` / `failed` / `cancelled` …… */
+    stage: text('stage').notNull(),
+    /** reaction 的 content（`eyes` / `rocket` / `confused`） */
+    content: text('content').notNull(),
+    /** 幂等锚点（默认空串 = 该 (目标, 阶段) 只有一条） */
+    anchor: text('anchor').notNull().default(''),
+    /** GitHub 返回的 reaction id；取消 reaction 时按它删 */
+    reactionId: bigint('reaction_id', { mode: 'number' }),
+    /** 实际打上/摘掉的时刻；NULL = 计划过但没落地（dry-run） */
+    appliedAt: timestamp('applied_at', { withTimezone: true }),
+    /** dry-run 与失败的细节 */
+    audit: jsonb('audit'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('issue_feedback_stage_uidx').on(t.repo, t.targetKind, t.targetNumber, t.stage, t.anchor),
+    index('issue_feedback_target_idx').on(t.repo, t.targetKind, t.targetNumber),
+  ],
+);
+
+/** 每轮打标的判定与结果（W2-E）：`desired` 是想要的、`applied` 是真正落地的，两者不等就是被拦了。 */
+export const labelDecisions = pgTable(
+  'label_decisions',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    repo: text('repo').notNull(),
+    targetNumber: integer('target_number').notNull(),
+    /** 判定快照哈希（同一判定重复跑不重复记账的锚） */
+    judgementHash: text('judgement_hash'),
+    /** 词表过滤 / 1:N 展开 / 互斥组 / 上限之后想要的标签 */
+    desired: jsonb('desired'),
+    /** 实际打上的标签 */
+    applied: jsonb('applied'),
+    /** 被拦的原因：`max_per_issue` / `not-in-vocabulary` / `human-veto` …… */
+    blockedReason: text('blocked_reason'),
+    /** 面向人的一句话理由（面板展示） */
+    reason: text('reason'),
+    runId: uuid('run_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('label_decisions_repo_target_idx').on(t.repo, t.targetNumber, t.createdAt)],
+);
+
+/** 配额计数器（建 issue 日配额等）：`(repo, kind, window_start)` 一行，UPSERT 累加。 */
+export const quotaCounters = pgTable(
+  'quota_counters',
+  {
+    repo: text('repo').notNull(),
+    /** 配额种类，如 `create_issue:day` */
+    kind: text('kind').notNull(),
+    /** 窗口起点（日/小时窗的第一刻，UTC） */
+    windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
+    count: integer('count').notNull().default(0),
+  },
+  (t) => [uniqueIndex('quota_counters_repo_kind_window_uidx').on(t.repo, t.kind, t.windowStart)],
+);
+
+/**
+ * 项目提示词（P1 层）的不可变版本（W3-G）：正文进库，保存即新建版本，
+ * 回滚 = 改 `settings.prompt.current_version`。
+ */
+export const promptVersions = pgTable(
+  'prompt_versions',
+  {
+    repo: text('repo').notNull(),
+    /** 版本号，从 1 起；`settings.prompt.current_version` 指向它 */
+    version: integer('version').notNull(),
+    /** 提示词正文 */
+    body: text('body').notNull(),
+    /** 保存时的备注（面板展示 / 回滚时看「为什么改成这样」） */
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('prompt_versions_repo_version_uidx').on(t.repo, t.version)],
 );
 
 /** schema 里的全部表（启动自检、迁移覆盖度检查、queries 生成都用得上）。 */
@@ -459,9 +627,13 @@ export const ALL_TABLES = {
   hostCredentials,
   runtimeFlags,
   panelSessions,
+  issueFeedback,
+  labelDecisions,
+  quotaCounters,
+  promptVersions,
 } as const;
 
-/** 表名清单（单测断言「§7.2 的 16 张表都在」用它）。 */
+/** 表名清单（单测断言「§7.2 的 16 张 + 多仓库 4 张都在」用它）。 */
 export const ALL_TABLE_NAMES: readonly string[] = Object.freeze(
   Object.values(ALL_TABLES).map((table) => getTableName(table)),
 );

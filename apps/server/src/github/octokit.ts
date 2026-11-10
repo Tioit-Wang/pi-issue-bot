@@ -22,10 +22,14 @@ import type {
   CommentRef,
   GithubClient,
   GithubClientMetrics,
+  GithubReactionApi,
   GithubRequest,
   GithubWriteApi,
   IssueComment,
   RateLimitSignal,
+  ReactionEntry,
+  ReactionRef,
+  ReactionTarget,
   ResponseLike,
 } from './types.ts';
 import { splitRepo } from './types.ts';
@@ -262,6 +266,90 @@ export function createGithubWriteApi(client: GithubClient): GithubWriteApi {
         state: 'closed',
         state_reason: input.reason ?? 'not_planned',
       });
+    },
+  };
+}
+
+/* ── reaction：无感反馈的写面（W2-D） ────────────────────────────────────────── */
+
+/** 一条 reaction 的原始返回（只取三个字段）。 */
+type RawReaction = {
+  readonly id?: unknown;
+  readonly content?: unknown;
+  readonly user?: { readonly login?: unknown } | null;
+};
+
+/**
+ * 把 `GithubClient` 适配成 `GithubReactionApi`。
+ *
+ * 端点选择（实测口径，见 `docs/plan-multi-repo.md` §11）：
+ *  - 主贴：`/repos/{owner}/{repo}/issues/{issue_number}/reactions` —— **PR 主贴同样可用**，
+ *    因为 GitHub 的 PR 在 REST 里就是 issue；
+ *  - 评论：`/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions`（issue 评论与
+ *    PR 的 issue 评论都走它；PR review comment 需要 `Pull requests:write`，本方案不引入，
+ *    调用方因此不传 `commentId`）。
+ *
+ * 不在这里做「先查再写」：同 content 重复 POST 是幂等的（第二次返回同一个 id）。
+ */
+export function createGithubReactionApi(client: GithubClient): GithubReactionApi {
+  /** reaction 的端点（主贴 / 评论二选一）。 */
+  const routeOf = (
+    method: 'GET' | 'POST' | 'DELETE',
+    input: ReactionTarget & { readonly reactionId?: number },
+  ): { readonly route: string; readonly params: Record<string, unknown> } => {
+    const { owner, repo } = splitRepo(input.repo);
+    if (input.commentId !== undefined && input.commentId !== null) {
+      const base = `/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions`;
+      const params: Record<string, unknown> = { owner, repo, comment_id: input.commentId };
+      if (input.reactionId !== undefined) {
+        params['reaction_id'] = input.reactionId;
+      }
+      return {
+        route:
+          input.reactionId === undefined
+            ? `${method} ${base}`
+            : `${method} ${base}/{reaction_id}`,
+        params,
+      };
+    }
+    const base = `/repos/{owner}/{repo}/issues/{issue_number}/reactions`;
+    const params: Record<string, unknown> = { owner, repo, issue_number: input.issueNumber };
+    if (input.reactionId !== undefined) {
+      params['reaction_id'] = input.reactionId;
+    }
+    return {
+      route: input.reactionId === undefined ? `${method} ${base}` : `${method} ${base}/{reaction_id}`,
+      params,
+    };
+  };
+
+  return {
+    async addReaction(input): Promise<ReactionRef> {
+      const { route, params } = routeOf('POST', input);
+      const response = await client.request<RawReaction>(route, { ...params, content: input.content });
+      return { id: typeof response.data.id === 'number' ? response.data.id : 0 };
+    },
+
+    async listReactions(input): Promise<readonly ReactionEntry[]> {
+      const { route, params } = routeOf('GET', input);
+      const response = await client.request<readonly RawReaction[]>(route, {
+        ...params,
+        content: input.content,
+        per_page: input.perPage ?? 100,
+      });
+      const rows = Array.isArray(response.data) ? response.data : [];
+      return rows
+        .filter((row): row is RawReaction & { id: number } => typeof row.id === 'number')
+        .map((row) => ({
+          id: row.id,
+          content: typeof row.content === 'string' ? row.content : '',
+          userLogin: typeof row.user?.login === 'string' ? row.user.login : null,
+        }));
+    },
+
+    async removeReaction(input): Promise<void> {
+      const { route, params } = routeOf('DELETE', input);
+      await client.request(route, params);
     },
   };
 }

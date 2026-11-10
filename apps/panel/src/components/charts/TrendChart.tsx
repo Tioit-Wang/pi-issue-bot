@@ -1,4 +1,5 @@
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { usePrefersReducedMotion } from './chart-kit.tsx';
 import type { OverviewResponse } from '../../lib/contract.ts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card.tsx';
 import { chartColor } from './chart-colors.ts';
@@ -16,6 +17,7 @@ export type TrendChartProps = {
 };
 
 export function TrendChart({ points, height = 260 }: TrendChartProps) {
+  const reduced = usePrefersReducedMotion();
   return (
     <Card>
       <CardHeader>
@@ -36,9 +38,9 @@ export function TrendChart({ points, height = 260 }: TrendChartProps) {
             <YAxis stroke="var(--muted-foreground)" fontSize={11} allowDecimals={false} />
             <Tooltip contentStyle={{ fontSize: 12 }} labelFormatter={(value) => String(value).slice(0, 16).replace('T', ' ')} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Line type="monotone" dataKey="tasks" name="任务" stroke={chartColor(0)} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="succeeded" name="成功" stroke={chartColor(1)} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="failed" name="失败" stroke={chartColor(3)} strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="tasks" name="任务" stroke={chartColor(0)} strokeWidth={2} dot={false} isAnimationActive={!reduced} />
+            <Line type="monotone" dataKey="succeeded" name="成功" stroke={chartColor(1)} strokeWidth={2} dot={false} isAnimationActive={!reduced} />
+            <Line type="monotone" dataKey="failed" name="失败" stroke={chartColor(3)} strokeWidth={2} dot={false} isAnimationActive={!reduced} />
           </LineChart>
         </ResponsiveContainer>
       </CardContent>

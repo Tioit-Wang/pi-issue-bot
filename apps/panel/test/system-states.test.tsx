@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 四态代表页（`/system`）：**空 / 错 / 401 / 慢**（+ 正常态做对照）。
  *
  * 为什么用 `/system` 当代表：它的数据源 `/api/system` 是唯一「无参数、必返回」的接口，
@@ -32,7 +32,8 @@ describe('/system 的四态', () => {
     expect(await screen.findByTestId('system-content')).toBeTruthy();
     expect(await screen.findByText('版本与协议')).toBeTruthy();
     expect(screen.getByText('run-task')).toBeTruthy();
-    expect(screen.getByText('acme/widgets')).toBeTruthy();
+    // 仓库名现在出现两次（仓库筛选下拉的选项 + 仓库开关卡），所以用 getAllByText
+    expect(screen.getAllByText('acme/widgets').length).toBeGreaterThan(0);
     // 契约占位字段如实显示「未知 / 未体检」，不假装正常
     expect(screen.getByText('未知')).toBeTruthy();
   });

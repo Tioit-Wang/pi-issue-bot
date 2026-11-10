@@ -30,6 +30,7 @@ function trend(): OverviewResponse['trend'] {
 export function overviewFixture(): OverviewResponse {
   return {
     generatedAt: MOCK_NOW,
+    repo: null,
     window: { from: '2026-05-31T12:00:00.000Z', to: MOCK_NOW },
     today: {
       deliveries: 12,
@@ -365,8 +366,30 @@ export function systemFixture(): SystemResponse {
     retention: { webhookDays: 90, runEventDays: 90, transcriptDays: 90, metricsForever: true },
     flags: [{ key: 'rate_limit_pause', value: '1', until: '2026-06-01T12:15:00.000Z' }],
     repos: [
-      { repo: 'acme/widgets', enabled: true, dryRun: false, configValid: true, configError: null },
-      { repo: 'other/lib', enabled: true, dryRun: true, configValid: false, configError: 'outputs 越界' },
+      {
+        repo: 'acme/widgets',
+        enabled: true,
+        dryRun: false,
+        settingsValid: true,
+        settingsError: null,
+        source: 'installation',
+        archivedAt: null,
+        lastActivityAt: '2026-06-01T11:40:00.000Z',
+        configValid: true,
+        configError: null,
+      },
+      {
+        repo: 'other/lib',
+        enabled: false,
+        dryRun: true,
+        settingsValid: false,
+        settingsError: 'outputs 越界：pr 但没有 paths',
+        source: 'manual',
+        archivedAt: '2026-05-20T08:00:00.000Z',
+        lastActivityAt: null,
+        configValid: false,
+        configError: 'outputs 越界：pr 但没有 paths',
+      },
     ],
     skills: [],
   };

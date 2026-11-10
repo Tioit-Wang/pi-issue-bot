@@ -33,6 +33,7 @@ import type {
   OverviewResponse,
   QualityQuery,
   RevertsResponse,
+  SystemQuery,
   SystemResponse,
   TaskDetailResponse,
   TasksQuery,
@@ -70,7 +71,7 @@ export type Queries = {
   /** 审计 CSV（`AUDIT_CSV_COLUMNS` 顺序 + UTF-8 BOM，上限 `AUDIT_EXPORT_LIMIT`）。 */
   auditCsv: (query: AuditQuery) => Promise<string>;
   /** 系统信息：版本 / 协议 / host / doctor / 队列配置 / 保留期 / flags / 仓库开关。 */
-  system: () => Promise<SystemResponse>;
+  system: (query?: SystemQuery) => Promise<SystemResponse>;
   /** 按 issue 聚合的列表（`(repo, kind, number)` 分组，`lastActivityAt` 倒序 + keyset 游标）。 */
   issues: (query: IssuesQuery) => Promise<IssuesListResponse>;
   /** 一个 issue 的会话（人问 AI 答）；该 issue 没有任何任务时返回 `null`（http 层映射 404）。 */
@@ -95,7 +96,7 @@ export function createQueries(deps: QueriesDeps): Queries {
       const at = now();
       return queryAuditCsv(runner, query, resolveWindow(query, at));
     },
-    system: () => querySystem(runner, now()),
+    system: (query: SystemQuery = {}) => querySystem(runner, now(), query),
     issues: (query) => queryIssues(runner, now(), query),
     issueSession: (params) => queryIssueSession(runner, now(), params),
   };
@@ -120,6 +121,7 @@ export type {
   RevertsResponse,
   RunEventRecord,
   RunSummary,
+  SystemQuery,
   SystemResponse,
   TaskDetailResponse,
   TaskDiff,

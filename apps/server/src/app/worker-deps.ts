@@ -12,18 +12,30 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import { AppError } from '../../../../packages/shared/src/index.ts';
+import type { RepoSettings } from '../../../../packages/contract/src/index.ts';
+import { parseRepoSettings } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
-import { createGithubWriteApi, createGithubClient } from '../github/index.ts';
-import type { GithubWriteApi } from '../github/index.ts';
+import { createPgFeedbackLedger, createPgReactionsFlagStore } from '../feedback/index.ts';
+import type { FeedbackDeps } from '../feedback/index.ts';
+import { createGithubClient, createGithubReactionApi, createGithubWriteApi } from '../github/index.ts';
+import type { BotLabelLedger, GithubClient, GithubReactionApi, GithubWriteApi } from '../github/index.ts';
+import { splitRepo } from '../github/types.ts';
 import type { SqlExecutor } from '../db/index.ts';
+import type { SqlRunner } from '../config/repo-config.ts';
+import { activePromptBody, recordAssembleStats } from '../prompt/store.ts';
 import { collectAgentsMd } from '../skills/agents-md.ts';
 import { assemblePrompt } from '../skills/assemble.ts';
-import { renderSkillPrompt } from '../skills/prompt.ts';
+import { renderLabelVocabulary, renderSkillPrompt } from '../skills/prompt.ts';
 import type { SkillPromptContext } from '../skills/prompt.ts';
 import { REPO_SKILLS_DIR, createSkillRegistry } from '../skills/registry.ts';
 import type { SkillRepoConfig } from '../skills/registry.ts';
 import type { SkillFile } from '../skills/types.ts';
+import { createPgBotLabelLedger, loadHumanVetoed } from '../workflows/bot-labels.ts';
+import { createPgLabelDecisionRecorder } from '../workflows/label-decisions.ts';
+import { toSqlRunner } from '../workflows/ports.ts';
+import type { LabelCatalogPort, ReactionPort } from '../workflows/ports.ts';
 import {
+  TASK_SOURCE_KINDS,
   createExecProxyPort,
   createLifecycleDisposer,
   createPgRunStore,
@@ -32,9 +44,11 @@ import {
 import type {
   ExecProxyPort,
   HostPort,
+  LabelWritebackPolicy,
   LifecycleDisposer,
   RunStore,
   TaskRunnerDeps,
+  TaskSourceKind,
   WorktreePort,
 } from '../worker/index.ts';
 import { ExecProxy, createLifecycleExecutor, createSandboxDocker } from '../sandbox/index.ts';
@@ -102,9 +116,22 @@ export interface TaskJobRow {
   readonly promptText: string | null;
   /** 触发者 login：最终回复要以 `@login` 开头（`tasks.actor_login`）。 */
   readonly actorLogin: string | null;
+  /**
+   * 无感反馈的幂等锚（`tasks.idempotency_key`）。
+   *
+   * 为什么必须读它、不能让 worker 拿 taskId 代：重投 / `/retry` / 超时重跑都会产生
+   * 新 taskId，用它当锚点等于没有幂等（同一阶段被反复记账、反复打 reaction）。
+   */
+  readonly idempotencyKey: string | null;
+  /**
+   * `tasks.source`（`webhook` / `command` / `cron`）：决定这一轮能不能写回评论。
+   * 认不出的值给 `null`，由 `writeback.ts::taskSourceOf()` 按命令名兜底推断。
+   */
+  readonly source: TaskSourceKind | null;
 }
 
-const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt", "prompt_text", "actor_login"
+const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt",
+  "prompt_text", "actor_login", "idempotency_key", "source"
 from "tasks" where "id" = $1`;
 
 /**
@@ -142,9 +169,19 @@ export async function readTaskRow(db: SqlExecutor, taskId: string): Promise<Task
     headSha: typeof row['head_sha'] === 'string' ? row['head_sha'] : null,
     promptText: typeof row['prompt_text'] === 'string' ? row['prompt_text'] : null,
     actorLogin: typeof row['actor_login'] === 'string' ? row['actor_login'] : null,
+    idempotencyKey: typeof row['idempotency_key'] === 'string' ? row['idempotency_key'] : null,
+    source: toTaskSource(row['source']),
     attempt: typeof attempt === 'number' ? attempt : 0,
   };
 }
+
+/** `tasks.source` → `TaskSourceKind`；认不出（老行 / NULL）就给 `null`（交给兜底推断）。 */
+function toTaskSource(value: unknown): TaskSourceKind | null {
+  return typeof value === 'string' && (TASK_SOURCE_KINDS as readonly string[]).includes(value)
+    ? (value as TaskSourceKind)
+    : null;
+}
+
 
 /* ── 提示词 ───────────────────────────────────────────────────────────────── */
 
@@ -154,18 +191,27 @@ export interface TaskPromptInput {
   readonly targetKind: 'issue' | 'pr';
   readonly targetNumber: number;
   readonly dryRun: boolean;
+  /**
+   * 仓库配置快照（`repos.settings`）。目前只用来渲染**项目标签词表**；
+   * 缺省时退回「只打仓库已有标签」的说明（不猜标签名）。
+   */
+  readonly settings?: RepoSettings | null;
 }
 
 /**
  * 拼提示词的**骨架**。
  *
- * TODO(owner: W4-M `skills/`)：技能模板（`renderSkillPrompt`）+ 仓库配置 + 不可信正文的围栏
- * 都归 `skills/`，本切片只放一个能让端到端链路跑通的最小骨架 —— 关键是**必须显式要求
- * 输出 JSON 信封**，否则 `worker/envelope.ts` 的 `findEnvelopeText` 找不到东西，
- * 任务会被判成 `parse` 失败（那是「装配漏了」，不是「模型不听话」）。
+ * 三件事：身份与命令 → 两段式输出要求（人话 + 唯一 json 信封）→ **项目标签词表**。
+ *
+ * 标签这一段的由来（W2-E）：旧版在提示词里写死了一串示范标签
+ * （`bug / feature / question / docs / needs-info / area/db`），于是每个仓库都被教成
+ * 同一套「平台词汇」，和面板里配的 `labels.vocabulary` 毫无关系、还诱导模型发明标签。
+ * 现在改为按 `settings.labels.vocabulary` 渲染；没有词表时明说「只能用已有标签」。
  */
 export function buildTaskPrompt(input: TaskPromptInput): string {
   const target = `${input.targetKind} #${String(input.targetNumber)}`;
+  const vocabulary = input.settings?.labels.vocabulary ?? [];
+  const exampleLabel = vocabulary[0]?.name;
   return [
     `你是 pi-bot，正在处理 ${input.repo} 的 ${target}。`,
     `命令：${input.command}`,
@@ -188,7 +234,7 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
     '{',
     '  "verdict": {',
     '    "kind": "issue",',
-    '    "labels": ["bug"],',
+    `    "labels": [${exampleLabel === undefined ? '' : JSON.stringify(exampleLabel)}],`,
     '    "evidence": [{ "rule": "repro-steps", "quote": "引用的原文片段", "passed": true }]',
     '  },',
     '  "actions": [{ "intent": "comment", "body": "与第一段一致的说明（可省略这条动作）" }],',
@@ -196,9 +242,10 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
     '}',
     '```',
     '- `verdict.kind` 只能是 "issue" 或 "pr"；',
-    '- `verdict.labels` 只能填仓库 `labels.map` 里映射过的判定键（bug / feature / question / docs / needs-info / area/db），',
-    '没有把握就留空数组；',
+    '- `verdict.labels` 只能填「**项目标签**」一节里列出的标签名，没有把握就留空数组；',
     '- `actions` 里只允许 `comment`（本命令的 outputs 只含 comment 与 label）。',
+    '',
+    renderLabelVocabulary(vocabulary),
   ].join('\n');
 }
 
@@ -373,6 +420,132 @@ export function createWorkerBaseDeps(
   };
 }
 
+/* ── 无感反馈 / 打标策略（W2-D + W2-E 的装配点）──────────────────────────────── */
+
+/**
+ * 无感反馈的装配（W2-D）：`issue_feedback` 台账 + reaction 写面 + 降级开关。
+ *
+ * 为什么必须有这个函数：`FeedbackDeps` 的三件东西分别住在 `feedback/`（台账）、
+ * `github/`（REST）与 `runtime_flags`（降级开关）里，**只有装配层同时认识它们**。
+ * 之前 compose 直接把 `feedback` 忘掉了 → 生产环境一个 reaction 都不会打。
+ *
+ * 返回 `null` 表示「这个部署没有可用的 reaction 写面」（没装 App / 没令牌）：
+ * `worker` 那边缺端口就是不打 reaction，而不是每轮记一条失败。
+ */
+export function createWorkerFeedbackDeps(options: {
+  readonly pool: SqlExecutor;
+  /** 现成的 reaction 写面（测试注入）；缺省由 `client` 造。 */
+  readonly reactions?: GithubReactionApi;
+  /** App 认证的客户端（`resolveGithubAuth()` 的产物）；没有它就返回 `null`。 */
+  readonly client?: GithubClient | null;
+  /** 本 App 的 slug（`user.login` 是 `<slug>[bot]`）；不传就只按 `[bot]` 后缀判。 */
+  readonly appSlug?: string | null;
+}): FeedbackDeps | null {
+  const reactions =
+    options.reactions ??
+    (options.client === undefined || options.client === null
+      ? null
+      : createGithubReactionApi(options.client));
+  if (reactions === null) {
+    return null;
+  }
+  return {
+    ledger: createPgFeedbackLedger({ pool: options.pool }),
+    reactions,
+    flags: createPgReactionsFlagStore({ pool: options.pool }),
+    ...(options.appSlug === undefined || options.appSlug === null || options.appSlug === ''
+      ? {}
+      : { appSlug: options.appSlug }),
+  };
+}
+
+/**
+ * 打标策略的装配（W2-E）：`settings.labels` + 人工否决（`bot_labels`）+ `label_decisions`。
+ *
+ * 每轮任务建一次（不是进程启动时）：`settings` 是**仓库级**的，人工否决与
+ * `judgement_hash` 是**目标/轮次级**的，缓存在进程里只会读到上一个仓库的配置。
+ */
+export function createLabelWritebackPolicy(options: {
+  readonly pool: SqlExecutor;
+  /** `readRepoPolicy().settings`（可能是 last-known-good / `null`）。 */
+  readonly settings: RepoSettings | null;
+  /** 判定快照哈希（webhook 的 issue 版本 hash）→ `label_decisions.judgement_hash`。 */
+  readonly judgementHash?: string | null;
+  readonly catalog?: LabelCatalogPort | undefined;
+  readonly reactions?: ReactionPort | undefined;
+}): LabelWritebackPolicy {
+  const runner = toSqlRunner(options.pool);
+  return {
+    // settings 读不出来时用契约默认值：宁可只按「上限 + 人工否决」打标，
+    // 也不要因为一份坏 jsonb 让「所有仓库都不打标签」。
+    labels: (options.settings ?? parseRepoSettings({})).labels,
+    humanVetoed: ({ repo, targetNumber }) => loadHumanVetoed(runner, { repo, issueNumber: targetNumber }),
+    decisions: createPgLabelDecisionRecorder(runner),
+    ...(options.judgementHash === undefined || options.judgementHash === null
+      ? {}
+      : { judgementHash: options.judgementHash }),
+    ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
+  };
+}
+
+/**
+ * `bot_labels` 的记账器（W2-E 的归因表）。
+ *
+ * 为什么它必须被注入：`github/executor.ts` 的「只增删自己打过的标签」与
+ * `normalizeDesired()` 的「人工否决」**都**以 `bot_labels` 为事实源。不注入 = 这张表
+ * 永远是空的：重算时删不掉自己打过的标签，人撕掉的标签下一轮又会被贴回去。
+ */
+export function createBotLabelLedger(pool: SqlExecutor): BotLabelLedger {
+  return createPgBotLabelLedger(toSqlRunner(pool));
+}
+
+/**
+ * 标签目录端口（`labels.missing` 的判据）：`GET/POST /repos/:o/:r/labels`。
+ *
+ * 为什么放在装配层而不是 `github/`：`GithubWriteApi` 刻意只含「写 issue」那几个动作，
+ * 标签目录是**仓库元数据**，只有 `labels.missing` 需要它。放在这里也不给
+ * `github/` 添第 7 个方法（那会让所有假实现一起改签名）。
+ */
+export function createGithubLabelCatalog(client: GithubClient): LabelCatalogPort {
+  return {
+    async list(input) {
+      const ref = splitRepo(input.repo);
+      const response = await client.request<readonly { readonly name?: unknown }[]>(
+        'GET /repos/{owner}/{repo}/labels',
+        { owner: ref.owner, repo: ref.repo, per_page: 100 },
+      );
+      const rows = Array.isArray(response.data) ? response.data : [];
+      return rows
+        .map((row) => row.name)
+        .filter((name): name is string => typeof name === 'string' && name !== '');
+    },
+    async create(input) {
+      const ref = splitRepo(input.repo);
+      await client.request('POST /repos/{owner}/{repo}/labels', {
+        owner: ref.owner,
+        repo: ref.repo,
+        name: input.name,
+        ...(input.color === undefined ? {} : { color: input.color }),
+        ...(input.description === undefined ? {} : { description: input.description }),
+      });
+    },
+  };
+}
+
+/** `workflows/` 的 reaction 端口 → `feedback/` 的 reaction 写面（同一个 REST 通道）。 */
+export function createWorkflowReactionPort(reactions: GithubReactionApi): ReactionPort {
+  return {
+    async add(input) {
+      await reactions.addReaction({
+        repo: input.repo,
+        issueNumber: input.targetNumber,
+        content: input.content,
+      });
+    },
+  };
+}
+
 /* ── 提示词装配（M1：AGENTS.md + 技能正文真正进入提示词）─────────────────────── */
 
 /**
@@ -403,6 +576,14 @@ export interface PromptEnricherOptions {
    * 优先级同 spec §7：面板-仓库 > 面板全局 > 仓库文件 > 内置。
    */
   readonly extraSkillFiles?: readonly SkillFile[];
+  /**
+   * P1「项目人格层」与装配统计的落库端口（`prompt_versions` / `runtime_flags`）。
+   *
+   * 为什么是「给库、不给正文」：每轮任务都要读一次**当前启用**的版本正文
+   * （`activePromptBody()`），在进程启动时缓存住就等于「面板改了要重启才生效」。
+   * 不给 = 装配结果与「没有 P1」逐字节一致（老装配 / 单测）。
+   */
+  readonly db?: SqlRunner | undefined;
 }
 
 /**
@@ -474,8 +655,25 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
       hintPaths: [],
     });
 
+    // ── P1「项目人格层」（W3-G）：插在 head 之后、AGENTS.md 之前 ────────────────
+    // 读库失败 / 没有版本 / 开关关掉 一律给空串 —— 装配结果与「没有 P1」逐字节一致，
+    // 所以这里不需要区分「没有 P1」与「P1 读不到」（后者多记一条 warn）。
+    const repo = options.context.repo;
+    let projectPrompt = '';
+    if (options.db !== undefined) {
+      try {
+        projectPrompt = await activePromptBody(options.db, repo);
+      } catch (error) {
+        logger?.warn(
+          { repo, err: error instanceof Error ? error.message : String(error) },
+          '读项目提示词（P1）失败，本轮按「没有 P1」装配',
+        );
+      }
+    }
+
     const assembled = assemblePrompt({
       basePrompt: input.basePrompt,
+      projectPrompt,
       agentsMd,
       skill:
         skill === undefined
@@ -484,7 +682,12 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
               name: skill.name,
               promptText: renderSkillPrompt({
                 skill,
-                context: options.context,
+                // 标签词表来自仓库配置（`options.config` 是注册表需要的切片，含 `labels`）：
+                // 装配层唯一知道 settings 的地方就是这里，所以在这一层把它补进渲染上下文。
+                context:
+                  options.config === undefined || options.config === null
+                    ? options.context
+                    : { ...options.context, config: options.config },
                 // 输出契约由 `basePrompt` 的尾部负责，且必须是**最后**一段；
                 // 这里再塞一份会让模型看到两个互相冲突的信封格式（`renderSkillPrompt` 自带的那份
                 // 用的是技能自己的 outputs，与 `buildTaskPrompt` 的命令级契约不是一回事）。
@@ -492,6 +695,27 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
               }).prompt,
             },
     });
+
+    // 整段丢弃（超预算）必须出声：静默丢层会让「技能/AGENTS.md 明明写了却不生效」难以归因。
+    if (assembled.stats.truncated.length > 0) {
+      logger?.warn(
+        { repo, truncated: assembled.stats.truncated, totalChars: assembled.stats.totalChars },
+        '提示词超出总预算：已按层整段丢弃（面板「最终装配预览」看得到丢弃标记）',
+      );
+    }
+
+    // 装配统计落库（`runtime_flags{key:'assemble:prompt:stats'}`）：面板保存 P1 时的预算预演要读它。
+    // 写失败只 warn：统计不是判定，缺一次不该让任务或装配失败。
+    if (options.db !== undefined) {
+      try {
+        await recordAssembleStats(options.db, repo, assembled.stats);
+      } catch (error) {
+        logger?.warn(
+          { repo, err: error instanceof Error ? error.message : String(error) },
+          '装配统计写库失败（已忽略）',
+        );
+      }
+    }
 
     logger?.debug(
       {

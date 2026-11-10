@@ -7,8 +7,12 @@
  * - `queue`：`pgboss.queue` 的配置（`retry_limit`、`expire_seconds`）+ `pgboss.job` 的
  *   `pending`/`active` 计数。**`expireInMs` 是 job 存活上限，不是排队时长**（§5.3 F5）。
  *   内部队列（`__pgboss__*`）不展示。没有 `pgboss` schema 时数组为空。
- * - `flags`：`runtime_flags`（全局 429 熔断 / 暂停开关）。
- * - `repos`：`repos` 表（开关、dry-run、配置校验结果）。
+ * - `flags`：`runtime_flags`（全局 429 熔断 / 暂停开关）。带 `?repo=` 时只留
+ *   「全局（`repo is null`）+ 该仓库」的；其余行属于别家仓库，展示出来只会误导。
+ * - `repos`：**`repos` 表**（`listRepos()`，多仓库改造后的唯一仓库载体）。
+ *   返回 `settingsValid/settingsError/source/archivedAt/lastActivityAt`；
+ *   `configValid/configError` 是同值别名（老面板读法继续能用）。
+ *   `lastActivityAt` = `tasks.queued_at` 与 `actions.applied_at` 的 max（一次聚合，不算 jsonb）。
  * - `retention`：§7.6 的保留期常量（webhook / run_events / transcript 各 90 天，指标永久）。
  * - `version.contract`：契约包的 `CONTRACT_VERSION`（与 OpenAPI 的 `info.version` 同源）。
  *
@@ -20,8 +24,10 @@
  * - `skills`：技能清单由 `skills/` 在启动期解析（W4-M），当前没有可读的表，返回空数组。
  */
 import { CONTRACT_VERSION } from '../../../../packages/contract/src/index.ts';
+import { listRepos } from '../config/repo-config.ts';
+import type { SqlRunner as RepoDb } from '../config/repo-config.ts';
 import { Params, intOf, isoOrNull, type SqlRunner } from './sql.ts';
-import type { SystemResponse } from './types.ts';
+import type { SystemQuery, SystemResponse } from './types.ts';
 
 /** 应用版本占位：与根 `package.json` 的 `version` 一致，等部署面注入。 */
 const APP_VERSION = '0.0.0';
@@ -31,6 +37,9 @@ const PROTOCOL = { wsPath: '/v1/racp/ws', wsSubprotocol: 'pi-racp.v1.jsonrpc' } 
 
 /** 保留期（tech-plan §7.6）：明细 90 天，指标永久。 */
 const RETENTION = { webhookDays: 90, runEventDays: 90, transcriptDays: 90, metricsForever: true } as const;
+
+/** 仓库列表上限（与契约 `SystemResponse.repos.max(200)` 一致）。 */
+const REPO_LIMIT = 200;
 
 type QueueRow = {
   name: string;
@@ -42,15 +51,13 @@ type QueueRow = {
 
 type FlagRow = { key: string; value: string; until: Date | null };
 
-type RepoRow = {
-  repo_full_name: string;
-  enabled: boolean;
-  dry_run: boolean;
-  config_valid: boolean;
-  config_error: string | null;
-};
+type LastActivityRow = { repo: string; last_at: Date | null };
 
-export async function querySystem(runner: SqlRunner, now: Date): Promise<SystemResponse> {
+export async function querySystem(
+  runner: SqlRunner,
+  now: Date,
+  query: SystemQuery = {},
+): Promise<SystemResponse> {
   const generatedAt = now.toISOString();
 
   const presence = (await runner.query("select to_regclass('pgboss.queue') is not null as present")).rows as Array<{
@@ -83,26 +90,42 @@ export async function querySystem(runner: SqlRunner, now: Date): Promise<SystemR
       : [];
 
   const flagsParams = new Params();
+  const flagsWhere = [
+    `(f.until is null or f.until > ${flagsParams.add(generatedAt, 'timestamptz')})`,
+  ];
+  if (query.repo !== undefined) {
+    // 全局开关（`repo is null`）+ 本仓库的；别家仓库的开关与这个页面无关
+    flagsWhere.push(`(f.repo is null or f.repo = ${flagsParams.add(query.repo)})`);
+  }
   const flagRows = (
     await runner.query(
       `select f.key, f.value, f.until
        from runtime_flags f
-       where f.until is null or f.until > ${flagsParams.add(generatedAt, 'timestamptz')}
+       where ${flagsWhere.join(' and ')}
        order by f.key asc
        limit 32`,
       flagsParams.list(),
     )
   ).rows as FlagRow[];
 
-  const repoRows = (
-    await runner.query(
-      `select repo_full_name, enabled, dry_run, config_valid, config_error
-       from repos
-       order by repo_full_name asc
-       limit 200`,
-    )
-  ).rows as RepoRow[];
-
+  /* ── 仓库：读 `repos` 表（多仓库改造后的唯一载体） ───────────────────────── */
+  const lastActivity = await readLastActivity(runner);
+  const repos = (await listRepos(toRepoDb(runner)))
+    .filter((item) => query.repo === undefined || item.repo === query.repo)
+    .slice(0, REPO_LIMIT)
+    .map((item) => ({
+      repo: item.repo,
+      enabled: item.enabled,
+      dryRun: item.dryRun,
+      settingsValid: item.settingsValid,
+      settingsError: item.settingsError,
+      source: item.source,
+      archivedAt: item.archivedAt,
+      lastActivityAt: lastActivity.get(item.repo) ?? null,
+      // 向后兼容别名（同名同值）：老面板读 `configValid` / `configError` 不用改
+      configValid: item.settingsValid,
+      configError: item.settingsError,
+    }));
 
   return {
     generatedAt,
@@ -124,13 +147,51 @@ export async function querySystem(runner: SqlRunner, now: Date): Promise<SystemR
     })),
     retention: { ...RETENTION },
     flags: flagRows.map((row) => ({ key: row.key, value: row.value, until: isoOrNull(row.until) })),
-    repos: repoRows.map((row) => ({
-      repo: row.repo_full_name,
-      enabled: row.enabled === true,
-      dryRun: row.dry_run === true,
-      configValid: row.config_valid === true,
-      configError: row.config_error,
-    })),
+    repos,
     skills: [],
+  };
+}
+
+/**
+ * 每个仓库的「最近活动」：`tasks.queued_at` ∪ `actions.applied_at` 的 max。
+ *
+ * 为什么不在 `listRepos` 里做：那一层是**配置存储**（`config/repo-config.ts`），
+ * 「最近跑过什么」是统计问题，属于查询层；两者混在一起会让面板的切换器查询背上业务表扫描。
+ */
+async function readLastActivity(runner: SqlRunner): Promise<Map<string, string>> {
+  const rows = (
+    await runner.query(
+      `select x.repo as repo, max(x.at) as last_at
+       from (
+         select t.repo as repo, t.queued_at as at from tasks t
+         union all
+         select t.repo as repo, a.applied_at as at
+         from actions a
+         join runs r on r.id = a.run_id
+         join tasks t on t.id = r.task_id
+         where a.applied_at is not null
+       ) x
+       group by x.repo`,
+    )
+  ).rows as LastActivityRow[];
+
+  const out = new Map<string, string>();
+  for (const row of rows) {
+    const at = isoOrNull(row.last_at);
+    if (at !== null) out.set(row.repo, at);
+  }
+  return out;
+}
+
+/**
+ * `queries/sql.ts` 的 `SqlRunner` → `config/repo-config.ts` 的 `SqlRunner`。
+ *
+ * 两个类型只差 `values` 的只读修饰（`unknown[]` vs `readonly unknown[]`），
+ * 结构上不兼容但语义完全一致，所以在这里做一次显式适配，而不是把类型断言散到调用点。
+ */
+function toRepoDb(runner: SqlRunner): RepoDb {
+  return {
+    query: (text: string, values?: readonly unknown[]) =>
+      runner.query(text, values === undefined ? undefined : [...values]),
   };
 }

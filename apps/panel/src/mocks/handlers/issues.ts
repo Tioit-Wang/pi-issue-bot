@@ -46,25 +46,47 @@ const REPO_OTHER = 'other/lib';
  */
 type ListSeed = Omit<
   IssueListItem,
-  'stateStale' | 'autoTurns' | 'lastReplyAt' | 'lastActorLogin' | 'lastActorKind' | 'awaitingReply'
+  | 'stateStale'
+  | 'autoTurns'
+  | 'lastReplyAt'
+  | 'lastActorLogin'
+  | 'lastActorKind'
+  | 'awaitingReply'
+  | 'reactionState'
+  | 'labelDecisions'
+  | 'feedback'
 > &
   Partial<
     Pick<
       IssueListItem,
-      'stateStale' | 'autoTurns' | 'lastReplyAt' | 'lastActorLogin' | 'lastActorKind' | 'awaitingReply'
+      | 'stateStale'
+      | 'autoTurns'
+      | 'lastReplyAt'
+      | 'lastActorLogin'
+      | 'lastActorKind'
+      | 'awaitingReply'
+      | 'reactionState'
+      | 'labelDecisions'
+      | 'feedback'
     >
   >;
 type TurnSeed = Omit<IssueTurn, 'commentId' | 'attempts' | 'truncated'> &
   Partial<Pick<IssueTurn, 'commentId' | 'attempts' | 'truncated'>>;
 
-type IssueRecord = {
-  list: ListSeed;
-  participants: string[];
-  turns: TurnSeed[];
-};
+/** 反馈时间线里的「最新终态」（`received` 只是「我收到了」，不算终态）。 */
+function reactionStateOf(
+  feedback: readonly IssueListItem['feedback'][number][],
+): IssueListItem['reactionState'] {
+  for (let index = feedback.length - 1; index >= 0; index -= 1) {
+    const event = feedback[index];
+    if (event !== undefined && event.stage !== 'received') return event;
+  }
+  return null;
+}
 
-/** 补齐列表行的契约字段（样本里的默认：状态可信、无自动轮、没回复过、不欠回答）。 */
+/** 补齐列表行的契约字段（样本里的默认：状态可信、无自动轮、没回复过、不欠回答、无反馈）。 */
 function finalizeList(seed: ListSeed): IssueListItem {
+  const feedback = seed.feedback ?? [];
   return {
     ...seed,
     stateStale: seed.stateStale ?? false,
@@ -73,8 +95,18 @@ function finalizeList(seed: ListSeed): IssueListItem {
     lastActorLogin: seed.lastActorLogin ?? null,
     lastActorKind: seed.lastActorKind ?? null,
     awaitingReply: seed.awaitingReply ?? false,
+    feedback,
+    // `reactionState` 默认从时间线推（显式给了就用显式的，方便测试单独改一处）
+    reactionState: seed.reactionState ?? reactionStateOf(feedback),
+    labelDecisions: seed.labelDecisions ?? null,
   };
 }
+
+type IssueRecord = {
+  list: ListSeed;
+  participants: string[];
+  turns: TurnSeed[];
+};
 
 /** 补齐轮次的契约字段（`commentId`/`attempts`/`truncated`）。 */
 function finalizeTurn(seed: TurnSeed): IssueTurn {
@@ -239,6 +271,27 @@ function storyEacces(now: number): IssueRecord {
       awaitingReply: true,
       lastActorKind: 'human',
       lastActorLogin: 'alice',
+      /*
+       * 无感反馈时间线（契约 `IssueListItem.feedback`）：入队 eyes → 成功 rocket → 再入队 eyes → 失败 confused。
+       * `reactionState` 由 `finalizeList()` 从这条时间线推出「最新终态」= failed / confused。
+       */
+      feedback: [
+        { stage: 'received', content: 'eyes', appliedAt: at(178), at: at(178), commentId: '410000' },
+        { stage: 'succeeded', content: 'rocket', appliedAt: at(174), at: at(174), commentId: '410000' },
+        { stage: 'received', content: 'eyes', appliedAt: at(38), at: at(38), commentId: '410020' },
+        { stage: 'failed', content: 'confused', appliedAt: at(32), at: at(32), commentId: '410020' },
+      ],
+      // 打标判定摘要：想要的比打上的多一个（`flaky-test` 不在词表）
+      labelDecisions: {
+        lastAt: at(34),
+        desired: ['bug', 'flaky-test', 'needs-info'],
+        applied: ['bug', 'needs-info'],
+        reason: 'flaky-test 不在词表，按 warn 策略跳过（不发评论催人）',
+        blocked: [
+          { reason: 'not-in-vocabulary', count: 2 },
+          { reason: 'max_per_issue', count: 1 },
+        ],
+      },
     },
     participants: ['Tioit-Wang', 'alice', BOT_LOGIN],
     turns,
@@ -267,6 +320,11 @@ function storyClosedOne(now: number): IssueRecord {
       labels: ['needs-info'],
       outcomes: { succeeded: 1 },
       lastPreview: previewOf(answer),
+      // 一轮正常闭环：入队 eyes → 成功 rocket（`reactionState` 由时间线推出 = succeeded / rocket）
+      feedback: [
+        { stage: 'received', content: 'eyes', appliedAt: at(94), at: at(94), commentId: '420000' },
+        { stage: 'succeeded', content: 'rocket', appliedAt: at(89), at: at(89), commentId: '420000' },
+      ],
     },
     participants: ['bob', BOT_LOGIN],
     turns: [
@@ -328,6 +386,12 @@ function storyWaiting(now: number): IssueRecord {
       labels: [],
       outcomes: { queued: 1 },
       lastPreview: previewOf(question),
+      /*
+       * 还没跑完：只有入队那条 `eyes`，而且 `appliedAt` 还是 null（dry-run / 排队中）——
+       * 详情页的 `pendingFeedback` 就是靠它展示「计划了但没落地」。
+       * `reactionState` 因此是 null（`received` 不算终态）。
+       */
+      feedback: [{ stage: 'received', content: 'eyes', appliedAt: null, at: at(6), commentId: '70000' }],
     },
     participants: ['carol'],
     turns: [
@@ -526,18 +590,22 @@ export function buildIssueSessionResponse(
   );
   if (record === undefined) return null;
 
+  const item = finalizeList(record.list);
   return {
     generatedAt: new Date(now).toISOString(),
     issue: {
-      repo: record.list.repo,
-      kind: record.list.kind,
-      number: record.list.number,
-      title: record.list.title,
-      url: record.list.url,
-      state: record.list.state,
-      stateStale: record.list.stateStale ?? false,
-      labels: record.list.labels,
+      repo: item.repo,
+      kind: item.kind,
+      number: item.number,
+      title: item.title,
+      url: item.url,
+      state: item.state,
+      stateStale: item.stateStale,
+      labels: item.labels,
       participants: record.participants,
+      reactionState: item.reactionState,
+      // 记了台账但还没落地的那几条（dry-run 计划 / 排队中）
+      pendingFeedback: item.feedback.filter((event) => event.appliedAt === null),
     },
     turns: record.turns.map(finalizeTurn),
   };

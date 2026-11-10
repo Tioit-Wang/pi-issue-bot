@@ -7,15 +7,23 @@ import {
   FAILURE_CLASS_PRIORITY_GROUPS,
   OUTCOMES,
   TASK_STATUSES,
+  addRepoRequestSchema,
   auditQuerySchema,
   auditResponseSchema,
   costsResponseSchema,
   errorBodySchema,
   failureClassPriority,
+  issueSessionResponseSchema,
+  issuesListResponseSchema,
+  overviewQuerySchema,
   overviewResponseSchema,
   querySchemas,
+  repoSettingsResponseSchema,
+  reposResponseSchema,
   responseSchemas,
   revertsResponseSchema,
+  saveRepoSettingsRequestSchema,
+  systemQuerySchema,
   systemResponseSchema,
   taskDetailResponseSchema,
   tasksQuerySchema,
@@ -218,6 +226,157 @@ describe('8 个 GET 的响应 schema', () => {
   });
 });
 
+describe('多仓库改造后的契约（W3-H）', () => {
+  it('只读接口的 `?repo=`：overview / system 都接受，未知参数仍被拒', () => {
+    expect(overviewQuerySchema.safeParse({}).success).toBe(true);
+    expect(overviewQuerySchema.parse({ repo: 'acme/widgets' }).repo).toBe('acme/widgets');
+    expect(overviewQuerySchema.safeParse({ repo: 'not a repo' }).success).toBe(false);
+    expect(systemQuerySchema.parse({})).toEqual({});
+    expect(systemQuerySchema.parse({ repo: 'acme/widgets' }).repo).toBe('acme/widgets');
+    expect(systemQuerySchema.safeParse({ repo: 'x' }).success).toBe(false);
+  });
+
+  it('/api/overview 的 `repo` 口径字段：null = 全部仓库', () => {
+    const body = baseOverview();
+    expect(overviewResponseSchema.safeParse(body).success).toBe(true);
+    expect(overviewResponseSchema.safeParse({ ...body, repo: 'acme/widgets' }).success).toBe(true);
+    // 缺字段不行（null 与「没给」必须可区分）
+    const { repo: _repo, ...withoutRepo } = body;
+    expect(overviewResponseSchema.safeParse(withoutRepo).success).toBe(false);
+  });
+
+  it('/api/system 的 repos[]：新字段齐 + `configValid` 同值别名', () => {
+    const system = baseSystem();
+    const [first] = system.repos;
+    expect(first).toMatchObject({
+      settingsValid: true,
+      configValid: true,
+      settingsError: null,
+      configError: null,
+      source: 'manual',
+      archivedAt: null,
+      lastActivityAt: '2026-06-02T00:00:00Z',
+    });
+    expect(systemResponseSchema.safeParse(system).success).toBe(true);
+    // 老形状（只有 configValid/configError）不再合法：别名是与新字段**并存**，不是替代
+    expect(
+      systemResponseSchema.safeParse({
+        ...system,
+        repos: [{ repo: 'acme/widgets', enabled: true, dryRun: true, configValid: true, configError: null }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('/api/repos 的响应与两个写请求体', () => {
+    const listItem = {
+      repo: 'acme/widgets',
+      enabled: true,
+      dryRun: false,
+      settingsValid: true,
+      settingsError: null,
+      settingsUpdatedAt: '2026-06-02T00:00:00Z',
+      source: 'installation',
+      installationId: '12345678',
+      archivedAt: null,
+      updatedAt: '2026-06-02T00:00:00Z',
+    };
+    expect(reposResponseSchema.safeParse({ items: [listItem] }).success).toBe(true);
+    // `source` 只有两个取值
+    expect(reposResponseSchema.safeParse({ items: [{ ...listItem, source: 'cron' }] }).success).toBe(false);
+
+    expect(addRepoRequestSchema.parse({ repo: 'acme/widgets' })).toEqual({ repo: 'acme/widgets' });
+    expect(addRepoRequestSchema.safeParse({ repo: 'acme/widgets', enabled: false }).success).toBe(false);
+
+    // settings 视图：非法配置时 `settings` 必须是 null（不是空对象）
+    const view = {
+      repo: 'acme/widgets',
+      enabled: false,
+      dryRun: true,
+      settings: null,
+      settingsValid: false,
+      settingsError: 'version: 缺字段',
+      source: 'manual',
+      installationId: null,
+      archivedAt: '2026-06-01T00:00:00Z',
+    };
+    expect(repoSettingsResponseSchema.safeParse(view).success).toBe(true);
+    // 请求体 = settings 本身（默认值会被补齐）
+    expect(saveRepoSettingsRequestSchema.parse({}).version).toBe(1);
+  });
+
+  it('/api/issues 的新字段：reactionState / labelDecisions / feedback 与详情侧 pendingFeedback', () => {
+    const feedbackEvent = {
+      stage: 'succeeded',
+      content: 'rocket',
+      appliedAt: '2026-06-02T00:01:00Z',
+      at: '2026-06-02T00:01:00Z',
+      commentId: null,
+    };
+    const issue = {
+      repo: 'acme/widgets',
+      kind: 'issue',
+      number: 17,
+      title: 'EACCES',
+      url: null,
+      state: 'open',
+      stateStale: false,
+      lastActivityAt: '2026-06-02T00:01:00Z',
+      humanTurns: 1,
+      autoTurns: 0,
+      botTurns: 1,
+      lastReplyAt: '2026-06-02T00:01:00Z',
+      lastActorLogin: 'alice',
+      lastActorKind: 'human',
+      awaitingReply: false,
+      labels: ['bug'],
+      outcomes: { succeeded: 1 },
+      lastPreview: '结论',
+      reactionState: feedbackEvent,
+      labelDecisions: {
+        lastAt: '2026-06-02T00:01:00Z',
+        desired: ['bug', 'needs-info'],
+        applied: ['bug'],
+        reason: 'needs-info 被词表拦住',
+        blocked: [{ reason: 'not-in-vocabulary', count: 1 }],
+      },
+      feedback: [{ ...feedbackEvent, stage: 'received', content: 'eyes' }, feedbackEvent],
+    };
+    const list = { generatedAt: '2026-06-02T00:02:00Z', issues: [issue], hasMore: false, nextCursor: null };
+    expect(issuesListResponseSchema.safeParse(list).success).toBe(true);
+    // 新字段是必填（缺了就解析失败：面板不用判空）
+    const { reactionState: _r, ...withoutReaction } = issue;
+    expect(
+      issuesListResponseSchema.safeParse({ ...list, issues: [withoutReaction] }).success,
+    ).toBe(false);
+    // 契约外的 stage 不行
+    expect(
+      issuesListResponseSchema.safeParse({
+        ...list,
+        issues: [{ ...issue, reactionState: { ...feedbackEvent, stage: 'queued' } }],
+      }).success,
+    ).toBe(false);
+
+    const session = {
+      generatedAt: '2026-06-02T00:02:00Z',
+      issue: {
+        repo: 'acme/widgets',
+        kind: 'issue',
+        number: 17,
+        title: 'EACCES',
+        url: null,
+        state: 'open',
+        stateStale: false,
+        labels: ['bug'],
+        participants: ['alice'],
+        reactionState: feedbackEvent,
+        pendingFeedback: [{ ...feedbackEvent, appliedAt: null }],
+      },
+      turns: [],
+    };
+    expect(issueSessionResponseSchema.safeParse(session).success).toBe(true);
+  });
+});
+
 describe('注册表', () => {
   it('每个响应 schema 都能生成 draft 2020-12 的 JSON Schema', () => {
     for (const [name, schema] of Object.entries(responseSchemas)) {
@@ -246,6 +405,7 @@ describe('注册表', () => {
 function baseOverview() {
   return {
     generatedAt: '2026-06-02T00:00:00Z',
+    repo: null,
     window: { from: '2026-06-01T00:00:00Z', to: '2026-06-02T00:00:00Z' },
     today: {
       deliveries: 0,
@@ -348,7 +508,21 @@ function baseSystem() {
     queue: [{ name: 'task', pending: 0, active: 0, retryLimit: 3, expireInMs: 1_200_000 }],
     retention: { webhookDays: 90, runEventDays: 90, transcriptDays: 90, metricsForever: true },
     flags: [{ key: 'rate_limit_pause', value: '1', until: null }],
-    repos: [{ repo: 'acme/widgets', enabled: true, dryRun: true, configValid: true, configError: null }],
+    repos: [
+      {
+        repo: 'acme/widgets',
+        enabled: true,
+        dryRun: true,
+        settingsValid: true,
+        settingsError: null,
+        source: 'manual',
+        archivedAt: null,
+        lastActivityAt: '2026-06-02T00:00:00Z',
+        // 过渡期别名（与 settingsValid / settingsError 同值）
+        configValid: true,
+        configError: null,
+      },
+    ],
     skills: [
       {
         name: '/issue-triage',

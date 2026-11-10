@@ -223,6 +223,10 @@ export function buildServer(deps: BuildServerDeps): ZodFastify {
       queries: deps.queries,
       requireAuth: deps.requireAuth,
       logger: deps.logger,
+      // `/api/repos*`（仓库列表 / 读配置 / 写配置 / 手动添加）：**默认挂载**。
+      // 不注入它这组路由就整组不存在，面板与「多仓库」的全流程都废掉（W1-A 的存储层已经就绪，
+      // 这里只是把池子接上去；测试可以用 `repos: undefined` 之外的装配拿到同样行为）。
+      repos: { db: deps.pool },
       ...(deps.skills === undefined ? {} : { skills: deps.skills }),
     });
   });

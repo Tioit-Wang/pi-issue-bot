@@ -64,7 +64,9 @@ import type {
   WorkerTaskStatus,
 } from './types.ts';
 import { WORKER_TASK_STATUS } from './types.ts';
-import { executeActions } from './writeback.ts';
+import { actionTargetOf, executeActions, taskSourceOf } from './writeback.ts';
+import { applyFeedback, feedbackStageForOutcome } from '../feedback/index.ts';
+import type { FeedbackOutcome } from '../feedback/index.ts';
 
 /** `/review-pr` 的命令名（决定 30min 而非 20min 的任务级时间闸，§4.7）。 */
 export const REVIEW_PR_COMMAND = '/review-pr';
@@ -186,6 +188,14 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   const attempt = Math.max(1, input.attempt ?? 1);
   const dryRun = input.dryRun === true;
 
+  /**
+   * 人工通道 / 自动通道（plan §5）：只有 `command` 允许写回评论。
+   *
+   * 显式传了就听传的；没传则按命令名推（`auto:*` → 自动通道），
+   * 于是「装配层还没接线」也不会让自动通道发出评论。
+   */
+  const taskSource = taskSourceOf({ source: input.source, command: input.command });
+
   const steps: TaskStep[] = [];
   const recordStep = (step: TaskStep, detail?: Readonly<Record<string, unknown>>): void => {
     steps.push(step);
@@ -226,6 +236,8 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   let containerState: ContainerStateSnapshot | null = null;
   let disposed = false;
   let prepared: PreparedEnvelope | null = null;
+  /** 终态无感反馈的结果（`null` = 没注入 feedback 端口 / 没走到收尾）。 */
+  let feedbackOutcome: FeedbackOutcome | null = null;
 
   await deps.store.beginRun({
     runId: input.runId,
@@ -516,8 +528,13 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
       targetNumber: input.targetNumber,
       actions: prepared.accepted,
       dryRun,
+      source: taskSource,
       api: deps.github,
+      ...(deps.feedback === undefined ? {} : { reactions: deps.feedback.reactions }),
       ledger: deps.ledger,
+      // 打标策略（W2-E）：装配层注入 → 写之前归一化 desired + 落 label_decisions。
+      // 不注入时 `executeActions` 照信封的增量集合直接写（接线前的行为）。
+      ...(deps.labelPolicy === undefined ? {} : { labelPolicy: deps.labelPolicy }),
       target,
       mention: input.actorLogin ?? null,
       store: deps.store,
@@ -621,6 +638,80 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     }
   }
 
+  // ── 无感反馈（W2-D）：终态一条 reaction ──────────────────────────────────────
+  //
+  // 成功 / 失败 / 超时 / 取消四条路径在 `decideOutcome()` 之后汇成一束，所以收尾只有这一处：
+  //   succeeded → -eyes +rocket；failed / degenerate-output → -eyes +confused；
+  //   timed-out / cancelled → -eyes +confused（闸门路径没有 worker，由闸门自己收尾）。
+  //
+  // 三条纪律：
+  //  1. dry-run 一个 reaction 都不打，`issue_feedback` 也不写，只落 `feedback.planned`；
+  //  2. 台账写入失败只 warn——**不能改变 run 结论**（反馈是装饰，不是证据）；
+  //  3. 403 / 无权限 → `applyFeedback()` 内部置 `reactions_disabled` 并降级，
+  //     这里补一条 `actions(applied_at=null)`，面板才能解释「为什么没有火箭」。
+  if (deps.feedback !== undefined) {
+    try {
+      feedbackOutcome = await applyFeedback(
+        {
+          ...deps.feedback,
+          logger,
+          clock,
+          onEvent: (kind: string, payload: unknown) => {
+            appendEvent(kind, payload);
+          },
+        },
+        {
+          repo: input.repo,
+          targetKind: input.targetKind,
+          targetNumber: input.targetNumber,
+          stage: feedbackStageForOutcome(outcome),
+          // 锚点取 `tasks.idempotency_key`（**不是** taskId）：重投/重跑不该重复打 reaction
+          anchor: input.idempotencyKey ?? input.runId,
+          ...(dryRun ? { dryRun: true } : {}),
+        },
+      );
+
+      if (feedbackOutcome.status === 'failed' || feedbackOutcome.status === 'disabled') {
+        await deps.store
+          .recordAction({
+            runId: input.runId,
+            intent: 'reaction.add',
+            target: actionTargetOf(input.repo, input.targetNumber),
+            externalRef: null,
+            appliedAt: null,
+            audit: {
+              stage: feedbackOutcome.stage,
+              content: feedbackOutcome.content,
+              status: feedbackOutcome.status,
+              reason: feedbackOutcome.reason,
+              httpStatus: feedbackOutcome.httpStatus,
+              permissionDenied: feedbackOutcome.permissionDenied,
+            },
+          })
+          .catch((error: unknown) => {
+            logger.warn({ err: String(error) }, '反馈留痕（actions 行）写入失败（已忽略）');
+          });
+      }
+
+      if (feedbackOutcome.status === 'applied' || feedbackOutcome.status === 'failed') {
+        appendEvent('feedback.result', {
+          stage: feedbackOutcome.stage,
+          content: feedbackOutcome.content,
+          status: feedbackOutcome.status,
+          reactionId: feedbackOutcome.reactionId,
+          removed: feedbackOutcome.removed,
+          reason: feedbackOutcome.reason,
+        });
+      }
+    } catch (error) {
+      // 兜底：反馈层内部已经把所有已知失败都收成 status，走到这里说明是未预料异常
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        '无感反馈失败（不影响 run 结论）',
+      );
+    }
+  }
+
   const failureDetail = {
     signals: signals.map((signal) => ({
       failureClass: signal.failureClass,
@@ -641,8 +732,18 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         ? null
         : { intent: fallback.intent, status: fallback.status, target: fallback.target, reason: fallback.reason },
     retry,
+    // 无感反馈的留痕（`null` = 没注入 feedback 端口；状态见 `FeedbackOutcome`）
+    feedback:
+      feedbackOutcome === null
+        ? null
+        : {
+            stage: feedbackOutcome.stage,
+            content: feedbackOutcome.content,
+            status: feedbackOutcome.status,
+            reactionId: feedbackOutcome.reactionId,
+            httpStatus: feedbackOutcome.httpStatus,
+          },
   };
-
   await appendChain.catch(() => undefined);
   // 成功路径用 turn-driver 给的 id；失败路径（超时/取消）用它从 operation 边界记下的那一份。
   sessionId = sessionId ?? recordedIds.sessionId;
@@ -671,6 +772,7 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     signals,
     retry,
     steps,
+    feedback: feedbackOutcome,
     terminal,
     envelope: prepared,
     sessionId: sessionId ?? null,

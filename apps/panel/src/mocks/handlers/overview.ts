@@ -23,37 +23,46 @@ const HOURLY_TASKS = [0, 0, 0, 0, 0, 0, 0, 2, 5, 7, 3, 1, 0, 4, 6, 5, 3, 2, 2, 0
 /** 与上面逐位对应的失败数（相加 = 4 ⇒ 成功率 90%，区间内不会有负数）。 */
 const HOURLY_FAILED = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
 
-/** 24 点趋势：按 `MOCK_NOW` 往前推整点，升序。 */
-function trendPoints(): OverviewResponse['trend'] {
+/** 带 `?repo=` 时保留哪些整点（每 3 个小时留 1 个 → 数字变小，但趋势/今日仍自洽）。 */
+const REPO_SCOPE_KEEP_EVERY = 3;
+
+/** 24 点趋势：按 `MOCK_NOW` 往前推整点，升序。`scoped = true` 时只留一部分整点。 */
+function trendPoints(scoped: boolean): OverviewResponse['trend'] {
   const end = Date.parse(MOCK_NOW);
   return HOURLY_TASKS.map((tasks, index) => {
     const at = new Date(end - (23 - index) * HOUR_MS).toISOString();
     // `noUncheckedIndexedAccess` 下逐位取值要兜底；失败数不允许超过任务数
     const failed = Math.min(tasks, HOURLY_FAILED[index] ?? 0);
     return { at, tasks, succeeded: tasks - failed, failed };
-  });
+  }).filter((_, index) => !scoped || index % REPO_SCOPE_KEEP_EVERY === 0);
 }
 
-/** 总览的「正常态」payload（契约里的字段一个不落）。 */
-export function overviewMock(): OverviewResponse {
-  const trend = trendPoints();
+/**
+ * 总览的「正常态」payload（契约里的字段一个不落）。
+ *
+ * `repo` 非空 = 按该仓库口径（`today` / `trend` / 分布都只算它）：这里用「每 3 个整点留 1 个」
+ * 近似，数字之间仍自洽，页面能看见「切仓库后数字变了」，而不是两份一模一样的 payload。
+ */
+export function overviewMock(repo: string | null = null): OverviewResponse {
+  const trend = trendPoints(repo !== null);
   const taskCount = trend.reduce((total, point) => total + point.tasks, 0);
   const succeededCount = trend.reduce((total, point) => total + point.succeeded, 0);
   const failedCount = trend.reduce((total, point) => total + point.failed, 0);
 
   return {
     generatedAt: MOCK_NOW,
+    repo,
     window: { from: WINDOW_START, to: MOCK_NOW },
     today: {
       // webhook 投递含重复，所以「投递数」永远 ≥ 任务数
-      deliveries: taskCount + 46,
+      deliveries: taskCount + (repo === null ? 46 : 12),
       tasks: taskCount,
       succeeded: succeededCount,
       failed: failedCount,
       successRate: taskCount === 0 ? null : succeededCount / taskCount,
-      p50Ms: 480_000,
-      p95Ms: 1_500_000,
-      costUsd: 0.8931,
+      p50Ms: repo === null ? 480_000 : 420_000,
+      p95Ms: repo === null ? 1_500_000 : 1_260_000,
+      costUsd: repo === null ? 0.8931 : 0.2842,
     },
     queue: { depth: 3, active: 2, oldestQueuedMs: 96_000, pausedUntil: null },
     doctor: {
@@ -63,25 +72,37 @@ export function overviewMock(): OverviewResponse {
     },
     trend,
     // 没有出现的 outcome 不占位（契约 §1）
-    outcomeDistribution: [
-      { outcome: 'success', count: succeededCount },
-      { outcome: 'failed', count: failedCount },
-      { outcome: 'timed-out', count: 2 },
-      { outcome: 'degenerate-output', count: 1 },
-    ],
+    outcomeDistribution: (
+      [
+        { outcome: 'success', count: succeededCount },
+        { outcome: 'failed', count: failedCount },
+        { outcome: 'timed-out', count: repo === null ? 2 : 0 },
+        { outcome: 'degenerate-output', count: repo === null ? 1 : 0 },
+      ] satisfies OverviewResponse['outcomeDistribution']
+    ).filter((bucket) => bucket.count > 0),
     // Top5，数量降序
-    failureTop: [
-      { failureClass: 'timeout', count: 3 },
-      { failureClass: 'rate-limit', count: 2 },
-      { failureClass: 'sandbox-oom', count: 1 },
-      { failureClass: 'parse', count: 1 },
-      { failureClass: 'auth', count: 1 },
-    ],
+    failureTop: (
+      [
+        { failureClass: 'timeout', count: repo === null ? 3 : 1 },
+        { failureClass: 'rate-limit', count: repo === null ? 2 : 1 },
+        { failureClass: 'sandbox-oom', count: 1 },
+        { failureClass: 'parse', count: 1 },
+        { failureClass: 'auth', count: repo === null ? 1 : 0 },
+      ] satisfies OverviewResponse['failureTop']
+    ).filter((bucket) => bucket.count > 0),
   };
 }
 
 export const overviewHandlers: HttpHandler[] = [
-  http.get('/api/overview', () =>
-    scenarioResponse({ data: overviewMock(), empty: overviewEmptyFixture() }),
-  ),
+  /**
+   * `?repo=` 走仓库口径（`overviewMock(repo)`）；不带就是全部仓库（`repo: null`）。
+   * 空串按「不带」处理——面板的 `toSearch()` 不会拼空值，但手工改 URL 时可能带上。
+   */
+  http.get('/api/overview', ({ request }) => {
+    const repo = new URL(request.url).searchParams.get('repo');
+    return scenarioResponse({
+      data: overviewMock(repo === null || repo === '' ? null : repo),
+      empty: overviewEmptyFixture(),
+    });
+  }),
 ];

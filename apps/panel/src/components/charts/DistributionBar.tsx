@@ -1,4 +1,5 @@
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { usePrefersReducedMotion } from './chart-kit.tsx';
 import type { OverviewResponse } from '../../lib/contract.ts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card.tsx';
 import { chartColor } from './chart-colors.ts';
@@ -25,6 +26,7 @@ const OUTCOME_LABEL: Record<string, string> = {
 };
 
 export function DistributionBar({ data, height = 96 }: DistributionBarProps) {
+  const reduced = usePrefersReducedMotion();
   const point = { label: '结果', ...Object.fromEntries(data.map((item) => [item.outcome, item.count])) };
 
   return (
@@ -50,6 +52,7 @@ export function DistributionBar({ data, height = 96 }: DistributionBarProps) {
                   stackId="outcomes"
                   fill={chartColor(index)}
                   radius={[0, 0, 0, 0]}
+                  isAnimationActive={!reduced}
                 >
                   {data.map((cell) => (
                     <Cell key={cell.outcome} fill={chartColor(index)} />

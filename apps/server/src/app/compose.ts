@@ -28,12 +28,14 @@ import type { Pool } from 'pg';
 
 import { AppError, createLogger } from '../../../../packages/shared/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
+import { DEFAULT_TRIGGER_ALIASES, resolveTriggerAliases } from '../../../../packages/contract/src/index.ts';
 import type { SqlExecutor } from '../db/index.ts';
 import { closePool, createPool } from '../db/index.ts';
 import { readRepoPolicy } from '../config/index.ts';
 import { resolveGithubAuth } from './github-auth.ts';
 import { createGithubWriteApi } from '../github/index.ts';
-import type { GithubClient, GithubWriteApi } from '../github/index.ts';
+import type { GithubClient, GithubReactionApi, GithubWriteApi } from '../github/index.ts';
+import type { LabelCatalogPort } from '../workflows/ports.ts';
 import { RepoCache, createExecFileRunGit, createRepoWorktreePort } from '../git/index.ts';
 import {
   APP_VERSION,
@@ -54,12 +56,21 @@ import type {
   MetricsServer,
   RequireAuth,
   SessionStore,
+  ReactionContent,
   WebhookAck,
   WebhookVerify,
 } from '../http/index.ts';
 import { JOB_SCHEDULES, registerJobs } from '../jobs/index.ts';
 import type { JobDeps } from '../jobs/index.ts';
-import { QUEUE, bootstrapQueue, createBoss, enqueueRetry, registerScheduleWorker, registerTaskWorker } from '../queue/index.ts';
+import {
+  QUEUE,
+  bootstrapQueue,
+  cancelTaskJob,
+  createBoss,
+  enqueueRetry,
+  registerScheduleWorker,
+  registerTaskWorker,
+} from '../queue/index.ts';
 import type {
   QueueAdminBoss,
   QueueBoss,
@@ -82,13 +93,19 @@ import type { RacpChannelFactory } from './racp.ts';
 import {
   buildTaskPrompt,
   buildAnswerPrompt,
+  createBotLabelLedger,
+  createGithubLabelCatalog,
+  createLabelWritebackPolicy,
   createPromptEnricher,
   createUnavailableHostPort,
+  createWorkerFeedbackDeps,
   createWorkerPorts,
+  createWorkflowReactionPort,
   readTaskRow,
 } from './worker-deps.ts';
 import type { WorkerPorts } from './worker-deps.ts';
 import { createSkillStore } from '../skills/store.ts';
+import { concurrencyPerRepoOf } from '../queue/repo-concurrency.ts';
 
 /* ── 队列的最小接口（结构可替换）────────────────────────────────────────────── */
 
@@ -164,6 +181,13 @@ export interface ApplicationOverrides {
   readonly verify?: WebhookVerify;
   readonly ack?: WebhookAck;
   readonly queries?: Queries;
+  /**
+   * reaction 写面（测试注入假实现）：给了就跳过「按 App 客户端造 reaction 端口」这一步，
+   * 于是装配级测试能断言「终态真的打了 rocket / confused」而不打网络。
+   */
+  readonly reactions?: GithubReactionApi;
+  /** 标签目录端口（测试注入）：`labels.missing` 的三策略需要它。 */
+  readonly labelCatalog?: LabelCatalogPort;
   readonly metrics?: Metrics;
   readonly metricsServer?: MetricsServer;
   readonly requireAuth?: BuildServerDeps['requireAuth'];
@@ -283,7 +307,7 @@ export function createUnavailableWebhookAck(reason: string): WebhookAck {
   const fail = async (): Promise<void> => {
     throw new Error(`webhook ack 不可用：${reason}`);
   };
-  return { addEyesReaction: fail, postAckComment: fail };
+  return { addEyesReaction: fail };
 }
 
 /**
@@ -422,6 +446,30 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     docker: trackContainers(declaredPorts.docker, liveContainers),
   };
 
+  // ── W2-D 无感反馈 + W2-E 打标策略的装配点 ───────────────────────────────────
+  //
+  // 这两组依赖的注入位置就在进程装配这一层：台账在 `feedback/`（要池）、reaction 在
+  // `github/`（要 App 客户端）、降级开关在 `runtime_flags`（要池）—— 只有这里同时认识它们。
+  //
+  // `feedback === null` 表示「本部署没有可用的 reaction 写面」（没装 App）：worker 缺端口
+  // 就是不打 reaction，而不是每轮记一条失败。dry-run 另有一层拦阻（一个 reaction 都不打）。
+  const feedback =
+    createWorkerFeedbackDeps({
+      pool,
+      // 测试注入假 reaction 时不需要客户端；反之才按 App 认证的客户端造。
+      ...(overrides.reactions === undefined ? { client: baseGithubClient } : { reactions: overrides.reactions }),
+      // App 身份在 GitHub 上显示成 `<slug>[bot]`，删自己的 reaction 时靠它判别归属。
+      appSlug: config.github.mention,
+    });
+  // `bot_labels` 记账（W2-E）：进程级建一次（它只依赖池）。
+  const botLabelLedger = createBotLabelLedger(pool);
+  // 标签目录（`labels.missing` 的判据）：只有真客户端才有。
+  const labelCatalog: LabelCatalogPort | undefined =
+    overrides.labelCatalog ??
+    (baseGithubClient === null ? undefined : createGithubLabelCatalog(baseGithubClient));
+  // `workflows/` 的 reaction 端口（缺信息时打 `confused`）：与终态反馈共用同一个写面。
+  const workflowReactions = feedback === null ? undefined : createWorkflowReactionPort(feedback.reactions);
+
   const racp: RacpChannelFactory =
     overrides.racp ?? createRacpChannelFactory({ logger });
 
@@ -462,12 +510,8 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       verify,
       db: pool,
       enqueue: createQueueEnqueuer(queue),
-      // 句柄来自配置：`@<App slug> /命令`（文档 §6.4 只规定「@机器人 /命令」）
-      mention: config.github.mention,
-      // 新 issue 的「接管」评论（`PI_BOT_GREET`）：bot 在该 thread 发过言后，
-      // 新 issue 的「接管」评论（`PI_BOT_GREET`）：bot 在该 thread 发过言后，
-      // 用户的 @ 下拉里才看得到它
-      greet: config.greet,
+      // 触发别名：部署默认（`@issuebot` / `@ibot`）+ App slug；仓库配置里的 `triggers` 与之合并
+      aliases: resolveTriggerAliases({ deployment: [...DEFAULT_TRIGGER_ALIASES, config.github.mention] }),
       ack,
       freeMention: config.freeMention,
       logger,
@@ -504,7 +548,19 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     // dry-run 的三条来源取并集：进程级开关（首周强制）、仓库开关、调用方强制（replay/测试）
     const dryRun = input.dryRun === true || config.dryRun || policy.dryRun;
     const attempt = input.attempt ?? row.attempt + 1;
+    // `runs.id` 在装配层生成（与 taskId 一对一）：打标策略要用它写 `label_decisions.run_id`，
+    // 所以先取出来，不能让 `runTask(...)` 的入参里现 new 一个。
+    const runId = randomUUID();
 
+    // 打标策略（W2-E）：**每轮**建一次（settings 是仓库级的，人工否决是目标级的）。
+    // `judgement_hash` 这一层拿不到（webhook 的 issue 版本 hash 没落到 `tasks` 列），
+    // 于是写 NULL —— 面板按 `created_at` 排序仍然能看「这一轮想打什么、被谁拦了」。
+    const labelPolicy = createLabelWritebackPolicy({
+      pool,
+      settings: policy.settings,
+      ...(labelCatalog === undefined ? {} : { catalog: labelCatalog }),
+      ...(workflowReactions === undefined ? {} : { reactions: workflowReactions }),
+    });
 
     // 自由问答任务：问题正文优先读 `tasks.prompt_text`（新格式），
     // 兼容历史行 `command=@answer:<base64url>` 的解码
@@ -518,13 +574,19 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       return await runTask(
         {
           taskId: row.id,
-          runId: randomUUID(),
+          runId,
           command: row.command,
           repo: row.repo,
           targetKind: row.targetKind,
           targetNumber: row.targetNumber,
           ...(row.headSha === null ? {} : { headSha: row.headSha }),
           actorLogin: row.actorLogin,
+          // 无感反馈的幂等锚（`tasks.idempotency_key`）：不给就退回 runId，
+          // 于是重投 / `/retry` 会重复打终态 reaction —— 这正是它必须被读上来的原因。
+          ...(row.idempotencyKey === null ? {} : { idempotencyKey: row.idempotencyKey }),
+          // `tasks.source` 决定「这一轮能不能写回评论」：自动通道零评论（plan §5）。
+          // 认不出的值（老行 / NULL）不传，由 `taskSourceOf()` 按命令名兜底推断。
+          ...(row.source === null ? {} : { source: row.source }),
           prompt:
             answerQuestion === null
               ? buildTaskPrompt({
@@ -533,6 +595,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
                   targetKind: row.targetKind,
                   targetNumber: row.targetNumber,
                   dryRun,
+                  // 项目标签词表（W2-E）：提示词里的「项目标签」段全靠它，缺了就退成
+                  // 「只能用该 issue 上已有的标签」。settings 读不出来时给 null（同上）。
+                  settings: policy.settings,
                 })
               : // 自由问答：问题正文在 `command` 里（`@answer:<base64url>`），不打标、只发评论
                 buildAnswerPrompt({
@@ -556,12 +621,21 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           // 用量与费用：从 pi-host 的 sqlite 读真实 token，金额按 DeepSeek 官方价目算
           usage: createHostUsageReader({ dataDir: config.host.dataDir }),
           events: channel.events,
+          // 无感反馈（W2-D）：终态 `-eyes +rocket/confused` + `issue_feedback` 台账。
+          // 没有可用 reaction 写面时不传（= 一个 reaction 都不打，而不是每轮记失败）。
+          ...(feedback === null ? {} : { feedback }),
+          // 打标策略（W2-E）：写 `label` 动作之前归一化 desired 并落 `label_decisions`。
+          labelPolicy,
+          // `bot_labels` 记账（W2-E）：只增删自己打过的标签 + 人工否决都靠这张表。
+          ledger: botLabelLedger,
           // 提示词装配（M1）：AGENTS.md 与仓库技能文件都在 **worktree** 里，而上面的 `prompt`
           // 是在建 worktree 之前拼好的 —— 所以装配只能由 worker 在建完 worktree 之后回调补一次。
           // 装配失败不影响任务（worker 侧回退到 basePrompt），所以这里不需要 try/catch。
           promptEnricher: createPromptEnricher({
             logger,
             config: policy.config,
+            // P1「项目人格层」+ 装配统计：每轮读一次当前版本（面板改了下一轮就生效）。
+            db: pool,
             context: {
               repo: row.repo,
               targetKind: row.targetKind,
@@ -632,7 +706,19 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     );
 
     // 3) worker（同进程，§8.4「刻意不拆」）
-    await registerTaskWorker(queue, onTaskJob);
+    //
+    // `gate` 是**仓库级并发**闸门（`settings.limits.concurrency_per_repo`，默认 2）：
+    // 全局并发仍是 `QUEUES.run-task` 的 3，但一个仓库最多占它声明的槽位，
+    // 免得「吵的那个仓库」把三个槽全占满、其余仓库只能排队（W1-B 第 3 条）。
+    // `limitFor` 走 `readRepoPolicy()`：settings 读不出来就回落默认 2（闸门不抛错）。
+    await registerTaskWorker(queue, onTaskJob, {
+      gate: {
+        limitFor: async (repo) => {
+          const policy = await readRepoPolicy(pool, repo);
+          return concurrencyPerRepoOf(policy.settings);
+        },
+      },
+    });
     logger.info({ queue: QUEUE.runTask }, 'run-task worker 已注册');
 
     // 4) 四个定时作业（缺 github/docker 注入时 `registerJobs` 自己跳过并告警）
@@ -644,6 +730,17 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
         proxy: ports.proxy,
         ...(baseGithubClient === null ? {} : { github: baseGithubClient }),
         diskPath: config.dataDir,
+        // 排队闸门（§4.7）：排队超时 → 取消 job + `confused` reaction（不是发一条评论）。
+        // `ack` 与 webhook 的入队 `+eyes` 是同一个对象（同一个 App 客户端），
+        // `cancelTaskJob` 直接把 pg-boss 里排队中的 job 撤掉，否则任务还会被 worker 领走。
+        gateAck: {
+          addReaction: async (input) => {
+            // `WebhookAck.addReaction` 的 content 是 reaction 枚举，闸门侧只声明是字符串：
+            // 闸门实际只发 `confused`（见 `QUEUE_GATE_REACTION`），这里收窄是安全的。
+            await ack.addReaction?.({ ...input, content: input.content as ReactionContent });
+          },
+        },
+        cancelTaskJob: (taskId: string) => cancelTaskJob(queue, taskId),
       };
       const registered = await registerJobs(queue, jobDeps, registerScheduleWorker);
       logger.info({ queues: registered, declared: JOB_SCHEDULES.length }, '定时作业已注册');

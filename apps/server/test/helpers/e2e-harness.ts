@@ -544,6 +544,21 @@ export interface FakeQueueRecord {
   readonly createdQueues: string[];
   readonly schedules: string[];
   readonly workers: string[];
+  /**
+   * `work()` 的第二个入参（`localConcurrency`）。
+   *
+   * 注意：**仓库级并发闸门不在里面** —— `registerTaskWorker` 把 `gate` 用在自己的
+   * handler 闭包里（`queue/boss.ts`），不会往 `boss.work` 透传。要验闸门只能拿 handler
+   * 真跑一次（见 `handlers`）。
+   */
+  readonly workOptions: Array<{ readonly name: string; readonly options: unknown }>;
+  /**
+   * 队列名 → `work()` 注册的 handler。
+   *
+   * 为什么记它：装配级测试要验「`settings.limits.concurrency_per_repo` 真的生效」，
+   * 而唯一的途径是按 pg-boss 的调用形状**真调一次** handler（两条 job，看是否串行）。
+   */
+  readonly handlers: Record<string, unknown>;
   readonly stopped: Array<{ graceful?: boolean; timeout?: number }>;
   starts: number;
 }
@@ -559,6 +574,8 @@ export function createFakeQueue(): FakeQueue {
     createdQueues: [],
     schedules: [],
     workers: [],
+    workOptions: [],
+    handlers: {},
     stopped: [],
     starts: 0,
   };
@@ -585,8 +602,10 @@ export function createFakeQueue(): FakeQueue {
     async findJobs() {
       return [];
     },
-    async work(name: string) {
+    async work(name: string, options?: unknown, handler?: unknown) {
       record.workers.push(name);
+      record.workOptions.push({ name, options });
+      record.handlers[name] = handler;
       return `worker-${name}`;
     },
     async getQueue(name: string) {

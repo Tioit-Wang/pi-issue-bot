@@ -16,15 +16,21 @@ import type {
   AuditResponse,
   CostsResponse,
   EnvelopeRecord,
+  IssueFeedbackEvent,
+  IssueLabelDecisionSummary,
   IssueListItem,
   IssueSessionResponse,
   IssuesListResponse,
   IssueToolCall,
   IssueTurn,
   OverviewResponse,
+  RepoSummary as RepoSummaryContract,
+  RepoSettingsResponse,
+  ReposResponse,
   RevertsResponse,
   RunEventRecord,
   RunSummary,
+  SaveRepoSettingsRequest,
   SystemResponse,
   TaskDetailResponse,
   TaskListItem,
@@ -36,20 +42,28 @@ export type {
   AuditResponse,
   CostsResponse,
   EnvelopeRecord,
+  IssueFeedbackEvent,
+  IssueLabelDecisionSummary,
   IssueListItem,
   IssueSessionResponse,
   IssuesListResponse,
   IssueToolCall,
   IssueTurn,
   OverviewResponse,
+  RepoSettingsResponse,
+  ReposResponse,
   RevertsResponse,
   RunEventRecord,
   RunSummary,
+  SaveRepoSettingsRequest,
   SystemResponse,
   TaskDetailResponse,
   TaskListItem,
   TasksResponse,
 };
+
+/** `GET /api/repos` 的一行（契约名 `RepoSummary`，避免与 `lib/repos.ts` 的面板投影同名）。 */
+export type RepoSummaryItem = RepoSummaryContract;
 
 /** 审计行（`AuditResponse['items'][number]`）。 */
 export type AuditRow = AuditResponse['items'][number];
@@ -58,8 +72,11 @@ export type TaskDiff = TaskDetailResponse['diff'];
 
 /* ── 查询入参（对应 contract 的 `*QuerySchema`，见文件头说明） ──────────────── */
 
-/** `overviewQuerySchema` = `timeRangeShape`。 */
-export type OverviewQuery = { from?: string; to?: string };
+/** `overviewQuerySchema` = `timeRangeShape` + 可选的 `repo`（按仓库口径算 today / 趋势 / 分布）。 */
+export type OverviewQuery = { from?: string; to?: string; repo?: string };
+
+/** `systemQuerySchema`：`repo` 只收窄 `repos` 与 `flags`。 */
+export type SystemQuery = { repo?: string };
 
 /** `tasksQuerySchema`。 */
 export type TasksQuery = {
@@ -129,6 +146,77 @@ export type IssueSessionParams = {
   kind: IssueKind;
   number: string | number;
 };
+
+/* ── 仓库写面（`/api/repos/*`，W3-H 起有契约；形状见 `packages/contract/src/api.ts`） ──────
+ * 这几个类型**不手抄**：全部是契约 schema 的 `z.infer` 产物（`RepoSummaryItem` /
+ * `RepoSummary` / `RepoSettingsResponse` / `SaveRepoSettingsRequest` 已在上面再导出）。
+ *
+ * 提示词（P1）那一组目前**还没有契约 schema**（W3-G 的 `/api/repos/:owner/:name/prompt`
+ * 响应形状尚未进 `packages/contract`），所以下面按它的实际实现手写一份，
+ * 等契约补上后换成再导出即可（`api.prompt()` 的调用点不用改）。
+ */
+
+/** 一版提示词的摘要（正文单独给，版本列表不撑爆响应）。 */
+export type PromptVersionSummary = {
+  version: number;
+  note: string | null;
+  createdAt: string;
+  /** 正文长度（字符数）。 */
+  chars: number;
+  /** 是否是 `settings.prompt.current_version` 指向的那一版。 */
+  current: boolean;
+};
+
+/** 保存期预算预演（`prompt/budget.ts` 的 `PromptBudget`）。 */
+export type PromptBudget = {
+  budgetChars: number;
+  p1Cap: number;
+  otherLayersChars: number;
+  available: number;
+  requested: number;
+  ok: boolean;
+  source: 'last-assembly' | 'conservative-estimate';
+  layers: { p0: number; p1: number; p2Root: number; p2Nearby: number; p3: number; p4: number };
+};
+
+/** 装配统计（`skills/assemble.ts` 的 `AssemblePromptStats`）。 */
+export type PromptAssemblyStats = {
+  baseChars: number;
+  promptChars: number;
+  agentsChars: number;
+  skillChars: number;
+  totalChars: number;
+  /** 被整段丢弃的层（运行期兜底），面板据此显示「哪一层没进上下文」。 */
+  truncated: string[];
+};
+
+/** `GET/PUT /api/repos/:owner/:name/prompt` 与 rollback 的响应体（三者同形状）。 */
+export type PromptResponse = {
+  repo: string;
+  /** `settings.prompt.enabled`。 */
+  enabled: boolean;
+  /** 当前版本号；`0` = 还没有任何版本。 */
+  version: number;
+  /** `false` = settings 指着一版、库里没有那一行（手删过库）。 */
+  present: boolean;
+  /** 当前版本正文。 */
+  body: string;
+  versions: PromptVersionSummary[];
+  budget: PromptBudget;
+  preview: {
+    /** 最终装配文本（与运行期同一函数产出）。 */
+    text: string;
+    stats: PromptAssemblyStats;
+    /** 预览里**没有**参与的层（面板显示成提示，不是当成「运行期也没有」）。 */
+    omitted: string[];
+    /** `ref@sha` 占位：面板没有 worktree 时为 `null`。 */
+    ref: string | null;
+    sha: string | null;
+  };
+  /** 最近一次真实装配统计；从没跑过为 `null`。 */
+  lastAssembly: PromptAssemblyStats | null;
+};
+
 /** 错误体（契约 §0.1）：所有 4xx/5xx 只有这一种形状。 */
 export type ApiErrorBody = {
   error: {

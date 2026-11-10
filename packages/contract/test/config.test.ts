@@ -1,77 +1,127 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_REPO_SETTINGS,
   SKILL_ALLOWED_TOOLS,
   SKILL_OUTPUT_INTENTS,
   SKILL_RESERVED_NAMES,
   SKILL_TIMEOUT_MAX_MS,
   effectiveSkillTimeout,
   parseRepoConfig,
+  parseRepoSettings,
   parseSkillTimeoutMs,
   repoConfigSchema,
+  repoSettingsSchema,
   skillFrontmatterSchema,
   toSkillEffectiveConfig,
 } from '../src/index.ts';
 
-describe('.github/pi-bot.yml', () => {
-  it('只写 version 时全部取默认值（含建 issue 日配额 10、默认 dry-run）', () => {
-    const config = parseRepoConfig({ version: 1 });
-    expect(config.enabled).toBe(true);
-    expect(config.dry_run).toBe(true);
-    expect(config.create_issue.enabled).toBe(false);
-    expect(config.create_issue.daily_quota).toBe(10);
-    expect(config.create_issue.scenarios).toEqual(['pr-review']);
-    expect(config.commands.allowed).toEqual(['/review-pr', '/issue-triage', '/issue-repro']);
-    expect(config.commands.author_associations).toEqual(['OWNER', 'MEMBER', 'COLLABORATOR']);
-    expect(config.limits.max_task_minutes).toBe(20);
-    expect(config.labels.map).toEqual({});
-    expect(config.compliance.rules).toEqual([]);
+describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
+  it('只写空对象时全部取默认值（含 version、dry-run、并发、队列等待、提示词版本）', () => {
+    const settings = parseRepoSettings({});
+    expect(settings.version).toBe(1);
+    expect(settings.enabled).toBe(true);
+    expect(settings.dry_run).toBe(true);
+    expect(settings.create_issue.enabled).toBe(false);
+    expect(settings.create_issue.daily_quota).toBe(10);
+    expect(settings.create_issue.scenarios).toEqual(['pr-review']);
+    expect(settings.commands.allowed).toEqual(['/review-pr', '/issue-triage', '/issue-repro']);
+    expect(settings.commands.author_associations).toEqual(['OWNER', 'MEMBER', 'COLLABORATOR']);
+    expect(settings.limits.max_task_minutes).toBe(20);
+    expect(settings.limits.concurrency_per_repo).toBe(2);
+    expect(settings.limits.queue_wait_minutes).toBe(10);
+    expect(settings.labels.map).toEqual({});
+    expect(settings.labels.vocabulary).toEqual([]);
+    expect(settings.labels.missing).toBe('warn');
+    expect(settings.labels.max_per_issue).toBe(6);
+    expect(settings.prompt.enabled).toBe(true);
+    expect(settings.prompt.current_version).toBe(0);
+    expect(settings.triggers.enabled).toBe(true);
   });
 
-  it('完整配置可以解析（标签映射 / 开关 / 配额 / 命令白名单）', () => {
-    const config = parseRepoConfig({
+  it('完整配置可以解析（标签词表 / 1:N 映射 / 提示词 / 并发）', () => {
+    const settings = parseRepoSettings({
       version: 1,
       enabled: true,
       dry_run: false,
       model: 'anthropic/claude-sonnet-4',
-      labels: { map: { bug: 'bug', feature: 'enhancement', needsInfo: 'needs-info' }, allow: ['bug', 'enhancement'] },
-      compliance: { enabled: true, rules: [{ id: 'has-repro', description: '复现步骤', required: true }] },
+      labels: {
+        vocabulary: [
+          { name: 'bug', meaning: '确认的缺陷', color: 'd73a4a', group: 'type' },
+          { name: 'needs-info', meaning: '缺复现步骤', color: '0e8a16' },
+        ],
+        map: { bug: 'bug', needsInfo: ['needs-info', 'question'] },
+        allow: ['bug', 'needs-info', 'question'],
+        missing: 'create',
+        max_per_issue: 3,
+      },
       create_issue: { enabled: true, daily_quota: 3, scenarios: ['pr-review', 'dependency'] },
       commands: { enabled: true, allowed: ['/review-pr'], allow_users: ['alice'], rate_limit_per_hour: 5 },
       skills: { repo_skills: false },
-      limits: { max_comments_per_hour: 4, max_actions_per_run: 6, max_task_minutes: 30 },
+      limits: {
+        max_comments_per_hour: 4,
+        max_actions_per_run: 6,
+        max_task_minutes: 30,
+        concurrency_per_repo: 3,
+        queue_wait_minutes: 5,
+      },
+      prompt: { enabled: false, current_version: 7 },
     });
-    expect(config.labels.map['bug']).toBe('bug');
-    expect(config.create_issue.daily_quota).toBe(3);
-    expect(config.commands.rate_limit_per_hour).toBe(5);
+    // 1:1 与 1:N 两种写法都能解析（1:N 的展开在应用层）
+    expect(settings.labels.map['bug']).toBe('bug');
+    expect(settings.labels.map['needsInfo']).toEqual(['needs-info', 'question']);
+    expect(settings.labels.missing).toBe('create');
+    expect(settings.labels.max_per_issue).toBe(3);
+    expect(settings.prompt).toEqual({ enabled: false, current_version: 7 });
+    expect(settings.limits.concurrency_per_repo).toBe(3);
+    expect(settings.create_issue.daily_quota).toBe(3);
+    expect(settings.commands.rate_limit_per_hour).toBe(5);
   });
 
-  it('未知键被拒（配置写错不能静默忽略）', () => {
-    expect(repoConfigSchema.safeParse({ version: 1, dryrun: true }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, limits: { max_comment: 3 } }).success).toBe(false);
+  it('未知键被拒（配置写错不能静默忽略），compliance 段已删除', () => {
+    expect(repoSettingsSchema.safeParse({ dryrun: true }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ limits: { max_comment: 3 } }).success).toBe(false);
+    // `compliance` 不再是合法段（规则改由提示词/技能承载，见 impl-multi-repo §0.3）
+    expect(repoSettingsSchema.safeParse({ compliance: { enabled: false } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ labels: { vocabulary: [{ name: 'bug', bogus: 1 }] } }).success).toBe(false);
   });
 
-  it('版本号只接受 1', () => {
-    expect(repoConfigSchema.safeParse({ version: 2 }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({}).success).toBe(false);
+  it('版本号只接受 1（缺省按 1）', () => {
+    expect(repoSettingsSchema.safeParse({ version: 2 }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({}).success).toBe(true);
   });
 
   it('配额与限额有边界', () => {
-    expect(repoConfigSchema.safeParse({ version: 1, create_issue: { daily_quota: 0 } }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, create_issue: { daily_quota: 101 } }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, limits: { max_actions_per_run: 9 } }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, limits: { max_task_minutes: 31 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ create_issue: { daily_quota: 0 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ create_issue: { daily_quota: 101 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ limits: { max_actions_per_run: 9 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ limits: { max_task_minutes: 31 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ limits: { concurrency_per_repo: 0 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ limits: { queue_wait_minutes: 0 } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ labels: { max_per_issue: 0 } }).success).toBe(false);
   });
 
   it('模型名必须是 provider/model', () => {
-    expect(repoConfigSchema.safeParse({ version: 1, model: 'claude-sonnet-4' }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, model: 'anthropic/claude-sonnet-4' }).success).toBe(true);
+    expect(repoSettingsSchema.safeParse({ model: 'claude-sonnet-4' }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ model: 'anthropic/claude-sonnet-4' }).success).toBe(true);
   });
 
-  it('合规规则 id 只接受小写短横线，命令白名单必须带 /', () => {
-    expect(repoConfigSchema.safeParse({ version: 1, compliance: { rules: [{ id: 'Has Repro' }] } }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, commands: { allowed: ['review-pr'] } }).success).toBe(false);
-    expect(repoConfigSchema.safeParse({ version: 1, commands: { author_associations: ['NONE'] } }).success).toBe(false);
+  it('标签：missing 只接受三态、颜色是 6 位十六进制、命令白名单必须带 /', () => {
+    expect(repoSettingsSchema.safeParse({ labels: { missing: 'boom' } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ labels: { vocabulary: [{ name: 'bug', color: '#d73a4a' }] } }).success).toBe(
+      false,
+    );
+    expect(repoSettingsSchema.safeParse({ labels: { vocabulary: [{ name: 'bug', color: 'd73a4a' }] } }).success).toBe(
+      true,
+    );
+    expect(repoSettingsSchema.safeParse({ commands: { allowed: ['review-pr'] } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ commands: { author_associations: ['NONE'] } }).success).toBe(false);
+  });
+
+  it('旧名是同一个 schema 的 deprecated alias（不复制第二份默认值）', () => {
+    expect(repoConfigSchema).toBe(repoSettingsSchema);
+    expect(parseRepoConfig).toBe(parseRepoSettings);
+    expect(DEFAULT_REPO_SETTINGS).toEqual(parseRepoSettings({}));
   });
 });
 

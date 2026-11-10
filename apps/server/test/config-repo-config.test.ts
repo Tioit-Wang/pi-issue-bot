@@ -1,174 +1,118 @@
 /**
- * 仓库配置（`config/repo-config.ts`）与受限 YAML 解析（`config/yaml.ts`）的测试。
+ * `repos` 存储（`config/repo-config.ts`）的测试：默认 seed、合法读写、非法不落库、
+ * last-known-good、归档不可用、列表。
  *
- * 落库部分用 **真 PostgreSQL**：`config_valid` / `enabled` / `dry_run` / `config_error` 四个列的
- * 最终取值就是 DBA 与面板看到的东西，只有真库能证明「非法配置确实把仓库关掉了」（plan §10）。
+ * 落库部分用**真 PostgreSQL**：`settings` / `settings_valid` / `settings_error` / `enabled` /
+ * `dry_run` / `archived_at` 的最终取值就是 webhook 与面板看到的东西，只有真库能证明
+ * 「非法配置不写库、库里留着最后一次合法值」（`docs/impl-multi-repo.md` §2/§4）。
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createNullLogger } from '../../../packages/shared/src/index.ts';
+import { DEFAULT_REPO_SETTINGS } from '../../../packages/contract/src/index.ts';
 import {
-  REPO_CONFIG_PATH,
-  REPO_CONFIG_SQL,
+  REPO_SETTINGS_ENV,
   UNKNOWN_REPO_POLICY,
-  YamlSubsetError,
-  createGithubRepoConfigFetcher,
-  decodeRepoConfig,
-  parseYamlSubset,
+  defaultRepoSettings,
+  listRepos,
+  loadDefaultRepoSettings,
   readRepoPolicy,
-  syncRepoConfig,
+  resetDefaultRepoSettingsCache,
+  updateRepoSettings,
+  upsertRepo,
+  validateRepoSettings,
 } from '../src/config/index.ts';
-import type { RepoConfigFetcher, RepoConfigNotifier } from '../src/config/index.ts';
-import type { GithubClient } from '../src/github/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
 
 const REPO = 'acme/widgets';
 
-const VALID_YAML = [
-  '# 仓库级配置',
-  'version: 1',
-  'enabled: true',
-  'dry_run: false',
-  'labels:',
-  '  map:',
-  '    bug: bug',
-  '    needs-info: needs-info',
-  '  allow: [bug, needs-info]',
-  'commands:',
-  '  allowed:',
-  '    - /review-pr',
-  '    - /issue-triage',
-  '  author_associations: [OWNER, MEMBER]',
-  'limits:',
-  '  max_comments_per_hour: 5',
-].join('\n');
+describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
+  it('未设置 → 契约默认值（不复制第二份默认值）', () => {
+    expect(loadDefaultRepoSettings(undefined)).toEqual(DEFAULT_REPO_SETTINGS);
+    expect(loadDefaultRepoSettings('   ')).toEqual(DEFAULT_REPO_SETTINGS);
+    expect(DEFAULT_REPO_SETTINGS.version).toBe(1);
+    expect(DEFAULT_REPO_SETTINGS.limits.concurrency_per_repo).toBe(2);
+    expect(DEFAULT_REPO_SETTINGS.labels.max_per_issue).toBe(6);
+    expect(DEFAULT_REPO_SETTINGS.prompt.enabled).toBe(true);
+  });
 
-describe('parseYamlSubset（受限 YAML 子集）', () => {
-  it('嵌套映射 + 序列 + 行内数组 + 标量类型', () => {
-    expect(parseYamlSubset(VALID_YAML)).toEqual({
-      version: 1,
-      enabled: true,
-      dry_run: false,
-      labels: {
-        map: { bug: 'bug', 'needs-info': 'needs-info' },
-        allow: ['bug', 'needs-info'],
-      },
-      commands: {
-        allowed: ['/review-pr', '/issue-triage'],
-        author_associations: ['OWNER', 'MEMBER'],
-      },
-      limits: { max_comments_per_hour: 5 },
+  it('内联 JSON：在默认值上覆写（未写的键仍有默认值）', () => {
+    const settings = loadDefaultRepoSettings('{"dry_run": false, "limits": {"queue_wait_minutes": 3}}');
+    expect(settings.dry_run).toBe(false);
+    expect(settings.limits.queue_wait_minutes).toBe(3);
+    // 没写的段仍取默认值
+    expect(settings.limits.max_comments_per_hour).toBe(10);
+    expect(settings.commands.enabled).toBe(true);
+  });
+
+  it('文件路径：读文件后按 JSON 解析（相对路径按 cwd 解析）', () => {
+    const files = new Map<string, string>([['/etc/pi-bot/default.json', '{"enabled": false}']]);
+    const settings = loadDefaultRepoSettings('/etc/pi-bot/default.json', (filePath) => {
+      const content = files.get(filePath);
+      if (content === undefined) {
+        throw new Error('ENOENT');
+      }
+      return content;
     });
+    expect(settings.enabled).toBe(false);
+    expect(settings.limits.max_comments_per_hour).toBe(10);
   });
 
-  it('注释与引号：行尾注释被剥掉，引号内的 # 与 : 保留', () => {
-    const yaml = ['a: 1  # 行尾注释', 'b: "x: y # not comment"', "c: 'it''s'"].join('\n');
-    expect(parseYamlSubset(yaml)).toEqual({ a: 1, b: 'x: y # not comment', c: "it's" });
+  it('解析失败要抛明确错误（不静默降级成默认值）', () => {
+    expect(() => loadDefaultRepoSettings('{not json')).toThrow(/不是合法 JSON/u);
+    expect(() => loadDefaultRepoSettings('{"bogus_key": 1}')).toThrow(/不符合 repoSettingsSchema/u);
+    expect(() =>
+      loadDefaultRepoSettings('/nope/missing.json', () => {
+        throw new Error('ENOENT: no such file');
+      }),
+    ).toThrow(/读取部署默认仓库配置失败/u);
   });
 
-  it('空文档 → {}（缺字段由 zod 默认值兜底），空映射与空值', () => {
-    expect(parseYamlSubset('')).toEqual({});
-    expect(parseYamlSubset('a: {}\nb:')).toEqual({ a: {}, b: null });
-  });
+  it('defaultRepoSettings() 走缓存，reset 后重新解析 env', () => {
+    const key = REPO_SETTINGS_ENV;
+    const previous = process.env[key];
+    try {
+      delete process.env[key];
+      resetDefaultRepoSettingsCache();
+      expect(defaultRepoSettings()).toEqual(DEFAULT_REPO_SETTINGS);
 
-  it('序列项是映射（`- key: value`）', () => {
-    const yaml = ['rules:', '  - id: steps', '    required: true', '  - id: version'].join('\n');
-    expect(parseYamlSubset(yaml)).toEqual({
-      rules: [{ id: 'steps', required: true }, { id: 'version' }],
-    });
-  });
-
-  it('不支持的写法明确报错并带行号（制表符 / 重复键 / 块标量 / 行内映射）', () => {
-    expect(() => parseYamlSubset('a:\n\tb: 1')).toThrow(YamlSubsetError);
-    expect(() => parseYamlSubset('a: 1\na: 2')).toThrow(/重复的键/);
-    expect(() => parseYamlSubset('a: |\n  x')).toThrow(/块标量/);
-    expect(() => parseYamlSubset('a: {b: 1}')).toThrow(/行内映射/);
-    expect(() => parseYamlSubset('a: 1\n  b: 2')).toThrow(/更深缩进/);
+      process.env[key] = '{"dry_run": false}';
+      // 缓存命中：还是上一次的值
+      expect(defaultRepoSettings().dry_run).toBe(true);
+      resetDefaultRepoSettingsCache();
+      expect(defaultRepoSettings().dry_run).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous;
+      }
+      resetDefaultRepoSettingsCache();
+    }
   });
 });
 
-describe('decodeRepoConfig（YAML → 契约 schema）', () => {
-  it('合法配置：解析后带出 schema 默认值（dry_run 缺省 true）', () => {
-    const result = decodeRepoConfig('version: 1\n');
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      return;
-    }
-    expect(result.config.dry_run).toBe(true);
-    expect(result.config.enabled).toBe(true);
-    expect(result.config.commands.allowed).toContain('/review-pr');
-    expect(result.config.limits.max_task_minutes).toBe(20);
-  });
+describe('validateRepoSettings', () => {
+  it('合法 → ok；非法 → issues 带字段路径', () => {
+    expect(validateRepoSettings({}).ok).toBe(true);
 
-  it('未知键 → 不合法（`.strict()` 不接受拼错的键）', () => {
-    const result = decodeRepoConfig('version: 1\nbogus_key: 1\n');
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    const invalid = validateRepoSettings({ limits: { max_task_minutes: 999 } });
+    expect(invalid.ok).toBe(false);
+    if (invalid.ok) {
       return;
     }
-    expect(result.error).toContain('配置不符合 schema');
-    expect(result.issues.join(' ')).toContain('bogus_key');
-  });
+    expect(invalid.error).toContain('repoSettingsSchema');
+    expect(invalid.issues.join(' ')).toContain('limits.max_task_minutes');
 
-  it('YAML 语法错 → 不合法，错误消息带行号', () => {
-    const result = decodeRepoConfig('version: 1\n   broken: 2\n');
-    expect(result.ok).toBe(false);
-    if (result.ok) {
+    const unknownKey = validateRepoSettings({ dryrun: true });
+    expect(unknownKey.ok).toBe(false);
+    if (unknownKey.ok) {
       return;
     }
-    expect(result.error).toContain('YAML 解析失败');
-    expect(result.error).toContain('第 2 行');
+    expect(unknownKey.error).toContain('dryrun');
   });
 });
 
-describe('拉取：createGithubRepoConfigFetcher', () => {
-  function clientWith(
-    responder: (route: string, params: Record<string, unknown> | undefined) => unknown,
-  ): GithubClient {
-    const request = async <T>(route: string, params?: Record<string, unknown>): Promise<unknown> => {
-      return responder(route, params) as T;
-    };
-    return {
-      request: request as GithubClient['request'],
-      getMetrics: () => ({ getCalls: 1, nonGetCalls: 0 }),
-      resetMetrics: () => undefined,
-    };
-  }
-
-  it('contents API 的 base64 内容被解开', async () => {
-    const yaml = 'version: 1\n';
-    const client = clientWith(() => ({
-      status: 200,
-      headers: {},
-      data: { content: Buffer.from(yaml, 'utf8').toString('base64'), encoding: 'base64', sha: 'abc123' },
-    }));
-    const fetcher = createGithubRepoConfigFetcher(client);
-    const result = await fetcher({ repo: REPO, path: REPO_CONFIG_PATH });
-    expect(result).toEqual({ found: true, yaml, sha: 'abc123' });
-  });
-
-  it('404 → found=false（没写配置不是错误）', async () => {
-    const client = clientWith(() => {
-      throw Object.assign(new Error('Not Found'), { status: 404 });
-    });
-    const fetcher = createGithubRepoConfigFetcher(client);
-    expect(await fetcher({ repo: REPO, path: REPO_CONFIG_PATH })).toEqual({
-      found: false,
-      yaml: null,
-      sha: null,
-    });
-  });
-
-  it('其它错误照常抛出（一次网络抖动不该被当成「没有配置文件」）', async () => {
-    const client = clientWith(() => {
-      throw Object.assign(new Error('Bad Gateway'), { status: 502 });
-    });
-    const fetcher = createGithubRepoConfigFetcher(client);
-    await expect(fetcher({ repo: REPO, path: REPO_CONFIG_PATH })).rejects.toThrow('Bad Gateway');
-  });
-});
-
-describe('落库：syncRepoConfig / readRepoPolicy（真 PG）', () => {
+describe('repos 存储（真 PG）', () => {
   let db: TestDb;
 
   beforeAll(async () => {
@@ -184,93 +128,201 @@ describe('落库：syncRepoConfig / readRepoPolicy（真 PG）', () => {
     await db.pool.query('truncate table repos cascade');
   });
 
-  function fetcherOf(result: { found: boolean; yaml: string | null; sha: string | null }): RepoConfigFetcher {
-    return async () => result;
-  }
-
-  it('合法配置：enabled / dry_run 取自文件，config_valid=true', async () => {
-    const result = await syncRepoConfig(
-      { fetch: fetcherOf({ found: true, yaml: VALID_YAML, sha: 'sha-1' }), db: db.pool },
-      REPO,
-    );
-    expect(result).toMatchObject({ valid: true, enabled: true, dryRun: false, notified: false, sha: 'sha-1' });
+  it('upsertRepo：用部署默认 settings seed 一行（source=manual）', async () => {
+    const created = await upsertRepo(db.pool, { repo: REPO });
+    expect(created.ok).toBe(true);
 
     const policy = await readRepoPolicy(db.pool, REPO);
-    expect(policy).toMatchObject({ known: true, enabled: true, dryRun: false, configValid: true });
-    expect(policy.config?.commands.allowed).toEqual(['/review-pr', '/issue-triage']);
-  });
-
-  it('非法配置：config_valid=false + 禁用仓库 + 通知 owner（通知失败也不改变禁用）', async () => {
-    const notified: Array<{ repo: string; error: string }> = [];
-    const notify: RepoConfigNotifier = async (input) => {
-      notified.push({ repo: input.repo, error: input.error });
-    };
-
-    const result = await syncRepoConfig(
-      {
-        fetch: fetcherOf({ found: true, yaml: 'version: 1\nbogus_key: 1\n', sha: 'sha-2' }),
-        db: db.pool,
-        notify,
-        logger: createNullLogger(),
-      },
-      REPO,
-    );
-
-    expect(result).toMatchObject({ valid: false, enabled: false, dryRun: true, notified: true });
-    expect(notified).toHaveLength(1);
-    expect(notified[0]?.repo).toBe(REPO);
-    expect(notified[0]?.error).toContain('bogus_key');
+    expect(policy).toMatchObject({
+      known: true,
+      enabled: true,
+      dryRun: true,
+      settingsValid: true,
+      settingsError: null,
+      source: 'manual',
+      installationId: null,
+      archivedAt: null,
+    });
+    // 过渡期别名与 settings 同值（旧调用点仍可用）
+    expect(policy.configValid).toBe(true);
+    expect(policy.config?.limits.concurrency_per_repo).toBe(2);
 
     const rows = await db.sql(
-      'select enabled, dry_run, config_valid, config_error, config from repos where repo_full_name = $1',
+      'select settings, settings_valid, source, settings_updated_at from repos where repo_full_name = $1',
       [REPO],
     );
-    expect(rows[0]).toMatchObject({ enabled: false, dry_run: true, config_valid: false, config: null });
-    expect(String(rows[0]?.['config_error'])).toContain('bogus_key');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['settings_valid']).toBe(true);
+    expect(rows[0]?.['source']).toBe('manual');
+    expect(rows[0]?.['settings_updated_at']).toBeInstanceOf(Date);
   });
 
-  it('通知抛错：仍然落库为禁用（通知是尽力而为）', async () => {
-    const result = await syncRepoConfig(
-      {
-        fetch: fetcherOf({ found: true, yaml: 'version: 1\nbogus_key: 1\n', sha: null }),
-        db: db.pool,
-        notify: async () => {
-          throw new Error('GitHub 挂了');
-        },
-        logger: createNullLogger(),
-      },
-      REPO,
-    );
-    expect(result).toMatchObject({ valid: false, enabled: false, notified: false });
+  it('upsertRepo：重复调用幂等，且不覆盖面板改过的 settings', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    const updated = await updateRepoSettings(db.pool, REPO, {
+      ...DEFAULT_REPO_SETTINGS,
+      dry_run: false,
+      limits: { ...DEFAULT_REPO_SETTINGS.limits, concurrency_per_repo: 5 },
+    });
+    expect(updated.ok).toBe(true);
+
+    await upsertRepo(db.pool, { repo: REPO, source: 'installation', installationId: 42 });
+    const rows = await db.sql('select count(*)::int as n from repos');
+    expect(rows[0]?.['n']).toBe(1);
+
+    const policy = await readRepoPolicy(db.pool, REPO);
+    expect(policy.dryRun).toBe(false);
+    expect(policy.settings?.limits.concurrency_per_repo).toBe(5);
+    // 安装事件补上了来源与 installation id
+    expect(policy.source).toBe('installation');
+    expect(policy.installationId).toBe('42');
+  });
+
+  it('upsertRepo：安装来源可以显式建一个「关着 + dry-run」的行', async () => {
+    const created = await upsertRepo(db.pool, {
+      repo: REPO,
+      source: 'installation',
+      installationId: 7,
+      enabled: false,
+      dryRun: true,
+    });
+    expect(created.ok).toBe(true);
     const policy = await readRepoPolicy(db.pool, REPO);
     expect(policy.enabled).toBe(false);
+    expect(policy.dryRun).toBe(true);
+    expect(policy.installationId).toBe('7');
   });
 
-  it('没有配置文件：按默认配置入库（enabled=true / dry_run=true），不通知', async () => {
-    const result = await syncRepoConfig(
-      { fetch: fetcherOf({ found: false, yaml: null, sha: null }), db: db.pool },
-      REPO,
-    );
-    expect(result).toMatchObject({ found: false, valid: true, enabled: true, dryRun: true, notified: false });
+  it('updateRepoSettings：合法配置写库，并把 enabled / dry_run 列同步过去', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    const result = await updateRepoSettings(db.pool, REPO, {
+      ...DEFAULT_REPO_SETTINGS,
+      enabled: true,
+      dry_run: false,
+      labels: { ...DEFAULT_REPO_SETTINGS.labels, map: { bug: ['bug', 'needs-info'] } },
+    });
+    expect(result.ok).toBe(true);
+
+    const rows = await db.sql('select enabled, dry_run, settings, settings_error from repos');
+    expect(rows[0]).toMatchObject({ enabled: true, dry_run: false, settings_error: null });
+    expect((rows[0]?.['settings'] as { labels: { map: Record<string, unknown> } }).labels.map['bug']).toEqual([
+      'bug',
+      'needs-info',
+    ]);
+
     const policy = await readRepoPolicy(db.pool, REPO);
-    expect(policy).toMatchObject({ known: true, enabled: true, dryRun: true, configValid: true });
+    expect(policy.dryRun).toBe(false);
+    expect(policy.settings?.labels.map['bug']).toEqual(['bug', 'needs-info']);
+  });
+
+  it('updateRepoSettings：非法配置不写库（库里保持 last-known-good）', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    const good = await updateRepoSettings(db.pool, REPO, {
+      ...DEFAULT_REPO_SETTINGS,
+      limits: { ...DEFAULT_REPO_SETTINGS.limits, max_task_minutes: 25 },
+    });
+    expect(good.ok).toBe(true);
+
+    const bad = await updateRepoSettings(db.pool, REPO, {
+      ...DEFAULT_REPO_SETTINGS,
+      limits: { ...DEFAULT_REPO_SETTINGS.limits, max_task_minutes: 999 },
+    });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) {
+      return;
+    }
+    expect(bad.notFound).toBe(false);
+    expect(bad.issues.join(' ')).toContain('limits.max_task_minutes');
+
+    // 库里还是上一次的合法值，webhook 不会因为一次手滑就哑掉
+    const policy = await readRepoPolicy(db.pool, REPO);
+    expect(policy.settingsValid).toBe(true);
+    expect(policy.settings?.limits.max_task_minutes).toBe(25);
+  });
+
+  it('last-known-good：库里的 jsonb 被手改成非法 → settings=null 且标为不可用', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    // 绕过 API 直接改库（模拟手改 / 旧结构）
+    await db.pool.query(`update repos set settings = '{"compliance": {"enabled": false}}'::jsonb`);
+
+    const policy = await readRepoPolicy(db.pool, REPO);
+    // 仓库存在，但配置不可用 → webhook 忽略它的投递
+    expect(policy.known).toBe(true);
+    expect(policy.settingsValid).toBe(false);
+    expect(policy.settings).toBeNull();
+    expect(policy.config).toBeNull();
+    expect(policy.settingsError).toContain('compliance');
+  });
+
+  it('settings_valid=false 时直接按不可用处理，并带上列里记的原因', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    await db.pool.query(
+      `update repos set settings_valid = false, settings_error = '面板写入失败：手工回滚' where repo_full_name = $1`,
+      [REPO],
+    );
+    const policy = await readRepoPolicy(db.pool, REPO);
+    expect(policy.known).toBe(true);
+    expect(policy.settingsValid).toBe(false);
+    expect(policy.settings).toBeNull();
+    expect(policy.settingsError).toBe('面板写入失败：手工回滚');
+  });
+
+  it('归档 → enabled=false（不删行），重新安装后恢复', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    await db.pool.query(`update repos set archived_at = now() where repo_full_name = $1`, [REPO]);
+
+    const archived = await readRepoPolicy(db.pool, REPO);
+    expect(archived.enabled).toBe(false);
+    expect(archived.archivedAt).not.toBeNull();
+    // settings 仍然可读（面板要展示归档仓库的配置）
+    expect(archived.settingsValid).toBe(true);
+
+    // 重新安装 = 复活（upsertRepo 清 archived_at）
+    await upsertRepo(db.pool, { repo: REPO, source: 'installation', installationId: 9 });
+    const restored = await readRepoPolicy(db.pool, REPO);
+    expect(restored.enabled).toBe(true);
+    expect(restored.archivedAt).toBeNull();
   });
 
   it('readRepoPolicy：repos 没有这一行 → UNKNOWN_REPO_POLICY（webhook 据此忽略）', async () => {
     expect(await readRepoPolicy(db.pool, 'nobody/nothing')).toEqual(UNKNOWN_REPO_POLICY);
+    expect(UNKNOWN_REPO_POLICY.known).toBe(false);
+    expect(UNKNOWN_REPO_POLICY.enabled).toBe(false);
+    expect(UNKNOWN_REPO_POLICY.settings).toBeNull();
   });
 
-  it('重复同步同一仓库是幂等的（UPSERT，不报唯一键冲突）', async () => {
-    const deps = { fetch: fetcherOf({ found: true, yaml: VALID_YAML, sha: 'sha-1' }), db: db.pool };
-    await syncRepoConfig(deps, REPO);
-    await syncRepoConfig(deps, REPO);
-    const rows = await db.sql('select count(*)::int as n from repos');
-    expect(rows[0]?.['n']).toBe(1);
+  it('updateRepoSettings：仓库不存在 → notFound（HTTP 层据此回 404）', async () => {
+    const result = await updateRepoSettings(db.pool, 'nobody/nothing', DEFAULT_REPO_SETTINGS);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.notFound).toBe(true);
   });
 
-  it('SQL 常量与表列名对得上（读一次就能发现列名漂移）', async () => {
-    await db.pool.query(REPO_CONFIG_SQL.upsert, [REPO, true, true, null, true, null]);
-    const rows = await db.sql(REPO_CONFIG_SQL.readPolicy, [REPO]);
-    expect(rows).toHaveLength(1);
+  it('listRepos：列出全部仓库与状态（按 repo_full_name 升序）', async () => {
+    await upsertRepo(db.pool, { repo: 'acme/zeta' });
+    await upsertRepo(db.pool, { repo: 'acme/alpha', source: 'installation', installationId: 11 });
+    await db.pool.query(`update repos set archived_at = now() where repo_full_name = 'acme/zeta'`);
+
+    const repos = await listRepos(db.pool);
+    expect(repos.map((item) => item.repo)).toEqual(['acme/alpha', 'acme/zeta']);
+    expect(repos[0]).toMatchObject({
+      enabled: true,
+      source: 'installation',
+      installationId: '11',
+      archivedAt: null,
+    });
+    expect(repos[1]).toMatchObject({ enabled: false, source: 'manual', installationId: null });
+    expect(repos[1]?.archivedAt).not.toBeNull();
+    expect(repos[0]?.settingsUpdatedAt).not.toBeNull();
+  });
+
+  it('读路径不会写库（`readRepoPolicy` 是只读的）', async () => {
+    await upsertRepo(db.pool, { repo: REPO });
+    const before = await db.sql('select settings_updated_at, updated_at from repos');
+    await readRepoPolicy(db.pool, REPO);
+    const after = await db.sql('select settings_updated_at, updated_at from repos');
+    expect(after).toEqual(before);
   });
 });

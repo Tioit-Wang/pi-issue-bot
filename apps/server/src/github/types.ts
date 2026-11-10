@@ -121,6 +121,67 @@ export type GithubWriteApi = {
   }): Promise<void>;
 };
 
+/**
+ * GitHub 的 8 种 reaction content（`docs/plan-multi-repo.md` §5 只用前三个里的
+ * `eyes` / `rocket` / `confused`；其余保留，方便测试与将来扩展）。
+ */
+export const REACTION_CONTENTS = [
+  '+1',
+  '-1',
+  'laugh',
+  'confused',
+  'heart',
+  'hooray',
+  'rocket',
+  'eyes',
+] as const;
+
+export type ReactionContent = (typeof REACTION_CONTENTS)[number];
+
+/** `+eyes` 成功后 GitHub 返回的引用（`reaction_id` 落 `issue_feedback`）。 */
+export type ReactionRef = {
+  readonly id: number;
+};
+
+/** 列出来的单条 reaction（删之前要按 `userLogin` 判是不是自己打的）。 */
+export type ReactionEntry = {
+  readonly id: number;
+  readonly content: string;
+  readonly userLogin: string | null;
+};
+
+/**
+ * reaction 的目标。
+ *
+ * `commentId` 给了就打**评论级** reaction（`/issues/comments/{id}/reactions`），
+ * 否则打**主贴**（`/issues/{n}/reactions`，PR 主贴同样走这个端点）。
+ *
+ * PR review comment 的 reaction 需要 `Pull requests:write`（本方案不引入该权限），
+ * 所以 review comment 触发时调用方必须把 reaction 打在主贴上（不传 `commentId`）。
+ */
+export type ReactionTarget = {
+  readonly repo: string;
+  readonly issueNumber: number;
+  readonly commentId?: number | null;
+};
+
+/**
+ * reaction 的窄接口（`docs/impl-multi-repo.md` W2-D）。
+ *
+ * 与 `GithubWriteApi` 分开的理由：既有写面已有多处假实现，往里加两个方法会让
+ * 与无感反馈无关的测试一起改签名；reaction 是独立能力，独立注入。
+ *
+ * 同 content 重复 POST 是幂等的（实测：第一次 201、第二次 200，返回同一个 id），
+ * 所以**发之前不需要查重**；`listReactions` 只在「删自己的」与面板回显时才需要。
+ */
+export type GithubReactionApi = {
+  addReaction(input: ReactionTarget & { readonly content: ReactionContent }): Promise<ReactionRef>;
+  listReactions(
+    input: ReactionTarget & { readonly content: ReactionContent; readonly perPage?: number },
+  ): Promise<readonly ReactionEntry[]>;
+  removeReaction(input: ReactionTarget & { readonly reactionId: number }): Promise<void>;
+};
+
 /** `owner/name` 形式的仓库标识。 */
 export type RepoRef = {
   readonly owner: string;
