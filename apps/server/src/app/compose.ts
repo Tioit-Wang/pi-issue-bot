@@ -32,6 +32,7 @@ import type { SqlExecutor } from '../db/index.ts';
 import { closePool, createPool } from '../db/index.ts';
 import { readRepoPolicy } from '../config/index.ts';
 import { resolveGithubAuth } from './github-auth.ts';
+import { createGithubWriteApi } from '../github/index.ts';
 import type { GithubClient, GithubWriteApi } from '../github/index.ts';
 import { RepoCache, createExecFileRunGit, createRepoWorktreePort } from '../git/index.ts';
 import {
@@ -361,6 +362,14 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
 
   // ── worker 端口（docker / exec 代理 / lifecycle / host / github / worktree）──
   const baseGithubClient = createDefaultGithubClient(config, logger);
+  const matchableGithub =
+    overrides.github !== undefined
+      ? { github: overrides.github }
+      : baseGithubClient === null
+        ? {}
+        : // 写面优先用 App 认证的客户端：评论/打标会显示成 `<app-slug>[bot]`，
+          // 与 webhook ack 用的是同一个客户端。只有 App 不可用才回落到静态 token 分支。
+          { github: createGithubWriteApi(baseGithubClient) };
   const declaredPorts =
     overrides.ports ??
     createWorkerPorts({
@@ -371,7 +380,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       worktree: overrides.worktree ?? createDefaultWorktreePort(config, logger),
       // 有 bundle 就真起 pi-host（`HostSupervisor`）；没有就换成「明确失败」的端口并告警
       host: overrides.host ?? createDefaultHostPort(config, logger),
-      ...(overrides.github === undefined ? {} : { github: overrides.github }),
+      ...matchableGithub,
     });
   const liveContainers = new Set<string>();
   const ports: WorkerPorts = {
