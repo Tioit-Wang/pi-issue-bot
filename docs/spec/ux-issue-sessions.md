@@ -227,3 +227,25 @@ sessions 禁止：`pnpm add/install`、`git add/commit/push`、改 `docs/plan.md
 1. `gh webhook forward` 进程会僵尸（转发静默失效，DB 里 `webhook_deliveries` 不再增长）。R1 的实测前先确认投递在增长。
 2. App bot 不可被 @（§1.5）。测试「@」触发时，正文里写 `@pi-issue-bot-tioit` 即可命中我们的字符串匹配，不必是蓝色链接。
 3. 本机 `PI_BOT_PANEL_AUTH=off` 只对 loopback 生效；新增接口必须走 `requireAuth`，不要另开后门。
+
+## 7. 列表查询的索引（dev 库已直连建好，**不在 migrations 里**）
+
+2026-11-10 按数据面评审（L-B）用 `EXPLAIN (ANALYZE,BUFFERS)` 的证据，在**本机 dev 库 `pi_issue_bot` 直接建了 4 条索引**
+（用户明确：开发环境不做迁移，直接覆盖）。生产/新环境要复现时，把下面这段原样跑一遍：
+
+```sql
+create index if not exists webhook_deliveries_repo_received_idx
+  on webhook_deliveries (((payload -> 'repository' ->> 'full_name')), received_at desc);
+create index if not exists tasks_target_activity_idx
+  on tasks (repo, target_kind, target_number, queued_at desc) include (source, status);
+create index if not exists runs_task_recent_idx
+  on runs (task_id, attempt desc, ended_at desc);
+create index if not exists actions_run_reply_idx
+  on actions (run_id, applied_at desc) include (intent) where applied_at is not null;
+```
+
+- **为什么第一条最重要**：`webhook_deliveries` 是唯一无限增长的表（90 天保留），旧计划里它吃掉 85% buffer。
+- `bot_labels` 不用新建：既有的 `bot_labels_active_uidx (repo, issue_number, label) where removed_at is null` 已覆盖。
+- 当前 dev 库只有几十行，规划器仍会选 seq scan（成本更低），这**不是**索引失效；
+  用 `set enable_seqscan=off` 可以验证四条都被选中（`webhook_deliveries_repo_received_idx` / `tasks_target_activity_idx` /
+  `runs_task_recent_idx` / `actions_run_reply_idx`，其中 `runs_task_recent_idx` 在会话详情里已被实际使用）。
