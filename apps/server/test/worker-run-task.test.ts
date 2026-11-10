@@ -94,6 +94,13 @@ function createMemoryStore(): RunStore & {
   readonly envelopes: EnvelopeRecord[];
   readonly actions: ActionRecord[];
   readonly degeneracyHits: { criterion: string; detail: unknown }[];
+  readonly usageRows: {
+    runId: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }[];
   readonly tasks: { status: string; containerName?: string }[];
 } {
   /**
@@ -112,6 +119,14 @@ function createMemoryStore(): RunStore & {
   const envelopes: EnvelopeRecord[] = [];
   const actions: ActionRecord[] = [];
   const degeneracyHits: { criterion: string; detail: unknown }[] = [];
+  /** 记账行（`usage_costs`）：金额已按 DeepSeek 价目算好，测试只断言「写了什么」 */
+  const usageRows: {
+    runId: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }[] = [];
   const tasks: { status: string; containerName?: string }[] = [];
 
   return {
@@ -119,6 +134,7 @@ function createMemoryStore(): RunStore & {
     runEvents,
     envelopes,
     actions,
+    usageRows,
     degeneracyHits,
     tasks,
     async beginRun(input) {
@@ -132,6 +148,9 @@ function createMemoryStore(): RunStore & {
     },
     async recordAction(record) {
       actions.push(record);
+    },
+    async recordUsage(input) {
+      usageRows.push({ ...input });
     },
     async recordDegeneracyHit(input) {
       degeneracyHits.push({ criterion: input.hit.criterion, detail: input.hit.detail });

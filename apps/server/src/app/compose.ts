@@ -68,6 +68,7 @@ import type {
   WorkBoss,
 } from '../queue/index.ts';
 import { createQueries } from '../queries/index.ts';
+import { createHostUsageReader } from '../cost/index.ts';
 import type { Queries } from '../queries/index.ts';
 import { HostSupervisor, createNodeHostSpawn, resolveBundleCommand } from '../runtime/index.ts';
 import type { SandboxDocker } from '../sandbox/index.ts';
@@ -537,6 +538,8 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           store: ports.store,
           github: ports.github,
           ops: channel.ops,
+          // 用量与费用：从 pi-host 的 sqlite 读真实 token，金额按 DeepSeek 官方价目算
+          usage: createHostUsageReader({ dataDir: config.host.dataDir }),
           events: channel.events,
           image: config.worker.image,
           networkMode: config.worker.network,

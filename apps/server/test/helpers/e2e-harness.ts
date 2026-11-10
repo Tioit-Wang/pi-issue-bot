@@ -365,6 +365,7 @@ function unconfiguredRunStore(): WorkerPorts['store'] {
     appendEvent: unset,
     recordEnvelope: unset,
     recordAction: unset,
+    recordUsage: unset,
     recordDegeneracyHit: unset,
     finishRun: unset,
     markTask: unset,

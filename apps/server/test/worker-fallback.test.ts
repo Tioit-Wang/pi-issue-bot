@@ -57,6 +57,7 @@ function createStore(): RunStore & { readonly actions: ActionRecord[] } {
     recordAction: async (record) => {
       actions.push(record);
     },
+    recordUsage: noop,
     recordDegeneracyHit: noop,
     finishRun: noop,
     markTask: noop,

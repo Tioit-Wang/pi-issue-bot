@@ -22,6 +22,7 @@
 import { createDegeneracyMonitor } from '../degeneracy/index.ts';
 import type { DegeneracyHit } from '../degeneracy/index.ts';
 import { decideRetry, pickHighestPrioritySignal } from '../queue/index.ts';
+import { estimateDeepSeekCostUsd } from '../cost/index.ts';
 import type { FailureClass, FailureSignal } from '../queue/index.ts';
 import { DEFAULT_TURN_TIMEOUT_MS, REVIEW_PR_TURN_TIMEOUT_MS, driveTurn } from '../runtime/turn-driver.ts';
 import type { TurnDriveResult, TurnDriverOps } from '../runtime/turn-driver.ts';
@@ -546,6 +547,46 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   const failureClass: FailureClass | null = outcome === 'succeeded' ? null : (highest?.failureClass ?? 'unknown');
   const retry = decideRetry(signals, { attempt });
   const endedAt = new Date(endedAtMs);
+
+  // ── 用量与费用：pi-host 只给 token，金额按 DeepSeek 官方价目自己算 ─────────────
+  //
+  // 为什么不信信封里的 `usage`：那是 agent 自己填的，实测恒为 0（它看不到计费数据）。
+  // pi-host 的 `turns` 表里有 provider 返回的真数（含 cacheReadTokens），所以从那里读。
+  // 读不到 / 算不出**都不影响任务结局**：这条链路是记账，不是判定。
+  const usageTurnId = turnId ?? recordedIds.turnId;
+  if (deps.usage !== undefined && usageTurnId !== undefined) {
+    try {
+      const usage = await deps.usage(usageTurnId);
+      if (usage !== null) {
+        const cost = estimateDeepSeekCostUsd({ model: usage.modelId, tokens: usage, at: endedAt });
+        await deps.store.recordUsage({
+          runId: input.runId,
+          model: usage.modelId ?? 'unknown',
+          // 库里存 provider 口径的「总输入」＝未命中 + 命中缓存；单价差异已经体现在 costUsd 里
+          inputTokens: usage.inputTokens + usage.cacheReadTokens,
+          outputTokens: usage.outputTokens,
+          costUsd: cost.costUsd,
+        });
+        logger.info(
+          {
+            model: usage.modelId,
+            inTokens: usage.inputTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            outTokens: usage.outputTokens,
+            costUsd: cost.costUsd,
+            tier: cost.tier,
+            peak: cost.peak,
+            priceVersion: cost.priceVersion,
+          },
+          '已记录本轮用量与费用',
+        );
+      } else {
+        logger.debug({ turnId: usageTurnId }, 'pi-host 里没有这一轮的用量记录，跳过记账');
+      }
+    } catch (error) {
+      logger.warn({ err: error instanceof Error ? error.message : String(error) }, '记录用量失败（不影响任务结局）');
+    }
+  }
 
   const failureDetail = {
     signals: signals.map((signal) => ({

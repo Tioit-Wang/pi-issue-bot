@@ -492,3 +492,37 @@ PM（本会话：分派、收敛、Gate 判定、契约变更仲裁）
 - skill/prompt 需要对「信封必须输出」做一轮收口（issue #10 即证据）。
 - 面板 OAuth 未接（`/api/*` 恒 401）；生产 webhook 需要公网入口（本机是 `gh webhook forward`）。
 - 本机磁盘水位 93% > 85%：`lifecycle-cleanup` 会按水位销毁容器，长任务与它抢容器是常态。
+
+---
+
+### 13.12 成本口径（DeepSeek 官方价目，2026-11-10）
+
+**问题**：`/api/costs` 一直是 0 —— 两层原因都查过：`usage_costs` **一行都没有**（没人写），
+而信封里的 `usage` 恒为 `{0,0,0}`（agent 看不到计费数据，提示词让它填它只能填 0）。
+
+**token 从哪来**：pi-host 自己的库 `<PI_BOT_HOST_DATA_DIR>/pi.sqlite` 的 `turns` 表里有真数：
+`input_tokens`（未命中缓存）+ `output_tokens` + `usage_json.cacheReadTokens`（命中缓存），
+还有 `model_id`。`runs.turn_id` 就是 `turns.id`，所以一对一挂得上。
+`costStatus` 在 host 侧是 `unknown` —— 它只给 token，不算钱。
+
+**钱怎么算**：`apps/server/src/cost/pricing.ts`（价目写死在代码里，因为它是**事实**不是部署参数）。
+官方价（USD / 1M tokens，<https://api-docs.deepseek.com/quick_start/pricing>）：
+
+| 档 | 缓存命中 | 缓存未命中 | 输出 |
+|---|---|---|---|
+| `deepseek-flash`（= V4.1-Flash-1017，本项目在用的 `deepseek-v4.1-flash`） | 0.006 | 0.30 | 1.20 |
+| `deepseek-v4-pro` | 0.044 | 1.32 | 3.96 |
+
+- **低谷价 = 高峰的一半**；高峰 = **UTC 周一至周五 01:00–04:00、06:00–10:00**，中国法定节假日全天低谷。
+- 三段各乘各的价再相加（`inputTokens` 与 `cacheReadTokens` 是并列的两段，不能先加总）。
+- 节假日无法离线推导：用 `PI_BOT_PEAK_HOLIDAYS=2026-10-01,2026-10-02`（逗号分隔）补；不传就只按工作日+时段判。
+
+**记账链路**：`worker/run-task.ts` 在 turn 结束后读用量 → `estimateDeepSeekCostUsd` → `RunStore.recordUsage`
+→ `usage_costs`（`input_tokens` 存 provider 口径的**总输入** = 未命中 + 命中缓存）。
+读不到 / 算不出**都不影响任务结局**（记账不是判定）。
+
+**历史回填**：`usage_costs` 原本为空，已用一次性脚本按同一价目回填 20 行（$0.214014）。
+真机验证：新跑一轮回答 → 自动新增 1 行（in 26781 + cacheRead 99200 + out 3042 → `$0.006140`，off-peak）。
+
+**已知边界**：`pricingCoverage` 只统计「有 `usage_costs` 行的 run」，早期没有 `turn_id` 的 run 永远不计；
+host 升级若改了 `turns` 表结构，读取器会退化成 `null`（面板显示无用量，而不是假 0）。

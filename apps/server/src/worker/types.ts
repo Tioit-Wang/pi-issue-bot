@@ -17,6 +17,7 @@ import type { DegeneracyHit, DegeneracyMonitorOptions, DegeneracyStats } from '.
 import type { BotLabelLedger, GithubWriteApi } from '../github/index.ts';
 import type { FailureClass, FailureSignal, RetryDecision } from '../queue/index.ts';
 import type { TurnDriverOps } from '../runtime/turn-driver.ts';
+import type { TurnUsageReader } from '../cost/index.ts';
 import type {
   ContainerStateSnapshot,
   DisposeResult,
@@ -174,6 +175,19 @@ export interface RunStore {
   }): Promise<void>;
   recordEnvelope(record: EnvelopeRecord): Promise<void>;
   recordAction(record: ActionRecord): Promise<void>;
+  /**
+   * 记一次用量与费用（`usage_costs`）。
+   *
+   * `inputTokens` 传**含缓存命中**的总输入（provider 口径），`costUsd` 已按
+   * DeepSeek 官方价目的三段价算好（见 `cost/pricing.ts`）——库里不存单价，只存结果。
+   */
+  recordUsage(input: {
+    readonly runId: string;
+    readonly model: string;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly costUsd: number;
+  }): Promise<void>;
   recordDegeneracyHit(input: {
     readonly runId: string;
     readonly hit: DegeneracyHit;
@@ -281,6 +295,11 @@ export interface TaskRunnerDeps {
   readonly github: GithubWriteApi;
   readonly ledger?: BotLabelLedger;
   readonly targets?: TargetContextPort;
+  /**
+   * 读某一轮的真实用量（token）。装配层注入 pi-host 的 sqlite 读取器；
+   * 不注入就表示「这个部署拿不到用量」，`usage_costs` 也就不写。
+   */
+  readonly usage?: TurnUsageReader;
   /** worker 镜像（`pi-worker:node22` 等）。 */
   readonly image: string;
   readonly memoryTier?: SandboxMemoryTier;

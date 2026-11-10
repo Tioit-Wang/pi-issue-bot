@@ -80,6 +80,20 @@ export function createPgRunStore(options: PgRunStoreOptions): RunStore {
       );
     },
 
+    /**
+     * 用量与费用落库。
+     *
+     * 一个 run 一行：同一 run 重复写会变成多行（金额列是 numeric，累加会失真），
+     * 所以调用方只在 turn 结束后写一次；重试是新 run id，天然分开。
+     */
+    async recordUsage(input) {
+      await pool.query(
+        `insert into usage_costs (run_id, model, input_tokens, output_tokens, cost_usd)
+         values ($1, $2, $3, $4, $5::numeric)`,
+        [input.runId, input.model, input.inputTokens, input.outputTokens, input.costUsd],
+      );
+    },
+
     async recordDegeneracyHit(input) {
       await pool.query(
         'insert into degeneracy_hits (run_id, criterion, detail, created_at) values ($1, $2, $3::jsonb, $4)',
