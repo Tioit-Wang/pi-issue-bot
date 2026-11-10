@@ -98,7 +98,6 @@ export function assertAppCredentials(credentials: AppCredentials): void {
     throw authConfigError('GitHub App 的 privateKey 不是 PEM 私钥（缺少 BEGIN/END 头）');
   }
 }
-
 /**
  * 建一个 `@octokit/auth-app` strategy。
  *
@@ -125,6 +124,44 @@ export function createAppAuthStrategy(config: {
   // 注意：这里故意不传 `log`，也绝不在自己这层打印任何东西——
   // @octokit/auth-app 的默认 log 只 warn，且不会打印令牌。
   return factory(options);
+}
+
+/**
+ * 交给 Octokit 的 `authStrategy`（**工厂**，不是实例）。
+ *
+ * 为什么必须是工厂：`@octokit/core` 构造时会调用
+ * `authStrategy({ request, log, octokit, octokitOptions, ...auth })`，然后要求返回值是
+ * **带 `.hook` 的可调用对象**（它随后做 `hook.wrap('request', auth.hook)`）。所以正确写法是
+ * 把 `createAppAuth` 本身交给它，让 `request/log` 在被调用时才注入：
+ *
+ * ```ts
+ * new Octokit({ authStrategy: createAppAuth, auth: { appId, privateKey, installationId } })
+ * ```
+ *
+ * 这里把凭证先闭包进去，效果等价。两种错误写法都有过现场：
+ *  - 直接传**实例**：调用时没有 `type` → `Invalid auth type: undefined`；
+ *  - 包一层箭头函数：`authStrategy.hook` 是 undefined →
+ *    `Cannot read properties of undefined (reading 'bind')`。
+ */
+export type OctokitAuthStrategyFactory = (
+  octokitOptions?: Readonly<Record<string, unknown>>,
+) => unknown;
+
+export function createOctokitAuthStrategy(config: {
+  readonly credentials: AppCredentials;
+  readonly installationId?: number | string | undefined;
+  readonly createAppAuthImpl?: CreateAppAuthFactory | undefined;
+}): OctokitAuthStrategyFactory {
+  assertAppCredentials(config.credentials);
+  const factory = config.createAppAuthImpl ?? defaultCreateAppAuth;
+  const fixed: Record<string, unknown> = {
+    appId: config.credentials.appId,
+    privateKey: config.credentials.privateKey,
+  };
+  if (config.installationId !== undefined) {
+    fixed['installationId'] = config.installationId;
+  }
+  return (octokitOptions = {}) => factory({ ...octokitOptions, ...fixed });
 }
 
 /**

@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ConfigError } from '../src/config/index.ts';
 import { describeAppConfig, readAppConfig, resolveGithubAuth } from '../src/app/index.ts';
+import { createInstallationTokenProvider, createOctokitAuthStrategy } from '../src/github/index.ts';
 
 const base = {
   PI_BOT_PG_DSN: 'postgres://pi:secret@127.0.0.1:5432/pi_bot',
@@ -130,5 +131,36 @@ describe('resolveGithubAuth', () => {
     const text = JSON.stringify(describeAppConfig(config));
     expect(text).not.toContain('/home/alice');
     expect(text).toContain('5690173');
+  });
+});
+
+describe('App 认证交给 Octokit 的 authStrategy', () => {
+  it('必须是 @octokit/auth-app 的实例（带 .hook），不能是包一层的箭头函数', () => {
+    // 回归：早先 `(request) => provider.authStrategy(...)` 让 `authStrategy.hook` 变成
+    // undefined，Octokit 内部 `hook.bind` 直接崩成
+    // `Cannot read properties of undefined (reading 'bind')` —— 现场表现是
+    // 「webhook 收到了、打标/评论发不出去」，日志里只有一行 warn。
+    const provider = createInstallationTokenProvider({
+      credentials: { appId: 5690173, privateKey: fakePem },
+      installationId: 180374996,
+    });
+    const strategy = provider.authStrategy as unknown as { readonly hook?: unknown };
+    expect(typeof provider.authStrategy).toBe('function');
+    expect(typeof strategy.hook).toBe('function');
+  });
+});
+
+describe('createOctokitAuthStrategy：给 Octokit 的是工厂，返回值带 .hook', () => {
+  it('调用后得到 @octokit/auth-app 实例（可调用 + .hook），不会 Invalid auth type / undefined.bind', () => {
+    const strategy = createOctokitAuthStrategy({
+      credentials: { appId: 5690173, privateKey: fakePem },
+      installationId: 180374996,
+    });
+    expect(typeof strategy).toBe('function');
+    const instance = strategy({ request: () => undefined, log: { warn: () => undefined } }) as unknown as {
+      readonly hook?: unknown;
+    };
+    expect(typeof instance).toBe('function');
+    expect(typeof instance.hook).toBe('function');
   });
 });

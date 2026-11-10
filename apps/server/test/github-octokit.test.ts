@@ -112,16 +112,37 @@ describe('Octokit 工厂（注入构造器，零真实请求）', () => {
     expect(options?.['auth']).toBeUndefined();
   });
 
-  it('认证必须显式给一个（authStrategy 或 authToken）', () => {
+  it('认证必须显式给一个（authTokenProvider / authStrategy / authToken），且不能同时给两个', () => {
     const fake = createFakeOctokit(() => ({ status: 200, headers: {}, data: {} }));
-    expect(() => createGithubClient({ OctokitCtor: fake.OctokitCtor })).toThrow(/authStrategy/);
+    expect(() => createGithubClient({ OctokitCtor: fake.OctokitCtor })).toThrow(/authTokenProvider/);
     expect(() =>
       createGithubClient({
         OctokitCtor: fake.OctokitCtor,
         authToken: 't',
         authStrategy: async () => ({}),
       }),
-    ).toThrow(/二选一/);
+    ).toThrow(/只能给一个/);
+  });
+
+  it('authTokenProvider：每次请求把令牌挂到 Authorization（App 认证的生产路径）', async () => {
+    const seen: (Record<string, unknown> | undefined)[] = [];
+    const fake = createFakeOctokit((route, params) => {
+      seen.push(params);
+      return { status: 200, headers: {}, data: { ok: true, route } };
+    });
+    let minted = 0;
+    const client = createGithubClient({
+      OctokitCtor: fake.OctokitCtor,
+      authTokenProvider: async () => {
+        minted += 1;
+        return 'ghs_test_token';
+      },
+    });
+    await client.request('GET /repos/{owner}/{repo}/issues', { owner: 'o', repo: 'r' });
+    const headers = seen[0]?.['headers'] as Record<string, string> | undefined;
+    expect(minted).toBe(1);
+    expect(headers?.['authorization']).toBe('token ghs_test_token');
+    expect(seen[0]?.['owner']).toBe('o');
   });
 
   it('成功的响应也读限流头：remaining=0 → 触发 onRateLimit 回调', async () => {

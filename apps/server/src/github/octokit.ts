@@ -11,7 +11,7 @@
  *     dry-run 期间它必须恒为 0，否则说明有写路径被真的走通了。
  */
 import { Octokit } from 'octokit';
-import type { AuthStrategyLike } from './auth.ts';
+import type { AuthStrategyLike, OctokitAuthStrategyFactory } from './auth.ts';
 import { extractErrorHeaders, toGithubError } from './errors.ts';
 import {
   FALLBACK_RETRY_AFTER_MS,
@@ -39,9 +39,17 @@ const defaultOctokitConstructor: OctokitConstructor = Octokit as unknown as Octo
 export type CreateGithubClientOptions = {
   /** 替换构造器（测试用）。 */
   readonly OctokitCtor?: OctokitConstructor | undefined;
-  /** `@octokit/auth-app` 的 strategy（生产路径：令牌由它在每次请求时挂上并自动续期）。 */
-  readonly authStrategy?: AuthStrategyLike | undefined;
-  /** 直接给一个令牌（只用于本地/测试；生产走 `authStrategy`）。 */
+  /**
+   * **认证（推荐）**：每次请求前取一个令牌（App installation token，`getToken()` 自带缓存与续期）。
+   *
+   * 为什么不把 `@octokit/auth-app` 的 `authStrategy` 交给 Octokit：两条路都踩过坑——
+   * 传实例是 `Invalid auth type: undefined`，传工厂则它的 request 包装会把 route 参数误当成
+   * body（打标 422：`issue_number, owner, repo are not permitted keys`）。令牌注入只改变
+   * `Authorization`，请求语义与 `auth: token` 完全一致，行为可预测。
+   */
+  readonly authTokenProvider?: (() => Promise<string>) | undefined;
+  /** 已建好的 strategy 实例（仅测试/特殊传输；生产用 `authTokenProvider`）。 */
+  readonly authStrategy?: AuthStrategyLike | OctokitAuthStrategyFactory | undefined;
   readonly authToken?: string | undefined;
   /** GitHub Enterprise 的 API 根地址。 */
   readonly baseUrl?: string | undefined;
@@ -57,17 +65,19 @@ export type CreateGithubClientOptions = {
 /**
  * 建一个 `GithubClient`。
  *
- * 认证二选一（`authStrategy` / `authToken`），必须显式给一个：
+ * 认证三选一（`authTokenProvider` / `authStrategy` / `authToken`），**必须显式给一个**：
  * 悄悄退化成「匿名请求」会让限流额度从 5000/h 掉到 60/h，而且失败形态更隐蔽。
  */
 export function createGithubClient(options: CreateGithubClientOptions = {}): GithubClient {
   const hasStrategy = options.authStrategy !== undefined;
   const hasToken = options.authToken !== undefined && options.authToken !== '';
-  if (hasStrategy && hasToken) {
-    throw new Error('createGithubClient: authStrategy 与 authToken 只能二选一');
+  const hasTokenProvider = options.authTokenProvider !== undefined;
+  const authKinds = [hasStrategy, hasToken, hasTokenProvider].filter(Boolean).length;
+  if (authKinds > 1) {
+    throw new Error('createGithubClient: authTokenProvider / authStrategy / authToken 只能给一个');
   }
-  if (!hasStrategy && !hasToken) {
-    throw new Error('createGithubClient: 必须提供 authStrategy（推荐）或 authToken');
+  if (authKinds === 0) {
+    throw new Error('createGithubClient: 必须提供 authTokenProvider（推荐）、authStrategy 或 authToken');
   }
 
   const ctor = options.OctokitCtor ?? defaultOctokitConstructor;
@@ -115,7 +125,19 @@ export function createGithubClient(options: CreateGithubClientOptions = {}): Git
 
     let response: ResponseLike<T>;
     try {
-      response = await callOctokit<T>(route, params);
+      // App 认证：每次请求前取一次令牌（`getToken()` 自带缓存与提前续期），
+      // 只覆盖 Authorization，route/params 语义与 `auth: token` 完全一致。
+      const withAuth =
+        options.authTokenProvider === undefined
+          ? params
+          : {
+              ...(params ?? {}),
+              headers: {
+                ...((params?.['headers'] as Record<string, string> | undefined) ?? {}),
+                authorization: `token ${await options.authTokenProvider()}`,
+              },
+            };
+      response = await callOctokit<T>(route, withAuth);
     } catch (error) {
       const wrapped = toGithubError(error, now());
       if (wrapped.info.class === 'rate_limit') {

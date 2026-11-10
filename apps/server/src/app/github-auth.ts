@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 
 import { createGithubClient, createInstallationTokenProvider } from '../github/index.ts';
-import type { AuthStrategyLike, GithubClient } from '../github/index.ts';
+import type { GithubClient } from '../github/index.ts';
 import { ConfigError } from '../config/index.ts';
 import type { AppConfig } from './config.ts';
 
@@ -65,18 +65,20 @@ export function resolveGithubAuth(config: AppConfig, deps: GithubAuthDeps = {}):
     }
 
     const privateKey = readPrivateKey(privateKeyPath, readFile);
+    // 认证走「每次请求前取令牌」：`createInstallationTokenProvider` 内部缓存并按过期前
+    // 1 分钟续期，我们只把令牌挂到 `Authorization` 上，请求语义与 `auth: token` 完全一致。
+    //
+    // 为什么不用 `@octokit/auth-app` 的 authStrategy：两条路都踩过坑——传实例是
+    // `Invalid auth type: undefined`；传工厂则是它的 request 包装把 route 参数误当 body，
+    // 打标直接 422 `issue_number, owner, repo are not permitted keys`（2026-11-10 实测）。
     const provider = createInstallationTokenProvider({
       credentials: { appId, privateKey },
       installationId,
     });
-    // Octokit 的每次请求都会调用 authStrategy，且不带 `type`；@octokit/auth-app 要求显式
-    // `type: 'installation'`，否则抛 `Invalid auth type: undefined`。这里把默认值补齐。
-    const authStrategy: AuthStrategyLike = (request) =>
-      provider.authStrategy({ ...request, type: 'installation', installationId });
 
     return {
       mode: 'app',
-      client: createGithubClient({ authStrategy }),
+      client: createGithubClient({ authTokenProvider: async () => (await provider.getToken()).token }),
       detail: `GitHub App 认证（appId=${String(appId)}，installationId=${String(installationId)}）`,
     };
   }
