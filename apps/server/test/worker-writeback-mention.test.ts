@@ -138,3 +138,19 @@ describe('toWriteActions：comment 动作带 @，其它动作不受影响', () =
     expect(JSON.stringify(actions[0])).not.toContain('@alice');
   });
 });
+
+describe('withMention：模型自拟的 `@agent` 换成真实提问人', () => {
+  it('以 @agent 开头 → 换成 @alice（保留后面的正文与换行）', () => {
+    expect(withMention('@agent 结论：缺复现步骤。', 'alice')).toBe('@alice 结论：缺复现步骤。');
+    expect(withMention('@agent\n结论：缺复现步骤。', 'alice')).toBe('@alice\n结论：缺复现步骤。');
+    expect(withMention('  @Agent 结论', 'alice')).toBe('@alice 结论');
+  });
+
+  it('@agentX 这类别的账号不算占位称呼（各 @ 各自的）', () => {
+    expect(withMention('@agentX 你好', 'alice')).toBe('@alice @agentX 你好');
+  });
+
+  it('正文没有 @ 时照旧前缀', () => {
+    expect(withMention('结论：信息不足。', 'alice')).toBe('@alice 结论：信息不足。');
+  });
+});

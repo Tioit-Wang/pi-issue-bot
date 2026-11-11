@@ -672,6 +672,8 @@ export const agentMessages = pgTable(
     commentId: bigint('comment_id', { mode: 'number' }),
     /** 消息原文（人消息是原话，事件消息是模板渲染结果） */
     commentBody: text('comment_body'),
+    /** 触发人 login（人消息 = 评论作者，事件消息 = issue 作者）：回复靠它加 `@login` */
+    actorLogin: text('actor_login'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

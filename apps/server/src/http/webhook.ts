@@ -1437,6 +1437,8 @@ async function submitAgentMessage(
     kind: agent.kind,
     commentId: plan.commentId,
     body: composed.text,
+    // 触发人：mention = 评论作者，opened/edited = issue 作者。写回时靠它加 `@login`。
+    actorLogin: plan.actorLogin,
   });
   if (!saved.inserted) {
     const existingTaskId = await findTaskIdByKey(deps.db, agentTaskIdempotencyKey(key)).catch(() => null);

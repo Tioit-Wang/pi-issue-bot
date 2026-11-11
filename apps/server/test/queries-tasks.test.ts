@@ -203,6 +203,30 @@ describe('queries/tasks（真库）', () => {
     expect(detail.diff.text).toContain('diff --git a/src/a.ts');
   });
 
+
+  it('事件 kind 归一：RACP 原始名映射到契约枚举，只有真未知才落 notice', async () => {
+    await db.pool.query(`
+      insert into run_events (run_id, cursor, kind, payload, created_at)
+      values
+        ('r1', 10, 'turn.started', '{}'::jsonb, '2026-06-01T01:08:00Z'),
+        ('r1', 11, 'item.completed', '{}'::jsonb, '2026-06-01T01:09:00Z'),
+        ('r1', 12, 'approval.requested', '{}'::jsonb, '2026-06-01T01:10:00Z'),
+        ('r1', 13, 'sandbox.inspected', '{}'::jsonb, '2026-06-01T01:11:00Z'),
+        ('r1', 14, 'writeback.fallback', '{}'::jsonb, '2026-06-01T01:12:00Z')
+    `);
+
+    const detail = await db.queries.taskDetail('t-succ-1');
+    const kinds = new Map((detail?.events ?? []).map((event) => [event.cursor, event.kind]));
+
+    // 实机（2026-11-11）：这些原始名以前全部落进 notice，详情页整页「通知」
+    expect(kinds.get(10)).toBe('turn');
+    expect(kinds.get(11)).toBe('tool-call');
+    expect(kinds.get(12)).toBe('approval');
+    expect(kinds.get(13)).toBe('sandbox');
+    expect(kinds.get(14)).toBe('writeback');
+    // 真未知（种子里的 `weird-custom`）仍然兜底成 notice
+    expect(kinds.get(4)).toBe('notice');
+  });
   it('详情：校验失败的信封（verdict=null、usage 归零）与没有 diff 的任务', async () => {
     const detail = await db.queries.taskDetail('t-fail-1');
     expect(detail).not.toBeNull();

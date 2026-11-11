@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { lifecycleSweep } from '../src/jobs/index.ts';
+import { lifecycleSweep, listTrackedContainers } from '../src/jobs/index.ts';
 import type { WorktreeCandidate } from '../src/jobs/index.ts';
 import { SandboxError } from '../src/sandbox/index.ts';
 import type { ContainerStateSnapshot, SandboxDocker, TrackedContainer } from '../src/sandbox/index.ts';
@@ -277,5 +277,52 @@ describe('jobs/lifecycle-sweep（假 docker + 假磁盘 + 真库落盘）', () =
         {},
       ),
     ).rejects.toThrow(/0–1/);
+  });
+});
+
+describe('容器清单：已处置过的不再重复进清扫（防「每分钟一条 sandbox.inspected」）', () => {
+  it('最近一次 run 有 sandbox.inspected → 该任务不再进清单；重试产生新 run 后重新进清单', async () => {
+    const jobIds = async (): Promise<string[]> =>
+      (await listTrackedContainers({ pool: db.pool })).map((item) => item.jobId).sort();
+
+    // 初始：三条终态任务都在清单里（历史任务本来就会被扫到）
+    expect(await jobIds()).toEqual(['t-failure', 't-success', 't-timeout']);
+
+    // worker 销毁容器时写的那条快照 —— 它同时是「这个容器已经处理过」的凭据
+    await db.pool.query(
+      "insert into run_events (run_id, cursor, kind, payload) values ('r1', 1, 'sandbox.inspected', '{}'::jsonb)",
+    );
+    expect(await jobIds()).toEqual(['t-failure', 't-timeout']);
+
+    // 重试（runs.attempt +1）意味着容器可能真的还在：新 run 没有快照 → 重新进清单
+    await db.pool.query(
+      "insert into runs (id, task_id, attempt, started_at) values ('r4', 't-success', 2, '2026-06-01T12:10:00Z')",
+    );
+    expect(await jobIds()).toEqual(['t-failure', 't-success', 't-timeout']);
+  });
+
+  it('清扫一轮后该任务就从清单里消失（不会每分钟重复写事件）', async () => {
+    const { docker } = createFakeDocker(STATES);
+    const first = await lifecycleSweep({
+      pool: db.pool,
+      docker,
+      clock,
+      readDiskUsageRatio: async () => 0.9,
+    });
+    // 默认清单（真库）第一轮把三台都处理掉
+    expect(first.stats.containersDestroyed).toBe(3);
+
+    const second = await lifecycleSweep({
+      pool: db.pool,
+      docker,
+      clock,
+      readDiskUsageRatio: async () => 0.9,
+    });
+    // 第二轮：一条都不该再扫到，更不该再追加 sandbox.inspected
+    expect(second.stats.containersScanned).toBe(0);
+    const inserted = await db.pool.query(
+      "select count(*)::int as n from run_events where kind = 'sandbox.inspected'",
+    );
+    expect((inserted.rows[0] as { n: number }).n).toBe(3);
   });
 });

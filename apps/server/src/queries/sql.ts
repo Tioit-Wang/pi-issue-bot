@@ -297,18 +297,42 @@ export function sqlRevertKind(column: string): string {
     else null end`;
 }
 
-/** `run_events.kind` → 契约的 10 个取值；未知事件归入 `notice`（契约里它就是兜底桶）。 */
+/**
+ * `run_events.kind` → 契约的 10 个取值。
+ *
+ * 库里存的是**原始事件名**（RACP 的 `turn.started` / `item.completed` / `approval.requested` /
+ * `sandbox.inspected` / `writeback.fallback` …，保留原始名是为了排查），而契约只有 10 个粗粒度
+ * 取值。这里按前缀归一，别再让 `else 'notice'` 把整页都变成「通知」——
+ * 实机（2026-11-11）一条 run 的 207 条事件全部落进了兜底桶。
+ *
+ * `item.*` 归到 `tool-call`：RACP 的 item 是「对话条目」，本仓用到的 `item.started` /
+ * `item.completed` 都带工具名（`item.delta` 是正文增量，已不落库，见 `worker/run-task.ts::onEvent`）。
+ * 未知事件仍然归 `notice`（契约里它就是兜底桶）。
+ *
+ * 注意用**搜过的 case**（`case when … = …`）：简版 `case col when …` 里出现 `LIKE` 会变成
+ * `col = (col like 'x.%')`，Postgres 直接报 `operator does not exist: text = boolean`。
+ */
 export function sqlRunEventKind(column: string): string {
-  return `case ${column}
-    when 'session' then 'session'
-    when 'turn' then 'turn'
-    when 'tool-call' then 'tool-call'
-    when 'approval' then 'approval'
-    when 'command' then 'command'
-    when 'sandbox' then 'sandbox'
-    when 'envelope' then 'envelope'
-    when 'action' then 'action'
-    when 'writeback' then 'writeback'
+  return `case
+    when ${column} = 'session' then 'session'
+    when ${column} = 'turn' then 'turn'
+    when ${column} = 'tool-call' then 'tool-call'
+    when ${column} = 'approval' then 'approval'
+    when ${column} = 'command' then 'command'
+    when ${column} = 'sandbox' then 'sandbox'
+    when ${column} = 'envelope' then 'envelope'
+    when ${column} = 'action' then 'action'
+    when ${column} = 'writeback' then 'writeback'
+    when ${column} like 'session.%' then 'session'
+    when ${column} like 'turn.%' then 'turn'
+    when ${column} like 'item.%' then 'tool-call'
+    when ${column} like 'tool.%' then 'tool-call'
+    when ${column} like 'approval.%' then 'approval'
+    when ${column} like 'command.%' then 'command'
+    when ${column} like 'sandbox.%' then 'sandbox'
+    when ${column} like 'envelope.%' then 'envelope'
+    when ${column} like 'action.%' then 'action'
+    when ${column} like 'writeback.%' then 'writeback'
     else 'notice' end`;
 }
 

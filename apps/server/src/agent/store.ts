@@ -26,6 +26,8 @@ export type AgentMessageRow = {
   readonly commentId: number | null;
   /** agent 真正看到的那条用户消息（人消息 = 摘过别名的原话，事件消息 = 模板渲染结果） */
   readonly body: string | null;
+  /** 触发人 login（人消息 = 评论作者，事件消息 = issue 作者）；老行为 `null`。 */
+  readonly actorLogin: string | null;
   readonly createdAt: Date;
 };
 
@@ -88,11 +90,11 @@ export function agentTaskCommand(kind: AgentMessageKind): string {
 
 export const AGENT_SQL = {
   /** 幂等落库：返回行 = 新插入；0 行 = 同一 (repo, issue, fingerprint) 已经存在。 */
-  insertMessage: `INSERT INTO "agent_messages" ("repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "created_at", "updated_at")
-VALUES ($1, $2, $3, $4, 'queued', $5, $6, now(), now())
+  insertMessage: `INSERT INTO "agent_messages" ("repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "created_at", "updated_at")
+VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, now(), now())
 ON CONFLICT ("repo", "issue_number", "fingerprint") DO NOTHING
 RETURNING "created_at"`,
-  readMessage: `SELECT "repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "created_at"
+  readMessage: `SELECT "repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "created_at"
 FROM "agent_messages"
 WHERE "repo" = $1 AND "issue_number" = $2 AND "fingerprint" = $3`,
   /**
@@ -132,7 +134,7 @@ WHERE ("repo", "issue_number", "fingerprint") IN (
     WHERE running."repo" = $1 AND running."issue_number" = $2 AND running."status" = 'running'
       AND running."fingerprint" <> "agent_messages"."fingerprint"
   )
-RETURNING "repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "created_at"`,
+RETURNING "repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "created_at"`,
   markStatus: `UPDATE "agent_messages"
 SET "status" = $4, "updated_at" = now()
 WHERE "repo" = $1 AND "issue_number" = $2 AND "fingerprint" = $3`,
@@ -193,6 +195,7 @@ function messageRowOf(raw: unknown): AgentMessageRow | null {
     status: String(row['status'] ?? 'queued') as AgentMessageStatus,
     commentId: typeof commentId === 'number' ? commentId : null,
     body: typeof row['comment_body'] === 'string' ? row['comment_body'] : null,
+    actorLogin: typeof row['actor_login'] === 'string' ? row['actor_login'] : null,
     createdAt: row['created_at'] instanceof Date ? row['created_at'] : new Date(0),
   };
 }
@@ -210,6 +213,8 @@ export async function insertMessage(
     readonly kind: AgentMessageKind;
     readonly commentId?: number | null;
     readonly body: string;
+    /** 触发人 login（人消息 = 评论作者，事件消息 = issue 作者）；老调用点可以不传。 */
+    readonly actorLogin?: string | null;
   },
 ): Promise<{ readonly inserted: boolean; readonly row: AgentMessageRow | null }> {
   const result = await db.query(AGENT_SQL.insertMessage, [
@@ -219,6 +224,7 @@ export async function insertMessage(
     input.kind,
     input.commentId ?? null,
     input.body,
+    input.actorLogin ?? null,
   ]);
   const inserted = (result.rowCount ?? result.rows.length) > 0;
   const existing = await readMessage(db, input.key);
@@ -297,6 +303,8 @@ export async function insertAgentTask(
     readonly key: AgentMessageKey;
     readonly kind: AgentMessageKind;
     readonly body: string;
+    /** 触发人 login：写进 `tasks.actor_login`，回复靠它加 `@login`（缺省回落 `AGENT_TASK_ACTOR`）。 */
+    readonly actorLogin?: string | null;
   },
 ): Promise<{ readonly taskId: string | null }> {
   const idempotencyKey = agentTaskIdempotencyKey(input.key);
@@ -305,7 +313,7 @@ export async function insertAgentTask(
     input.key.repo,
     input.key.issueNumber,
     agentTaskCommand(input.kind),
-    AGENT_TASK_ACTOR,
+    input.actorLogin ?? AGENT_TASK_ACTOR,
     idempotencyKey,
     input.body,
   ]);

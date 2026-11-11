@@ -453,6 +453,10 @@ describe('worker 全链（tech-plan §4.3）', () => {
     const cursors = harness.store.runEvents.map((item) => item.cursor);
     expect(cursors).toEqual(cursors.slice().sort((left, right) => left - right));
     expect(cursors[0]).toBe(1);
+    // 流式增量（`item.delta`）不落库：一次 turn 上百条，落库会把详情页变成「通知」墙
+    expect(harness.store.runEvents.some((item) => item.kind === 'item.delta')).toBe(false);
+    // 销毁时补一条 sandbox.inspected —— `lifecycle-cleanup` 的容器清单靠它排除「已处理过」
+    expect(harness.store.runEvents.filter((item) => item.kind === 'sandbox.inspected')).toHaveLength(1);
 
     // 4) 容器规格与处置
     expect(harness.specs[0]?.name).toBe('pi-job-task-1');

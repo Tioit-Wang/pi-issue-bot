@@ -25,7 +25,7 @@ import type { GithubWriteApi } from '../github/index.ts';
 import type { CapturedEvent } from './envelope.ts';
 import { signalFromGithub } from './failure.ts';
 import type { ActionOutcome, RunStore } from './types.ts';
-import { actionTargetOf } from './writeback.ts';
+import { actionTargetOf, withMention } from './writeback.ts';
 
 /** 兜底评论的隐藏标记（**不参与** `pi-bot:` 去重键，只用于人/审计识别这是兜底）。 */
 export const FALLBACK_COMMENT_MARKER = '<!-- pi-issue-bot:fallback -->';
@@ -265,6 +265,8 @@ export interface PostFallbackCommentInput {
   readonly command: string;
   /** 已经过 `buildFallbackCommentBody()` 的正文（不含 `pi-bot:` 去重标记，那层由 `github/` 追加）。 */
   readonly body: string;
+  /** 提问者 login：兜底评论同样要 `@login`（`worker/writeback.ts::withMention`）。 */
+  readonly mention?: string | null | undefined;
   readonly api: GithubWriteApi;
   readonly store: RunStore;
   readonly clock: () => number;
@@ -286,7 +288,7 @@ export async function postFallbackComment(input: PostFallbackCommentInput): Prom
         repo: input.repo,
         target: input.targetNumber,
         intent: FALLBACK_INTENT,
-        body: input.body,
+        body: withMention(input.body, input.mention),
       },
       { api: input.api },
     );

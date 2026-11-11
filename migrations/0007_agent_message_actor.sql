@@ -1,0 +1,11 @@
+-- 0007：agent 消息记住「谁触发的」，让回复能 @ 到人
+--
+-- 为什么需要：`tasks.actor_login` 在 v0.3 的 agent 任务里固定写 `'agent'`（幂等键口径），
+-- 于是 `worker/writeback.ts::withMention(body, tasks.actor_login)` 只能加上 `@agent` ——
+-- 一个不存在的用户。真实提问人只存在于 webhook 载荷里，落库必须趁那一刻。
+--
+-- 回滚：
+--   ALTER TABLE "agent_messages" DROP COLUMN IF EXISTS "actor_login";
+--
+-- 说明：只加可空列，老行保持 NULL（那时没有记录触发人，回复就不加 @ 前缀）。
+ALTER TABLE "agent_messages" ADD COLUMN IF NOT EXISTS "actor_login" text;

@@ -417,7 +417,12 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         events: observedEvents,
         onEvent: async (event) => {
           captured.push({ eventId: event.eventId, kind: event.kind, payload: event.payload });
-          appendEvent(event.kind, event.payload);
+          // `item.delta` 是正文的**流式增量**（一次 turn 上百条，实机 125 条 / 27 秒）：
+          // 退化检测需要它（走 `captured`，不进库），审计与面板不需要 —— 落库只会让
+          // `run_events` 每轮多出上百行、把真正的事件挤出详情页（上限 500 条）。
+          if (event.kind !== 'item.delta') {
+            appendEvent(event.kind, event.payload);
+          }
         },
         onAudit: (audit) => {
           deps.onAuditEvent?.(audit);
@@ -555,6 +560,8 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         targetNumber: input.targetNumber,
         command: input.command,
         body,
+        // 兜底评论也要 @ 到提问人（与信封里的 comment 一致）
+        mention: input.actorLogin ?? null,
         api: deps.github,
         store: deps.store,
         clock,
@@ -644,7 +651,21 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         });
         disposed = true;
         containerState = disposeResult.state;
-        // 采到 OOM 却与 lifecycle 的判定不一致时以采到的状态为准（§7.3 的判定源是 OOMKilled）
+        // 销毁前快照落一条事件 —— **也是「这个容器已经处理过」的凭据**：
+        // `lifecycle-cleanup` 的容器清单来自 `tasks` 的终态行（`container_name` 永不清空），
+        // 没有这条凭据它就会每分钟对早已消失的容器重放一次 dispose，并往 `run_events`
+        // 追加一条重复的 `sandbox.inspected`（实机：一条 run 结束后 36 分钟涨了 36 行）。
+        // 见 `jobs/lifecycle-sweep.ts` 的 `TRACKED_CONTAINERS_SQL`。
+        appendEvent('sandbox.inspected', {
+          containerId,
+          outcome: toTaskOutcome(preOutcome),
+          reason: '任务结束：容器已由 worker 销毁',
+          oomKilled: disposeResult.state?.oomKilled ?? null,
+          exitCode: disposeResult.state?.exitCode ?? null,
+          status: disposeResult.state?.status ?? null,
+          failureClass: classifyDestroyedState(disposeResult.state) ?? null,
+        });
+        // 采到 OOM 却与 lifecycle 的判定不一致时以采到的状态为准（§7.3 的判定源是 OomKilled）
         const patched = classifyDestroyedState(disposeResult.state);
         if (patched !== undefined && preOutcome !== 'succeeded') {
           logger.debug({ patched }, '销毁前采集出的容器状态');

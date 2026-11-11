@@ -153,8 +153,9 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
     // 是 opened 还是 edited 看 `agent_messages.comment_body`（模板首句不同）。
     expect(tasks[0]?.['command']).toBe('agent:event');
     expect(tasks[0]?.['source']).toBe('agent');
-    // 消息表没有 actor 列 → dispatcher 统一写 `agent`（面板按 agent_messages 找触发评论）
-    expect(tasks[0]?.['actor_login']).toBe('agent');
+    // 触发人落在 `agent_messages.actor_login`（0007）→ dispatcher 原样写进任务的 actor_login，
+    // 写回时靠它加 `@login`。载荷里的 sender 是 alice。
+    expect(tasks[0]?.['actor_login']).toBe('alice');
     expect(tasks[0]?.['status']).toBe('queued');
 
     // 3) 入队恰好一次（singletonKey = taskId）

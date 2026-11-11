@@ -100,6 +100,8 @@ export async function dispatchNextForIssue(
     },
     kind: message.kind,
     body: message.body ?? '',
+    // 真实提问人：写回时靠它加 `@login`（不传就回落成 `agent`，即旧行为）
+    actorLogin: message.actorLogin,
   });
   const taskId = inserted.taskId;
   if (taskId === null) {

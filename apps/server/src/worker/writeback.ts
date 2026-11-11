@@ -340,10 +340,21 @@ export function describeLabelPlan(plan: LabelWritePlan, dryRun: boolean): string
 }
 
 /**
+ * 模型自拟的占位称呼：v0.3 早期 `tasks.actor_login` 恒为 `'agent'`，回复于是以 `@agent` 开头
+ * （一个不存在的账号）。写回时把它换成真实提问人，而不是再叠加一个 `@`。
+ */
+const PLACEHOLDER_MENTIONS = ['@agent'] as const;
+
+/**
  * 给最终回复加 `@提问者` 前缀。
  *
  * 为什么在写回时加、而不是让 agent 自己写：agent 看不到触发评论的作者（提示词里只有 issue 号与问题正文），
- * 而 `@login` 必须来自那一行 `tasks.actor_login`。已经是 `@…` 开头的不重复加。
+ * 而 `@login` 必须来自那一行 `tasks.actor_login`。
+ *
+ * 三条规则：
+ *  1. 已经以 `@提问者` 开头 → 原样返回（不重复加）；
+ *  2. 以占位称呼（`@agent`）开头 → 换成真实提问人（保留后面的正文）；
+ *  3. 其它 → 前缀 `@提问者 `。
  */
 export function withMention(body: string, mention: string | null | undefined): string {
   if (mention === null || mention === undefined) {
@@ -354,7 +365,22 @@ export function withMention(body: string, mention: string | null | undefined): s
     return body;
   }
   const handle = trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
-  return body.trimStart().startsWith(handle) ? body : `${handle} ${body}`;
+  const head = body.trimStart();
+  if (head.toLowerCase().startsWith(handle.toLowerCase())) {
+    return body;
+  }
+  for (const placeholder of PLACEHOLDER_MENTIONS) {
+    if (!head.toLowerCase().startsWith(placeholder)) {
+      continue;
+    }
+    // `@agentX` 这种别的账号不能被当成占位称呼
+    const next = head.charAt(placeholder.length);
+    if (next !== '' && /[A-Za-z0-9_-]/u.test(next)) {
+      continue;
+    }
+    return `${handle}${head.slice(placeholder.length)}`;
+  }
+  return `${handle} ${body}`;
 }
 
 /**
