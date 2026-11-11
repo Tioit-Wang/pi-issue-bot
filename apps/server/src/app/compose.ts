@@ -938,6 +938,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
         targetKind: row.targetKind,
         targetNumber: row.targetNumber,
         ...(row.headSha === null ? {} : { headSha: row.headSha }),
+        // 触发这条任务的原话（agent 任务是 comment_body 渲染结果，其余是 issue 正文）。
+        // 技能正文会引用 `## 任务上下文` 的「正文」段；不给它这段就是空的，技能等于没说。
+        ...(agentMessageBody === null || agentMessageBody === '' ? {} : { body: agentMessageBody }),
       },
       extraSkillFiles: uploadedSkills,
     });

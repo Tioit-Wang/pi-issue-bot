@@ -1,4 +1,10 @@
 /**
+ * ⚠️ 当前**未接线**：本模块假定服务端能看到 agent 的 workspace 目录，但 RACP 没有 workspace 写入通道
+ * （`packages/racp-client/src/ops.ts` 明确不用 `workspace/toolExecute` / `tools/advertise`），
+ * 所以技能正文目前走**提示词**投递，而不是落盘到 `<workspace>/.pi/skills/`。
+ * 保留它是因为 `session/create` 一旦支持文件投放，这是唯一需要接的地方；**不要**在文档里声称
+ * 「技能会被物化到运行目录」—— 现在不会。
+ *
  * 把技能**物化到本次运行的目录**里（不是共享路径）。
  *
  * 为什么需要这一层：

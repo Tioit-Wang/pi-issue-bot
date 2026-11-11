@@ -33,6 +33,7 @@ import { assemblePrompt } from '../skills/assemble.ts';
 import {
   fenceUntrusted,
   renderLabelVocabulary,
+  renderSkillCatalog,
   renderSkillPrompt,
   sanitizeUntrustedText,
 } from '../skills/prompt.ts';
@@ -826,6 +827,35 @@ export function createRepoAgentsMdLoader(
  * **不抛异常**是调用方（`worker/run-task.ts`）的责任，但这里也尽量把「读不到」变成「少一段」：
  * 唯一的抛错来源是 `assemblePrompt`（纯函数，实际不会抛）。
  */
+/**
+ * 从「命令 / 触发文本 / 无」里挑出一个技能名。
+ *
+ * 优先级：
+ * 1. `command` 本身就是 `/xxx`（显式命令任务）；
+ * 2. 触发文本（issue 正文或评论正文）里出现本仓库**已加载**的技能名 —— 这是 `agent:mention` 的主路径；
+ * 3. 都没有 → `null`（交给上层注入技能目录，由模型按 `description` 自选）。
+ *
+ * 只认已加载的名字：文本里出现 `/usr/bin` 这种伪命令不该被当成技能。
+ */
+export function pickRequestedSkill(
+  command: string | null,
+  messageText: string,
+  available: readonly { readonly name: string }[],
+): string | null {
+  const known = new Set(available.map((item) => item.name));
+  const fromCommand = command === null ? null : /^(\/[a-z][a-z0-9-]{0,62})\b/u.exec(command.trim())?.[1] ?? null;
+  if (fromCommand !== null) {
+    return fromCommand;
+  }
+  for (const match of messageText.matchAll(/(?:^|[\s(`])(\/[a-z][a-z0-9-]{0,62})\b/gu)) {
+    const name = match[1];
+    if (name !== undefined && known.has(name)) {
+      return name;
+    }
+  }
+  return null;
+}
+
 export function createPromptEnricher(options: PromptEnricherOptions): PromptEnricher {
   const logger = options.logger;
   const extraSkillFiles = options.extraSkillFiles ?? [];
@@ -838,7 +868,24 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
       config: options.config ?? null,
       ...(logger === undefined ? {} : { logger }),
     });
-    const skill = input.command === null ? undefined : registry.resolve(input.command);
+    // 技能选择：显式命令 → 触发文本里的 `/name` → 都没有则注入技能目录（不静默）。
+    const availableSkills = registry.summaries();
+    const requestedSkill = pickRequestedSkill(
+      input.command,
+      options.context.body ?? '',
+      availableSkills,
+    );
+    const skill = requestedSkill === null ? undefined : registry.resolve(requestedSkill);
+    if (requestedSkill !== null && skill === undefined) {
+      logger?.warn(
+        {
+          repo: options.context.repo,
+          requested: requestedSkill,
+          available: availableSkills.map((item) => item.name),
+        },
+        '指定的技能不可用：已退回技能目录（本轮不注入该技能正文）',
+      );
+    }
 
     const agentsMd = await collectAgentsMd({
       worktreeDir: input.worktreeDir,
@@ -850,7 +897,21 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
     const repo = options.context.repo;
     const assembled = assemblePrompt({
       basePrompt: input.basePrompt,
-      projectPrompt: '',
+      // 没命中技能时注入「本项目的技能目录」，由模型按 description 自选。
+      // 以前这里是空字符串，于是 `agent:mention` 任务实际上没有任何技能知识 ——
+      // 模型只能自己编技能名（实测编出 `format-check`）并去翻已退役的 `.github/pi-bot.yml`。
+      projectPrompt:
+        skill === undefined
+          ? renderSkillCatalog(
+              availableSkills
+                .filter((item) => item.enabled)
+                .map((item) => ({
+                  name: item.name,
+                  description: registry.resolve(item.name)?.frontmatter.description ?? '',
+                }))
+                .filter((item) => item.description !== ''),
+            )
+          : '',
       agentsMd,
       skill:
         skill === undefined

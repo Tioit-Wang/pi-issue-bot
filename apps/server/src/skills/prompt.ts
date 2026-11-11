@@ -281,6 +281,37 @@ export function renderToolCatalog(tools: readonly string[]): string {
   return lines.join('\n');
 }
 
+/**
+ * 技能目录 → 提示词里的 `## 可用技能` 段。
+ *
+ * 为什么需要它：`agent:mention` / `agent:event` 这类任务**没有**明确的技能命令，
+ * 早期实现里 `registry.resolve('agent:mention')` 恒为 `undefined`，于是干脆什么都不注入 ——
+ * 模型只能自己编（实测它会去编一个 `format-check` 技能名，并翻已退役的 `.github/pi-bot.yml`）。
+ *
+ * 有了目录，至少三件事成立：
+ * 1. 模型知道「本项目有哪些技能、各自什么时候用」；
+ * 2. 没有指定技能时会按 `description` 挑一个，并在结论里说明用的是哪个；
+ * 3. 指定了不存在的技能名，提示词里能显式看到「现有的是这些」，不必瞎猜。
+ */
+export function renderSkillCatalog(entries: readonly { readonly name: string; readonly description: string }[]): string {
+  const lines = ['## 可用技能（本项目已加载）', ''];
+  if (entries.length === 0) {
+    lines.push('（没有加载到任何技能：本轮按通用要求处理，不要假称使用了某个技能。）');
+    return lines.join('\n');
+  }
+  for (const entry of entries) {
+    lines.push(`- \`${entry.name}\`：${oneLine(entry.description, 200)}`);
+  }
+  lines.push(
+    '',
+    '用法：',
+    '- 上游已经指定技能时，按该技能执行，不要在它之外另起一套流程。',
+    '- 没有指定时，选**一个**最匹配的（按上面的说明判断），并在结论开头写「技能：`/name`」。',
+    '- 只能从上面这份清单里选；清单里没有的技能名一律不要使用，也不要描述它的流程。',
+  );
+  return lines.join('\n');
+}
+
 /** 技能声明允许产出的 intent 列表（`outputs` → intent，契约 §2 的映射表）。 */
 export function allowedIntentsOf(outputs: readonly SkillOutput[]): readonly string[] {
   const intents: string[] = [];
