@@ -13,22 +13,22 @@
 
 | 项 | 数值 |
 |---|---|
-| 登记用例总数 | **339**（2026-11-11：327 + §6 补下的 12 条） |
-| 涉及测试文件 | **27**（24 + `no-auto-triage` / `pipeline-anchor-shape` / `pipeline-classify-runtime`；另加 `packages/contract/test/config.test.ts` 一个文件里只登记 10/25 条） |
+| 登记用例总数 | **355**（2026-11-12：339 + 本轮 P1-4 行为面 10 条 + P2-3 的 HTTP 层 6 条） |
+| 涉及测试文件 | **28**（27 + `http-webhook-triggers-disabled`；另加 `packages/contract/test/config.test.ts` 一个文件里只登记 10/25 条） |
 | 未登记但同文件的无关用例 | 15（`contract/test/config.test.ts` 里的技能 frontmatter / 配额 / 版本号等，与本改造无关） |
-| 基线（`impl-fixed-pipeline.md` §8） | server 105 文件 / 1281 通过 / 2 skipped；panel 223；contract 81；envelope 33；shared 30；racp-client 87。**复核（2026-11-11，§6 的 12 条补测落地后实测）：server 115 文件 / 1324 通过 / 2 skipped**（相对上一轮 112 文件 / 1312 通过：+3 文件、+12 条；其余 4 个文件 / 8 条来自 P0/P1 那批回归用例） |
+| 基线（`impl-fixed-pipeline.md` §8） | server 105 文件 / 1281 通过 / 2 skipped；panel 223；contract 81；envelope 33；shared 30；racp-client 87。**复核（2026-11-11，§6 的 12 条补测落地后实测）：server 115 文件 / 1324 通过 / 2 skipped**（相对上一轮 112 文件 / 1312 通过：+3 文件、+12 条；其余 4 个文件 / 8 条来自 P0/P1 那批回归用例）。**复核（2026-11-12，本轮 P1-4 + P2-3 落地后实测）：server 116 文件 / 1340 通过 / 2 skipped**（相对上一轮 +1 文件、+16 条） |
 
 ### 1.2 按切片分布
 
 | 切片 | 范围 | 文件数 | 登记用例数 |
 |---|---|---|---|
 | S0 数据与契约 | `issue_pipeline` 列/迁移、`repos.settings` 严格化、4 类 prompt kind、常量、`jobs/` 注册 | 4 | **56** |
-| S1 状态机与门禁 | 转移表、`issue_pipeline` 读写、webhook 三分支、`@` 闸门（`pipeline:notice`）、评论优先、幂等锚形状、`auto:triage` 源码断言 | 5 | **71** |
+| S1 状态机与门禁 | 转移表、`issue_pipeline` 读写、webhook 三分支、`@` 闸门（`pipeline:notice`）、评论优先、幂等锚形状、`auto:triage` 源码断言、`triggers.enabled` 的提及类触发开关 | 6 | **81** |
 | S2 阶段 0 | light 运行时、pass/fail/重检三路径、`stage-result` 校验、5 次不通过、48h 关闭作业 | 5 | **49** |
 | S3 阶段 1 | 四分支、`path:line` 降级、`@` 单槽、按 role 打标、`normalizeDesired`、`pipeline:classify` 跑 sandboxed | 3 | **27** |
 | S4 阶段 2 | `agent` 阶段提示词、会话复用/轮换、层序与预算、四版本线集成 | 7 | **87** |
-| S5 面板 | 流水线页、issue 列表四列、设置页流水线分区、提示词四 tab、层序预览 | 6 | **49** |
-| 合计 | | **27（+1 部分）** | **339** |
+| S5 面板 | 流水线页、issue 列表四列、设置页流水线分区、提示词四 tab、层序预览、提示词路由的 HTTP 层（400 与 `kind` 隔离） | 6 | **55** |
+| 合计 | | **28（+1 部分）** | **355** |
 
 ### 1.3 覆盖判定口径
 
@@ -71,12 +71,14 @@
 | P-USE | `apps/panel/src/components/settings/__tests__/use-prompt.test.tsx` |
 | P-API | `apps/panel/src/lib/api-prompt.test.ts` |
 | P-COL | `apps/panel/src/components/issues/__tests__/pipeline-columns.test.tsx` |
+| HS | `apps/server/test/http-server.test.ts` |
+| WH-TD | `apps/server/test/http-webhook-triggers-disabled.test.ts` |
 
 ---
 
 ## 2. V1–V20 映射表
 
-统计：**已覆盖 11 / 部分 9 / 缺失 1**（共 21 条，含 V4b）。
+统计：**已覆盖 13 / 部分 7 / 缺失 1**（共 21 条，含 V4b）。2026-11-12：V10、V11 由「部分」改「已覆盖」（依据见各自行的补记：`triggers.enabled=false` 的提及类触发行为已有 10 条投递用例，提示词路由的 400 映射与 `?kind=` 隔离已有 6 条 `app.inject`）。
 
 | V 编号 | 验收摘要 | 判定用例（文件::用例名） | 覆盖状态 | 缺什么 |
 |---|---|---|---|---|
@@ -90,8 +92,8 @@
 | V7 | other：只打标签、0 评论、0 `@` | `CP::只打 role=other 标签：0 条评论、0 个 @、直接 ready`（`mentionSentAt` 仍为 NULL） | 已覆盖 | — |
 | V8 | 门禁：被拦命令不建任务、只产 `pipeline:notice`、回 1 条 AI 评论、每小时限速 | `WH::format/awaiting_info → 命令被拦，只产 pipeline:notice（不建命令任务）`；`WH::同一小时内的第二条 @ 只打 eyes（回执限速）`；`WH::format/running → 只打 eyes，零任务`；`WH::blocked → notice`；`WH::closed → 静默`；`WH::PR 完全不受闸门影响` | 部分 | **「回执恰好 1 条 AI 评论」只在提示词/渲染层有断言**（`SP::buildNoticePrompt 从 prompt_text 取 gate_state`、`STP::把 {{gate_state}} 插进模板`），没有「跑一条 `pipeline:notice` 任务 → `createIssueComment` 1 次」的执行面用例；`classify/awaiting_info` 那一行的门禁分支无用例（只有 `blocked` / `format/awaiting_info` / `running`） |
 | V9 | 作用域：阶段 0/1 grep 不到 P1 与技能层，但 grep 到 AGENTS.md 与阶段系统提示词；阶段 2 四层齐 | `SP::stage=format：有 AGENTS.md，没有 P1、没有技能层`；`AP::含 AGENTS.md，不含 P1 与技能层（Q9 / V9）`；`AP::四层齐全：agent 阶段提示词 + P1 + AGENTS.md + 技能层，契约仍在最后`；`ASM::层序：阶段系统提示词 → AGENTS.md → 输出契约` | 已覆盖 | — |
-| V10 | 全量切换/不可绕过：无 `pipeline.enabled`；`triggers.enabled=false`、`commands.enabled=false`、`repos.enabled=true` 组合下三段照跑；全仓 grep 不到 `auto:triage` 任务 | `CONFIG::pipeline 段没有 enabled、没有任何流程阈值`（`pipeline.enabled` 被拒）；`CONFIG::未知键被拒…pipeline.enabled`；`WH::commands.enabled=false 不影响流水线`；`WH::issues.opened → pipeline:format 任务…`（`tasks` 只有 1 行且 command=`pipeline:format`） | 部分 | **`triggers.enabled=false` 的投递用例缺失**（实现在 `webhook.ts:1117-1123` 只取 `triggers` 的别名，不读 `enabled`，但没有用例钉住这一点）；**「全仓 grep 不到 `auto:triage` 任务」没有源码级断言**（`no-merge.test.ts` 只扫 merge，是现成范式） |
-| V11 | 占位符：`format_check` 缺 `{{title}}`/`{{body}}` → 400；未知占位符 400 并列出名字 | `STP::format_check 缺 {{title}} / {{body}} → ok=false 并列出缺的名字`；`STP::未知占位符 → ok=false 并列出名字`；`PK::未知占位符 / 缺 title·body / 超上限：拒写且一行不留`；`PK::body-too-long` 断言（`tooLong.code`） | 部分 | **HTTP 层 400 无用例**：`apps/server/test/` 里没有一条打到 `/api/repos/:o/:r/prompt?kind=` 的 inject；`savePrompt` 的错误码只在 store 层断言，路由→400 的映射靠面板 mock（`P-API::400 的 details.code 原样进 ApiError`）反推 |
+| V10 | 全量切换/不可绕过：无 `pipeline.enabled`；`triggers.enabled=false`、`commands.enabled=false`、`repos.enabled=true` 组合下三段照跑；全仓 grep 不到 `auto:triage` 任务 | `CONFIG::pipeline 段没有 enabled、没有任何流程阈值`（`pipeline.enabled` 被拒）；`CONFIG::未知键被拒…pipeline.enabled`；`WH::commands.enabled=false 不影响流水线`；`WH::V10 不可绕过：triggers.enabled=false 不影响流水线（P1-4）`；`WH-TD::triggers.enabled=false：流水线照跑（P8 的前半句，V10 不可绕过）`；`no-auto-triage.test.ts` 三条（扫到源码 / 扫描面 / 零命中） | 已覆盖 | **2026-11-12 补齐**（原缺 `triggers.enabled=false` 的投递用例 + `auto:triage` 源码断言）。行为面新增 10 条（`WH-TD`）：`enabled=false` 时 `@bot /命令`（issue 与 PR）与 `@bot 提问` **0 条任务**、投递仍落 1 行、不打回执；同一开关下 `issues.opened`、`format/awaiting_info` 作者补充评论、`classify/awaiting_info` managers 评论**照常**产 `pipeline:format` / `pipeline:classify`。**口径取舍**：管理员指令（`/recheck`、`/pipeline next|prev`）按 P8「只关提及类触发、流水线走独立分支」的读法**不**受该开关约束（`webhook.ts` 的 `triggersEnabled` 注释写明）；若要一并关掉须单独定口径 |
+| V11 | 占位符：`format_check` 缺 `{{title}}`/`{{body}}` → 400；未知占位符 400 并列出名字 | `STP::format_check 缺 {{title}} / {{body}} → ok=false 并列出缺的名字`；`STP::未知占位符 → ok=false 并列出名字`；`PK::未知占位符 / 缺 title·body / 超上限：拒写且一行不留`；`PK::body-too-long` 断言（`tooLong.code`）；`HS::PUT ?kind=format_check 缺 {{body}} / 缺 {{title}} → 400 placeholder-missing，并列出缺失名字`；`HS::PUT ?kind=classify 正文含未知占位符 {{nope}} → 400 placeholder-unknown，并列出名字`；`HS::PUT ?kind=agent 正文超过 4000 字符 → 400 body-too-long` | 已覆盖 | **2026-11-12 补齐 HTTP 层**（P2-3，`HS` 6 条 inject）：路由→400 的映射（`error.details.code` + 占位符名字）、`?kind=` 的枚举 400 与四条版本线互不串味、`restore` 回内置默认都在路由层断言；`placeholder-missing` 那条顺带断言「校验不过一行都不写」（`prompt_versions` 0 行） |
 | V12 | 关闭：注入 `PIPELINE_CLOSE_AFTER_HOURS=0.01` 到点关；注入 `PIPELINE_FORMAT_MAX_FAILS=2` 第 2 次关；`close_after_hours`/`max_runs_per_stage` 被 `.strict()` 拒收 | `CLOSE::format/awaiting_info 超时：关一次 + 状态落 closed + closed_at 有值`；`CLOSE::反例一：classify/awaiting_info（info_requested_at 为 NULL）不动`；`FP::注入 formatMaxFails=2：第 2 次不通过就关`；`FE::注入 formatMaxFails=2：第 2 次不通过就关`；`CONFIG::pipeline 段没有 enabled、没有任何流程阈值` | 已覆盖 | — |
 | V13 | 连续两次 `@`：`session_id` 不变、`session_turns +2`、archive 0 次、`after=cursor`；阶段 0/1/2 的 `session_id` 两两不同 | `SES::session_id 不变、session_turns +2、session/archive 0 次、订阅用 cursor 当 after`（真 `createApplication().executeTask()`，`attach=[OLD,OLD]`、`archive=0`、`after=[3,4]`、`turns=6`）；`SES::pipeline:format（light + ephemeral）：跑完 session_id 仍是 NULL` | 部分 | **`classify` 阶段跑完 `session_id` 仍为 NULL 无用例**（判据要求三段两两不同，现在只钉住 0 与 2）；`session_turns` 轮换后从 1 起虽有用例，但「三段 `session_id` 两两不同」需要一条把三段都跑一遍的用例 |
 | V14 | 真实环境：不合格 issue 收到评论、补充后通过、需求 issue 能点到人 | 无（`doctor-real.test.ts` 只验配置/连通性） | **缺失** | 需要一条**人工验收脚本**（脚本化 drop-in 到 `docs/`，不进 `pnpm test`）：在 `Tioit-Wang/pi-issue-bot-test` 上投 3 个 issue（不合规 / 合规 / 缺陷），核对评论数、`/cc` 命中、`issue_pipeline` 行；当前只有 `impl-fixed-pipeline.md` §8 的配置校验记录 |
@@ -596,6 +598,7 @@
 | B13 | 门禁回执每小时 1 条限速 + `running` 只 eyes 零任务 | **已覆盖** | `S1-49`（同小时第 2 条 → `notice` 仍 1 条、`eyes` 2 次）、`S1-61`（>1h 放行）、`S1-50`（`running`：`sends` 0、`tasks` 0、`eyes` 1）、`S1-52`（`closed` 静默） |
 | **B14** | **门禁回执不得改动 `issue_pipeline` 任何字段** | **缺失（P0 回归）** | `S1-48` 只断言 `gateNoticeAt===NOW`，**没有断言 `stage`/`state`/`info_requested_at`/`last_recheck_at`/`mention_sent_at` 原封不动**。实现点在 `webhook.ts:1273`（`applyTransition(db, key, { gateNoticeAt: at })`），而 `buildUpdateStatement`（`pipeline.ts:282-302`）总会追加 `updated_at = now()`。→ **P0-1** |
 | **B15** | **`blocked` 在连续 2 次失败后可达** | **部分（P1 回归）** | 纯函数/执行面都覆盖了（`S2-14`、`S3-09`、`S3-10`、`S3-11`），但真正修掉的那一行在接线层：`compose.ts:848` `consecutiveFailures: params.row.attempt + 1`。**没有用例让同一条任务失败两次并断言 `state='blocked'`** → **P1-3** |
+| **B16** | **`triggers.enabled` 的边界（P8）：`false` 只关 `@` 提及类触发（`/命令` + 提问），流水线一个字不改** | **已覆盖（2026-11-12 补齐）** | 实现：`webhook.ts::handleWebhook` 读完 policy 把 `triggersEnabled` 传给纯函数 `decideWebhookTask`（纯函数不查库），只在「有 @ 且被识别成命令/提问」的评论上判 ignore（`reason=triggers-disabled`，**不打回执**）。用例：`WH-TD`（10 条）——`enabled=false` 下 `issues.opened` 仍产 `pipeline:format`、`format/awaiting_info` 作者评论与 `classify/awaiting_info` managers 评论仍重跑、`@bot /review-pr`（issue/PR）与 `@bot 提问` 0 任务且投递落 1 行；`enabled=true`／缺省三种场景照常建任务（防改反）。旧说法「`webhook.ts` 只取别名、不读 `enabled`，是碰巧对」已不成立 |
 
 ---
 
@@ -691,13 +694,13 @@ export function legacyShapeSettings(): Record<string, unknown>;
 | **P1-1** | 评论优先的**反向**（编辑后 120s 内评论仍立即触发，§16.2 第 3 条末句） | 在 `WH` 新增：先投 `issues.edited`（`tasks` 变 1 行），紧接着投作者评论，断言 `tasks` 变 **2 行**且第 2 行 command 仍 `pipeline:format` | **已补（1 条）**·`WH::评论优先的反向（P1-1）`（口径按真实时序收紧，见下方备注） | 现有一条只测了「评论→编辑让位」；反向若被写反（冷却也挡评论）会静默丢补充信息，用户以为机器人没收到 |
 | **P1-2** | V4 端到端：评论触发 → 新任务 pass → **恰好 1 条确认评论** | 用装配级 harness：`format/awaiting_info` + 作者评论 → 跑掉入队的 `pipeline:format` 任务（pass 信封、无评论动作）→ 断言 `createIssueComment` **1 次**且是兜底确认句、行 `{classify,pending}`、`tasks` 恰好 2 行 | **未补** | 判据是「两段合成一条链」，现在两段分处 `WH`（触发）与 `FP`（确认文案），中间的 `confirmComment` 效果在装配层没有一条用例验证 |
 | **P1-3** | 接线层的 `blocked` 可达（`compose.ts:848` 的 `attempt+1`） | 在 `SES`/新文件里跑同一条 `pipeline:format` 任务两次（`attempt=0`、`attempt=1`），两次都给坏信封，断言第 2 次后行 `state==='blocked'`、`blockedReason` 非空、`createIssueComment` **0 次** | **已补（2 条）**·`apps/server/test/pipeline-blocked-after-retry.test.ts`（连续 2 次失败 → blocked；成功一轮后再失败不 blocked） | P1 就是这个字段推错了（永远只算 1），修完没有接线层用例；纯函数用例给了 `consecutiveFailures=2` 是**喂进去**的，不是算出来的 |
-| **P1-4** | V10 的「不可绕过」：`triggers.enabled=false` + 源码级 `auto:triage` 断言 | ① 在 `WH` 新增一条：`seedRepo({settings:{...VALID, triggers:{...VALID.triggers, enabled:false}}})` + `issues.opened` → 断言仍 `tasks[0].command==='pipeline:format'`；② 照 `no-merge.test.ts` 的范式加 `no-auto-triage.test.ts`，扫 `apps/server/src` 不存在 `'auto:triage'` 任务分支 | **已补（1 + 3 条）**·`WH::V10 不可绕过：triggers.enabled=false 不影响流水线（P1-4）`（1）+ `apps/server/test/no-auto-triage.test.ts`（3） | 规格 §16.1 第 3 条把这两条写成硬判据；现在 `webhook.ts:1117-1123` 只从 `triggers` 取别名、根本不读 `enabled`，**这是「碰巧对」**，任何人加一行判断就回退 |
+| **P1-4** | V10 的「不可绕过」：`triggers.enabled=false` + 源码级 `auto:triage` 断言 | ① 在 `WH` 新增一条：`seedRepo({settings:{...VALID, triggers:{...VALID.triggers, enabled:false}}})` + `issues.opened` → 断言仍 `tasks[0].command==='pipeline:format'`；② 照 `no-merge.test.ts` 的范式加 `no-auto-triage.test.ts`，扫 `apps/server/src` 不存在 `'auto:triage'` 任务分支 | **已补（1 + 3 条）**·`WH::V10 不可绕过：triggers.enabled=false 不影响流水线（P1-4）`（1）+ `apps/server/test/no-auto-triage.test.ts`（3）。**2026-11-12 再补 10 条**（`WH-TD`）：把「提及类触发真的被关掉」这一半也钉住（原来只测了「不影响流水线」） | 规格 §16.1 第 3 条把这两条写成硬判据；`triggers.enabled=false` 当时是「碰巧跑得通」（不读 `enabled`），所以既要行为用例（现在会读它、必然关掉命令/提问）也要「流水线不受影响」的反向用例，缺一头就会在改动时静默回退 |
 | **P1-5** | V16 的后半句：项目版 agent 提示词 + **坏信封** → 校验仍生效 | 新增：`savePrompt(kind:'agent', body:'不要输出 JSON')` → `buildStagePrompt({stage:'agent'})` 的最终 prompt 末尾含契约；再把该 prompt 跑一条返回「非 JSON」的任务，断言 `envelopes.valid===false` 且 `failure_class==='parse'`、`actions` 0 行 | **未补** | 现在前半句（契约在末尾）与后半句（校验生效）分属两个文件，没人验证「换了提示词之后校验还在」 |
 
 > 备注（2026-11-11 补测时确认的两条口径）：
 >
 > - **P1-1 为什么不是逐字照原方案写**：原方案（「编辑先到 → 紧接着评论 → `tasks` 2 行」）在当前实现上**跑不通**，而且不是冷却写反：`issues.edited` 自己会把行推进成 `format/pending`（`workflows/pipeline.ts:877-885`），而 `decideSupplementOutcome()`（`http/webhook.ts:1647-1649`）把 `pending` 与 `running` 一律当「正在跑 → 只打 eyes」，评论在那一步就被丢掉。冷却本身只作用于编辑（`pipelineTransitionFor()` 仅在 `action === 'edited'` 分支读 `recheckCooldownElapsed`，`webhook.ts:1776-1781`），所以「评论被冷却挡住」这个回归不存在。用例因此按**真实时序**写：编辑先到（1 行任务、`last_recheck_at=NOW`）→ 这一轮不通过回到 `format/awaiting_info` → 120s 内的作者评论仍立刻产第 2 行 `pipeline:format`（补充正文也在第 2 行里）。「编辑后立刻评论也要单独触发」属于产品口径问题（与 §8「`pending` 只打 eyes」冲突），要改的是 `decideSupplementOutcome`，不该在测试里假定。
-> - **P1-4 为什么拆两处**：`triggers.enabled=false` 是投递层的「碰巧对」（`webhook.ts:1117-1123` 只取别名），行为用例能钉住现状但钉不住「有人日后补一行 `enabled` 判断」；源码级 `auto:triage` 零命中只有扫源码能钉，故拆成 `WH` 一条 + 新文件三条（扫到源码 / 扫描面覆盖 `http·workflows·queue·worker` / 零命中）。
+> - **P1-4 为什么拆两处**：`triggers.enabled=false` 在 2026-11-11 时是投递层的「碰巧对」（`webhook.ts` 当时只取别名、不读 `enabled`），行为用例只能钉住现状；源码级 `auto:triage` 零命中只有扫源码能钉，故拆成 `WH` 一条 + 新文件三条（扫到源码 / 扫描面覆盖 `http·workflows·queue·worker` / 零命中）。**2026-11-12 更新**：`enabled` 现在是**真的**被读（`handleWebhook` → `decideWebhookTask` 的 `triggersEnabled`），于是「关掉命令/提问」与「流水线照跑」两侧都需要用例，`WH-TD` 的 10 条补的就是这个交叉矩阵。
 
 ### 6.2 B 类：规格要求但实现/测试都没有
 
@@ -705,7 +708,7 @@ export function legacyShapeSettings(): Record<string, unknown>;
 |---|---|---|---|---|
 | **P2-1** | `pipeline:classify` 必须跑 **sandboxed**（D6 + 30 分钟闸） | 为 `compose.ts:204-210` 的 `PIPELINE_RUNTIME_MODE` 加单测：断言 4 个 command 的映射，并用装配级用例断言 `pipeline:classify` 任务的 `report.runtimeMode==='sandboxed'` 且 `docker.create` 1 次 | **已补（2 条）**·`apps/server/test/pipeline-classify-runtime.test.ts`（映射表 1 + 装配级 1） | 现在只有 `pipeline:format → light` 有装配断言（`e2e-envelope-invalid.ts:151`）；映射表本身 0 用例，写错就是「分类不上容器」——流程看起来照跑，但查不到代码 |
 | **P2-2** | V17 的「0005 迁移跑完后存量 settings 全部是新形状」 | 用 `applyMigration0005(pool)` 在含旧形状行的库上跑迁移，然后 `select settings from repos` 逐行 `parseRepoSettings` 断言全成功；再断言被丢空词表的仓库 `settings_valid=false` | **未补** | `CONST` 现有 4 条只断言 SQL **文本**；迁移里的 `jsonb` 运算写错不会红 |
-| **P2-3** | HTTP 层：`PUT /api/repos/:o/:r/prompt?kind=` 的 400（未知占位符 / 缺 `{{title}}` / 超限）与 `GET` 的 kind 隔离；`PUT /settings` 的 400 | 在 `http-server.test.ts` 加 3 条 `app.inject`：非法占位符 → 400 且 `details.code`/名字、超限 → 400 `body-too-long`、`GET ?kind=classify` 不返回 project 正文 | **未补** | 面板侧已在 mock 上断言了文案（`P-USE`），**服务端路由一条都没测**——路由参数名写错也能「全绿」 |
+| **P2-3** | HTTP 层：`PUT /api/repos/:o/:r/prompt?kind=` 的 400（未知占位符 / 缺 `{{title}}` / 超限）与 `GET` 的 kind 隔离；`PUT /settings` 的 400 | 在 `http-server.test.ts` 加 `app.inject`：非法占位符 → 400 且 `details.code`/名字、超限 → 400 `body-too-long`、`GET ?kind=classify` 不返回 project 正文 | **已补（6 条，2026-11-12）**·`HS::提示词 API（HTTP 层，P2-3）`：①`GET ?kind=classify` vs `?kind=project`（互不串味 + `limit`/`activeVersion`/`systemDefault`）②`GET ?kind=xxx` → 400 ③`PUT ?kind=format_check` 缺 `{{body}}` / 缺 `{{title}}` → 400 `placeholder-missing` + `missingPlaceholders` + 一行不写 ④`PUT ?kind=classify` 含 `{{nope}}` → 400 `placeholder-unknown` + `unknownPlaceholders` ⑤`PUT ?kind=agent` 4001 字符 → 400 `body-too-long` ⑥`POST ?kind=agent/restore` → 指针回 0、`GET` 回到内置默认。**剩半句**：`PUT /api/repos/:o/:r/settings` 的 400 仍只有 store 层断言（`S0-R11`），HTTP 层无 inject —— 本轮未做（不在这次改动面内），仍挂在 §4 B8 的备注上 | 面板侧已在 mock 上断言了文案（`P-USE`），**服务端路由一条都没测**——路由参数名写错也能「全绿」；补完后 `details.code` / 占位符名字 / `?kind=` 隔离都在真实路由上被钉住 |
 | **P2-4** | V20 的「每次操作有审计记录」 | 在 `DIR` 里补断言：指令执行后 `webhook_deliveries` 恰好 1 行（`deliveryId` 对应）、`tasks` 1 行、日志 logger 收到 1 条带 `directive=` 的记录 | **未补** | 现在只断言 `tasks`；`webhook.ts:1743` 写的审计口径（投递行 + 任务行 + 日志）没被测 |
 | **P2-5** | 幂等锚的字符串形状（B4） | 给 `pipelineAnchor()` / `supplementAnchor` 加单测：`pipelineAnchor('format','v1')==='pipeline:format:v1'`，补充锚 `==='pipeline:format:v1:777'` | **已补（5 条）**·`apps/server/test/pipeline-anchor-shape.test.ts` | 锚拼错不报错，只让幂等静默失效——最难查的一类回归 |
 | **P2-6** | V13 的「三个阶段 `session_id` 两两不同」 | 在 `SES` 补一条：`pipeline:format`（light）、`pipeline:classify`（sandboxed）、两次 `@answer` 依次跑，断言 format/classify 后 `session_id` 均为 NULL、两条 `@` 后为同一非空 id，且 `session/archive` 共 3 次（阶段 0/1 各 1 + 无轮换时 0） | **未补** | 现在只有 format=null 有断言；classify 阶段没有装配级用例 |
@@ -722,17 +725,19 @@ export function legacyShapeSettings(): Record<string, unknown>;
 
 > 2026-11-11 更新：P0-1/P0-2/P1-1/P1-3/P1-4/P2-1/P2-5 已补，以下为剩余。
 > 前 5 条即原「最该补的 5 条」的位置被补完之后的新前 5；`P2-9` / `P2-10` 见 §7。
+>
+> 2026-11-12 更新：**P2-3 的 prompt 一半已补**（`HS` 6 条 inject，见 §6.2），已从下表移除；
+> `PUT /api/repos/:o/:r/settings` 的 HTTP 层 400 仍缺（归 §4 B8）。
 
 | 顺序 | 用例 | 一句话理由 |
 |---|---|---|
 | 1 | **P1-2** V4 的端到端链路（评论 → 重跑 → 恰 1 条确认评论） | 判据横跨两个文件（`WH` 触发 / `FP` 文案），中间 `confirmComment` 效果在装配层无人验证——P1-1 补完后，「评论 → 真的跑出确认评论」这条链仍是断的 |
 | 2 | **P1-5** V16 后半句：项目版 agent 提示词 + **坏信封** → 校验仍生效 | 「契约永远在最后」已被钉住，「换了提示词之后信封校验还在」没有一条用例；这两半分开就有人把校验挪进提示词 |
-| 3 | **P2-3** HTTP 层 400 与 `kind` 隔离（`PUT/GET …/prompt?kind=`、`PUT /settings`） | 面板侧只在 msw 上断言了文案，服务端路由一条 inject 都没有——参数名/映射写错也能全绿 |
-| 4 | **P2-2** 0005 迁移跑完后存量 `settings` 全过新契约 | 现在只断言迁移 SQL 的**文本**；`jsonb` 运算写错（少删一个键、role 过滤反了）不会有任何红 |
-| 5 | **P2-4** V20 的「每次操作有审计记录」（`webhook_deliveries` + `tasks` + 带 `directive=` 的日志） | 指令是唯一能改状态的入口，现在只断言 `tasks` 一行；`runDirective()` 的审计口径（投递行 + 任务行 + 日志）没被测 |
-| 6 | **P2-6** V13 的「三个阶段 `session_id` 两两不同」 | 只有 `format=null` 有断言；`classify` 阶段没有装配级用例（补 P2-1 时已铺好跑 `pipeline:classify` 的 harness，成本已降到接近 0） |
-| 7 | **P2-8** 面板「今日自动关闭」「已归档」缺数据源 | 两条用例把「缺接口」写成期望值，接口补上后会**假绿**，必须同步改 |
-| 8 | **P2-7** V14 真实环境验收（3 个真实 issue） | 假 GitHub 验不了「`@` 是否真点到人 / 评论是否被拒」，只能手工脚本兜 |
+| 3 | **P2-2** 0005 迁移跑完后存量 `settings` 全过新契约 | 现在只断言迁移 SQL 的**文本**；`jsonb` 运算写错（少删一个键、role 过滤反了）不会有任何红 |
+| 4 | **P2-4** V20 的「每次操作有审计记录」（`webhook_deliveries` + `tasks` + 带 `directive=` 的日志） | 指令是唯一能改状态的入口，现在只断言 `tasks` 一行；`runDirective()` 的审计口径（投递行 + 任务行 + 日志）没被测 |
+| 5 | **P2-6** V13 的「三个阶段 `session_id` 两两不同」 | 只有 `format=null` 有断言；`classify` 阶段没有装配级用例（补 P2-1 时已铺好跑 `pipeline:classify` 的 harness，成本已降到接近 0） |
+| 6 | **P2-8** 面板「今日自动关闭」「已归档」缺数据源 | 两条用例把「缺接口」写成期望值，接口补上后会**假绿**，必须同步改 |
+| 7 | **P2-7** V14 真实环境验收（3 个真实 issue） | 假 GitHub 验不了「`@` 是否真点到人 / 评论是否被拒」，只能手工脚本兜 |
 
 
 ---

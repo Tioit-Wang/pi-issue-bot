@@ -453,6 +453,9 @@ function isBotActor(user: Record<string, unknown> | null): boolean {
  * 覆盖范围有意收窄（其余事件一律 `ignored`，但仍落 `webhook_deliveries` 供审计）：
  *  - `issue_comment.created` 且正文里有 `@pi-bot /cmd` → 命令任务（PR 或 issue）；
  *  - `issue_comment.created` 且是「纯 @ 提问」→ 自由问答任务（PR 或 issue）；
+ *    上面两条（命令 / 自由问答）受 `triggersEnabled`（= `settings.triggers.enabled`）约束：
+ *    `false` 时一律 `ignored`（`reason=triggers-disabled`，**不打回执**，P8）；
+ *    下面两条流水线路径（补充评论、`issues.*`）**不读**这个开关（V10 不可绕过）。
  *  - `issue_comment.created` 且**既没命令也没 @**（issue）→ `pipeline-supplement`（补充信息候选，§16.2）；
  *  - `issues.opened|edited|reopened` → `pipeline:format` 阶段任务（E1 全量切换，§16.1 第 2 条）；
  *  - 其余（含 `pull_request.*`、`push`、`label`…）→ 不建任务。PR 的审查由命令触发（plan §6.4）。
@@ -472,6 +475,17 @@ export function decideWebhookTask(input: {
    * 关掉时只有 `@别名 /命令` 会建任务。
    */
   readonly freeMention?: boolean;
+  /**
+   * `settings.triggers.enabled`（`docs/plan-fixed-pipeline.md` P8）。
+   *
+   * **只关 `@` 提及类触发**（`@bot /命令` 与 `@bot 提问`），**不影响流水线**：
+   * `issues.opened|edited|reopened` 的 `pipeline:format`、评论补充重跑、managers 重分类、
+   * `pipeline:notice` 都不经过这一支（V10「不可绕过」的硬要求）。
+   *
+   * 为什么做成入参而不是在这里读配置：本函数是**纯函数**、不许查库；
+   * `enabled` 由 `handleWebhook` 读完 policy 后传进来。缺省（`undefined`）= 开。
+   */
+  readonly triggersEnabled?: boolean;
 }): WebhookDecision {
   const payload = asRecord(input.payload);
   const actorUser = asRecord(payload?.['sender']);
@@ -498,6 +512,16 @@ export function decideWebhookTask(input: {
     // 纯 @ 提问（没有 `/命令`）：走自由问答通道，问题正文落 `tasks.prompt_text`
     const question =
       command === null && input.freeMention === true ? extractFreeQuestion(comment?.['body'], aliases) : null;
+    // ★ P8：`settings.triggers.enabled=false` 只关**提及类触发**（命令 + 自由问答）。
+    // 判定放在 `pipeline-supplement` 之前、只拦「有 @ 且被识别成命令/提问」的评论：
+    // 普通评论（既没命令也没 @）走的是流水线补充通道，与触发开关**无关**（V10 硬要求）。
+    // 回执一律**不打**：配置关掉就安静（只记 reason，不产生任何 GitHub 写动作）。
+    if (input.triggersEnabled === false && (command !== null || question !== null)) {
+      return {
+        action: 'ignore',
+        reason: 'triggers-disabled：仓库配置 settings.triggers.enabled=false（只关 @ 提及类触发，不影响流水线）',
+      };
+    }
     if (command === null && question === null) {
       // §16.2 第 1 条（E4 评论优先）：**普通评论不再一律 ignored**。
       // 只有 issue（PR 不受流水线影响）且正文非空时交回给 `handleWebhook` 查状态行，
@@ -1121,6 +1145,14 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     configured: policy.settings?.triggers,
     deployment: deploymentAliases,
   });
+  /**
+   * P8：`settings.triggers.enabled=false` 只关 `@` 提及类触发（`@bot /命令`、`@bot 提问`）。
+   *
+   * 这个值**只**喂给 `decideWebhookTask`（命令/自由问答分支），管理员指令（`/recheck`、
+   * `/pipeline next|prev` 属于流水线控制面）与 `issues.*` 的 `pipeline:format`、评论补充重跑、
+   * `pipeline:notice` 都不读它 —— 关掉触发开关不许让任何 issue 绕过三段（V10）。
+   */
+  const triggersEnabled = policy.settings === null || policy.settings.triggers.enabled !== false;
   const at = now();
   const dryRun = policy.dryRun || input.forcedDryRun === true;
 
@@ -1192,6 +1224,7 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     payload,
     aliases,
     ...(deps.freeMention === undefined ? {} : { freeMention: deps.freeMention }),
+    triggersEnabled,
   });
   if (decision.action === 'ignore') {
     log.info({ repo, reason: decision.reason }, '事件不在白名单，不建任务');

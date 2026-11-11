@@ -120,7 +120,13 @@ afterAll(async () => {
  * 测试文件的行，制造偶发红。
  */
 beforeEach(async () => {
-  await db.pool.query('truncate table tasks, webhook_deliveries, repos, runtime_flags cascade');
+  // `issue_pipeline` 必须一起清：`POST /webhook` 的 issue 用例断言「建 pipeline:format」，
+  // 而 `http-webhook-pipeline.test.ts` / `http-webhook-triggers-disabled.test.ts` 会在
+  // `acme/widgets#7` 上留下 `agent/ready` 行（无 FK，truncate repos 带不走）——
+  // 残留行会让状态机判 `already-ready`，这条用例就变成「看运气」。
+  await db.pool.query(
+    'truncate table tasks, webhook_deliveries, repos, runtime_flags, issue_pipeline cascade',
+  );
 });
 
 describe('/healthz', () => {
@@ -321,6 +327,177 @@ describe('面板只读 API', () => {
     expect(overview.statusCode).toBe(200);
     const parsed = overviewResponseSchema.parse(overview.json());
     expect(parsed.repo).toBe('acme/widgets');
+  });
+});
+
+/**
+ * V11 / P2-3：提示词路由的 **HTTP 层**（`GET/PUT/POST /api/repos/:owner/:name/prompt?kind=…`）。
+ *
+ * 为什么补这一组：`savePrompt()` 的三种失败（未知占位符 / `format_check` 缺 title·body / 超上限）
+ * 与 `?kind=` 的隔离以前只在 store 层（`PK::…`）与面板 mock（`P-API::400 的 details.code 原样进 ApiError`）
+ * 上断言过，**服务端路由一条 inject 都没有** —— 路由参数名、错误码映射、`kind` 传错都能「全绿」。
+ *
+ * 写面沿用 `/api/skills` 的同一套守卫（`createApiGuards`：本机来源 + `X-Pi-Bot-CSRF: 1`）。
+ */
+describe('提示词 API（HTTP 层，P2-3）', () => {
+  /** 写接口的第二道门（CSRF 自定义头）；`inject` 的 remoteAddress 是本机，loopback 那一道天然通过。 */
+  const WRITE_HEADERS = { 'x-pi-bot-csrf': '1' } as const;
+  const promptUrl = (query: string): string => `/api/repos/${REPO}/prompt${query}`;
+
+  type PromptView = {
+    kind: string;
+    activeVersion: number;
+    isSystemDefault: boolean;
+    systemDefault: string;
+    body: string;
+    limit: number;
+  };
+  type ErrorDetails = {
+    code: string;
+    kind?: string;
+    missingPlaceholders?: string[];
+    unknownPlaceholders?: string[];
+  };
+  const detailsOf = (response: { json: () => unknown }): ErrorDetails =>
+    (response.json() as { error: { details: ErrorDetails } }).error.details;
+
+  /** `POST /api/repos` 手动添加（部署默认 settings 合法：`pipeline.managers` 非空）。 */
+  async function seedRepo(): Promise<void> {
+    const created = await app.inject({ method: 'POST', url: '/api/repos', payload: { repo: REPO } });
+    expect(created.statusCode).toBe(201);
+  }
+
+  beforeEach(async () => {
+    // `prompt_versions` 没有 FK 到 `repos`：外层 truncate 带不走它，这里单独清干净
+    await db.pool.query('delete from prompt_versions where repo = $1', [REPO]);
+  });
+
+  it('GET ?kind=classify 返回分类模板，?kind=project 返回另一份（两条版本线互不串味）', async () => {
+    await seedRepo();
+
+    const classify = await app.inject({ method: 'GET', url: promptUrl('?kind=classify') });
+    expect(classify.statusCode).toBe(200);
+    const classifyView = classify.json() as PromptView;
+    expect(classifyView.kind).toBe('classify');
+    expect(classifyView.activeVersion).toBe(0);
+    expect(classifyView.isSystemDefault).toBe(true);
+    // 内置分类模板：正文非空、带占位符，且与 `systemDefault` 同一份
+    expect(classifyView.body.length).toBeGreaterThan(0);
+    expect(classifyView.body).toContain('{{repo}}');
+    expect(classifyView.systemDefault).toBe(classifyView.body);
+    expect(classifyView.limit).toBe(8_000);
+
+    const project = await app.inject({ method: 'GET', url: promptUrl('?kind=project') });
+    expect(project.statusCode).toBe(200);
+    const projectView = project.json() as PromptView;
+    expect(projectView.kind).toBe('project');
+    // P1 没有项目版本 = 这一层不注入（`body` 空、也没有内置默认正文）
+    expect(projectView.body).toBe('');
+    expect(projectView.systemDefault).toBe('');
+    expect(projectView.activeVersion).toBe(0);
+    // 互不串味：分类模板不会漏进 project，反之亦然
+    expect(projectView.body).not.toContain('{{repo}}');
+    expect(classifyView.body).not.toBe(projectView.body);
+  });
+
+  it('GET ?kind=xxx（四个 tab 之外）→ 400 bad-request（枚举口径来自契约）', async () => {
+    await seedRepo();
+    const response = await app.inject({ method: 'GET', url: promptUrl('?kind=nope') });
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { error: { code: string } }).error.code).toBe('bad-request');
+  });
+
+  it('PUT ?kind=format_check 缺 {{body}} / 缺 {{title}} → 400 placeholder-missing，并列出缺失名字', async () => {
+    await seedRepo();
+
+    const missingBody = await app.inject({
+      method: 'PUT',
+      url: promptUrl('?kind=format_check'),
+      headers: WRITE_HEADERS,
+      payload: { body: '【任务】判断 {{title}} 是否符合本项目格式要求。' },
+    });
+    expect(missingBody.statusCode).toBe(400);
+    expect((missingBody.json() as { error: { code: string } }).error.code).toBe('bad-request');
+    expect(detailsOf(missingBody)).toMatchObject({
+      code: 'placeholder-missing',
+      kind: 'format_check',
+      missingPlaceholders: ['body'],
+    });
+
+    // 反向：只写 {{body}} 也拒（两个占位符都是硬要求，缺哪个就列哪个）
+    const missingTitle = await app.inject({
+      method: 'PUT',
+      url: promptUrl('?kind=format_check'),
+      headers: WRITE_HEADERS,
+      payload: { body: '【任务】{{body}}' },
+    });
+    expect(missingTitle.statusCode).toBe(400);
+    expect(detailsOf(missingTitle)).toMatchObject({
+      code: 'placeholder-missing',
+      missingPlaceholders: ['title'],
+    });
+
+    // 校验不过 = 一行都不写（「面板说不行」与「库里有什么」不许互相矛盾）
+    const rows = await db.pool.query('select count(*)::int as n from prompt_versions where repo = $1', [REPO]);
+    expect((rows.rows[0] as { n: number }).n).toBe(0);
+  });
+
+  it('PUT ?kind=classify 正文含未知占位符 {{nope}} → 400 placeholder-unknown，并列出名字', async () => {
+    await seedRepo();
+    const response = await app.inject({
+      method: 'PUT',
+      url: promptUrl('?kind=classify'),
+      headers: WRITE_HEADERS,
+      payload: { body: '【任务】判断 {{repo}} {{target}} {{nope}} 的类型。' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(detailsOf(response)).toMatchObject({
+      code: 'placeholder-unknown',
+      kind: 'classify',
+      unknownPlaceholders: ['nope'],
+    });
+  });
+
+  it('PUT ?kind=agent 正文超过 4000 字符 → 400 body-too-long（agent 档上限最小）', async () => {
+    await seedRepo();
+    const response = await app.inject({
+      method: 'PUT',
+      url: promptUrl('?kind=agent'),
+      headers: WRITE_HEADERS,
+      payload: { body: 'x'.repeat(4_001) },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(detailsOf(response)).toMatchObject({ code: 'body-too-long', kind: 'agent' });
+  });
+
+  it('POST ?kind=agent/prompt/restore → 指针回 0，GET 回到内置默认（isSystemDefault=true 且 systemDefault 非空）', async () => {
+    await seedRepo();
+
+    // 先存一版项目 agent 提示词（指针变 1，正文不再是内置默认）
+    const saved = await app.inject({
+      method: 'PUT',
+      url: promptUrl('?kind=agent'),
+      headers: WRITE_HEADERS,
+      payload: { body: '按项目约定推进：先看复现步骤，再决定改动范围。', note: 'P2-3' },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect((saved.json() as PromptView).activeVersion).toBe(1);
+
+    const restored = await app.inject({
+      method: 'POST',
+      url: promptUrl('/restore?kind=agent'),
+      headers: WRITE_HEADERS,
+    });
+    expect(restored.statusCode).toBe(200);
+    expect((restored.json() as PromptView).activeVersion).toBe(0);
+
+    const read = await app.inject({ method: 'GET', url: promptUrl('?kind=agent') });
+    expect(read.statusCode).toBe(200);
+    const view = read.json() as PromptView;
+    expect(view.activeVersion).toBe(0);
+    expect(view.isSystemDefault).toBe(true);
+    expect(view.systemDefault.length).toBeGreaterThan(0);
+    expect(view.body).toBe(view.systemDefault);
   });
 });
 

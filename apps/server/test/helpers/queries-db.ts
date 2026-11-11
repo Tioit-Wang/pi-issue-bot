@@ -63,12 +63,16 @@ export async function openTestDb(now: Date = FIXED_NOW): Promise<TestDb> {
   };
 
   const truncate = async (): Promise<void> => {
+    // `issue_pipeline` 没有外键指向 `repos`，`truncate repos ... cascade` 带不走它。
+    // 漏掉它，下一个测试文件就会看到上一个文件留下的 `agent/ready` 行：状态机判 `already-ready`，
+    // 新 issue 的 `issues.opened` 被静默忽略（表现为 e2e 用例假红，且只在整库跑时出现）。
     await pool.query(
       `truncate table
-        tasks, runs, run_events, envelopes, actions, bot_labels, issue_fingerprints, issue_states,
-        usage_costs, degeneracy_hits, metrics_daily, repos, webhook_deliveries, runtime_flags,
-        panel_sessions, host_credentials, issue_feedback, label_decisions, quota_counters,
-        prompt_versions
+       tasks, runs, run_events, envelopes, actions, bot_labels, issue_fingerprints, issue_states,
+       issue_pipeline,
+       usage_costs, degeneracy_hits, metrics_daily, repos, webhook_deliveries, runtime_flags,
+       panel_sessions, host_credentials, issue_feedback, label_decisions, quota_counters,
+       prompt_versions
       cascade`,
     );
     // pg-boss 的表由库自己建：job 表清空（队列配置本身保留，system 要读它）
