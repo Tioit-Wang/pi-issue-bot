@@ -1,0 +1,71 @@
+<!--@title Issue 中心-->
+<!--@page issues-->
+<!--@nav issues-->
+<!--@crumb 全部项目|{repo}|Issue 中心-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">当前仓库 · <span class="mono" data-repo-name>acme/web-console</span></div>
+    <h1>Issue 中心</h1>
+    <div class="phead-sub">固定三段流水线 · 每段一个独立会话 · 5 个待人补充 · 1 个阻塞</div>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta">阶段 0 与 1 一次性会话 · 阶段 2 按 issue 复用会话</span>
+    <button class="btn sm" type="button" data-disabled-reason="面板没有写接口：issue 列表只读，重新检查请在该 issue 里回复 /recheck">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7M13.2 2.6v3.2H10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      刷新
+    </button>
+  </div>
+</div>
+
+<div class="issue-layout">
+  <div class="issue-list">
+    <div class="issue-toolbar">
+      <div class="search" style="width:190px;flex:none">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7.2" cy="7.2" r="4.4"/><path d="m10.6 10.6 3 3" stroke-linecap="round"/></svg>
+        <input class="input" id="issue-search" type="search" placeholder="标题或编号" aria-label="搜索 issue" />
+      </div>
+      <select class="select" id="issue-stage" aria-label="按阶段筛选" style="width:128px;flex:none;height:26px;font-size:11px;padding:0 22px 0 8px">
+        <option value="all">全部阶段</option>
+        <option value="0">阶段 0 · 格式检查</option>
+        <option value="1">阶段 1 · 标签分类</option>
+        <option value="2">阶段 2 · Agent</option>
+        <option value="3">已结束</option>
+      </select>
+      <span class="sec-note" style="margin-left:auto" id="issue-count">10 / 10</span>
+    </div>
+    <div class="issue-chips">
+      <button class="chip" type="button" data-state="all" aria-pressed="true">全部<span class="n">10</span></button>
+      <button class="chip" type="button" data-state="running" aria-pressed="false">执行中<span class="n">1</span></button>
+      <button class="chip" type="button" data-state="awaiting_info" aria-pressed="false">待人补充<span class="n">5</span></button>
+      <button class="chip" type="button" data-state="blocked" aria-pressed="false">阻塞<span class="n">1</span></button>
+      <button class="chip" type="button" data-state="ready" aria-pressed="false">已就绪<span class="n">1</span></button>
+      <button class="chip" type="button" data-state="closed" aria-pressed="false">已关闭<span class="n">2</span></button>
+    </div>
+    <div class="issue-rows" id="issue-rows"></div>
+    <div class="home-todo-foot" style="margin:0;border-top:1px solid var(--line);padding:8px 12px">
+      <span><span class="kbd">j</span> <span class="kbd">k</span> 移动</span>
+      <span><span class="kbd">Enter</span> 打开会话</span>
+      <span style="margin-left:auto">筛选只作用于当前仓库已加载的行</span>
+    </div>
+  </div>
+  <div class="issue-detail" id="issue-detail"></div>
+</div>
+
+<div class="facts" style="margin-top:18px">
+  <div>
+    <div class="facts-label">自动关闭</div>
+    <div class="facts-value"><b>2</b><span class="faint" style="font-size:10.5px">个 issue 在 4 小时内关闭</span></div>
+    <div class="facts-note">待人补充满 48 小时 · pipeline-close 每 10 分钟扫描</div>
+  </div>
+  <div>
+    <div class="facts-label">复用会话</div>
+    <div class="facts-value"><b>4</b><span class="faint" style="font-size:10.5px">个 · 最长 12 轮 / 30</span></div>
+    <div class="facts-note">超 30 轮或 7 天轮换，历史结论随摘要带入新会话</div>
+  </div>
+  <div>
+    <div class="facts-label">写回闸门</div>
+    <div class="facts-value"><b>1 274</b><span class="faint" style="font-size:10.5px">次动作已应用</span></div>
+    <div class="facts-note">隐藏标记去重 · 标签归属校验 · 静默丢弃 0 次</div>
+  </div>
+</div>

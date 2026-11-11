@@ -1,0 +1,146 @@
+<!--@title 系统-->
+<!--@page system-->
+<!--@nav system-->
+<!--@crumb 全部项目|系统-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 运行时</div>
+    <h1>系统</h1>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta">进程 3d 04h · 无重启</span>
+    <button class="btn sm" type="button" id="pause-all">暂停全部自动执行</button>
+    <button class="btn sm primary" type="button" id="doctor-run">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7M13.2 2.6v3.2H10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      重新体检
+    </button>
+  </div>
+</div>
+
+<div id="paused-banner" class="notice" hidden style="margin-bottom:14px"></div>
+
+<div class="grid g-main">
+  <div>
+    <section class="sec" style="border-top:0;padding-top:0">
+      <div class="sec-h"><h2>连接与安装</h2><div class="sec-actions"><span class="pill ok"><i class="dot"></i>全部正常</span></div></div>
+      <div class="panel panel-pad" style="padding-top:4px">
+        <dl class="kv">
+          <dt>GitHub App</dt><dd class="mono">pi-issue-bot-prod · id 128441</dd>
+          <dt>installation</dt><dd class="mono">acme · 58 个仓库授权</dd>
+          <dt>权限</dt><dd>issues:write · pulls:write · contents:write · metadata:read</dd>
+          <dt>webhook</dt><dd>最近投递 12s 前 · 失败 0 / 148</dd>
+          <dt>令牌</dt><dd>安装级 token · 42 分钟后过期 · 自动刷新</dd>
+          <dt>密钥轮换</dt><dd class="num">下次 12/01 · 双密钥并行</dd>
+          <dt>数据库</dt><dd>PostgreSQL 16.4 · 迁移 <span class="mono">0005</span></dd>
+          <dt>流水线表</dt><dd><span class="mono">issue_pipeline</span> · 14 行 · 索引 <span class="mono">state, info_requested_at</span></dd>
+          <dt>队列</dt><dd>pg-boss 12 · schema <span class="mono">pgboss</span></dd>
+        </dl>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-h">
+        <h2>doctor 检查</h2>
+        <span class="sec-count">14</span>
+        <div class="sec-actions"><span class="sec-note" id="doctor-stamp">09:32 · 14 项全部通过</span></div>
+      </div>
+      <div class="panel panel-pad" style="padding-top:4px;padding-bottom:4px">
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">github.app_auth</span><span class="check-detail">installation token 正常，权限覆盖六动作</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">github.webhook_secret</span><span class="check-detail">HMAC 校验通过，最近投递 12s 前</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">db.migrations</span><span class="check-detail">已应用 0005 · 期望 0005</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">db.pool</span><span class="check-detail">连接 6 / 20 · 等待 0</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">queue.pgboss</span><span class="check-detail">schema 存在 · 死信 0</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">sandbox.docker</span><span class="check-detail">daemon 24.0.7 · 镜像 pi-sandbox:24.11</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">sandbox.network_policy</span><span class="check-detail">公网放行 · 私网与 169.254.169.254 阻断</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">racp.handshake</span><span class="check-detail">pi-host bundle 就绪 · 白名单 18 op</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">racp.token</span><span class="check-detail">AES-GCM 密钥可解 · 剩余 42 分钟</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">contract.schema</span><span class="check-detail">契约 v1.2 · 17 表 / 10 接口一致</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">pipeline.constants</span><span class="check-detail">48h / 5 次 / 30 轮 / 7 天 · 代码常量与文档一致</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">pipeline.managers</span><span class="check-detail">3 个仓库 · 6 个用户名全部可解析</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">pipeline.index</span><span class="check-detail">issue_pipeline 扫描走 (state, info_requested_at)</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+        <div class="check-row"><span class="dot tone-warn"></span><span class="check-name">repo.settings</span><span class="check-detail">3 个仓库中 2 个通过，infra-terraform 失败</span><span class="pill warn" data-check-state><i class="dot"></i>降级</span></div>
+        <div class="check-row"><span class="dot tone-ok"></span><span class="check-name">disk.worktree</span><span class="check-detail">已用 18.2 / 80 GB · 保留期 24h</span><span class="pill ok" data-check-state><i class="dot"></i>通过</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <div class="panel">
+      <div class="panel-h"><h3>队列与并发</h3><span class="sec-note" style="margin-left:auto">全局</span></div>
+      <div class="panel-pad" style="padding-top:4px;padding-bottom:12px">
+        <div class="queue-line"><span class="queue-num num">3</span><span class="queue-label">排队</span><span class="queue-num num" style="margin-left:auto">2</span><span class="queue-label">进行中</span></div>
+        <div class="queue-line"><span class="queue-num num">42s</span><span class="queue-label">最老排队</span><span class="pill ok" style="margin-left:auto"><i class="dot"></i>未熔断</span></div>
+        <div class="concurrency">
+          <div class="concurrency-head"><span>全局并发 2 / 4</span><span>今日失败 4</span></div>
+          <div class="slots"><i class="slot busy"></i><i class="slot busy"></i><i class="slot queue"></i><i class="slot"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-h"><h3>确定性作业</h3><span class="pill line" style="margin-left:auto">不可关闭</span></div>
+      <div class="panel-pad" style="padding-top:2px;padding-bottom:2px">
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">pipeline-close</div><div class="flag-desc">待人补充满 48h → 关闭并打 <span class="mono">pipeline:done</span></div></div>
+          <span class="pill ok"><i class="dot"></i>10 分钟内</span>
+        </div>
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">session-reset</div><div class="flag-desc">超 30 轮或 7 天 → 归档旧会话，写 <span class="mono">blocked_reason=session_rotated</span></div></div>
+          <span class="num" style="font-size:12px">0</span>
+        </div>
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">stage-reaper</div><div class="flag-desc">running 超 20 分钟无 heartbeat → 标记 blocked，不再自动重试</div></div>
+          <span class="num" style="font-size:12px">0</span>
+        </div>
+      </div>
+      <div class="board-foot" style="border-radius:0">上次执行 10:30 · 本次关闭 2 个 · 停调度等于停流水线</div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-h"><h3>运行时开关</h3></div>
+      <div class="panel-pad" style="padding-top:2px;padding-bottom:2px">
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">rate_limit_pause</div><div class="flag-desc">429 熔断：期间新事件只入队，不占并发</div></div>
+          <span class="pill ok"><i class="dot"></i>关闭</span>
+        </div>
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">global_concurrency</div><div class="flag-desc">同一时刻最多 4 个 run</div></div>
+          <span class="num" style="font-size:12px">4</span>
+        </div>
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">dry_run_default</div><div class="flag-desc">新仓库默认只读，不写 GitHub</div></div>
+          <span class="switch" role="switch" aria-checked="false" aria-label="默认 dry-run"></span>
+        </div>
+        <div class="flag-row">
+          <div class="flag-main"><div class="flag-name">retention_days</div><div class="flag-desc">审计与运行事件保留期</div></div>
+          <span class="num" style="font-size:12px">180</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-h"><h3>版本</h3></div>
+      <div class="panel-pad" style="padding-top:4px">
+        <dl class="kv">
+          <dt>应用</dt><dd class="mono">pi-issue-bot v0.4.0</dd>
+          <dt>契约</dt><dd class="mono">v1.2（已冻结）</dd>
+          <dt>Node</dt><dd class="mono">24.1.0</dd>
+          <dt>监控</dt><dd class="mono">/metrics · Prometheus</dd>
+          <dt>部署</dt><dd>单机 · systemd · 反向代理 Caddy</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="pause-dialog" role="dialog" aria-modal="true" aria-labelledby="pause-title">
+  <div class="dialog">
+    <h3 id="pause-title">暂停全部自动执行？</h3>
+    <p>暂停期间 webhook 仍会接收并入库，但不会领取新任务；正在运行的 2 个 run 会继续跑完。恢复需要手动操作，或到期自动解除。</p>
+    <div class="dialog-f">
+      <button class="btn sm" type="button" data-close-dialog>取消</button>
+      <button class="btn sm primary" type="button" id="pause-confirm">暂停 60 分钟</button>
+    </div>
+  </div>
+</div>

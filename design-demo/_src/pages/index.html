@@ -1,0 +1,302 @@
+<!--@title 工作台-->
+<!--@page home-->
+<!--@nav home-->
+<!--@crumb 全部项目-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 今日 · UTC+8</div>
+    <h1>工作台</h1>
+    <div class="phead-sub">流水线只有三种事需要人：补信息、解阻塞、看结论是否还成立</div>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta" id="home-updated">42 秒前更新</span>
+    <button class="btn sm" id="home-refresh" type="button">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7M13.2 2.6v3.2H10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      刷新
+    </button>
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-top" title="按 issue 首次进入阶段 0 的时间统计，UTC 自然日">今日进入流水线</div>
+    <div class="metric-row">
+      <span class="metric-value num">18</span>
+      <span class="metric-unit">个 issue</span>
+      <span class="metric-delta" style="color:var(--ok-ink)">+6 环比</span>
+    </div>
+    <div class="metric-spark" id="spark-tasks"></div>
+  </div>
+  <div class="metric">
+    <div class="metric-top" title="今日有结论的 issue 中，走到阶段 2 ready 的比例">阶段完成率</div>
+    <div class="metric-row">
+      <span class="metric-value num">82.4</span>
+      <span class="metric-unit">%</span>
+      <span class="metric-delta faint">14 / 17 走到 Agent</span>
+    </div>
+    <div class="metric-spark" id="spark-rate"></div>
+  </div>
+  <div class="metric">
+    <div class="metric-top" title="state = awaiting_info；满 48 小时自动关闭">待人补充</div>
+    <div class="metric-row">
+      <span class="metric-value num" style="color:var(--warn-ink)">5</span>
+      <span class="metric-unit">个</span>
+      <span class="metric-delta faint">最久 46 小时</span>
+    </div>
+    <div class="metric-spark" id="spark-p95"></div>
+  </div>
+  <div class="metric">
+    <div class="metric-top" title="usage_costs 汇总，不含沙箱机器成本">今日成本</div>
+    <div class="metric-row">
+      <span class="metric-value num">$4.82</span>
+      <span class="metric-delta faint">日预算 $20</span>
+    </div>
+    <div class="metric-spark" id="spark-cost"></div>
+  </div>
+</div>
+
+<div class="home-notices" style="margin-top:14px">
+  <div class="notice bad">
+    <span class="dot tone-bad"></span>
+    <span><b>acme/infra-terraform 的 defect 通知降级</b> · <span class="mono" style="font-size:11px">managers.defect[1]</span> 已不在组织内，该类别只回评论、不 @</span>
+    <a class="link" href="settings.html">去修复</a>
+  </div>
+  <div class="notice">
+    <span class="dot tone-warn"></span>
+    <span><b>2 个 issue 将在 4 小时内自动关闭</b> · 待人补充满 48 小时，<span class="mono" style="font-size:11px">pipeline-close</span> 每 10 分钟扫描一次</span>
+    <a class="link" href="issues.html">去处理</a>
+  </div>
+</div>
+
+<div class="grid g-main">
+  <section class="sec" style="border-top:0;padding-top:0">
+    <div class="sec-h">
+      <h2>需要你处理</h2>
+      <span class="sec-count">7</span>
+      <div class="sec-actions"><span class="sec-note">按「会不会自己消失」排序 · 自动关闭最靠前</span></div>
+    </div>
+    <div class="panel">
+      <div class="rows" style="padding:4px">
+        <div class="rrow" role="link" tabindex="0" data-target="issue#276" data-href="issues.html">
+          <span class="dot tone-bad"></span>
+          <span class="target">issue#276</span>
+          <span class="pill bad">2h 后关闭</span>
+          <span class="subject">待人补充 46h · 搜索框中文输入法重复请求</span>
+          <span class="when">46 小时前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="rrow" role="link" tabindex="0" data-target="issue#299" data-href="issues.html">
+          <span class="dot tone-bad"></span>
+          <span class="target">issue#299</span>
+          <span class="pill bad">4h 后关闭</span>
+          <span class="subject">待人补充 44h · 上传大文件进度条静止</span>
+          <span class="when">44 小时前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="rrow" role="link" tabindex="0" data-target="issue#308" data-href="issues.html">
+          <span class="dot tone-warn"></span>
+          <span class="target">issue#308</span>
+          <span class="pill warn">等管理员</span>
+          <span class="subject">分类 not-found · 只有 managers 能推进，不计入 48h</span>
+          <span class="when">15 小时前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="rrow" role="link" tabindex="0" data-target="issue#301" data-href="issues.html">
+          <span class="dot tone-bad"></span>
+          <span class="target">issue#301</span>
+          <span class="pill bad">test_failed</span>
+          <span class="subject">连续 2 次运行失败 → blocked · 重跑不限次数</span>
+          <span class="when">21 小时前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="rrow" role="link" tabindex="0" data-target="issue#315" data-href="issues.html">
+          <span class="dot tone-warn"></span>
+          <span class="target">issue#315</span>
+          <span class="pill warn">结论陈旧</span>
+          <span class="subject">ready 后作者改了正文 · 结论未回退，只记 stale_at</span>
+          <span class="when">2 小时前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="rrow" role="link" tabindex="0" data-target="issue#318" data-href="issues.html">
+          <span class="dot tone-warn"></span>
+          <span class="target">issue#318</span>
+          <span class="pill warn">等待回答</span>
+          <span class="subject">阶段 2 第 7 轮 · 问自动填充是否默认开启</span>
+          <span class="when">26 分钟前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="rrow" role="link" tabindex="0" data-target="acme/infra-terraform" data-href="settings.html">
+          <span class="dot tone-bad"></span>
+          <span class="target">infra-terraform</span>
+          <span class="pill bad">通知降级</span>
+          <span class="subject">managers.defect[1] 不在组织内</span>
+          <span class="when">1 小时前</span>
+          <svg class="rrow-arrow" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6.5 3.5 4.5 4.5-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+      </div>
+      <div class="home-todo-foot">
+        <span>共 9 项 · 只显示最需要人的 7 项</span>
+        <a class="link" href="pipeline.html" style="margin-left:auto">打开流水线看板</a>
+      </div>
+    </div>
+  </section>
+
+  <div>
+    <section class="sec" style="border-top:0;padding-top:0">
+      <div class="sec-h">
+        <h2>阶段负载</h2>
+        <div class="sec-actions"><span class="sec-note">当前仓库 · 8 个在流水线</span></div>
+      </div>
+      <div class="panel panel-pad" style="padding-top:8px;padding-bottom:10px">
+        <div class="stackbar" style="height:8px">
+          <i style="width:25%;background:var(--warn)"></i>
+          <i style="width:25%;background:var(--info)"></i>
+          <i style="width:50%;background:var(--ok)"></i>
+        </div>
+        <div style="display:flex;gap:12px;margin-top:9px;font-size:10.5px;color:var(--ink-3)" class="num">
+          <span><span class="dot tone-warn" style="display:inline-block"></span> 格式 2</span>
+          <span><span class="dot tone-info" style="display:inline-block"></span> 分类 2</span>
+          <span><span class="dot tone-ok" style="display:inline-block"></span> Agent 4</span>
+        </div>
+        <div class="queue-line" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+          <span class="queue-num num">2</span><span class="queue-label">排队（并发已满）</span>
+          <span class="queue-num num" style="margin-left:auto">2</span><span class="queue-label">进行中</span>
+        </div>
+        <div class="concurrency">
+          <div class="concurrency-head"><span>并发 2 / 4</span><span>今日完成 14</span></div>
+          <div class="slots"><i class="slot busy"></i><i class="slot busy"></i><i class="slot queue"></i><i class="slot"></i></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-h">
+        <h2>仓库健康</h2>
+        <div class="sec-actions"><span class="sec-note">在流水线 · 待人补充</span></div>
+      </div>
+      <div class="panel panel-pad" style="padding-top:4px;padding-bottom:8px">
+        <div class="health-row">
+          <span class="dot tone-ok"></span>
+          <span class="health-repo">web-console</span>
+          <span class="health-num">8</span>
+          <span class="health-num">5</span>
+        </div>
+        <div class="health-row">
+          <span class="dot tone-ok"></span>
+          <span class="health-repo">payments-api</span>
+          <span class="health-num">2</span>
+          <span class="health-num">0</span>
+        </div>
+        <div class="health-row">
+          <span class="dot tone-bad"></span>
+          <span class="health-repo">infra-terraform</span>
+          <span class="health-num">3</span>
+          <span class="health-num">1</span>
+        </div>
+        <div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px">
+          <span class="faint" style="font-size:10.5px">managers 解析：11 / 12 可解析</span>
+          <a class="link" href="system.html" style="margin-left:auto;font-size:11px">打开 doctor</a>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="grid g-main" style="margin-top:22px">
+  <section class="sec">
+    <div class="sec-h">
+      <h2>24 小时阶段任务</h2>
+      <div class="sec-actions">
+        <div class="chart-legend">
+          <span><i style="background:var(--accent)"></i>成功</span>
+          <span><i style="background:var(--bad)"></i>失败</span>
+        </div>
+      </div>
+    </div>
+    <div class="chart" id="trend-chart"></div>
+    <div class="chart-foot"><span>UTC 整点 · 三个阶段的 run 合计</span><span>今日 46 个阶段任务 · 失败 4</span></div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h">
+      <h2>打回与阻塞原因</h2>
+      <div class="sec-actions"><span class="sec-note">窗口内 · Top 5</span></div>
+    </div>
+    <div class="hbars" style="margin-bottom:16px">
+      <div class="hbar"><span class="hbar-label">缺少复现步骤</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:100%;background:var(--warn);opacity:.85"></i></span><span class="hbar-val">3</span></div>
+      <div class="hbar"><span class="hbar-label">缺少环境版本</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:67%;background:var(--warn);opacity:.85"></i></span><span class="hbar-val">2</span></div>
+      <div class="hbar"><span class="hbar-label">分类证据不足</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:33%;background:var(--bad);opacity:.8"></i></span><span class="hbar-val">1</span></div>
+      <div class="hbar"><span class="hbar-label">container_oom</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:33%;background:var(--bad);opacity:.8"></i></span><span class="hbar-val">1</span></div>
+      <div class="hbar"><span class="hbar-label">test_failed</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:33%;background:var(--bad);opacity:.8"></i></span><span class="hbar-val">1</span></div>
+    </div>
+    <div class="sec-h" style="padding-bottom:8px"><h2 style="font-size:11.5px">issue 状态分布</h2><div class="sec-actions"><span class="sec-note">当前仓库 · 10 个</span></div></div>
+    <div class="stackbar">
+      <i style="width:10%;background:var(--ok)"></i>
+      <i style="width:50%;background:var(--warn)"></i>
+      <i style="width:10%;background:var(--bad)"></i>
+      <i style="width:10%;background:var(--info)"></i>
+      <i style="width:20%;background:var(--surface-3)"></i>
+    </div>
+    <div style="display:flex;gap:12px;margin-top:9px;font-size:10.5px;color:var(--ink-3);flex-wrap:wrap" class="num">
+      <span><span class="dot tone-ok" style="display:inline-block"></span> 已就绪 1</span>
+      <span><span class="dot tone-warn" style="display:inline-block"></span> 待人补充 5</span>
+      <span><span class="dot tone-bad" style="display:inline-block"></span> 阻塞 1</span>
+      <span><span class="dot tone-info" style="display:inline-block"></span> 执行中 1</span>
+      <span><span class="dot tone-mute" style="display:inline-block"></span> 已关闭 2</span>
+    </div>
+  </section>
+</div>
+
+<section class="sec" style="margin-top:22px">
+  <div class="sec-h">
+    <h2>最近活动</h2>
+    <div class="sec-actions"><a class="link" href="audit.html" style="font-size:11px">审计全量</a></div>
+  </div>
+  <div class="panel">
+    <div class="rows" style="padding:4px">
+      <div class="rrow" style="height:32px">
+        <span class="mono" style="width:42px;font-size:10px;color:var(--ink-4)">10:31</span>
+        <span class="dot tone-warn"></span>
+        <span class="subject">#318 阶段 2 turn 7 产出待回答 → <span class="mono" style="font-size:10.5px">awaiting_info</span></span>
+        <span class="repo">web-console</span>
+        <span class="when">2 分钟前</span>
+      </div>
+      <div class="rrow" style="height:32px">
+        <span class="mono" style="width:42px;font-size:10px;color:var(--ink-4)">10:30</span>
+        <span class="dot tone-mute"></span>
+        <span class="subject"><span class="mono" style="font-size:10.5px">pipeline-close</span> 关闭 #281 · 待人补充满 48 小时</span>
+        <span class="repo">web-console</span>
+        <span class="when">3 分钟前</span>
+      </div>
+      <div class="rrow" style="height:32px">
+        <span class="mono" style="width:42px;font-size:10px;color:var(--ink-4)">10:22</span>
+        <span class="dot tone-warn"></span>
+        <span class="subject">阶段 0 打回 #322 · 缺 3 项，写回 <span class="mono" style="font-size:10.5px">needs-info</span></span>
+        <span class="repo">web-console</span>
+        <span class="when">11 分钟前</span>
+      </div>
+      <div class="rrow" style="height:32px">
+        <span class="mono" style="width:42px;font-size:10px;color:var(--ink-4)">10:12</span>
+        <span class="dot tone-ok"></span>
+        <span class="subject">#287 阶段 2 产出结论 → <span class="mono" style="font-size:10.5px">ready</span> · 2 轮 · $0.006</span>
+        <span class="repo">web-console</span>
+        <span class="when">21 分钟前</span>
+      </div>
+      <div class="rrow" style="height:32px">
+        <span class="mono" style="width:42px;font-size:10px;color:var(--ink-4)">09:58</span>
+        <span class="dot tone-ok"></span>
+        <span class="subject">写回：开 PR <a class="link" href="run.html" style="font-family:var(--mono);font-size:10.5px">#412</a> · #305 关闭并打 <span class="mono" style="font-size:10.5px">pipeline:done</span></span>
+        <span class="repo">web-console</span>
+        <span class="when">35 分钟前</span>
+      </div>
+      <div class="rrow" style="height:32px">
+        <span class="mono" style="width:42px;font-size:10px;color:var(--ink-4)">09:51</span>
+        <span class="dot tone-bad"></span>
+        <span class="subject">仓库配置校验失败 · <span class="mono" style="font-size:10.5px">managers.defect[1]</span> 无法解析</span>
+        <span class="repo">infra-terraform</span>
+        <span class="when">42 分钟前</span>
+      </div>
+    </div>
+  </div>
+</section>

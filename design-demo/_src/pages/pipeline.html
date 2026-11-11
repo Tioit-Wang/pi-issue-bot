@@ -1,0 +1,266 @@
+<!--@title 流水线-->
+<!--@page pipeline-->
+<!--@nav pipeline-->
+<!--@crumb 全部项目|{repo}|流水线-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">当前仓库 · <span class="mono" data-repo-name>acme/web-console</span></div>
+    <h1>流水线</h1>
+    <div class="phead-sub">格式检查 → 标签分类 → Agent 执行 · 同一时刻每个 issue 只停在一个阶段</div>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta">阶段推进由代码判定，不由模型决定</span>
+    <a class="btn sm" href="settings.html">阶段配置</a>
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-top">在流水线</div>
+    <div class="metric-row">
+      <span class="metric-value num">8</span>
+      <span class="metric-unit">个 issue</span>
+      <span class="metric-delta faint">当前仓库</span>
+    </div>
+  </div>
+  <div class="metric">
+    <div class="metric-top">待人补充</div>
+    <div class="metric-row">
+      <span class="metric-value num" style="color:var(--warn-ink)">5</span>
+      <span class="metric-unit">个</span>
+      <span class="metric-delta faint">最久 46 小时</span>
+    </div>
+  </div>
+  <div class="metric">
+    <div class="metric-top">阻塞</div>
+    <div class="metric-row">
+      <span class="metric-value num" style="color:var(--bad-ink)">1</span>
+      <span class="metric-unit">个</span>
+      <span class="metric-delta faint">重跑 5 / 5 已到顶</span>
+    </div>
+  </div>
+  <div class="metric">
+    <div class="metric-top" title="由 pipeline-close 确定性作业执行">今日自动关闭</div>
+    <div class="metric-row">
+      <span class="metric-value num">2</span>
+      <span class="metric-unit">个</span>
+      <span class="metric-delta faint">待人补充满 48 小时</span>
+    </div>
+  </div>
+</div>
+
+<section class="sec" style="margin-top:20px">
+  <div class="sec-h">
+    <h2>阶段看板</h2>
+    <span class="sec-count">8</span>
+    <div class="sec-actions"><span class="sec-note">卡片按停留时长升序 · 点开进入 issue 详情</span></div>
+  </div>
+  <div class="board">
+    <div class="board-col">
+      <div class="board-h"><span class="dot tone-warn"></span><h3>阶段 0 · 格式检查</h3><span class="n">2</span></div>
+      <div class="board-b">
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">导出 CSV 时中文列名变成乱码</div>
+          <div class="bcard-m"><span class="pill warn">待人补充</span><span class="num">3.2h</span><span style="margin-left:auto">2 轮</span></div>
+        </a>
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">上传大文件时进度条静止超过 30 秒</div>
+          <div class="bcard-m"><span class="pill warn">待人补充</span><span class="num" style="color:var(--bad-ink)">44h</span><span style="margin-left:auto">2 轮</span></div>
+        </a>
+      </div>
+      <div class="board-foot">一次性会话：create → run → archive</div>
+    </div>
+
+    <div class="board-col">
+      <div class="board-h"><span class="dot tone-info"></span><h3>阶段 1 · 标签分类</h3><span class="n">2</span></div>
+      <div class="board-b">
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">搜索结果排序在同义词下不稳定</div>
+          <div class="bcard-m"><span class="pill info">执行中</span><span class="num">4m</span><span style="margin-left:auto">2 轮</span></div>
+        </a>
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">搜索排名疑似被人工降权（查不到证据）</div>
+          <div class="bcard-m"><span class="pill warn">等管理员</span><span class="num">15h</span><span style="margin-left:auto">3 轮</span></div>
+        </a>
+      </div>
+      <div class="board-foot">not-found 停在等管理员，其余直接进阶段 2</div>
+    </div>
+
+    <div class="board-col">
+      <div class="board-h"><span class="dot tone-ok"></span><h3>阶段 2 · Agent</h3><span class="n">4</span></div>
+      <div class="board-b">
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">build: 升级 Vite 8 后 HMR 明显变慢</div>
+          <div class="bcard-m"><span class="pill ok">已就绪</span><span class="num">5h</span><span style="margin-left:auto">6 轮</span></div>
+        </a>
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">登录页在 Safari 17 下无法聚焦验证码输入框</div>
+          <div class="bcard-m"><span class="pill warn">待人补充</span><span class="num">26m</span><span style="margin-left:auto">7 轮</span></div>
+        </a>
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">feat: 支持按负责人批量重新分配任务</div>
+          <div class="bcard-m"><span class="pill bad">阻塞</span><span class="num">21h</span><span style="margin-left:auto">12 轮</span></div>
+        </a>
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">搜索框在中文输入法下重复触发请求</div>
+          <div class="bcard-m"><span class="pill warn">待人补充</span><span class="num" style="color:var(--bad-ink)">46h</span><span style="margin-left:auto">4 轮</span></div>
+        </a>
+      </div>
+      <div class="board-foot">按 issue 复用会话 · 30 轮或 7 天轮换</div>
+    </div>
+
+    <div class="board-col">
+      <div class="board-h"><span class="dot tone-mute"></span><h3>已结束</h3><span class="n">2</span></div>
+      <div class="board-b">
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">新增团队成员时权限继承不符合预期</div>
+          <div class="bcard-m"><span class="pill ok">fixed</span><span class="num">4 天</span><span style="margin-left:auto">6 轮</span></div>
+        </a>
+        <a class="bcard" href="issues.html">
+          <div class="bcard-t">空状态插画在深色模式下几乎不可见</div>
+          <div class="bcard-m"><span class="pill ok">fixed</span><span class="num">2 天</span><span style="margin-left:auto">3 轮</span></div>
+        </a>
+      </div>
+      <div class="board-foot">关闭后会话归档，reopen 重新建会话</div>
+    </div>
+  </div>
+</section>
+
+<div class="grid g-main" style="margin-top:22px">
+  <section class="sec" style="border-top:0;padding-top:0">
+    <div class="sec-h">
+      <h2>门禁处置</h2>
+      <div class="sec-actions"><span class="sec-note">未 ready 时收到 @ · 按状态分流</span></div>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table class="tb">
+          <thead><tr><th>当前状态</th><th>收到 @ 的处置</th><th>理由</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="pill line">无流水线行 / ready</span></td>
+              <td>正常建任务，进入阶段 2 会话</td>
+              <td class="faint">不重跑阶段 0 / 1，已有结论直接复用</td>
+            </tr>
+            <tr>
+              <td><span class="pill info"><i class="dot"></i>running</span></td>
+              <td>只打 <span class="mono">eyes</span> reaction，不建任务</td>
+              <td class="faint">避免两个任务并发写同一个会话</td>
+            </tr>
+            <tr>
+              <td><span class="pill warn"><i class="dot"></i>awaiting_info</span></td>
+              <td>回一条限速提示，把内容写入 <span class="mono">tasks.supplement</span></td>
+              <td class="faint">评论优先：先当补充，再触发重跑；120s 冷却让位</td>
+            </tr>
+            <tr>
+              <td><span class="pill bad"><i class="dot"></i>blocked</span></td>
+              <td>回一条提示：回复 <span class="mono">/recheck --force</span></td>
+              <td class="faint">不自动重跑，避免把失败循环放大</td>
+            </tr>
+            <tr>
+              <td><span class="pill"><i class="dot"></i>closed</span></td>
+              <td>静默忽略</td>
+              <td class="faint">不建任务、不回评论；reopen 由 GitHub 事件重新入队</td>
+            </tr>
+            <tr>
+              <td><span class="pill warn"><i class="dot"></i>classify/awaiting_info</span></td>
+              <td>只有 <b>managers</b> 的评论触发重分类</td>
+              <td class="faint">作者 / 他人评论只记录、不重跑</td>
+            </tr>
+            <tr>
+              <td><span class="pill line">任意非 closed · managers</span></td>
+              <td><span class="mono">/pipeline next</span> / <span class="mono">/pipeline prev</span></td>
+              <td class="faint">blocked 时 next 等价解禁；记审计</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <section class="sec" style="margin-top:20px">
+      <div class="sec-h">
+        <h2>今日流转</h2>
+        <div class="sec-actions"><span class="sec-note">按阶段进出计数 · UTC+8</span></div>
+      </div>
+      <div class="panel panel-pad" style="padding-top:6px;padding-bottom:10px">
+        <div class="step"><span class="dot tone-ok"></span><span class="step-name">新建 issue 进入阶段 0</span><span class="step-dur">18</span><span class="pill" style="justify-self:end">+18</span></div>
+        <div class="step"><span class="dot tone-ok"></span><span class="step-name">阶段 0 通过 → 阶段 1</span><span class="step-dur">12</span><span class="pill ok" style="justify-self:end">+12</span></div>
+        <div class="step"><span class="dot tone-ok"></span><span class="step-name">阶段 1 通过 → 阶段 2</span><span class="step-dur">10</span><span class="pill ok" style="justify-self:end">+10</span></div>
+        <div class="step"><span class="dot tone-warn"></span><span class="step-name">阶段 0 / 1 打回待人补充</span><span class="step-dur">6</span><span class="pill warn" style="justify-self:end">−6</span></div>
+        <div class="step"><span class="dot tone-bad"></span><span class="step-name">阶段 2 阻塞</span><span class="step-dur">2</span><span class="pill bad" style="justify-self:end">−2</span></div>
+        <div class="step"><span class="dot tone-mute"></span><span class="step-name">pipeline-close 自动关闭</span><span class="step-dur">2</span><span class="pill" style="justify-self:end">−2</span></div>
+      </div>
+    </section>
+  </section>
+
+  <div>
+    <div class="panel">
+      <div class="panel-h"><h3>系统常量</h3><span class="pill line" style="margin-left:auto">只读</span></div>
+      <div class="panel-pad" style="padding-top:2px;padding-bottom:4px">
+        <div class="const-row">
+          <span class="const-name">PIPELINE_FORMAT_MAX_FAILS</span>
+          <span class="const-val">5<small>次</small></span>
+        </div>
+        <div class="const-note" style="padding-bottom:7px">格式验证累计 5 次不通过 → 自动关 issue，不是 blocked；第 5 次的评论即最后反馈</div>
+        <div class="const-row">
+          <span class="const-name">PIPELINE_CLOSE_AFTER_HOURS</span>
+          <span class="const-val">48<small>小时</small></span>
+        </div>
+        <div class="const-note" style="padding-bottom:7px">只扫 format/awaiting_info 等用户补充；classify 等管理员不进扫描</div>
+        <div class="const-row">
+          <span class="const-name">fail_streak → blocked</span>
+          <span class="const-val">2<small>次</small></span>
+        </div>
+        <div class="const-note" style="padding-bottom:7px">运行失败 / 信封不合法连续 2 次；重跑不限次数</div>
+        <div class="const-row">
+          <span class="const-name">SESSION_MAX_TURNS</span>
+          <span class="const-val">30<small>轮</small></span>
+        </div>
+        <div class="const-row">
+          <span class="const-name">SESSION_MAX_AGE</span>
+          <span class="const-val">7<small>天</small></span>
+        </div>
+        <div class="const-note" style="padding-bottom:7px">任一超限即轮换：结论摘要带入新会话</div>
+        <div class="const-row">
+          <span class="const-name">PROMPT_LIMITS.body</span>
+          <span class="const-val">4 000<small>字符</small></span>
+        </div>
+        <div class="const-row">
+          <span class="const-name">COMMENT_COOLDOWN_SECONDS</span>
+          <span class="const-val">120<small>秒</small></span>
+        </div>
+        <div class="const-note">改常量需要发版，配置里没有这些开关</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-h"><h3>会话健康</h3></div>
+      <div class="panel-pad" style="padding-top:4px">
+        <dl class="kv">
+          <dt>复用会话</dt><dd class="num">6 个</dd>
+          <dt>平均轮次</dt><dd class="num">6.2 轮</dd>
+          <dt>接近轮换</dt><dd><span class="pill warn"><i class="dot"></i>1 个 · 24 轮</span></dd>
+          <dt>已归档</dt><dd class="num">42 个</dd>
+          <dt>孤儿会话</dt><dd><span class="pill ok"><i class="dot"></i>0</span></dd>
+        </dl>
+        <div class="notice info" style="margin-top:10px;align-items:flex-start">
+          <span class="dot tone-info" style="margin-top:4px"></span>
+          <span>会话轮换由确定性作业执行，不经过模型：写入 <span class="mono">blocked_reason = session_rotated</span> 后建新会话。</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-h"><h3>阶段提示词</h3><a class="link" href="settings.html" style="margin-left:auto;font-size:10.5px">去配置</a></div>
+      <div class="panel-pad" style="padding-top:4px">
+        <dl class="kv">
+          <dt>format_check</dt><dd class="mono">v3 · 项目版本</dd>
+          <dt>classify</dt><dd class="mono">v2 · 项目版本</dd>
+          <dt>agent</dt><dd class="mono">v4 · 项目版本</dd>
+          <dt>project</dt><dd class="mono">v7 · 系统默认</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</div>

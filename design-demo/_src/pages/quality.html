@@ -1,0 +1,149 @@
+<!--@title 质量-->
+<!--@page quality-->
+<!--@nav quality-->
+<!--@crumb 全部项目|质量-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 最近 30 天</div>
+    <h1>质量</h1>
+  </div>
+  <div class="phead-actions">
+    <div class="seg" role="group" aria-label="分组维度">
+      <button type="button" data-group="command" aria-pressed="true">按命令</button>
+      <button type="button" data-group="repo" aria-pressed="false">按仓库</button>
+    </div>
+  </div>
+</div>
+
+<div class="kpi-inline">
+  <div class="k"><span class="k-label">被改回率</span><span class="k-val">6.4%</span><span class="k-sub">82 / 1 274 次已应用</span></div>
+  <div class="k"><span class="k-label">环比</span><span class="k-val delta-down" style="font-size:14px">−0.8pp</span><span class="k-sub">上一个 30 天</span></div>
+  <div class="k"><span class="k-label">平均改回间隔</span><span class="k-val" style="font-size:14px">2 天 9 小时</span></div>
+  <div class="k" style="margin-left:auto"><span class="k-sub">改回 = 同一动作 applied_at 非空且 reverted_at 非空</span></div>
+</div>
+
+<div class="grid g-main" style="margin-top:18px">
+  <section class="sec" style="border-top:0;padding-top:0">
+    <div class="sec-h">
+      <h2>被改回率</h2>
+      <div class="sec-actions"><span class="sec-note" id="revert-note">按命令分组 · 窗口内已应用动作</span></div>
+    </div>
+    <div class="panel panel-pad" style="padding-top:16px">
+      <div class="hbars" id="revert-bars"></div>
+      <div class="faint" style="font-size:10.5px;margin-top:14px;padding-top:11px;border-top:1px solid var(--line)">
+        分母是「已应用动作」；dry-run、rejected、skipped 不计入。分母为 0 时不显示比率，而不是显示 0。
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" style="border-top:0;padding-top:0">
+    <div class="sec-h"><h2>改回方式分布</h2><div class="sec-actions"><span class="sec-note">82 次</span></div></div>
+    <div class="panel panel-pad">
+      <div class="stackbar" style="height:10px">
+        <i style="width:62%;background:var(--accent)"></i>
+        <i style="width:24%;background:var(--warn)"></i>
+        <i style="width:14%;background:var(--mute)"></i>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:9px;margin-top:14px">
+        <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="dot" style="background:var(--accent)"></span><span style="color:var(--ink-2)">人工改写内容</span><span class="num faint" style="margin-left:auto">51 · 62%</span></div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="dot" style="background:var(--warn)"></span><span style="color:var(--ink-2)">直接关闭 / 撤回</span><span class="num faint" style="margin-left:auto">20 · 24%</span></div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="dot" style="background:var(--mute)"></span><span style="color:var(--ink-2)">重新打开 issue</span><span class="num faint" style="margin-left:auto">11 · 14%</span></div>
+      </div>
+      <div class="notice info" style="margin-top:14px">
+        <span class="dot tone-info"></span>
+        <span>改回由 <span class="mono">reconcile</span> 作业与反向 webhook 双向置位，不依赖模型自评。</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<section class="sec" style="margin-top:22px">
+  <div class="sec-h">
+    <h2>逐条改回记录</h2>
+    <span class="sec-count">8 / 82</span>
+    <div class="sec-actions"><span class="sec-note">按改回时间倒序</span></div>
+  </div>
+  <div class="panel">
+    <div class="table-wrap">
+      <table class="tb">
+        <thead>
+          <tr>
+            <th>改回时间</th>
+            <th>仓库</th>
+            <th>命令</th>
+            <th>目标</th>
+            <th>方式</th>
+            <th class="r">间隔</th>
+            <th>动作人</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/10 21:40</td><td class="mono">web-console</td><td class="mono">issue-pipeline</td><td class="mono">issue#305</td><td><span class="pill accent">人工改写</span></td><td class="r">4h 12m</td><td>@wangjing</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">机器人写的标签</div><div class="mono" style="font-size:11px">bug, pipeline:agent</div></div>
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">人改成</div><div class="mono" style="font-size:11px">bug, regression, priority:high</div></div>
+              </div>
+            </td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/10 14:06</td><td class="mono">payments-api</td><td class="mono">/review-pr</td><td class="mono">pr#398</td><td><span class="pill warn">直接撤回</span></td><td class="r">1d 03h</td><td>@chenmo</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7">
+              <div class="notice" style="background:var(--surface-2);border-left-color:var(--warn)">
+                <span class="dot tone-warn"></span>
+                <span>评审结论被驳回：机器人给出 <span class="mono">request_changes</span>，人改为 <span class="mono">approve</span>。原因记录为「误判测试失败是本次改动引入」。</span>
+              </div>
+            </td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/10 09:51</td><td class="mono">web-console</td><td class="mono">/deep-review</td><td class="mono">issue#311</td><td><span class="pill accent">人工改写</span></td><td class="r">52m</td><td>@linwei</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">机器人结论</div><div style="font-size:11.5px;color:var(--ink-2)">无法复现，环境为 Node 22 / macOS</div></div>
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">人工补充</div><div style="font-size:11.5px;color:var(--ink-2)">Node 20 下可稳定复现，容器镜像需要固定小版本</div></div>
+              </div>
+            </td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/09 18:22</td><td class="mono">infra-terraform</td><td class="mono">issue-pipeline</td><td class="mono">issue#288</td><td><span class="pill">重新打开</span></td><td class="r">3d 08h</td><td>@zhangyu</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">机器人按「重复」关闭，作者重新打开并补充了第二个复现路径；该 issue 已被加入排除规则。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/09 10:03</td><td class="mono">web-console</td><td class="mono">/review-pr</td><td class="mono">pr#391</td><td><span class="pill accent">人工改写</span></td><td class="r">6h 40m</td><td>@wangjing</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">机器人草拟的 review 漏掉了 a11y 检查项，人补了 3 条评论。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/08 22:47</td><td class="mono">payments-api</td><td class="mono">/deep-review</td><td class="mono">issue#279</td><td><span class="pill warn">直接撤回</span></td><td class="r">18m</td><td>@chenmo</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">复现脚本误用了生产环境的 mock，结论作废。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/08 16:15</td><td class="mono">web-console</td><td class="mono">issue-pipeline</td><td class="mono">issue#274</td><td><span class="pill accent">人工改写</span></td><td class="r">2d 01h</td><td>@linwei</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">优先级判定偏低，人从 P2 提到 P0。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/07 11:32</td><td class="mono">infra-terraform</td><td class="mono">/review-pr</td><td class="mono">pr#366</td><td><span class="pill">重新打开</span></td><td class="r">9d 04h</td><td>@zhangyu</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">已被关闭的 PR 重新打开，机器人没有重复评论（隐藏标记去重生效）。</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>

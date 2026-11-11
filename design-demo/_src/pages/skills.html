@@ -1,0 +1,192 @@
+<!--@title 技能-->
+<!--@page skills-->
+<!--@nav skills-->
+<!--@crumb 全部项目|技能-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 技能表</div>
+    <h1>技能</h1>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta">3 个技能 · 流水线阶段任务复用 issue-pipeline</span>
+    <button class="btn sm" type="button" data-disabled-reason="POST /api/skills/sync 尚未实现，面板只读">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7M13.2 2.6v3.2H10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      同步技能表
+    </button>
+  </div>
+</div>
+
+<div class="grid g-3">
+  <div class="skill-card">
+    <div class="skill-top">
+      <span class="skill-icon">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.2 3.4h5.6M4 6h8M4 8.6h8M5.2 11.2h5.6" stroke-linecap="round"/><rect x="1.8" y="1.8" width="12.4" height="12.4" rx="2.4"/></svg>
+      </span>
+      <div style="min-width:0;flex:1">
+        <div class="skill-name">/review-pr</div>
+        <div class="faint" style="font-size:10px;margin-top:2px">PR 评审 · 读 diff、跑测试、草拟 review</div>
+      </div>
+      <button class="switch" type="button" role="switch" aria-checked="true" aria-label="启用 /review-pr" data-skill="/review-pr"></button>
+    </div>
+    <div class="skill-desc">在独立 worktree 里检出 PR 分支，安装依赖并跑受影响的测试；结论必须带命令、退出码与耗时。</div>
+    <div class="skill-stats">
+      <div><b>512</b>近 7 天调用</div>
+      <div><b>96.1%</b>成功率</div>
+      <div><b>6m12s</b>平均耗时</div>
+      <div style="margin-left:auto"><button class="link" type="button" data-skill-open="/review-pr" data-yaml-id="yaml-review-pr" data-calls="512" data-rate="96.1%" data-dur="6m12s">定义</button></div>
+    </div>
+  </div>
+
+  <div class="skill-card">
+    <div class="skill-top">
+      <span class="skill-icon">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.2 4.4h6.2M2.2 8h9.6M2.2 11.6h5" stroke-linecap="round"/><circle cx="12.2" cy="4.4" r="1.6"/></svg>
+      </span>
+      <div style="min-width:0;flex:1">
+        <div class="skill-name">issue-pipeline</div>
+        <div class="faint" style="font-size:10px;margin-top:2px">内部任务 · 阶段 0 / 1 / 2 各一个会话</div>
+      </div>
+      <button class="switch" type="button" role="switch" aria-checked="true" aria-label="启用 issue-pipeline" data-skill="issue-pipeline"></button>
+    </div>
+    <div class="skill-desc">阶段 0 查模板、阶段 1 判类别、阶段 2 长期处理同一个 issue。阶段推进由代码判定，技能只负责产出结论与信封。</div>
+    <div class="skill-stats">
+      <div><b>733</b>近 7 天调用</div>
+      <div><b>99.2%</b>成功率</div>
+      <div><b>12s</b>平均耗时</div>
+      <div style="margin-left:auto"><button class="link" type="button" data-skill-open="issue-pipeline" data-yaml-id="yaml-pipeline" data-calls="733" data-rate="99.2%" data-dur="12s">定义</button></div>
+    </div>
+  </div>
+
+  <div class="skill-card">
+    <div class="skill-top">
+      <span class="skill-icon">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M6.4 5.3 10.6 8l-4.2 2.7V5.3Z" stroke-linejoin="round"/></svg>
+      </span>
+      <div style="min-width:0;flex:1">
+        <div class="skill-name">/deep-review</div>
+        <div class="faint" style="font-size:10px;margin-top:2px">被 @ 触发 · 读全仓 + 跑全部测试</div>
+      </div>
+      <button class="switch" type="button" role="switch" aria-checked="true" aria-label="启用 /deep-review" data-skill="/deep-review"></button>
+    </div>
+    <div class="skill-desc">在容器内读全仓、跑全部测试与构建，用于复现与验证；失败必须给 failure_class 与最后 40 行日志。</div>
+    <div class="skill-stats">
+      <div><b>129</b>近 7 天调用</div>
+      <div><b>88.4%</b>成功率</div>
+      <div><b>9m40s</b>平均耗时</div>
+      <div style="margin-left:auto"><button class="link" type="button" data-skill-open="/deep-review" data-yaml-id="yaml-deep-review" data-calls="129" data-rate="88.4%" data-dur="9m40s">定义</button></div>
+    </div>
+  </div>
+</div>
+
+<section class="sec" style="margin-top:22px">
+  <div class="sec-h">
+    <h2>技能表校验</h2>
+    <span class="sec-count">3 / 3 通过</span>
+    <div class="sec-actions"><span class="sec-note">加载时校验，不通过则该命令不注册</span></div>
+  </div>
+  <div class="panel panel-pad" style="padding-top:4px;padding-bottom:4px">
+    <div class="check-row">
+      <span class="dot tone-ok"></span>
+      <span class="check-name">frontmatter.schema</span>
+      <span class="check-detail">name / description / model / allowed-tools</span>
+      <span class="pill ok" style="justify-self:end"><i class="dot"></i>通过</span>
+    </div>
+    <div class="check-row">
+      <span class="dot tone-ok"></span>
+      <span class="check-name">command.unique</span>
+      <span class="check-detail">3 个技能互不重复，且不与内置命令同名</span>
+      <span class="pill ok" style="justify-self:end"><i class="dot"></i>通过</span>
+    </div>
+    <div class="check-row">
+      <span class="dot tone-ok"></span>
+      <span class="check-name">allowed-ops</span>
+      <span class="check-detail">声明 8 个 op，全部在 RACP 18 条白名单内</span>
+      <span class="pill ok" style="justify-self:end"><i class="dot"></i>通过</span>
+    </div>
+  </div>
+</section>
+
+<section class="sec" style="margin-top:20px">
+  <div class="sec-h"><h2>最近调用</h2><div class="sec-actions"><span class="sec-note">跨仓库 · 30 分钟</span></div></div>
+  <div class="panel">
+    <div class="table-wrap">
+      <table class="tb">
+        <thead><tr><th>时间</th><th>技能</th><th>仓库</th><th>目标</th><th>结果</th><th class="r">耗时</th><th class="r">成本</th></tr></thead>
+        <tbody>
+          <tr><td class="num">10:04</td><td class="mono">/review-pr</td><td class="mono">web-console</td><td class="mono">pr#409</td><td><span class="pill bad"><i class="dot"></i>container_oom</span></td><td class="r">4m18s</td><td class="r">$0.041</td></tr>
+          <tr><td class="num">10:03</td><td class="mono">issue-pipeline</td><td class="mono">web-console</td><td class="mono">issue#322</td><td><span class="pill ok"><i class="dot"></i>成功</span></td><td class="r">9s</td><td class="r">$0.006</td></tr>
+          <tr><td class="num">09:58</td><td class="mono">/deep-review</td><td class="mono">web-console</td><td class="mono">issue#301</td><td><span class="pill bad"><i class="dot"></i>test_failed</span></td><td class="r">9m02s</td><td class="r">$0.038</td></tr>
+          <tr><td class="num">09:47</td><td class="mono">issue-pipeline</td><td class="mono">infra-terraform</td><td class="mono">issue#296</td><td><span class="pill ok"><i class="dot"></i>成功</span></td><td class="r">14s</td><td class="r">$0.005</td></tr>
+          <tr><td class="num">09:31</td><td class="mono">/review-pr</td><td class="mono">web-console</td><td class="mono">pr#405</td><td><span class="pill ok"><i class="dot"></i>成功</span></td><td class="r">5m41s</td><td class="r">$0.048</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<div class="drawer-wrap" id="skill-drawer">
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="skill-drawer-title">
+    <div class="drawer-h">
+      <h3 id="skill-drawer-title">/review-pr</h3>
+      <button class="icon-btn" type="button" data-close-drawer aria-label="关闭" style="margin-left:auto">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 4 8 8M12 4l-8 8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer-b">
+      <div class="mono faint" id="skill-drawer-path" style="font-size:10.5px"></div>
+      <div id="skill-drawer-stats" style="display:flex;gap:26px;margin:14px 0;padding-bottom:14px;border-bottom:1px solid var(--line)"></div>
+      <div class="faint" style="font-size:10px;letter-spacing:.06em;margin-bottom:6px">SKILL.md · frontmatter</div>
+      <pre class="code" id="skill-drawer-yaml" style="max-height:none"></pre>
+      <div class="faint" style="font-size:10px;letter-spacing:.06em;margin:14px 0 6px">说明</div>
+      <p style="font-size:11.5px;line-height:1.7;color:var(--ink-2)">
+        技能只声明允许的 op 集合，实际调用走 RACP-WS 的 18 条白名单。任何写 GitHub 的动作都会先过写回闸门；合并永远不实现。
+      </p>
+    </div>
+    <div class="drawer-f">
+      <button class="btn sm" type="button" data-close-drawer>关闭</button>
+      <button class="btn sm primary" type="button" id="skill-dryrun">dry-run 一次</button>
+    </div>
+  </div>
+</div>
+
+<pre id="yaml-review-pr" hidden>name: /review-pr
+description: 评审 PR：读 diff、跑受影响测试、草拟 review
+model: claude-sonnet-4.5
+timeout: 20m
+allowed-tools:
+  - git.clone
+  - git.diff
+  - bash.exec
+  - envelope.write
+  - review.draft
+triggers:
+  - pr.opened
+  - pr.synchronize
+  - comment./review-pr</pre>
+<pre id="yaml-pipeline" hidden>name: issue-pipeline
+description: 三阶段内部任务（format_check / classify / agent）
+model: claude-sonnet-4.5
+timeout: 20m
+allowed-tools:
+  - issue.read
+  - comment.create
+  - label.add
+  - mention.add
+  - envelope.write
+stages:
+  - format_check   # 只读模板；allowedIntents 只含 comment
+  - classify       # 必须给 path:line 证据
+  - agent          # 按 issue 复用会话，30 轮 / 7 天轮换</pre>
+<pre id="yaml-deep-review" hidden>name: /deep-review
+description: 被 @ 触发的深度评审：读全仓、跑全部测试与构建
+model: claude-sonnet-4.5
+timeout: 30m
+allowed-tools:
+  - git.clone
+  - bash.exec
+  - browser.open
+  - envelope.write
+  - comment.create
+triggers:
+  - comment./deep-review</pre>

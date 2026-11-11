@@ -1,0 +1,5141 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>质量 · pi-issue-bot 控制台</title>
+<style>
+/* ==========================================================================
+   pi-issue-bot 控制台 · 改版视觉底座
+   规则：中性底盘 + 单一墨色主操作 + 四档状态语义；层级只用 hairline 与留白，
+   阴影只属于浮层；行密度 32/34px；数字一律 tabular。
+   ========================================================================== */
+
+/* ── 1. 令牌 ─────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  --bg: oklch(0.988 0.002 95);
+  --surface: oklch(1 0 0);
+  --surface-2: oklch(0.971 0.003 95);
+  --surface-3: oklch(0.944 0.004 95);
+  --ink: oklch(0.205 0.012 264);
+  --ink-2: oklch(0.435 0.011 264);
+  --ink-3: oklch(0.605 0.01 264);
+  --ink-4: oklch(0.72 0.008 264);
+
+  --line: color-mix(in oklab, var(--ink) 9%, transparent);
+  --line-2: color-mix(in oklab, var(--ink) 15%, transparent);
+  --line-3: color-mix(in oklab, var(--ink) 24%, transparent);
+
+  --accent: oklch(0.475 0.088 205);
+  --accent-ink: oklch(0.99 0.01 205);
+  --accent-2: oklch(0.62 0.1 200);
+  --accent-soft: color-mix(in oklab, var(--accent) 9%, var(--surface));
+  --accent-line: color-mix(in oklab, var(--accent) 34%, transparent);
+
+  --ok: oklch(0.52 0.125 155);
+  --ok-ink: oklch(0.38 0.095 155);
+  --ok-soft: color-mix(in oklab, var(--ok) 10%, var(--surface));
+  --warn: oklch(0.66 0.135 72);
+  --warn-ink: oklch(0.46 0.1 62);
+  --warn-soft: color-mix(in oklab, var(--warn) 15%, var(--surface));
+  --bad: oklch(0.545 0.185 27);
+  --bad-ink: oklch(0.47 0.17 27);
+  --bad-soft: color-mix(in oklab, var(--bad) 10%, var(--surface));
+  --info: oklch(0.55 0.1 245);
+  --info-ink: oklch(0.45 0.1 245);
+  --info-soft: color-mix(in oklab, var(--info) 10%, var(--surface));
+  --mute: oklch(0.6 0.008 264);
+  --mute-ink: oklch(0.45 0.01 264);
+  --mute-soft: oklch(0.962 0.003 264);
+
+  --float:
+    0 18px 42px -16px oklch(0.2 0.01 264 / 0.26),
+    0 3px 10px -4px oklch(0.2 0.01 264 / 0.14);
+
+  --rail: 212px;
+  --topbar: 46px;
+  --pad: 26px;
+  --gap: 18px;
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-fast: 120ms;
+  --t-base: 180ms;
+
+  --font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', 'Cascadia Code', Consolas,
+    'Liberation Mono', monospace;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: oklch(0.168 0.008 264);
+  --surface: oklch(0.207 0.009 264);
+  --surface-2: oklch(0.243 0.01 264);
+  --surface-3: oklch(0.285 0.011 264);
+  --ink: oklch(0.955 0.004 264);
+  --ink-2: oklch(0.745 0.008 264);
+  --ink-3: oklch(0.6 0.008 264);
+  --ink-4: oklch(0.49 0.008 264);
+
+  --line: color-mix(in oklab, var(--ink) 11%, transparent);
+  --line-2: color-mix(in oklab, var(--ink) 18%, transparent);
+  --line-3: color-mix(in oklab, var(--ink) 28%, transparent);
+
+  --accent: oklch(0.79 0.098 195);
+  --accent-ink: oklch(0.2 0.03 205);
+  --accent-2: oklch(0.7 0.09 198);
+  --accent-soft: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  --accent-line: color-mix(in oklab, var(--accent) 40%, transparent);
+
+  --ok: oklch(0.72 0.13 155);
+  --ok-ink: oklch(0.82 0.12 155);
+  --ok-soft: color-mix(in oklab, var(--ok) 16%, var(--surface));
+  --warn: oklch(0.79 0.13 78);
+  --warn-ink: oklch(0.86 0.11 82);
+  --warn-soft: color-mix(in oklab, var(--warn) 16%, var(--surface));
+  --bad: oklch(0.68 0.17 27);
+  --bad-ink: oklch(0.8 0.13 27);
+  --bad-soft: color-mix(in oklab, var(--bad) 18%, var(--surface));
+  --info: oklch(0.72 0.11 245);
+  --info-ink: oklch(0.83 0.09 245);
+  --info-soft: color-mix(in oklab, var(--info) 16%, var(--surface));
+  --mute: oklch(0.6 0.008 264);
+  --mute-ink: oklch(0.75 0.008 264);
+  --mute-soft: oklch(0.25 0.01 264);
+
+  --float: 0 20px 48px -18px oklch(0 0 0 / 0.62), 0 2px 8px -4px oklch(0 0 0 / 0.5);
+}
+
+/* ── 2. 基础 ─────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  font-feature-settings: 'cv05' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+figure {
+  margin: 0;
+  padding: 0;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+svg {
+  display: block;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 0.94em;
+  letter-spacing: -0.01em;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.faint {
+  color: var(--ink-3);
+}
+
+.muted {
+  color: var(--ink-2);
+}
+
+.trunc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── 3. 外壳 ────────────────────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: var(--topbar);
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--surface);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  padding-bottom: 1px;
+}
+
+[data-theme='dark'] .brand-mark {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.brand-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.brand-meta {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 仓库上下文 */
+.repo-ctx {
+  margin: 0 0 10px;
+}
+
+.repo-ctx-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 38px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+
+.repo-ctx-btn:hover {
+  border-color: var(--line-2);
+  background: var(--surface-3);
+}
+
+.repo-avatar {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  flex: none;
+}
+
+.repo-ctx-name {
+  min-width: 0;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-ctx-caret {
+  margin-left: auto;
+  color: var(--ink-3);
+  flex: none;
+}
+
+.nav-label {
+  padding: 12px 8px 5px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  color: var(--ink-3);
+}
+
+.nav-label:first-child {
+  padding-top: 4px;
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 31px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.nav-item svg {
+  color: var(--ink-3);
+  flex: none;
+  transition: color var(--t-fast) var(--ease);
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nav-item:hover svg {
+  color: var(--ink-2);
+}
+
+.nav-item[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.nav-item[aria-current='page'] svg {
+  color: var(--accent);
+}
+
+.nav-item[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.nav-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-foot {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rail-health {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.rail-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.rail-foot-row .sep {
+  color: var(--ink-4);
+}
+
+/* 顶栏 */
+.main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--topbar);
+  padding: 0 var(--pad);
+  background: color-mix(in oklab, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.crumbs a:hover {
+  color: var(--ink);
+}
+
+.crumbs .sep {
+  color: var(--ink-4);
+}
+
+.crumbs .here {
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.crumbs .current {
+  color: var(--ink-2);
+  font-size: 11.5px;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.status-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-right: 4px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.ribbon-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.ribbon-item b {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.tone-ok {
+  color: var(--ok);
+}
+.tone-warn {
+  color: var(--warn);
+}
+.tone-bad {
+  color: var(--bad);
+}
+.tone-info {
+  color: var(--info);
+}
+.tone-mute {
+  color: var(--mute);
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--ink-2);
+  border: 1px solid transparent;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 17px;
+  padding: 0 4px;
+  border: 1px solid var(--line-2);
+  border-bottom-width: 1.5px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-3);
+  line-height: 1;
+}
+
+.search-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 7px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.search-trigger:hover {
+  border-color: var(--line-2);
+  color: var(--ink-2);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-2);
+}
+
+/* 内容区 */
+.content {
+  padding: 20px var(--pad) 72px;
+  max-width: 1520px;
+  width: 100%;
+}
+
+.phead {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  padding-bottom: 18px;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  color: var(--ink-3);
+}
+
+h1 {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  line-height: 1.25;
+}
+
+.phead-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.phead-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 2px;
+}
+
+.phead-meta {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 4. 原语 ─────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 450;
+  white-space: nowrap;
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.btn:hover {
+  background: var(--surface-2);
+  border-color: var(--line-3);
+}
+
+.btn:active {
+  background: var(--surface-3);
+}
+
+.btn svg {
+  color: var(--ink-3);
+}
+
+.btn:hover svg {
+  color: var(--ink-2);
+}
+
+.btn.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+.btn.primary:hover {
+  background: color-mix(in oklab, var(--ink) 86%, var(--accent));
+  border-color: transparent;
+}
+
+.btn.primary svg {
+  color: currentColor;
+}
+
+.btn.accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn.accent:hover {
+  background: color-mix(in oklab, var(--accent) 88%, var(--ink));
+}
+
+.btn.accent svg {
+  color: currentColor;
+}
+
+.btn.sm {
+  height: 25px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  border-radius: 6px;
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn.ghost:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn[disabled]:hover {
+  background: var(--surface);
+  border-color: var(--line-2);
+}
+
+.link {
+  color: var(--accent);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--t-fast) var(--ease);
+}
+
+.link:hover {
+  border-bottom-color: var(--accent-line);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--mute-soft);
+  color: var(--mute-ink);
+}
+
+.pill.ok {
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+}
+.pill.warn {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+.pill.bad {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+.pill.info {
+  background: var(--info-soft);
+  color: var(--info-ink);
+}
+.pill.accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pill.line {
+  background: transparent;
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+}
+.pill .dot {
+  width: 4px;
+  height: 4px;
+}
+
+.pill.lg {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.seg button {
+  height: 23px;
+  padding: 0 9px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.seg button:hover {
+  color: var(--ink);
+}
+
+.seg button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 0 8px;
+  margin-bottom: -1px;
+  border-bottom: 1.5px solid transparent;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
+.tab-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.sec {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.sec + .sec {
+  margin-top: 20px;
+}
+
+.sec-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding-bottom: 10px;
+}
+
+.sec-h h2 {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+
+.sec-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sec-note {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.sec-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.panel-pad {
+  padding: 14px 16px;
+}
+
+.panel-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-h h3 {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.grid {
+  display: grid;
+  gap: var(--gap);
+}
+
+.g-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.g-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.g-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.g-main {
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+}
+
+.g-main-r {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+}
+
+/* 指标条：一行四格，hairline 分隔，不是四张卡 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.metric {
+  position: relative;
+  padding: 11px 14px 12px;
+  min-width: 0;
+}
+
+.metric + .metric {
+  border-left: 1px solid var(--line);
+}
+
+.metric-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+
+.metric-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.metric-value {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.028em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-unit {
+  font-size: 11px;
+  color: var(--ink-3);
+  padding-bottom: 2px;
+}
+
+.metric-delta {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 3px;
+}
+
+.metric-spark {
+  margin-top: 6px;
+  height: 22px;
+}
+
+.metric-spark svg {
+  width: 100%;
+  height: 22px;
+  overflow: visible;
+}
+
+/* 表格 */
+.table-wrap {
+  overflow: auto;
+}
+
+table.tb {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.tb thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--ink-3);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.tb thead th.r {
+  text-align: right;
+}
+
+.tb thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.tb thead th.sortable:hover {
+  color: var(--ink);
+}
+
+.tb tbody td {
+  height: 33px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.tb tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.tb tbody tr {
+  transition: background-color var(--t-fast) var(--ease);
+}
+
+.tb tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+.tb tbody tr.is-selected td {
+  background: var(--accent-soft);
+}
+
+.tb tbody tr.is-selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tb td.r {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb td.strong {
+  color: var(--ink);
+}
+
+.tb .cell-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+/* 行列表 */
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.rrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 35px;
+  padding: 0 10px;
+  border-radius: 6px;
+  transition: background-color var(--t-fast) var(--ease);
+}
+
+.rrow:hover {
+  background: var(--surface-2);
+}
+
+.rrow .target {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  flex: none;
+}
+
+.rrow .subject {
+  min-width: 0;
+  flex: 1;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rrow .repo {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  flex: none;
+}
+
+.rrow .when {
+  flex: none;
+  min-width: 62px;
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.rrow .act {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.rrow:hover .act,
+.rrow:focus-within .act {
+  opacity: 1;
+}
+
+.rrow-arrow {
+  flex: none;
+  color: var(--ink-4);
+  transition: color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+.rrow:hover .rrow-arrow {
+  color: var(--ink-2);
+  transform: translateX(2px);
+}
+
+/* 键值 */
+.kv {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 0;
+}
+
+.kv dt,
+.kv dd {
+  margin: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11.5px;
+}
+
+.kv dt {
+  color: var(--ink-3);
+}
+
+.kv dd {
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kv > :nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+/* 输入 */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field > label,
+.field-label {
+  font-size: 11px;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+.field-hint {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--ink);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--ink-4);
+}
+
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: var(--line-3);
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.textarea {
+  height: auto;
+  min-height: 120px;
+  padding: 9px;
+  line-height: 1.65;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-3) 50%),
+    linear-gradient(135deg, var(--ink-3) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 13px, calc(100% - 9px) 13px;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  padding-right: 24px;
+}
+
+.search {
+  position: relative;
+  min-width: 0;
+}
+
+.search svg {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+
+.search .input {
+  padding-left: 27px;
+}
+
+/* 开关 */
+.switch {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+  transition: background-color var(--t-base) var(--ease), border-color var(--t-base) var(--ease);
+  flex: none;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 1.5px;
+  left: 1.5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.2);
+  transition: transform var(--t-base) var(--ease);
+}
+
+.switch[aria-checked='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch[aria-checked='true']::after {
+  transform: translateX(13px);
+  background: var(--accent-ink);
+}
+
+/* 进度条 */
+.bar {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.bar.ok > i {
+  background: var(--ok);
+}
+.bar.warn > i {
+  background: var(--warn);
+}
+.bar.bad > i {
+  background: var(--bad);
+}
+
+/* 提示条 */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  border-radius: 6px;
+  background: var(--warn-soft);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.notice.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.notice.info {
+  border-left-color: var(--info);
+  background: var(--info-soft);
+}
+
+.notice b {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.notice .link {
+  margin-left: auto;
+  flex: none;
+}
+
+/* 空态 */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 34px 20px;
+  text-align: center;
+}
+
+.empty-title {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.empty-sub {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ── 5. 图表 ────────────────────────────────────────────────────────────── */
+.chart {
+  position: relative;
+  width: 100%;
+}
+
+.chart svg {
+  width: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.chart-legend i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: 0;
+}
+
+.chart-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.hbar {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 9px;
+  font-size: 11.5px;
+}
+
+.hbar-label {
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hbar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.hbar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.hbar-val {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.stackbar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.stackbar i {
+  height: 100%;
+}
+
+/* 一行事实条：三段并列，hairline 分隔，不是三张卡 */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.facts > div {
+  padding: 11px 14px 12px;
+  min-width: 0;
+}
+
+.facts > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.facts-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+}
+
+.facts-value {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.facts-value b {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.facts-note {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+/* 时间线 */
+.tl {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.tl-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.tl-item::before {
+  content: '';
+  position: absolute;
+  left: 4.5px;
+  top: 22px;
+  bottom: -8px;
+  width: 1px;
+  background: var(--line);
+}
+
+.tl-item:last-child::before {
+  display: none;
+}
+
+.tl-dot {
+  position: relative;
+  z-index: 1;
+  margin-top: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  background: var(--surface-3);
+  box-shadow: 0 0 0 1px var(--line-2);
+}
+
+.tl-dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok);
+}
+.tl-dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+.tl-dot.bad {
+  background: var(--bad);
+  box-shadow: 0 0 0 1px var(--bad);
+}
+.tl-dot.info {
+  background: var(--info);
+  box-shadow: 0 0 0 1px var(--info);
+}
+
+.tl-title {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.tl-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.tl-time {
+  font-size: 10px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── 6. 浮层 ────────────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: oklch(0.2 0.01 264 / 0.32);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-base) var(--ease);
+}
+
+.overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.palette {
+  width: min(560px, calc(100vw - 40px));
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--float);
+  border: 1px solid var(--line-2);
+  overflow: hidden;
+  transform: translateY(-6px) scale(0.99);
+  transition: transform var(--t-base) var(--ease);
+}
+
+.overlay.open .palette {
+  transform: none;
+}
+
+.palette-input {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  height: 46px;
+  border-bottom: 1px solid var(--line);
+}
+
+.palette-input input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 13.5px;
+}
+
+.palette-input input::placeholder {
+  color: var(--ink-4);
+}
+
+.palette-list {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-group {
+  padding: 8px 8px 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.07em;
+  color: var(--ink-4);
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.palette-item svg {
+  color: var(--ink-3);
+}
+
+.palette-item .hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ink-4);
+  font-family: var(--mono);
+}
+
+.palette-item.on,
+.palette-item:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.palette-empty {
+  padding: 26px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.drawer-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.drawer-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: oklch(0.2 0.01 264 / 0.28);
+  opacity: 0;
+  transition: opacity var(--t-base) var(--ease);
+}
+
+.drawer-wrap.open {
+  pointer-events: auto;
+}
+
+.drawer-wrap.open::before {
+  opacity: 1;
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 92vw);
+  background: var(--surface);
+  border-left: 1px solid var(--line-2);
+  box-shadow: var(--float);
+  transform: translateX(100%);
+  transition: transform 220ms var(--ease);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-wrap.open .drawer {
+  transform: none;
+}
+
+.drawer-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.drawer-h h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.drawer-b {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.drawer-f {
+  flex: none;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dialog {
+  width: min(440px, calc(100vw - 40px));
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--float);
+  border: 1px solid var(--line-2);
+  padding: 20px;
+}
+
+.dialog h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dialog p {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.65;
+}
+
+.dialog-f {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--float);
+  font-size: 11.5px;
+  color: var(--ink);
+  animation: toast-in 180ms var(--ease);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.popover {
+  position: absolute;
+  z-index: 50;
+  min-width: 210px;
+  padding: 5px;
+  border-radius: 9px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--float);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+.popover.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  width: 100%;
+  text-align: left;
+}
+
+.popover-item:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.popover-item .check {
+  margin-left: auto;
+  color: var(--accent);
+  opacity: 0;
+}
+
+.popover-item[aria-selected='true'] .check {
+  opacity: 1;
+}
+
+.popover-label {
+  padding: 7px 8px 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.07em;
+  color: var(--ink-4);
+}
+
+/* ── 7. 页面：工作台 ─────────────────────────────────────────────────────── */
+.home-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.home-todo-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 2px;
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.health-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 54px 62px;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 2px;
+  font-size: 11.5px;
+}
+
+.health-row + .health-row {
+  border-top: 1px solid var(--line);
+}
+
+.health-repo {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.health-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  font-size: 11px;
+}
+
+.queue-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.queue-line + .queue-line {
+  border-top: 1px solid var(--line);
+}
+
+.queue-num {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-label {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.concurrency {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.concurrency-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  margin-bottom: 6px;
+}
+
+.slots {
+  display: flex;
+  gap: 4px;
+}
+
+.slot {
+  height: 16px;
+  flex: 1;
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+
+.slot.busy {
+  background: var(--accent);
+}
+
+.slot.queue {
+  background: var(--accent-line);
+}
+
+/* ── 8. 页面：Issue 中心 ────────────────────────────────────────────────── */
+.issue-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  min-height: 620px;
+}
+
+.issue-list {
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+.issue-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.issue-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+  background: var(--surface-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface);
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.chip:hover {
+  border-color: var(--line-2);
+  color: var(--ink);
+}
+
+.chip[aria-pressed='true'] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+
+.chip .n {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  opacity: 0.7;
+}
+
+.issue-rows {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.irow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.irow + .irow {
+  margin-top: 1px;
+}
+
+.irow:hover {
+  background: var(--surface-2);
+}
+
+.irow.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.irow-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.irow-main {
+  min-width: 0;
+}
+
+.irow-title {
+  font-size: 12px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.irow-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.irow-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.irow-time {
+  font-size: 9.5px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.issue-detail {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.detail-h {
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.detail-kicker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.detail-title {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.45;
+}
+
+.detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.detail-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.detail-sec {
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-sec:last-child {
+  border-bottom: 0;
+}
+
+.detail-sec h4 {
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  color: var(--ink-3);
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.verdict {
+  display: flex;
+  gap: 9px;
+  padding: 10px 11px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.verdict-mark {
+  flex: none;
+  margin-top: 1px;
+}
+
+.verdict p {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.verdict b {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.comment {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.comment-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.comment-body {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.detail-f {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── 9. 页面：运行详情 ──────────────────────────────────────────────────── */
+.run-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding-bottom: 16px;
+}
+
+.run-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.run-command {
+  font-family: var(--mono);
+  font-size: 19px;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+
+.run-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.run-meta-row .sep {
+  width: 1px;
+  height: 11px;
+  background: var(--line-2);
+}
+
+.run-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 58px 64px;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  font-size: 11.5px;
+}
+
+.step + .step {
+  border-top: 1px solid var(--line);
+}
+
+.step-name {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.step-dur {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.event {
+  display: grid;
+  grid-template-columns: 52px 74px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  align-items: baseline;
+}
+
+.event:last-child {
+  border-bottom: 0;
+}
+
+.event-time {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
+.event-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-msg {
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event.is-error .event-msg {
+  color: var(--bad-ink);
+}
+
+.code {
+  margin: 0;
+  padding: 11px 12px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  overflow: auto;
+  max-height: 320px;
+  white-space: pre;
+}
+
+.diff {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.75;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.diff-line {
+  display: flex;
+  gap: 10px;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.diff-line .ln {
+  width: 30px;
+  flex: none;
+  text-align: right;
+  color: var(--ink-4);
+  user-select: none;
+}
+
+.diff-line.add {
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+}
+
+.diff-line.del {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+
+.diff-h {
+  padding: 6px 10px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs-panel {
+  padding-top: 12px;
+}
+
+/* ── 10. 页面：成本 / 质量 / 审计 ───────────────────────────────────────── */
+.kpi-inline {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 12px 0 14px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.kpi-inline .k {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.kpi-inline .k-label {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.kpi-inline .k-val {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-inline .k-sub {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.revert-record {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr) 90px 92px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+}
+
+.revert-record + .revert-record {
+  border-top: 1px solid var(--line);
+}
+
+.delta-up {
+  color: var(--bad-ink);
+}
+
+.delta-down {
+  color: var(--ok-ink);
+}
+
+.audit-detail {
+  background: var(--surface-2);
+}
+
+.audit-detail td {
+  padding: 12px 14px !important;
+  white-space: normal !important;
+  height: auto !important;
+}
+
+.audit-json {
+  margin-top: 6px;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  flex-wrap: wrap;
+}
+
+.filter-row .search {
+  width: 220px;
+}
+
+/* ── 11. 页面：技能 / 系统 / 设置 ───────────────────────────────────────── */
+.skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition: border-color var(--t-fast) var(--ease);
+}
+
+.skill-card:hover {
+  border-color: var(--line-2);
+}
+
+.skill-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.skill-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex: none;
+}
+
+.skill-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.skill-desc {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  min-height: 36px;
+}
+
+.skill-stats {
+  display: flex;
+  gap: 14px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.skill-stats b {
+  display: block;
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 1px;
+}
+
+.check-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 0.85fr) minmax(0, 1.5fr) 62px;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 2px;
+  font-size: 11.5px;
+  border-top: 1px solid var(--line);
+}
+
+.check-row:first-child {
+  border-top: 0;
+}
+
+.check-name {
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.check-detail {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.flag-row:first-child {
+  border-top: 0;
+}
+
+.flag-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.flag-name {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.flag-desc {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  min-height: 520px;
+}
+
+.settings-nav {
+  border-right: 1px solid var(--line);
+  padding: 8px;
+  background: var(--surface-2);
+}
+
+.settings-nav button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: left;
+  margin-bottom: 1px;
+}
+
+.settings-nav button:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.settings-nav button[aria-selected='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.settings-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-scroll {
+  flex: 1;
+  padding: 18px 20px;
+  overflow-y: auto;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 680px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.form-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.form-line:last-child {
+  border-bottom: 0;
+}
+
+.form-line-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.form-line-title {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.form-line-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.save-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  transform: translateY(100%);
+  opacity: 0;
+  height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  transition: transform var(--t-base) var(--ease), opacity var(--t-base) var(--ease),
+    height var(--t-base) var(--ease), padding var(--t-base) var(--ease);
+}
+
+.save-bar.show {
+  transform: none;
+  opacity: 1;
+  height: 50px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.save-bar .txt {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.save-bar .acts {
+  margin-left: auto;
+  display: flex;
+  gap: 7px;
+}
+
+.section-switch {
+  display: none;
+}
+
+.section-switch.on {
+  display: block;
+}
+
+/* ── 12. 设计说明页 ─────────────────────────────────────────────────────── */
+.doc-grid {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 32px;
+}
+
+.doc-nav {
+  position: sticky;
+  top: 70px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.doc-nav a {
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.doc-nav a:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.doc h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 26px 0 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.doc h2:first-child {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.doc p {
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--ink-2);
+  margin-bottom: 10px;
+  max-width: 68ch;
+}
+
+.doc ul {
+  margin: 0 0 12px;
+  padding-left: 16px;
+  list-style: disc;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.swatch {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.swatch i {
+  display: block;
+  height: 44px;
+}
+
+.swatch span {
+  display: block;
+  padding: 5px 8px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-3);
+  background: var(--surface);
+}
+
+/* ── 13. 流水线：三阶段 ─────────────────────────────────────────────────── */
+
+/* 三段进度条 */
+.stagebar {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.stagebar i {
+  display: block;
+  width: 15px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+
+.stagebar i.done {
+  background: color-mix(in oklab, var(--ok) 52%, var(--surface));
+}
+
+.stagebar i.run,
+.stagebar i.on {
+  background: var(--accent);
+}
+
+.stagebar i.warn {
+  background: var(--warn);
+}
+
+.stagebar i.bad {
+  background: var(--bad);
+}
+
+.stagebar.lg i {
+  width: 22px;
+  height: 4px;
+}
+
+.stage-name {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-3);
+  letter-spacing: -0.01em;
+}
+
+/* 竖排三步骤 */
+.psteps {
+  display: flex;
+  flex-direction: column;
+}
+
+.pstep {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 9px;
+  padding-bottom: 12px;
+}
+
+.pstep:last-child {
+  padding-bottom: 0;
+}
+
+.pstep-rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 7px;
+}
+
+.pstep-rail::before {
+  content: '';
+  position: absolute;
+  top: 27px;
+  bottom: -19px;
+  width: 1px;
+  background: var(--line);
+}
+
+.pstep:last-child .pstep-rail::before {
+  display: none;
+}
+
+.pstep-dot {
+  position: relative;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--ink-4);
+  flex: none;
+}
+
+.pstep.done .pstep-dot {
+  background: var(--ok-soft);
+  border-color: color-mix(in oklab, var(--ok) 34%, transparent);
+  color: var(--ok-ink);
+}
+
+.pstep.on .pstep-dot {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.pstep.warn .pstep-dot {
+  background: var(--warn-soft);
+  border-color: color-mix(in oklab, var(--warn) 38%, transparent);
+  color: var(--warn-ink);
+}
+
+.pstep.bad .pstep-dot {
+  background: var(--bad-soft);
+  border-color: color-mix(in oklab, var(--bad) 34%, transparent);
+  color: var(--bad-ink);
+}
+
+.pstep-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.pstep.on .pstep-card {
+  border-color: var(--accent-line);
+}
+
+.pstep-h {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.pstep-h h5 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.pstep-h .mono {
+  font-size: 9.5px;
+  color: var(--ink-4);
+}
+
+.pstep-h .pill {
+  margin-left: auto;
+}
+
+.pstep-b {
+  padding: 9px 10px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.pstep-b p + p {
+  margin-top: 5px;
+}
+
+.pstep-b .evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.pstep-m {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-4);
+}
+
+.pstep-m .sep {
+  color: var(--line-3);
+}
+
+.pstep-m .open {
+  margin-left: auto;
+  font-family: var(--font);
+  font-size: 10.5px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.pstep-m .open:hover {
+  text-decoration: underline;
+}
+
+.evidence-chip {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+/* 会话气泡 */
+.chat {
+  display: flex;
+  flex-direction: column;
+}
+
+.msg {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  padding: 11px 14px;
+}
+
+.msg + .msg {
+  border-top: 1px solid var(--line);
+}
+
+.msg-av {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+  flex: none;
+}
+
+.msg.me .msg-av {
+  background: var(--surface-3);
+  color: var(--ink-2);
+  border-color: var(--line-2);
+}
+
+.msg-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-h b {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.msg-b {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.msg-b p + p {
+  margin-top: 7px;
+}
+
+.msg-b ul {
+  margin: 6px 0 0;
+  padding-left: 15px;
+  list-style: disc;
+}
+
+.msg-b li {
+  margin-bottom: 2px;
+}
+
+.msg-b code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.msg-b .callout {
+  margin-top: 7px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--bad);
+  background: var(--bad-soft);
+  font-size: 11px;
+}
+
+.msg.sys {
+  grid-template-columns: minmax(0, 1fr);
+  margin: 8px 14px;
+  padding: 7px 10px;
+  border: 1px dashed var(--line-2);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.msg.sys .msg-b {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.msg.sys .msg-b .mono {
+  color: var(--ink-2);
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.composer .input {
+  flex: 1;
+  height: 32px;
+  font-size: 11.5px;
+}
+
+.composer .hint {
+  font-size: 10px;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+/* 看板 */
+.board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.board-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 400px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.board-h {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.board-h h3 {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.board-h .n {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.board-b {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+}
+
+.bcard {
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.bcard:hover {
+  background: var(--surface-2);
+  border-color: var(--line-2);
+}
+
+.bcard-t {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.bcard-m {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 9.5px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.bcard-m .num {
+  color: var(--ink-3);
+}
+
+.board-foot {
+  padding: 7px 11px;
+  border-top: 1px solid var(--line);
+  font-size: 9.5px;
+  color: var(--ink-4);
+  background: var(--surface-2);
+}
+
+/* 预算层序 */
+.budget {
+  display: flex;
+  flex-direction: column;
+}
+
+.budget-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr) 58px;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.budget-name {
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.budget-name .mono {
+  font-size: 9.5px;
+  color: var(--ink-4);
+}
+
+.budget-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.budget-track i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.budget-track i.drop {
+  background: var(--bad);
+}
+
+.budget-row .num {
+  text-align: right;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+/* 只读常量 */
+.const-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.const-row:last-child {
+  border-bottom: 0;
+}
+
+.const-name {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+.const-note {
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
+.const-val {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.const-val small {
+  font-family: var(--font);
+  font-size: 9.5px;
+  color: var(--ink-4);
+  margin-left: 4px;
+}
+
+/* 提示词版本线 */
+.prompt-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.prompt-line:last-child {
+  border-bottom: 0;
+}
+
+.prompt-name {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.prompt-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-4);
+}
+
+/* ── 14. 响应式 ─────────────────────────────────────────────────────────── */
+@media (max-width: 1280px) {
+  :root {
+    --pad: 20px;
+  }
+  .g-main,
+  .g-main-r,
+  .run-grid,
+  .issue-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .issue-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .issue-layout {
+    min-height: 0;
+  }
+  .issue-rows {
+    max-height: 380px;
+  }
+  .board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1080px) {
+  .status-ribbon {
+    display: none;
+  }
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metric:nth-child(3) {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .metric:nth-child(4) {
+    border-top: 1px solid var(--line);
+  }
+  .g-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .g-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 240px;
+    transform: translateX(-100%);
+    transition: transform 200ms var(--ease);
+    box-shadow: var(--float);
+  }
+  .rail.open {
+    transform: none;
+  }
+  .content {
+    padding: 16px 16px 60px;
+  }
+  .topbar {
+    padding: 0 16px;
+  }
+  .menu-btn {
+    display: grid !important;
+  }
+  .g-2,
+  .g-3,
+  .g-4,
+  .form-row,
+  .doc-grid,
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-nav {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .settings-nav button {
+    width: auto;
+    white-space: nowrap;
+  }
+  .doc-nav {
+    display: none;
+  }
+  .search-trigger span {
+    display: none;
+  }
+  .board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .prompt-line {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+.menu-btn {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+</style>
+</head>
+<body data-page="quality">
+<div class="shell">
+  <aside class="rail" id="rail" aria-label="侧栏">
+    <div class="brand">
+      <span class="brand-mark">π</span>
+      <span class="brand-name">pi-issue-bot</span>
+      <span class="brand-meta">v0.4</span>
+    </div>
+    <div class="rail-scroll">
+      <div class="repo-ctx" style="position:relative">
+        <button class="repo-ctx-btn" id="repo-trigger" type="button" aria-expanded="false" aria-haspopup="listbox">
+          <span class="repo-avatar">W</span>
+          <span class="repo-ctx-name" data-repo-name>acme/web-console</span>
+          <svg class="repo-ctx-caret" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="popover" id="repo-pop" role="listbox" aria-label="仓库列表"></div>
+      </div>
+      <div class="nav-label">跨仓库</div>
+        <a class="nav-item" href="index.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 8h2.4l1.6-4.2L8 12l1.7-5.4L11 8h3.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>工作台</span></a>
+        <a class="nav-item" href="costs.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4.4" rx="5.2" ry="2.2"/><path d="M2.8 4.4v3.2c0 1.2 2.3 2.2 5.2 2.2s5.2-1 5.2-2.2V4.4M2.8 7.6v3.2c0 1.2 2.3 2.2 5.2 2.2s5.2-1 5.2-2.2V7.6"/></svg><span>成本</span></a>
+        <a class="nav-item" href="quality.html" aria-current="page"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8 3 3.6v4.1c0 2.6 2 4.6 5 5.5 3-.9 5-2.9 5-5.5V3.6L8 1.8Z"/><path d="m5.9 7.6 1.5 1.5 2.7-3" stroke-linecap="round" stroke-linejoin="round"/></svg><span>质量</span></a>
+        <a class="nav-item" href="audit.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.4 4.2h8.2M5.4 8h8.2M5.4 11.8h8.2M2.4 4.2h.01M2.4 8h.01M2.4 11.8h.01" stroke-linecap="round"/></svg><span>审计</span></a>
+        <a class="nav-item" href="skills.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m8 1.8 1.6 4 4 1.6-4 1.6L8 13l-1.6-4-4-1.6 4-1.6L8 1.8Z" stroke-linejoin="round"/></svg><span>技能</span></a>
+        <a class="nav-item" href="system.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="8" height="8" rx="1.6"/><path d="M6.6 1.6v2.2M9.4 1.6v2.2M6.6 12.2v2.2M9.4 12.2v2.2M1.6 6.6h2.2M1.6 9.4h2.2M12.2 6.6h2.2M12.2 9.4h2.2" stroke-linecap="round"/></svg><span>系统</span></a>
+      <div class="nav-label">当前仓库</div>
+        <a class="nav-item" href="issues.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 4.8v3.8M8 11.1h.01" stroke-linecap="round"/></svg><span>Issue 中心</span><span class="nav-count">10</span></a>
+        <a class="nav-item" href="pipeline.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="3.4" cy="8" r="1.5"/><circle cx="12.6" cy="4.2" r="1.5"/><circle cx="12.6" cy="11.8" r="1.5"/><path d="M4.9 8h2.2c1.6 0 2.1-3.8 4.2-3.8M4.9 8h2.2c1.6 0 2.1 3.8 4.2 3.8"/></svg><span>流水线</span></a>
+        <a class="nav-item" href="settings.html"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.6h10M3 8h10M3 11.4h10" stroke-linecap="round"/><circle cx="6" cy="4.6" r="1.5" fill="currentColor" stroke="none"/><circle cx="10" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="11.4" r="1.5" fill="currentColor" stroke="none"/></svg><span>设置</span></a>
+    </div>
+    <div class="rail-foot">
+      <div class="rail-health"><span class="dot tone-ok"></span><span>GitHub App 已连接</span></div>
+      <div class="rail-foot-row"><span>轮询 15s</span><span class="sep">·</span><span>契约 v1.1</span><span class="sep">·</span><span>UTC+8</span></div>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="打开导航">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke-linecap="round"/></svg>
+      </button>
+      <nav class="crumbs" aria-label="面包屑"><span class="sep">/</span><a href="index.html">全部项目</a><span class="sep">/</span><span class="current">质量</span></nav>
+      <div class="topbar-spacer"></div>
+      <div class="status-ribbon" aria-label="全局状态">
+        <span class="pill line" title="本原型所有数字均为演示数据">演示数据</span>
+        <span class="ribbon-item"><span class="dot tone-ok"></span>队列 <b>3</b></span>
+        <span class="ribbon-item"><span class="dot tone-ok"></span>429 熔断 <b>无</b></span>
+        <span class="ribbon-item"><span class="dot tone-ok"></span>doctor <b>通过</b></span>
+      </div>
+      <button class="search-trigger" type="button" data-open-palette>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7.2" cy="7.2" r="4.4"/><path d="m10.6 10.6 3 3" stroke-linecap="round"/></svg>
+        <span>搜索</span>
+        <span class="kbd">⌘K</span>
+      </button>
+      <button class="icon-btn" id="theme-btn" type="button" aria-label="切换主题"></button>
+      <span class="avatar" title="acme 组织管理员">LW</span>
+    </header>
+    <div class="content" id="main">
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 最近 30 天</div>
+    <h1>质量</h1>
+  </div>
+  <div class="phead-actions">
+    <div class="seg" role="group" aria-label="分组维度">
+      <button type="button" data-group="command" aria-pressed="true">按命令</button>
+      <button type="button" data-group="repo" aria-pressed="false">按仓库</button>
+    </div>
+  </div>
+</div>
+
+<div class="kpi-inline">
+  <div class="k"><span class="k-label">被改回率</span><span class="k-val">6.4%</span><span class="k-sub">82 / 1 274 次已应用</span></div>
+  <div class="k"><span class="k-label">环比</span><span class="k-val delta-down" style="font-size:14px">−0.8pp</span><span class="k-sub">上一个 30 天</span></div>
+  <div class="k"><span class="k-label">平均改回间隔</span><span class="k-val" style="font-size:14px">2 天 9 小时</span></div>
+  <div class="k" style="margin-left:auto"><span class="k-sub">改回 = 同一动作 applied_at 非空且 reverted_at 非空</span></div>
+</div>
+
+<div class="grid g-main" style="margin-top:18px">
+  <section class="sec" style="border-top:0;padding-top:0">
+    <div class="sec-h">
+      <h2>被改回率</h2>
+      <div class="sec-actions"><span class="sec-note" id="revert-note">按命令分组 · 窗口内已应用动作</span></div>
+    </div>
+    <div class="panel panel-pad" style="padding-top:16px">
+      <div class="hbars" id="revert-bars"></div>
+      <div class="faint" style="font-size:10.5px;margin-top:14px;padding-top:11px;border-top:1px solid var(--line)">
+        分母是「已应用动作」；dry-run、rejected、skipped 不计入。分母为 0 时不显示比率，而不是显示 0。
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" style="border-top:0;padding-top:0">
+    <div class="sec-h"><h2>改回方式分布</h2><div class="sec-actions"><span class="sec-note">82 次</span></div></div>
+    <div class="panel panel-pad">
+      <div class="stackbar" style="height:10px">
+        <i style="width:62%;background:var(--accent)"></i>
+        <i style="width:24%;background:var(--warn)"></i>
+        <i style="width:14%;background:var(--mute)"></i>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:9px;margin-top:14px">
+        <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="dot" style="background:var(--accent)"></span><span style="color:var(--ink-2)">人工改写内容</span><span class="num faint" style="margin-left:auto">51 · 62%</span></div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="dot" style="background:var(--warn)"></span><span style="color:var(--ink-2)">直接关闭 / 撤回</span><span class="num faint" style="margin-left:auto">20 · 24%</span></div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="dot" style="background:var(--mute)"></span><span style="color:var(--ink-2)">重新打开 issue</span><span class="num faint" style="margin-left:auto">11 · 14%</span></div>
+      </div>
+      <div class="notice info" style="margin-top:14px">
+        <span class="dot tone-info"></span>
+        <span>改回由 <span class="mono">reconcile</span> 作业与反向 webhook 双向置位，不依赖模型自评。</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<section class="sec" style="margin-top:22px">
+  <div class="sec-h">
+    <h2>逐条改回记录</h2>
+    <span class="sec-count">8 / 82</span>
+    <div class="sec-actions"><span class="sec-note">按改回时间倒序</span></div>
+  </div>
+  <div class="panel">
+    <div class="table-wrap">
+      <table class="tb">
+        <thead>
+          <tr>
+            <th>改回时间</th>
+            <th>仓库</th>
+            <th>命令</th>
+            <th>目标</th>
+            <th>方式</th>
+            <th class="r">间隔</th>
+            <th>动作人</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/10 21:40</td><td class="mono">web-console</td><td class="mono">issue-pipeline</td><td class="mono">issue#305</td><td><span class="pill accent">人工改写</span></td><td class="r">4h 12m</td><td>@wangjing</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">机器人写的标签</div><div class="mono" style="font-size:11px">bug, pipeline:agent</div></div>
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">人改成</div><div class="mono" style="font-size:11px">bug, regression, priority:high</div></div>
+              </div>
+            </td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/10 14:06</td><td class="mono">payments-api</td><td class="mono">/review-pr</td><td class="mono">pr#398</td><td><span class="pill warn">直接撤回</span></td><td class="r">1d 03h</td><td>@chenmo</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7">
+              <div class="notice" style="background:var(--surface-2);border-left-color:var(--warn)">
+                <span class="dot tone-warn"></span>
+                <span>评审结论被驳回：机器人给出 <span class="mono">request_changes</span>，人改为 <span class="mono">approve</span>。原因记录为「误判测试失败是本次改动引入」。</span>
+              </div>
+            </td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/10 09:51</td><td class="mono">web-console</td><td class="mono">/deep-review</td><td class="mono">issue#311</td><td><span class="pill accent">人工改写</span></td><td class="r">52m</td><td>@linwei</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">机器人结论</div><div style="font-size:11.5px;color:var(--ink-2)">无法复现，环境为 Node 22 / macOS</div></div>
+                <div><div class="faint" style="font-size:10px;margin-bottom:4px">人工补充</div><div style="font-size:11.5px;color:var(--ink-2)">Node 20 下可稳定复现，容器镜像需要固定小版本</div></div>
+              </div>
+            </td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/09 18:22</td><td class="mono">infra-terraform</td><td class="mono">issue-pipeline</td><td class="mono">issue#288</td><td><span class="pill">重新打开</span></td><td class="r">3d 08h</td><td>@zhangyu</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">机器人按「重复」关闭，作者重新打开并补充了第二个复现路径；该 issue 已被加入排除规则。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/09 10:03</td><td class="mono">web-console</td><td class="mono">/review-pr</td><td class="mono">pr#391</td><td><span class="pill accent">人工改写</span></td><td class="r">6h 40m</td><td>@wangjing</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">机器人草拟的 review 漏掉了 a11y 检查项，人补了 3 条评论。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/08 22:47</td><td class="mono">payments-api</td><td class="mono">/deep-review</td><td class="mono">issue#279</td><td><span class="pill warn">直接撤回</span></td><td class="r">18m</td><td>@chenmo</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">复现脚本误用了生产环境的 mock，结论作废。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/08 16:15</td><td class="mono">web-console</td><td class="mono">issue-pipeline</td><td class="mono">issue#274</td><td><span class="pill accent">人工改写</span></td><td class="r">2d 01h</td><td>@linwei</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">优先级判定偏低，人从 P2 提到 P0。</span></td>
+          </tr>
+          <tr data-revert-row style="cursor:pointer">
+            <td class="num">11/07 11:32</td><td class="mono">infra-terraform</td><td class="mono">/review-pr</td><td class="mono">pr#366</td><td><span class="pill">重新打开</span></td><td class="r">9d 04h</td><td>@zhangyu</td>
+          </tr>
+          <tr class="audit-detail" hidden>
+            <td colspan="7"><span class="faint" style="font-size:11.5px">已被关闭的 PR 重新打开，机器人没有重复评论（隐藏标记去重生效）。</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+    </div>
+  </div>
+</div>
+  <div class="overlay" id="palette-overlay" role="dialog" aria-modal="true" aria-label="命令面板">
+    <div class="palette">
+      <div class="palette-input">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--ink-3)" stroke-width="1.6"><circle cx="7.2" cy="7.2" r="4.4"/><path d="m10.6 10.6 3 3" stroke-linecap="round"/></svg>
+        <input id="palette-input" type="text" placeholder="搜索页面、仓库…" aria-label="搜索页面或仓库" autocomplete="off" />
+        <span class="kbd">ESC</span>
+      </div>
+      <div class="palette-list" id="palette-list"></div>
+    </div>
+  </div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<script>
+window.__PAGE__ = "quality";
+window.__REPO__ = "acme/web-console";
+window.__REPOS__ = ["acme/web-console","acme/payments-api","acme/infra-terraform"];
+window.__NAV__ = [{"group":"跨仓库","items":[{"id":"home","label":"工作台","href":"index.html","icon":"pulse"},{"id":"costs","label":"成本","href":"costs.html","icon":"coin"},{"id":"quality","label":"质量","href":"quality.html","icon":"shield"},{"id":"audit","label":"审计","href":"audit.html","icon":"list"},{"id":"skills","label":"技能","href":"skills.html","icon":"spark"},{"id":"system","label":"系统","href":"system.html","icon":"cpu"}]},{"group":"当前仓库","items":[{"id":"issues","label":"Issue 中心","href":"issues.html","icon":"issue","count":"10"},{"id":"pipeline","label":"流水线","href":"pipeline.html","icon":"flow"},{"id":"settings","label":"设置","href":"settings.html","icon":"sliders"}]}];
+</script>
+<script>
+/* ==========================================================================
+   pi-issue-bot 控制台 · 交互原型脚本（无依赖，file:// 直接可跑）
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var $ = function (sel, root) { return (root || document).querySelector(sel); };
+  var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+  var SVGNS = 'http://www.w3.org/2000/svg';
+
+  /* ── 基础工具 ─────────────────────────────────────────────────────────── */
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    if (text != null) node.textContent = text;
+    return node;
+  }
+  function svg(tag, attrs) {
+    var node = document.createElementNS(SVGNS, tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    return node;
+  }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function fmt(n) { return new Intl.NumberFormat('en-US').format(n); }
+
+  function toast(message, tone) {
+    var host = $('#toasts');
+    if (!host) return;
+    var t = el('div', { class: 'toast' });
+    var dot = el('span', { class: 'dot tone-' + (tone || 'ok') });
+    t.appendChild(dot);
+    t.appendChild(el('span', null, message));
+    host.appendChild(t);
+    while (host.children.length > 3) host.removeChild(host.firstChild);
+    setTimeout(function () {
+      t.style.transition = 'opacity 160ms ease, transform 160ms ease';
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(4px)';
+      setTimeout(function () { t.remove(); }, 180);
+    }, 2600);
+  }
+
+  function copyText(text, label) {
+    var done = function () { toast(label || '已复制', 'ok'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { toast('浏览器拒绝了剪贴板访问', 'warn'); });
+    } else {
+      done();
+    }
+  }
+
+  /* ── 主题 ─────────────────────────────────────────────────────────────── */
+  var THEME_KEY = 'pib-demo-theme';
+  function applyTheme(mode) {
+    document.documentElement.setAttribute('data-theme', mode);
+    var btn = $('#theme-btn');
+    if (btn) {
+      btn.setAttribute('aria-label', mode === 'dark' ? '切换到浅色' : '切换到深色');
+      btn.innerHTML = mode === 'dark'
+        ? '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3.1"/><path d="M8 1.2v1.4M8 13.4v1.4M1.2 8h1.4M13.4 8h1.4M3.2 3.2l1 1M11.8 11.8l1 1M12.8 3.2l-1 1M4.2 11.8l-1 1" stroke-linecap="round"/></svg>'
+        : '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8Z" stroke-linejoin="round"/></svg>';
+    }
+  }
+  function initTheme() {
+    var stored = null;
+    try { stored = localStorage.getItem(THEME_KEY); } catch (e) { /* file:// 下可能不可用 */ }
+    var forced = (location.search.match(/theme=(dark|light)/) || [])[1];
+    var mode = forced || stored || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    applyTheme(mode);
+    var btn = $('#theme-btn');
+    if (btn) btn.addEventListener('click', function () {
+      var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* ignore */ }
+      redrawCharts();
+    });
+  }
+
+  /* ── 仓库切换 ─────────────────────────────────────────────────────────── */
+  var REPO_KEY = 'pib-demo-repo';
+  function currentRepo() {
+    try { return localStorage.getItem(REPO_KEY) || window.__REPO__; } catch (e) { return window.__REPO__; }
+  }
+  function initRepoSwitcher() {
+    var trigger = $('#repo-trigger');
+    var pop = $('#repo-pop');
+    if (!trigger || !pop) return;
+    var repos = window.__REPOS__ || [];
+    var active = currentRepo();
+
+    function paint() {
+      $$('[data-repo-name]').forEach(function (n) { n.textContent = active; });
+      $$('[data-repo-short]').forEach(function (n) { n.textContent = active.split('/')[1]; });
+      $$('.popover-item', pop).forEach(function (item) {
+        item.setAttribute('aria-selected', item.dataset.repo === active ? 'true' : 'false');
+      });
+      document.dispatchEvent(new CustomEvent('repo:change', { detail: { repo: active } }));
+    }
+
+    pop.innerHTML = '<div class="popover-label">切换仓库上下文</div>';
+    repos.forEach(function (repo) {
+      var b = el('button', { class: 'popover-item', type: 'button', 'data-repo': repo });
+      b.innerHTML = '<span class="repo-avatar">' + repo.split('/')[1].slice(0, 1).toUpperCase() + '</span>' +
+        '<span class="mono">' + repo + '</span>' +
+        '<svg class="check" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3.5 8.4 3 3 6-6.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      b.addEventListener('click', function () {
+        active = repo;
+        try { localStorage.setItem(REPO_KEY, active); } catch (e) { /* ignore */ }
+        paint();
+        togglePop(false);
+        toast('已切换仓库上下文：' + active, 'info');
+      });
+      pop.appendChild(b);
+    });
+
+    function togglePop(open) {
+      var willOpen = open == null ? !pop.classList.contains('open') : open;
+      pop.classList.toggle('open', willOpen);
+      trigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    }
+    trigger.addEventListener('click', function (e) { e.stopPropagation(); togglePop(); });
+    document.addEventListener('click', function (e) {
+      if (!pop.contains(e.target) && !trigger.contains(e.target)) togglePop(false);
+    });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') togglePop(false); });
+    paint();
+  }
+
+  /* ── 命令面板 ─────────────────────────────────────────────────────────── */
+  function initPalette() {
+    var overlay = $('#palette-overlay');
+    var input = $('#palette-input');
+    var list = $('#palette-list');
+    if (!overlay || !input) return;
+    var nav = window.__NAV__ || [];
+    var repos = window.__REPOS__ || [];
+    var flat = [];
+    nav.forEach(function (group) {
+      group.items.forEach(function (item) {
+        flat.push({ group: group.group, label: item.label, href: item.href, icon: item.icon, kind: 'page' });
+      });
+    });
+    var repoItems = repos.map(function (r) { return { group: '仓库', label: r, repo: r, kind: 'repo' }; });
+    var cursor = 0;
+
+    function render(q) {
+      var query = (q || '').toLowerCase().trim();
+      var items = flat.concat(repoItems).filter(function (i) {
+        return query === '' || i.label.toLowerCase().indexOf(query) >= 0 || (i.group && i.group.toLowerCase().indexOf(query) >= 0);
+      });
+      list.innerHTML = '';
+      if (!items.length) {
+        list.appendChild(el('div', { class: 'palette-empty' }, '没有匹配的页面或仓库'));
+        return;
+      }
+      cursor = 0;
+      var lastGroup = null;
+      items.forEach(function (item, idx) {
+        if (item.group !== lastGroup) {
+          list.appendChild(el('div', { class: 'palette-group' }, item.group));
+          lastGroup = item.group;
+        }
+        var b = el('button', { class: 'palette-item' + (idx === 0 ? ' on' : ''), type: 'button' });
+        b.innerHTML = (item.kind === 'page' ? iconSvg(item.icon) : '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.4 4.6h11.2M2.4 8h11.2M2.4 11.4h7" stroke-linecap="round"/></svg>') +
+          '<span>' + item.label + '</span>' +
+          '<span class="hint">' + (item.kind === 'page' ? '页面' : '切换') + '</span>';
+        b.addEventListener('click', function () { choose(item); });
+        list.appendChild(b);
+        item.__node = b;
+      });
+      list.__items = items;
+    }
+
+    function choose(item) {
+      if (item.kind === 'page') { location.href = item.href; return; }
+      try { localStorage.setItem(REPO_KEY, item.repo); } catch (e) { /* ignore */ }
+      close();
+      location.reload();
+    }
+
+    function paintCursor() {
+      var items = list.__items || [];
+      items.forEach(function (i, idx) { if (i.__node) i.__node.classList.toggle('on', idx === cursor); });
+      var node = items[cursor] && items[cursor].__node;
+      if (node) node.scrollIntoView({ block: 'nearest' });
+    }
+
+    function open() {
+      overlay.classList.add('open');
+      input.value = '';
+      render('');
+      setTimeout(function () { input.focus(); }, 20);
+    }
+    function close() { overlay.classList.remove('open'); }
+
+    input.addEventListener('input', function () { render(input.value); });
+    input.addEventListener('keydown', function (e) {
+      var items = list.__items || [];
+      if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(items.length - 1, cursor + 1); paintCursor(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(0, cursor - 1); paintCursor(); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (items[cursor]) choose(items[cursor]); }
+      else if (e.key === 'Escape') { close(); }
+    });
+    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function (e) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(); }
+      else if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); open(); }
+    });
+    $$('[data-open-palette]').forEach(function (b) { b.addEventListener('click', open); });
+    window.__openPalette = open;
+  }
+
+  function iconSvg(name) {
+    var paths = {
+      pulse: '<path d="M1.5 8h2.4l1.6-4.2L8 12l1.7-5.4L11 8h3.5" stroke-linecap="round" stroke-linejoin="round"/>',
+      coin: '<ellipse cx="8" cy="4.4" rx="5.2" ry="2.2"/><path d="M2.8 4.4v3.2c0 1.2 2.3 2.2 5.2 2.2s5.2-1 5.2-2.2V4.4M2.8 7.6v3.2c0 1.2 2.3 2.2 5.2 2.2s5.2-1 5.2-2.2V7.6"/>',
+      shield: '<path d="M8 1.8 3 3.6v4.1c0 2.6 2 4.6 5 5.5 3-.9 5-2.9 5-5.5V3.6L8 1.8Z"/><path d="m5.9 7.6 1.5 1.5 2.7-3" stroke-linecap="round" stroke-linejoin="round"/>',
+      list: '<path d="M5.4 4.2h8.2M5.4 8h8.2M5.4 11.8h8.2M2.4 4.2h.01M2.4 8h.01M2.4 11.8h.01" stroke-linecap="round"/>',
+      spark: '<path d="m8 1.8 1.6 4 4 1.6-4 1.6L8 13l-1.6-4-4-1.6 4-1.6L8 1.8Z" stroke-linejoin="round"/>',
+      cpu: '<rect x="4" y="4" width="8" height="8" rx="1.6"/><path d="M6.6 1.6v2.2M9.4 1.6v2.2M6.6 12.2v2.2M9.4 12.2v2.2M1.6 6.6h2.2M1.6 9.4h2.2M12.2 6.6h2.2M12.2 9.4h2.2" stroke-linecap="round"/>',
+      issue: '<circle cx="8" cy="8" r="6"/><path d="M8 4.8v3.8M8 11.1h.01" stroke-linecap="round"/>',
+      play: '<circle cx="8" cy="8" r="6"/><path d="M6.4 5.3 10.6 8l-4.2 2.7V5.3Z" stroke-linejoin="round"/>',
+      sliders: '<path d="M3 4.6h10M3 8h10M3 11.4h10" stroke-linecap="round"/><circle cx="6" cy="4.6" r="1.5" fill="currentColor" stroke="none"/><circle cx="10" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="11.4" r="1.5" fill="currentColor" stroke="none"/>',
+      search: '<circle cx="7.2" cy="7.2" r="4.4"/><path d="m10.6 10.6 3 3" stroke-linecap="round"/>'
+    };
+    return '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">' + (paths[name] || paths.list) + '</svg>';
+  }
+
+  /* ── 图表 ─────────────────────────────────────────────────────────────── */
+  var charts = [];
+
+  function renderTrend(host, data) {
+    if (!host) return;
+    var w = Math.max(420, host.clientWidth || 760), h = 176, pad = { l: 30, r: 12, t: 12, b: 20 };
+    var iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+    var rawMax = 4;
+    data.forEach(function (d) { rawMax = Math.max(rawMax, d.ok + d.fail); });
+    var max = Math.ceil(rawMax / 4) * 4;
+    var bw = iw / data.length;
+    var barW = Math.min(18, bw * 0.58);
+
+    var s = svg('svg', { viewBox: '0 0 ' + w + ' ' + h });
+    s.style.height = h + 'px';
+
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (p) {
+      var y = pad.t + ih * (1 - p);
+      s.appendChild(svg('line', {
+        x1: pad.l, x2: w - pad.r, y1: y, y2: y,
+        stroke: 'var(--line)', 'stroke-width': 1, 'stroke-dasharray': p === 0 ? '0' : '2 4',
+        'vector-effect': 'non-scaling-stroke'
+      }));
+      var t = svg('text', { x: pad.l - 7, y: y + 3, 'text-anchor': 'end', 'font-size': 8.5, fill: 'var(--ink-4)', 'font-family': 'var(--mono)' });
+      t.textContent = String(Math.round(max * p));
+      s.appendChild(t);
+    });
+
+    data.forEach(function (d, i) {
+      var x = pad.l + bw * i + (bw - barW) / 2;
+      var hOk = (d.ok / max) * ih;
+      var hFail = (d.fail / max) * ih;
+      var yOk = pad.t + ih - hOk;
+      s.appendChild(svg('rect', { x: x, y: yOk, width: barW, height: Math.max(0, hOk), rx: 1.5, fill: 'var(--accent)', opacity: 0.88 }));
+      if (hFail > 0) {
+        s.appendChild(svg('rect', { x: x, y: yOk - hFail, width: barW, height: hFail, rx: 1.5, fill: 'var(--bad)', opacity: 0.85 }));
+      }
+      if (i % 3 === 0) {
+        var lbl = svg('text', { x: pad.l + bw * i + bw / 2, y: h - 6, 'text-anchor': 'middle', 'font-size': 8.5, fill: 'var(--ink-4)', 'font-family': 'var(--mono)' });
+        lbl.textContent = d.label;
+        s.appendChild(lbl);
+      }
+    });
+
+    host.innerHTML = '';
+    host.appendChild(s);
+    charts.push(function () { renderTrend(host, data); });
+  }
+
+  function renderSpark(host, values, tone) {
+    if (!host) return;
+    var w = 96, h = 22, n = values.length;
+    var min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+    var span = max - min || 1;
+    var pts = values.map(function (v, i) {
+      return [ (i / (n - 1)) * w, h - 2 - ((v - min) / span) * (h - 5) ];
+    });
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+    var area = line + ' L' + w + ' ' + h + ' L0 ' + h + ' Z';
+    var color = tone === 'bad' ? 'var(--bad)' : tone === 'warn' ? 'var(--warn)' : 'var(--accent)';
+    host.innerHTML = '';
+    var s = svg('svg', { viewBox: '0 0 ' + w + ' ' + h, preserveAspectRatio: 'none' });
+    s.appendChild(svg('path', { d: area, fill: color, opacity: 0.1 }));
+    s.appendChild(svg('path', { d: line, fill: 'none', stroke: color, 'stroke-width': 1.4, 'vector-effect': 'non-scaling-stroke', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    host.appendChild(s);
+  }
+
+  function renderArea(host, labels, values, opts) {
+    if (!host) return;
+    opts = opts || {};
+    var w = Math.max(420, host.clientWidth || 760), h = opts.height || 180, pad = { l: 40, r: 10, t: 12, b: 22 };
+    var iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+    var max = Math.max.apply(null, values) * 1.12;
+    var min = opts.zero ? 0 : Math.min.apply(null, values) * 0.75;
+    var s = svg('svg', { viewBox: '0 0 ' + w + ' ' + h });
+    s.style.height = h + 'px';
+
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (p) {
+      var y = pad.t + ih * (1 - p);
+      s.appendChild(svg('line', { x1: pad.l, x2: w - pad.r, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1, 'stroke-dasharray': p === 0 ? '0' : '2 4', 'vector-effect': 'non-scaling-stroke' }));
+      var t = svg('text', { x: pad.l - 7, y: y + 3.5, 'text-anchor': 'end', 'font-size': 9, fill: 'var(--ink-4)', 'font-family': 'var(--mono)' });
+      t.textContent = (opts.prefix || '') + (min + (max - min) * p).toFixed(opts.decimals == null ? 0 : opts.decimals);
+      s.appendChild(t);
+    });
+
+    var pts = values.map(function (v, i) {
+      return [ pad.l + (i / (values.length - 1)) * iw, pad.t + ih * (1 - (v - min) / (max - min)) ];
+    });
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+    var area = line + ' L' + (pad.l + iw) + ' ' + (pad.t + ih) + ' L' + pad.l + ' ' + (pad.t + ih) + ' Z';
+    var grad = svg('linearGradient', { id: 'area-fill', x1: 0, y1: 0, x2: 0, y2: 1 });
+    grad.appendChild(svg('stop', { offset: '0', 'stop-color': 'var(--accent)', 'stop-opacity': 0.16 }));
+    grad.appendChild(svg('stop', { offset: '1', 'stop-color': 'var(--accent)', 'stop-opacity': 0 }));
+    var defs = svg('defs'); defs.appendChild(grad); s.appendChild(defs);
+    s.appendChild(svg('path', { d: area, fill: 'url(#area-fill)' }));
+    s.appendChild(svg('path', { d: line, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round' }));
+
+    labels.forEach(function (lb, i) {
+      if (labels.length > 12 && i % Math.ceil(labels.length / 6) !== 0) return;
+      var t = svg('text', { x: pts[i][0], y: h - 6, 'text-anchor': 'middle', 'font-size': 8.5, fill: 'var(--ink-4)', 'font-family': 'var(--mono)' });
+      t.textContent = lb;
+      s.appendChild(t);
+    });
+
+    host.innerHTML = '';
+    host.appendChild(s);
+    charts.push(function () { renderArea(host, labels, values, opts); });
+  }
+
+  function renderHBars(host, items, tone) {
+    if (!host) return;
+    var max = Math.max.apply(null, items.map(function (i) { return i.value; })) || 1;
+    host.innerHTML = items.map(function (i) {
+      var pct = Math.round((i.value / max) * 100);
+      return '<div class="hbar"><span class="hbar-label" title="' + i.label + '">' + i.label + '</span>' +
+        '<span class="hbar-track"><i class="hbar-fill" style="display:block;width:' + pct + '%;background:' + (i.color || (tone === 'bad' ? 'var(--bad)' : 'var(--accent)')) + ';opacity:.85"></i></span>' +
+        '<span class="hbar-val">' + i.display + '</span></div>';
+    }).join('');
+  }
+
+  function redrawCharts() {
+    var list = charts.slice();
+    charts = [];
+    list.forEach(function (fn) { fn(); });
+  }
+
+  /* ── 页面：工作台 ─────────────────────────────────────────────────────── */
+  function homeData() {
+    var hours = [], ok = 0, fail = 0;
+    // 24 小时阶段任务数（阶段 0 / 1 / 2 合计），合计 46，失败 4
+    var shape = [1, 0, 0, 0, 1, 1, 2, 3, 4, 4, 3, 3, 2, 3, 4, 2, 2, 2, 2, 1, 1, 2, 2, 1];
+    var failAt = { 6: 1, 9: 1, 15: 1, 21: 1 };
+    for (var i = 0; i < 24; i++) {
+      var hh = (new Date().getHours() - 23 + i + 24) % 24;
+      var total = shape[i];
+      var f = failAt[i] && total > 0 ? 1 : 0;
+      hours.push({ label: ('0' + hh).slice(-2), ok: total - f, fail: f });
+      ok += total - f; fail += f;
+    }
+    return { hours: hours, ok: ok, fail: fail };
+  }
+
+  function initHome() {
+    var data = homeData();
+    renderTrend($('#trend-chart'), data.hours);
+
+    renderSpark($('#spark-tasks'), [2, 1, 1, 0, 1, 2, 3, 4, 4, 3, 2, 3, 4, 3, 3, 2, 3, 4, 3, 2].map(function (v) { return v + 1; }));
+    renderSpark($('#spark-rate'), [78, 80, 79, 81, 83, 84, 82, 81, 83, 84, 83, 82, 84, 85, 83, 82, 84, 83, 82, 82.4], 'ok');
+    renderSpark($('#spark-p95'), [1, 1, 0, 0, 1, 2, 2, 3, 3, 4, 3, 4, 4, 3, 4, 4, 4, 4, 4, 4], 'warn');
+    renderSpark($('#spark-cost'), [0.9, 1.2, 1.0, 1.4, 1.8, 2.2, 3.1, 4.4, 3.9, 3.2, 3.6, 4.2, 4.6, 4.1, 3.8, 4.4, 4.9, 5.2, 4.8, 4.82]);
+
+    var refresh = $('#home-refresh');
+    if (refresh) refresh.addEventListener('click', function () {
+      refresh.setAttribute('disabled', '');
+      refresh.textContent = '刷新中';
+      setTimeout(function () {
+        refresh.removeAttribute('disabled');
+        refresh.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7M13.2 2.6v3.2H10" stroke-linecap="round" stroke-linejoin="round"/></svg> 刷新';
+        var meta = $('#home-updated');
+        if (meta) meta.textContent = '刚刚更新';
+        toast('已拉取最新数据（演示）', 'ok');
+      }, 620);
+    });
+
+    var todo = $('.rows');
+    if (todo) {
+      $$('.rrow', todo).forEach(function (row) {
+        row.addEventListener('click', function (e) {
+          if (e.target.closest('button, a')) return;
+          if (row.dataset.href) { location.href = row.dataset.href; return; }
+          toast('进入 ' + (row.dataset.target || '详情') + '（演示）', 'info');
+        });
+      });
+    }
+  }
+
+  /* ── 页面：Issue 中心 ─────────────────────────────────────────────────── */
+  // stage: 0 格式检查 / 1 标签分类 / 2 Agent / 3 已结束
+  // state: pending / running / awaiting_info / blocked / ready / closed
+  var ISSUES = [
+    {
+      n: 318, title: '登录页在 Safari 17 下无法聚焦验证码输入框', repo: 'acme/web-console',
+      stage: 2, state: 'awaiting_info', cat: 'defect', runs: [1, 1, 3], wait: 26,
+      turns: 7, cursor: 12, age: 3, stale: false, actor: 'linwei', cost: 0.021,
+      labels: ['bug', 'needs-info'],
+      f: { body: '模板 4 项齐全：复现步骤、期望结果、实际结果、环境版本。没有需要补充的字段，直接进入分类。', turns: 2, dur: '11s' },
+      c: { body: '判定为<b>缺陷</b>，落点 <span class="mono">packages/auth/src/otp.ts:112</span>：<span class="mono">focus()</span> 在 <span class="mono">autoComplete</span> 稳定前调用。', ev: ['packages/auth/src/otp.ts:112', 'packages/auth/src/otp.spec.ts:44'], turns: 4, dur: '42s', mgr: '@linwei · defect 首次' },
+      a: { body: '已复现 3 / 3 浏览器组合，Safari 17.3 稳定命中。最后一轮在问作者：「自动填充」开关是否默认开启，这决定复现脚本的预置条件。' }
+    },
+    {
+      n: 322, title: '导出 CSV 时中文列名变成乱码', repo: 'acme/web-console',
+      stage: 0, state: 'awaiting_info', cat: null, runs: [2, 0, 0], wait: 192,
+      turns: 2, cursor: 3, age: 0, stale: false, actor: 'zhangyu', cost: 0.006,
+      labels: ['needs-info'],
+      f: { body: '缺 3 项：浏览器版本、导出入口、原始列名。已在 issue 里回复一次并打 <span class="mono">needs-info</span>；48 小时内无补充将自动关闭。', turns: 2, dur: '9s' }
+    },
+    {
+      n: 301, title: 'feat: 支持按负责人批量重新分配任务', repo: 'acme/web-console',
+      stage: 2, state: 'blocked', cat: 'requirement', runs: [1, 1, 2], wait: 1260,
+      turns: 12, cursor: 19, age: 6, stale: false, actor: 'chenmo', cost: 0.041,
+      labels: ['enhancement', 'blocked'],
+      f: { body: '模板齐全，验收标准以「批量接口 + 表驱动用例」表述，可直接进入分类。', turns: 2, dur: '14s' },
+      c: { body: '判定为<b>需求</b>：已有 <span class="mono">assignment.batch</span> 服务，缺的是批量入口与权限校验。', ev: ['src/assignments/batch.ts:38', 'docs/rbac.md:12'], turns: 3, dur: '51s', mgr: '@chenmo · requirement 首次' },
+      a: { body: '测试套件在容器内 <span class="mono">9m02s</span> 超时（<span class="mono">assignment.batch.spec.ts</span>）。<b>连续 2 次运行失败</b> → blocked；重跑不限次数，需要人工判断是环境问题还是用例本身写得过重。', reason: 'test_failed' }
+    },
+    {
+      n: 312, title: 'refactor: 把 webhook 重试逻辑抽成独立模块', repo: 'acme/payments-api',
+      stage: 2, state: 'running', cat: 'requirement', runs: [1, 1, 1], wait: 12,
+      turns: 3, cursor: 5, age: 0, stale: false, actor: 'chenmo', cost: 0.022,
+      labels: ['refactor'],
+      f: { body: '模板齐全：背景、目标、非目标、验收标准四段都有。', turns: 2, dur: '12s' },
+      c: { body: '判定为<b>需求</b>，非缺陷；影响面 <span class="mono">src/webhooks/*</span>，无对外契约变更。', ev: ['src/webhooks/retry.ts:1', 'src/webhooks/index.ts:22'], turns: 3, dur: '38s', mgr: '@chenmo · requirement 已通知' },
+      a: { body: '第 3 轮正在读 <span class="mono">retry.ts</span> 与退避表，准备产出拆分方案。尚未写回。' }
+    },
+    {
+      n: 305, title: '新增团队成员时权限继承不符合预期', repo: 'acme/web-console',
+      stage: 3, state: 'closed', cat: 'defect', runs: [1, 1, 2], wait: null,
+      turns: 5, cursor: 9, age: 4, stale: false, actor: 'wangjing', cost: 0.033,
+      labels: ['bug', 'fixed'],
+      f: { body: '复现步骤完整，附带组织与团队两级截图。', turns: 2, dur: '10s' },
+      c: { body: '判定为<b>缺陷</b>：<span class="mono">team.inherit.ts:64</span> 在角色合并时覆盖了组织级权限。', ev: ['src/teams/inherit.ts:64'], turns: 3, dur: '44s', mgr: '@wangjing · defect 首次' },
+      a: { body: '已开 PR <span class="mono">#412</span> 并合并，回归用例 <span class="mono">team.inherit.spec.ts</span> 补了 3 条。流水线在第 5 轮关闭。', close: 'fixed' }
+    },
+    {
+      n: 299, title: '上传大文件时进度条静止超过 30 秒', repo: 'acme/web-console',
+      stage: 0, state: 'awaiting_info', cat: null, runs: [1, 0, 0], wait: 2640,
+      turns: 2, cursor: 3, age: 2, stale: false, actor: 'linwei', cost: 0.009,
+      labels: ['needs-info'],
+      f: { body: '缺 2 项：文件体积、网络环境（内网 / 公网）。已回复一次，作者 44 小时未补充。', turns: 2, dur: '8s' }
+    },
+    {
+      n: 287, title: 'build: 升级 Vite 8 后 HMR 明显变慢', repo: 'acme/web-console',
+      stage: 2, state: 'ready', cat: 'other', runs: [1, 1, 2], wait: 300,
+      turns: 6, cursor: 11, age: 2, stale: false, actor: 'chenmo', cost: 0.017,
+      labels: ['performance'],
+      f: { body: '模板齐全，附了冷启动与热更新的耗时对比，数据可直接复核。', turns: 2, dur: '13s' },
+      c: { body: '判定为<b>其他</b>：不是缺陷也不是需求，属于构建性能观察项，不 @ 管理人员。', ev: ['vite.config.ts:18'], turns: 3, dur: '40s', mgr: '不通知（other）' },
+      a: { body: '已完成分析：热更新 180ms → 640ms，定位到依赖预构建缓存失效。结论已写回 issue，等待维护者决定是否单开需求。' }
+    },
+    {
+      n: 276, title: '搜索框在中文输入法下重复触发请求', repo: 'acme/web-console',
+      stage: 2, state: 'awaiting_info', cat: 'defect', runs: [1, 1, 3], wait: 2760,
+      turns: 4, cursor: 8, age: 3, stale: false, actor: 'wangjing', cost: 0.021,
+      labels: ['bug', 'i18n'],
+      f: { body: '模板齐全，输入法版本与系统语言都写了。', turns: 2, dur: '11s' },
+      c: { body: '判定为<b>缺陷</b>：<span class="mono">compositionend</span> 之前触发了 debounce。', ev: ['src/search/useQuery.ts:57'], turns: 4, dur: '46s', mgr: '@wangjing · defect 已通知' },
+      a: { body: '在问作者：Safari 下 <span class="mono">compositionend</span> 早于 <span class="mono">input</span>，要不要额外加 100ms 缓冲。已等 46 小时。' }
+    },
+    {
+      n: 281, title: '空状态插画在深色模式下几乎不可见', repo: 'acme/web-console',
+      stage: 3, state: 'closed', cat: 'defect', runs: [1, 1, 1], wait: null,
+      turns: 3, cursor: 6, age: 2, stale: false, actor: 'zhangyu', cost: 0.008,
+      labels: ['bug', 'fixed'],
+      f: { body: '附了深浅两种模式的对比截图。', turns: 2, dur: '9s' },
+      c: { body: '判定为<b>缺陷</b>：插画使用固定深色填充，没有跟随主题。', ev: ['src/ui/EmptyState.tsx:31'], turns: 2, dur: '31s', mgr: '@zhangyu · defect 首次' },
+      a: { body: '替换为双色插画，深色模式对比度 4.8:1。已写回并关闭。', close: 'fixed' }
+    },
+    {
+      n: 315, title: '支付回调偶发重复入账（约 1/2000）', repo: 'acme/payments-api',
+      stage: 2, state: 'ready', cat: 'defect', runs: [1, 1, 2], wait: 120,
+      turns: 9, cursor: 14, age: 3, stale: true, actor: 'linwei', cost: 0.087,
+      labels: ['bug', 'priority:high'],
+      f: { body: '复现步骤与发生频率都给了，日志脱敏后可直接用。', turns: 2, dur: '15s' },
+      c: { body: '判定为<b>缺陷</b>：幂等键只用了 <span class="mono">order_id</span>，同订单多事件会重复入账。', ev: ['src/payments/idempotency.ts:41'], turns: 3, dur: '58s', mgr: '@linwei · defect 首次' },
+      a: { body: '结论已写回：建议幂等键改为 <span class="mono">order_id + event_id</span>，并附历史数据补偿口径。作者在 2 小时前编辑了正文，结论未回退，只记了一次 stale。' }
+    },
+    {
+      n: 311, title: '搜索结果排序在同义词下不稳定', repo: 'acme/web-console',
+      stage: 1, state: 'running', cat: null, runs: [1, 1, 0], wait: 4,
+      turns: 2, cursor: 3, age: 0, stale: false, actor: 'zhangyu', cost: 0.007,
+      labels: ['bug', 'search'],
+      f: { body: '模板齐全：查询词、期望顺序、实际顺序都给了，附两条同义词的对比。', turns: 2, dur: '10s' }
+    },
+    {
+      n: 308, title: '搜索排名疑似被人工降权（查不到证据）', repo: 'acme/web-console',
+      stage: 1, state: 'awaiting_info', cat: 'not_found', runs: [1, 2, 0], wait: 900,
+      turns: 3, cursor: 6, age: 1, stale: false, actor: 'wangjing', cost: 0.019,
+      labels: ['needs-info', 'pipeline:classify'],
+      f: { body: '模板齐全：给了查询词、对比截图与期望排名。', turns: 2, dur: '10s' },
+      c: { body: '按描述检索 <span class="mono">src/search/*</span>、<span class="mono">src/rank/*</span> 与近 30 天发布记录，<b>查不到</b>人工干预入口或权重配置。已 @ 维护者确认是否存在内部权重表。', ev: ['src/search/rank.ts', 'src/rank/config/*', '近 30 天发布记录'], turns: 3, dur: '44s', mgr: '@chenmo · not_found 要求管理员回复' }
+    },
+    {
+      n: 296, title: '文档站的搜索索引在构建后没有更新', repo: 'acme/infra-terraform',
+      stage: 1, state: 'running', cat: null, runs: [1, 2, 0], wait: 4,
+      turns: 3, cursor: 5, age: 0, stale: false, actor: 'wangjing', cost: 0.012,
+      labels: ['bug', 'docs'],
+      f: { body: '模板齐全，附了构建日志与 CDN 发布记录。', turns: 2, dur: '10s' }
+    },
+    {
+      n: 309, title: 'CI 在 Node 22 上偶发 OOM', repo: 'acme/infra-terraform',
+      stage: 2, state: 'blocked', cat: 'defect', runs: [1, 1, 2], wait: 180,
+      turns: 8, cursor: 13, age: 5, stale: false, actor: 'zhangyu', cost: 0.055,
+      labels: ['ci', 'blocked'],
+      f: { body: '模板齐全，附了容器内存曲线。', turns: 2, dur: '12s' },
+      c: { body: '判定为<b>缺陷</b>：<span class="mono">node --test</span> 峰值 2.3 GB，超过 2 GB 上限。', ev: ['.github/workflows/ci.yml:57'], turns: 3, dur: '41s', mgr: '@zhangyu · defect 首次' },
+      a: { body: '容器 OOM，退出码 137，<b>连续 2 次</b> → blocked。建议把测试并发降到 2 或把该 job 调到 4 GB；需人工改 workflow，Agent 不改 CI 配置。', reason: 'container_oom' }
+    },
+    {
+      n: 291, title: 'docs: 补充本地开发环境的容器说明', repo: 'acme/infra-terraform',
+      stage: 3, state: 'closed', cat: 'other', runs: [1, 1, 1], wait: null,
+      turns: 3, cursor: 5, age: 1, stale: false, actor: 'chenmo', cost: 0.014,
+      labels: ['docs', 'fixed'],
+      f: { body: '模板不适用（docs 类），按宽松通道放行。', turns: 2, dur: '8s' },
+      c: { body: '判定为<b>其他</b>：纯文档补充，不 @ 管理人员。', turns: 2, dur: '29s', mgr: '不通知（other）' },
+      a: { body: '已开 PR <span class="mono">#408</span> 并合并，补了 <span class="mono">docker compose</span> 的端口冲突说明。', close: 'fixed' }
+    }
+  ];
+
+  var STATE_META = {
+    pending: { label: '排队', cls: '' },
+    running: { label: '执行中', cls: 'info' },
+    awaiting_info: { label: '待人补充', cls: 'warn' },
+    blocked: { label: '阻塞', cls: 'bad' },
+    ready: { label: '已就绪', cls: 'ok' },
+    closed: { label: '已关闭', cls: '' }
+  };
+
+  var CAT_META = {
+    requirement: { label: '需求', cls: 'info' },
+    defect: { label: '缺陷', cls: 'bad' },
+    not_found: { label: '当前查不到', cls: '' },
+    other: { label: '其他', cls: '' }
+  };
+
+  var STAGES = [
+    { name: '格式检查', kind: 'format_check', ver: 'v3' },
+    { name: '标签分类', kind: 'classify', ver: 'v2' },
+    { name: 'Agent 执行', kind: 'agent', ver: 'v4' }
+  ];
+
+  function waitText(mins) {
+    if (mins == null) return '—';
+    if (mins < 60) return Math.round(mins) + ' 分钟';
+    var h = mins / 60;
+    return (h < 10 ? h.toFixed(1).replace(/\.0$/, '') : Math.round(h)) + ' 小时';
+  }
+
+  function stageState(item, idx) {
+    if (item.stage === 3) return 'done';
+    if (idx < item.stage) return 'done';
+    if (idx > item.stage) return 'todo';
+    if (item.state === 'running') return 'on';
+    if (item.state === 'awaiting_info') return 'warn';
+    if (item.state === 'blocked') return 'bad';
+    if (item.state === 'ready') return 'done';
+    return 'todo';
+  }
+
+  function stagePill(st, label) {
+    var map = {
+      done: ['通过', 'ok'],
+      on: ['执行中', 'info'],
+      warn: ['待人补充', 'warn'],
+      bad: ['阻塞', 'bad'],
+      todo: ['未开始', '']
+    };
+    var m = map[st] || map.todo;
+    return '<span class="pill ' + m[1] + '"><i class="dot"></i>' + (label || m[0]) + '</span>';
+  }
+
+  function initIssues() {
+    var state = { q: '', stage: 'all', status: 'all', selected: null, repo: currentRepo() };
+    var rowsHost = $('#issue-rows');
+    if (!rowsHost) return;
+
+    function repoItems() {
+      return ISSUES.filter(function (i) { return i.repo === state.repo; });
+    }
+
+    function filtered() {
+      return repoItems().filter(function (i) {
+        if (state.stage !== 'all' && String(i.stage) !== state.stage) return false;
+        if (state.status !== 'all' && i.state !== state.status) return false;
+        if (state.q && (i.title + ' #' + i.n).toLowerCase().indexOf(state.q.toLowerCase()) < 0) return false;
+        return true;
+      });
+    }
+
+    function paintChips() {
+      var base = repoItems();
+      $$('[data-state]').forEach(function (chip) {
+        var key = chip.dataset.state;
+        var n = key === 'all' ? base.length : base.filter(function (i) { return i.state === key; }).length;
+        var box = chip.querySelector('.n');
+        if (box) box.textContent = n;
+        chip.hidden = key !== 'all' && n === 0;
+      });
+    }
+
+    function renderList() {
+      var items = filtered();
+      paintChips();
+      var count = $('#issue-count');
+      if (count) count.textContent = items.length + ' / ' + repoItems().length;
+
+      if (!items.length) {
+        rowsHost.innerHTML = '<div class="empty"><div class="empty-title">当前筛选下没有 issue</div><div class="empty-sub">清空搜索，或切回「全部阶段」</div></div>';
+        return;
+      }
+
+      rowsHost.innerHTML = items.map(function (i) {
+        var meta = (i.stage === 1 && i.state === 'awaiting_info') ? { label: '等管理员', cls: 'warn' } : STATE_META[i.state];
+        var cat = i.cat ? CAT_META[i.cat] : null;
+        var segs = [0, 1, 2].map(function (k) { return '<i class="' + stageState(i, k) + '"></i>'; }).join('');
+        var stageName = i.stage === 3 ? '已结束' : '阶段 ' + i.stage + ' · ' + STAGES[i.stage].name;
+        var extra = '';
+        if (i.stage === 0 && i.runs[0] > 0) {
+          extra += '<span class="pill line">失败 ' + i.runs[0] + ' / 5</span>';
+        } else if ((i.stage === 1 || i.stage === 2) && i.runs[i.stage] > 1) {
+          extra += '<span class="pill line">重跑 ' + i.runs[i.stage] + ' 次</span>';
+        }
+        if (i.stale) extra += '<span class="pill warn">结论陈旧</span>';
+        return '<div class="irow' + (state.selected === i.n ? ' is-active' : '') + '" data-n="' + i.n + '" tabindex="0">' +
+          '<span class="irow-num">#' + i.n + '</span>' +
+          '<div class="irow-main"><div class="irow-title">' + i.title + '</div>' +
+          '<div class="irow-meta">' +
+          '<span class="stagebar" title="' + stageName + '">' + segs + '</span>' +
+          '<span class="stage-name">' + stageName + '</span>' +
+          (cat ? '<span class="pill line">' + cat.label + '</span>' : '') +
+          extra +
+          '</div></div>' +
+          '<div class="irow-right"><span class="pill ' + meta.cls + '"><i class="dot"></i>' + meta.label + '</span>' +
+          '<span class="irow-time">' + (i.wait == null ? '已结束' : '停留 ' + waitText(i.wait)) + '</span></div></div>';
+      }).join('');
+
+      $$('.irow', rowsHost).forEach(function (row) {
+        row.addEventListener('click', function () { select(parseInt(row.dataset.n, 10)); });
+        row.addEventListener('keydown', function (e) { if (e.key === 'Enter') select(parseInt(row.dataset.n, 10)); });
+      });
+    }
+
+    function select(n) {
+      state.selected = n;
+      renderList();
+      renderDetail();
+    }
+
+    function stageBody(item, idx) {
+      var st = stageState(item, idx);
+      if (st === 'todo') return '<p class="faint">未开始 · 上一步通过后自动开始，不与前一步共用会话。</p>';
+      var d = idx === 0 ? item.f : idx === 1 ? item.c : item.a;
+      if (!d) return '<p class="faint">该阶段尚未产出结论。</p>';
+      var html = '<p>' + d.body + '</p>';
+      if (d.ev) {
+        html += '<div class="evidence">' + d.ev.map(function (p) { return '<span class="evidence-chip">' + p + '</span>'; }).join('') + '</div>';
+      }
+      if (d.mgr) html += '<p class="faint" style="font-size:10px;margin-top:6px">管理人员通知：' + d.mgr + '</p>';
+      if (d.reason) html += '<p class="faint" style="font-size:10px;margin-top:6px">blocked_reason：<span class="mono">' + d.reason + '</span></p>';
+      return html;
+    }
+
+    function stageMeta(item, idx) {
+      var st = stageState(item, idx);
+      if (st === 'todo') return '<span>—</span>';
+      var d = idx === 0 ? item.f : idx === 1 ? item.c : item.a;
+      var parts = [];
+      if (idx < 2) {
+        parts.push('一次性会话');
+        if (d && d.turns) parts.push(d.turns + ' 轮');
+        if (d && d.dur) parts.push(d.dur);
+        parts.push('已归档');
+      } else {
+        parts.push('复用会话');
+        parts.push(item.turns + ' 轮');
+        parts.push('cursor ' + item.cursor);
+        parts.push(item.age >= 1 ? item.age + ' 天前建立' : '今天建立');
+      }
+      var meta = '<span>' + parts.join('</span><span class="sep">·</span><span>') + '</span>';
+      if (item.stage >= idx) {
+        meta += '<a class="open" href="run.html">打开会话 →</a>';
+      }
+      return meta;
+    }
+
+    function renderDetail() {
+      var host = $('#issue-detail');
+      if (!host) return;
+      var item = ISSUES.filter(function (i) { return i.n === state.selected; })[0];
+      if (!item) {
+        host.innerHTML = '<div class="empty" style="flex:1"><div class="empty-title">从左侧选择一个 issue</div><div class="empty-sub">j / k 移动，Enter 打开</div></div>';
+        return;
+      }
+      var meta = (item.stage === 1 && item.state === 'awaiting_info') ? { label: '等管理员', cls: 'warn' } : STATE_META[item.state];
+      var cat = item.cat ? CAT_META[item.cat] : null;
+      var attempt = item.runs[Math.min(item.stage, 2)];
+
+      var steps = [0, 1, 2].map(function (idx) {
+        var st = stageState(item, idx);
+        var s = STAGES[idx];
+        var num = st === 'done' ? '✓' : st === 'bad' ? '!' : st === 'warn' ? '?' : String(idx);
+        return '<div class="pstep ' + st + '">' +
+          '<div class="pstep-rail"><span class="pstep-dot">' + num + '</span></div>' +
+          '<div class="pstep-card">' +
+          '<div class="pstep-h"><h5>' + s.name + '</h5>' +
+          '<span class="mono">' + s.kind + ' ' + s.ver + '</span>' + stagePill(st, idx === 1 && st === 'warn' ? '等管理员' : '') + '</div>' +
+          '<div class="pstep-b">' + stageBody(item, idx) + '</div>' +
+          '<div class="pstep-m">' + stageMeta(item, idx) + '</div>' +
+          '</div></div>';
+      }).join('');
+
+      var alerts = '';
+      if (item.state === 'awaiting_info' && item.stage === 1) {
+        alerts = '<div class="detail-sec"><h4>等待管理员</h4>' +
+          '<div class="notice" style="align-items:flex-start"><span class="dot tone-warn" style="margin-top:4px"></span>' +
+          '<span>分类结论是 <b>not-found</b>（查不到缺陷证据）。已 @ 维护者要求回复，<b>只有 managers 的评论会触发重分类</b>；作者或他人的评论只记录、不重跑。</span></div>' +
+          '<div class="faint" style="font-size:10.5px;margin-top:7px"><span class="mono">info_requested_at = NULL</span> · 不计入 48 小时关闭扫描；<span class="mono">/pipeline next</span> 可直接进入阶段 2。</div></div>';
+      } else if (item.state === 'awaiting_info') {
+        var leftMin = Math.max(0, 48 * 60 - item.wait);
+        var lh = Math.floor(leftMin / 60);
+        var lm = Math.round(leftMin % 60);
+        var pct = Math.max(4, Math.min(100, (item.wait / 60 / 48) * 100));
+        alerts = '<div class="detail-sec"><h4>自动关闭倒计时</h4>' +
+          '<div style="display:flex;align-items:baseline;gap:7px;margin-bottom:6px">' +
+          '<span class="num" style="font-size:15px;color:var(--ink)">' + lh + '</span>' +
+          '<span class="faint" style="font-size:10.5px">小时' + (lm ? ' ' + lm + ' 分' : '') + '后自动关闭 · 已等待 ' + waitText(item.wait) + '</span></div>' +
+          '<div class="bar ' + (lh < 10 ? 'bad' : 'warn') + '"><i style="width:' + pct + '%"></i></div>' +
+          '<div class="faint" style="font-size:10.5px;margin-top:7px">确定性作业 <span class="mono">pipeline-close</span> 每 10 分钟扫描一次；期间收到 @ 仍会优先当评论处理。</div></div>';
+      } else if (item.state === 'blocked') {
+        alerts = '<div class="detail-sec"><h4>阻塞</h4><div class="notice bad" style="align-items:flex-start">' +
+          '<span class="dot tone-bad" style="margin-top:4px"></span>' +
+          '<span><b>连续 ' + attempt + ' 次运行失败</b>（<span class="mono">' + ((item.a && item.a.reason) || 'unknown') + '</span>）→ blocked。重跑不限次数；<span class="mono">/pipeline next</span> 可解禁并推进到下一阶段，仅 managers 可用。</span></div></div>';
+      } else if (item.stale) {
+        alerts = '<div class="detail-sec"><h4>结论时效</h4><div class="notice">' +
+          '<span class="dot tone-warn"></span><span>作者在结论产出后编辑了正文。<b>结论不回退</b>，只记录 <span class="mono">stale_at</span>；需要新结论请手动 <span class="mono">/recheck</span>。</span></div></div>';
+      } else if (item.state === 'ready') {
+        alerts = '<div class="detail-sec"><h4>结论时效</h4><div class="notice info">' +
+          '<span class="dot tone-info"></span><span>已产出结论并写回。此后正文改动不会让流水线回退到分类阶段，只标记为陈旧。</span></div></div>';
+      }
+
+      host.innerHTML =
+        '<div class="detail-h"><div class="detail-kicker"><span class="mono">' + item.repo + '</span><span>·</span><span>#' + item.n + '</span>' +
+        (cat ? '<span class="pill ' + cat.cls + '" style="margin-left:auto"><i class="dot"></i>' + cat.label + '</span>' : '<span style="margin-left:auto"></span>') +
+        '</div><div class="detail-title">' + item.title + '</div>' +
+        '<div class="detail-tags"><span class="pill ' + meta.cls + '"><i class="dot"></i>' + meta.label + '</span>' +
+        '<span class="pill line">' + (item.stage === 3 ? '已结束' : '阶段 ' + item.stage + ' / 3') + '</span>' +
+        (item.stage === 0 && item.runs[0] > 0 ? '<span class="pill line">失败 ' + item.runs[0] + ' / 5</span>' :
+          (item.stage < 3 && item.runs[item.stage] > 1 ? '<span class="pill line">重跑 ' + item.runs[item.stage] + ' 次</span>' : '')) +
+        item.labels.map(function (l) { return '<span class="pill line">' + l + '</span>'; }).join('') +
+        '<span class="pill">@' + item.actor + '</span></div></div>' +
+        '<div class="detail-body">' +
+        '<div class="detail-sec"><h4>三步流水线 · 每步一个独立会话</h4><div class="psteps">' + steps + '</div></div>' +
+        alerts +
+        '<div class="detail-sec"><h4>口径</h4><dl class="kv">' +
+        '<dt>阶段重跑</dt><dd class="num">' + item.runs.join(' / ') + ' 次</dd>' +
+        '<dt>累计成本</dt><dd class="num">$' + item.cost.toFixed(3) + '</dd>' +
+        '<dt>触发人</dt><dd class="mono">@' + item.actor + '</dd>' +
+        '<dt>写回闸门</dt><dd>' + (item.state === 'blocked' ? '<span class="pill bad"><i class="dot"></i>未写回</span>' : '<span class="pill ok"><i class="dot"></i>动作已应用</span>') + '</dd>' +
+        '</dl></div></div>' +
+        '<div class="detail-f">' +
+        (item.state === 'blocked'
+          ? '<button class="btn sm primary" type="button" data-act="next">/pipeline next</button>' +
+            '<a class="btn sm" href="run.html">打开会话</a>'
+          : (item.stage < 3 ? '<a class="btn sm primary" href="run.html">打开当前会话</a>' : '<a class="btn sm primary" href="run.html">查看最后会话</a>')) +
+        '<button class="btn sm" type="button" data-act="recheck">/recheck</button>' +
+        (item.stage > 0 && item.stage < 3 ? '<button class="btn sm ghost" type="button" data-act="prev">/pipeline prev</button>' : '') +
+        '<button class="btn sm ghost" type="button" data-act="gh">在 GitHub 打开</button>' +
+        '</div>';
+
+      $$('[data-act]', host).forEach(function (b) {
+        b.addEventListener('click', function () {
+          var map = {
+            recheck: '已排队 /recheck：只重跑当前阶段（演示）',
+            next: '已排队 /pipeline next：仅 managers，blocked 时等价解禁（演示）',
+            prev: '已排队 /pipeline prev：退回上一阶段并重跑（仅 managers）',
+            gh: '将跳转 github.com/' + item.repo + '/issues/' + item.n
+          };
+          toast(map[b.dataset.act], b.dataset.act === 'next' ? 'warn' : 'ok');
+        });
+      });
+    }
+
+    $$('[data-state]').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        state.status = chip.dataset.state;
+        $$('[data-state]').forEach(function (c) { c.setAttribute('aria-pressed', c === chip ? 'true' : 'false'); });
+        renderList();
+      });
+    });
+    var stageSel = $('#issue-stage');
+    if (stageSel) stageSel.addEventListener('change', function () { state.stage = stageSel.value; renderList(); });
+    var search = $('#issue-search');
+    if (search) search.addEventListener('input', function () { state.q = search.value; renderList(); });
+
+    document.addEventListener('repo:change', function (e) {
+      state.repo = e.detail.repo;
+      var first = ISSUES.filter(function (i) { return i.repo === state.repo; })[0];
+      state.selected = first ? first.n : null;
+      renderList();
+      renderDetail();
+    });
+
+    document.addEventListener('keydown', function (e) {
+      if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+      var items = filtered();
+      if (!items.length) return;
+      var idx = items.findIndex(function (i) { return i.n === state.selected; });
+      if (e.key === 'j') { e.preventDefault(); select(items[Math.min(items.length - 1, idx + 1)].n); }
+      else if (e.key === 'k') { e.preventDefault(); select(items[Math.max(0, idx - 1)].n); }
+      else if (e.key === 'Enter' && state.selected) { location.href = 'run.html'; }
+    });
+
+    var start = ISSUES.filter(function (i) { return i.repo === state.repo; })[0];
+    state.selected = start ? start.n : null;
+    renderList();
+    renderDetail();
+  }
+
+  /* ── 页面：运行详情 ───────────────────────────────────────────────────── */
+  function initRun() {
+    $$('[data-tab]').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        $$('[data-tab]').forEach(function (t) { t.setAttribute('aria-selected', t === tab ? 'true' : 'false'); });
+        $$('[data-tab-panel]').forEach(function (p) {
+          p.hidden = p.dataset.tabPanel !== tab.dataset.tab;
+        });
+      });
+    });
+    $$('[data-copy]').forEach(function (b) {
+      b.addEventListener('click', function () { copyText(b.dataset.copy, '已复制到剪贴板'); });
+    });
+    $$('[data-event-filter]').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var mode = chip.dataset.eventFilter;
+        $$('[data-event-filter]').forEach(function (c) { c.setAttribute('aria-pressed', c === chip ? 'true' : 'false'); });
+        $$('.event').forEach(function (row) {
+          row.style.display = mode === 'error' && !row.classList.contains('is-error') ? 'none' : 'grid';
+        });
+      });
+    });
+    $$('[data-expand]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var target = document.getElementById(b.dataset.expand);
+        if (!target) return;
+        target.hidden = !target.hidden;
+        b.textContent = target.hidden ? '展开 JSON' : '收起 JSON';
+      });
+    });
+    $$('[data-disabled]').forEach(function (b) {
+      b.addEventListener('click', function () { toast(b.dataset.disabled, 'warn'); });
+    });
+  }
+
+  /* ── 页面：成本 ───────────────────────────────────────────────────────── */
+  function initCosts() {
+    var host = $('#cost-chart');
+    if (!host) return;
+
+    // 30 天基数：形状固定，总和归一到与「按仓库」表一致（$142.86）
+    var shape = [0.62, 0.78, 1.05, 0.92, 1.18, 1.32, 0.54, 0.48, 1.12, 1.26, 1.02, 0.88, 1.34, 1.46, 1.28,
+      1.1, 0.96, 0.5, 0.46, 1.16, 1.3, 1.42, 1.2, 1.06, 1.38, 1.5, 1.62, 0.58, 0.52, 1.28];
+    var shapeSum = shape.reduce(function (a, b) { return a + b; }, 0);
+    var BASE_TOTAL = 142.86;
+    var BASE_TASKS = 1374;
+    var labels = [];
+    var values = [];
+    for (var i = 0; i < 30; i++) {
+      var d = new Date(Date.now() - (29 - i) * 864e5);
+      labels.push((d.getMonth() + 1) + '/' + d.getDate());
+      values.push(+(shape[i] * (BASE_TOTAL / shapeSum)).toFixed(2));
+    }
+
+    function paint(days) {
+      var tail = values.slice(30 - days);
+      var tailLabels = labels.slice(30 - days);
+      renderArea(host, tailLabels, tail, { prefix: '$', decimals: 1, height: 190, zero: true });
+
+      var total = tail.reduce(function (a, b) { return a + b; }, 0);
+      var avg = total / days;
+      var peak = Math.max.apply(null, tail);
+      var peakIdx = tail.indexOf(peak);
+      var ratio = total / BASE_TOTAL;
+      var tasks = Math.round(BASE_TASKS * ratio);
+
+      var set = function (id, text) { var n = document.getElementById(id); if (n) n.textContent = text; };
+      set('cost-total', '$' + total.toFixed(2));
+      set('cost-avg', '$' + avg.toFixed(2));
+      set('cost-peak', '$' + peak.toFixed(2));
+      set('cost-peak-date', tailLabels[peakIdx]);
+      set('cost-unit', '$' + (total / tasks).toFixed(3));
+      set('cost-tasks', fmt(tasks) + ' 个任务');
+      set('cost-note', '最近 ' + days + ' 天 · UTC');
+
+      $$('[data-repo-row]').forEach(function (row) {
+        var baseCost = parseFloat(row.dataset.baseCost);
+        var baseTasks = parseInt(row.dataset.baseTasks, 10);
+        var cost = baseCost * ratio;
+        var repoTasks = Math.round(baseTasks * ratio);
+        row.querySelector('[data-cell="cost"]').textContent = '$' + cost.toFixed(2);
+        row.querySelector('[data-cell="tasks"]').textContent = fmt(repoTasks);
+        row.querySelector('[data-cell="share"]').textContent = (cost / total * 100).toFixed(1) + '%';
+        row.querySelector('[data-cell="avg"]').textContent = '$' + (cost / (repoTasks || 1)).toFixed(3);
+      });
+
+      var totalRow = $('#cost-total-row');
+      if (totalRow) {
+        totalRow.querySelector('[data-cell="tasks"]').textContent = fmt(tasks);
+        totalRow.querySelector('[data-cell="cost"]').textContent = '$' + total.toFixed(2);
+        totalRow.querySelector('[data-cell="share"]').textContent = '100%';
+        totalRow.querySelector('[data-cell="avg"]').textContent = '$' + (total / tasks).toFixed(3);
+      }
+    }
+
+    $$('[data-window]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        $$('[data-window]').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        paint(parseInt(b.dataset.window, 10));
+      });
+    });
+
+    $$('th.sortable').forEach(function (th) {
+      th.addEventListener('click', function () {
+        var table = th.closest('table');
+        var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
+        var tbody = table.querySelector('tbody');
+        var rows = Array.prototype.slice.call(tbody.children);
+        var numeric = /成本|任务|占比|次数|均价|tokens/.test(th.textContent);
+        var dir = th.dataset.dir === 'desc' ? 1 : -1;
+        $$('th', table).forEach(function (h) { h.dataset.dir = ''; });
+        th.dataset.dir = dir === 1 ? 'desc' : 'asc';
+        rows.sort(function (a, b) {
+          var av = a.children[idx].textContent.replace(/[$,\s%]/g, '');
+          var bv = b.children[idx].textContent.replace(/[$,\s%]/g, '');
+          if (numeric) return (parseFloat(av) - parseFloat(bv)) * dir;
+          return av.localeCompare(bv) * dir;
+        });
+        rows.forEach(function (r) { tbody.appendChild(r); });
+        toast('已按「' + th.textContent.trim() + '」排序', 'info');
+      });
+    });
+
+    paint(30);
+  }
+
+  /* ── 页面：质量 ───────────────────────────────────────────────────────── */
+  function initQuality() {
+    var byCommand = [
+      { label: '/review-pr', value: 38, display: '8.1%' },
+      { label: '/issue-triage', value: 21, display: '4.2%' },
+      { label: '/issue-repro', value: 14, display: '5.0%' },
+      { label: '自动分类', value: 9, display: '2.6%' }
+    ];
+    var byRepo = [
+      { label: 'acme/web-console', value: 44, display: '7.4%' },
+      { label: 'acme/payments-api', value: 25, display: '5.2%' },
+      { label: 'acme/infra-terraform', value: 13, display: '4.1%' }
+    ];
+    var host = $('#revert-bars');
+    function paint(mode) {
+      renderHBars(host, mode === 'repo' ? byRepo : byCommand, 'bad');
+      var note = $('#revert-note');
+      if (note) note.textContent = mode === 'repo' ? '按仓库分组 · 窗口内已应用动作' : '按命令分组 · 窗口内已应用动作';
+    }
+    $$('[data-group]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        $$('[data-group]').forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        paint(b.dataset.group);
+      });
+    });
+    paint('command');
+
+    $$('[data-revert-row]').forEach(function (row) {
+      row.addEventListener('click', function () {
+        var detail = row.nextElementSibling;
+        if (!detail) return;
+        detail.hidden = !detail.hidden;
+      });
+    });
+  }
+
+  /* ── 页面：审计 ───────────────────────────────────────────────────────── */
+  function initAudit() {
+    var tbody = $('#audit-body');
+    if (!tbody) return;
+
+    $$('[data-audit-row]').forEach(function (row) {
+      row.addEventListener('click', function (e) {
+        if (e.target.closest('button')) return;
+        var detail = row.nextElementSibling;
+        if (detail && detail.classList.contains('audit-detail')) detail.hidden = !detail.hidden;
+      });
+    });
+
+    var search = $('#audit-search');
+    var action = $('#audit-action');
+    function apply() {
+      var q = (search ? search.value : '').toLowerCase();
+      var act = action ? action.value : '';
+      $$('#audit-body > tr[data-audit-row]').forEach(function (row) {
+        var text = row.textContent.toLowerCase();
+        var okQ = !q || text.indexOf(q) >= 0;
+        var okA = !act || row.dataset.action === act;
+        var show = okQ && okA;
+        row.style.display = show ? '' : 'none';
+        var detail = row.nextElementSibling;
+        if (detail && detail.classList.contains('audit-detail') && !show) detail.hidden = true;
+      });
+      var visible = $$('#audit-body > tr[data-audit-row]').filter(function (r) { return r.style.display !== 'none'; }).length;
+      var count = $('#audit-count');
+      if (count) count.textContent = visible + ' / 8 条';
+    }
+    if (search) search.addEventListener('input', apply);
+    if (action) action.addEventListener('change', apply);
+    var exportBtn = $('#audit-export');
+    if (exportBtn) exportBtn.addEventListener('click', function () { toast('已导出 CSV（演示，未写入磁盘）', 'ok'); });
+  }
+
+  /* ── 页面：技能 ───────────────────────────────────────────────────────── */
+  function initSkills() {
+    $$('.switch[data-skill]').forEach(function (sw) {
+      sw.addEventListener('click', function () {
+        var next = sw.getAttribute('aria-checked') !== 'true';
+        sw.setAttribute('aria-checked', next ? 'true' : 'false');
+        toast((next ? '已启用 ' : '已停用 ') + sw.dataset.skill + '（演示）', next ? 'ok' : 'warn');
+      });
+    });
+
+    var wrap = $('#skill-drawer');
+    function open(drawerData) {
+      if (!wrap) return;
+      $('#skill-drawer-title').textContent = drawerData.name;
+      $('#skill-drawer-path').textContent = drawerData.path;
+      $('#skill-drawer-yaml').textContent = drawerData.yaml;
+      $('#skill-drawer-stats').innerHTML = drawerData.stats.map(function (s) {
+        return '<div><span class="faint" style="font-size:10px">' + s.k + '</span><div class="num" style="font-size:13px;font-weight:500">' + s.v + '</div></div>';
+      }).join('');
+      wrap.classList.add('open');
+      document.body.style.overflow = 'hidden';
+    }
+    $$('[data-skill-open]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var yamlNode = document.getElementById(b.dataset.yamlId);
+        open({
+          name: b.dataset.skillOpen,
+          path: 'skills/' + b.dataset.skillOpen.replace(/^\//, '') + '/SKILL.md',
+          yaml: yamlNode ? yamlNode.textContent : '',
+          stats: [{ k: '近 7 天调用', v: b.dataset.calls }, { k: '成功率', v: b.dataset.rate }, { k: '平均耗时', v: b.dataset.dur }]
+        });
+      });
+    });
+    $$('[data-close-drawer]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        wrap.classList.remove('open');
+        document.body.style.overflow = '';
+      });
+    });
+    if (wrap) wrap.addEventListener('mousedown', function (e) {
+      if (e.target === wrap) { wrap.classList.remove('open'); document.body.style.overflow = ''; }
+    });
+
+    var dry = $('#skill-dryrun');
+    if (dry) dry.addEventListener('click', function () { toast('已排队一次 dry-run（演示，不写 GitHub）', 'ok'); });
+  }
+
+  /* ── 页面：系统 ───────────────────────────────────────────────────────── */
+  function initSystem() {
+    var run = $('#doctor-run');
+    if (run) run.addEventListener('click', function () {
+      run.setAttribute('disabled', '');
+      run.textContent = '体检中';
+      var rows = $$('.check-row');
+      rows.forEach(function (r) {
+        var s = r.querySelector('[data-check-state]');
+        if (!s) return;
+        s.className = 'pill';
+        s.innerHTML = '<i class="dot"></i>等待';
+      });
+      var i = 0;
+      var timer = setInterval(function () {
+        if (i >= rows.length) {
+          clearInterval(timer);
+          run.removeAttribute('disabled');
+          run.innerHTML = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.7M13.2 2.6v3.2H10" stroke-linecap="round" stroke-linejoin="round"/></svg> 重新体检';
+          var stamp = $('#doctor-stamp');
+          if (stamp) stamp.textContent = '刚刚 · 14 项完成（1 降级）';
+          toast('体检完成：14 项，13 通过 1 降级', 'warn');
+          return;
+        }
+        var s = rows[i].querySelector('[data-check-state]');
+        if (s) {
+          var name = rows[i].querySelector('.check-name').textContent;
+          var isWarn = name === 'repo.settings';
+          s.className = 'pill ' + (isWarn ? 'warn' : 'ok');
+          s.innerHTML = '<i class="dot"></i>' + (isWarn ? '降级' : '通过');
+        }
+        i++;
+      }, 170);
+    });
+
+    var pause = $('#pause-all');
+    var dialog = $('#pause-dialog');
+    if (pause && dialog) {
+      pause.addEventListener('click', function () { dialog.classList.add('open'); });
+      $$('[data-close-dialog]', dialog).forEach(function (b) {
+        b.addEventListener('click', function () { dialog.classList.remove('open'); });
+      });
+      var confirm = $('#pause-confirm');
+      if (confirm) confirm.addEventListener('click', function () {
+        dialog.classList.remove('open');
+        var banner = $('#paused-banner');
+        if (banner) {
+          banner.hidden = false;
+          banner.innerHTML = '<span class="dot tone-warn"></span><span><b>已暂停全部自动执行</b> · 解除时间 11:10（UTC+8）· 期间新事件只入队</span><button class="link" type="button" id="resume-btn" style="margin-left:auto">恢复</button>';
+          var resume = $('#resume-btn');
+          if (resume) resume.addEventListener('click', function () {
+            banner.hidden = true;
+            pause.textContent = '暂停全部自动执行';
+            toast('已解除暂停（演示）', 'ok');
+          });
+        }
+        pause.textContent = '恢复自动执行';
+        toast('已写入 runtime_flags.rate_limit_pause（演示）', 'warn');
+      });
+    }
+  }
+
+  /* ── 页面：设置 ───────────────────────────────────────────────────────── */
+  function initSettings() {
+    var body = $('.settings-body');
+    if (!body) return;
+    var dirty = false;
+    var saveBar = $('#save-bar');
+
+    function setDirty(next) {
+      dirty = next;
+      if (saveBar) saveBar.classList.toggle('show', dirty);
+    }
+
+    function showSection(id) {
+      $$('.settings-nav button').forEach(function (b) { b.setAttribute('aria-selected', b.dataset.section === id ? 'true' : 'false'); });
+      $$('.section-switch').forEach(function (p) { p.classList.toggle('on', p.dataset.section === id); });
+      var bodyEl = $('.settings-scroll');
+      if (bodyEl) bodyEl.scrollTop = 0;
+    }
+
+    $$('.settings-nav button').forEach(function (btn) {
+      btn.addEventListener('click', function () { showSection(btn.dataset.section); });
+    });
+
+    var initial = (location.hash || '').replace('#', '');
+    if (initial) showSection(initial);
+
+    $$('.settings-scroll input, .settings-scroll textarea, .settings-scroll select, .settings-scroll .switch').forEach(function (input) {
+      input.addEventListener('input', function () { setDirty(true); });
+      input.addEventListener('change', function () { setDirty(true); });
+      input.addEventListener('click', function () { if (input.classList.contains('switch')) setDirty(true); });
+    });
+
+    var save = $('#save-btn');
+    if (save) save.addEventListener('click', function () {
+      save.setAttribute('disabled', '');
+      save.textContent = '保存中';
+      setTimeout(function () {
+        save.removeAttribute('disabled');
+        save.textContent = '保存更改';
+        setDirty(false);
+        toast('已保存并触发配置校验：通过（演示）', 'ok');
+      }, 520);
+    });
+    var reset = $('#reset-btn');
+    if (reset) reset.addEventListener('click', function () { setDirty(false); toast('已丢弃未保存的更改', 'info'); });
+
+    $$('[data-preview]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var wrap = $('#prompt-drawer');
+        if (!wrap) return;
+        var key = b.dataset.preview;
+        var src = document.getElementById('pv-' + key);
+        var target = $('#prompt-drawer-body');
+        var title = $('#prompt-drawer-title');
+        if (!target || !src) return;
+        var body = src.textContent.replace(/[<>&]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]; });
+        var layers = [
+          ['head 硬骨架', 1240], ['P1 项目约定', 620], ['AGENTS.md', 1040], ['技能 frontmatter', 360], ['tail 输出契约', 440]
+        ];
+        if (title) title.textContent = '提示词预览 · ' + key;
+        target.innerHTML =
+          '<div class="panel-pad" style="background:var(--surface-2);border-radius:7px;border:1px solid var(--line);margin-bottom:12px">' +
+          '<div class="faint" style="font-size:10px;margin-bottom:7px">渲染后的系统提示词 · 只读</div>' +
+          '<pre style="margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--ink-2)">' + body + '</pre></div>' +
+          '<div class="faint" style="font-size:10px;margin-bottom:6px">拼接层序 · 括号内为字符数</div>' +
+          '<div class="budget">' +
+          layers.map(function (l) {
+            var pct = Math.round((l[1] / 4000) * 100);
+            return '<div class="budget-row"><span class="budget-name">' + l[0] + '</span>' +
+              '<span class="budget-track"><i style="width:' + pct + '%"></i></span>' +
+              '<span class="num">' + l[1] + '</span></div>';
+          }).join('') +
+          '</div>';
+        wrap.classList.add('open');
+      });
+    });
+
+    $$('.seg[data-prompt-src]').forEach(function (seg) {
+      $$('button', seg).forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          $$('button', seg).forEach(function (b) { b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'); });
+          setDirty(true);
+          toast(btn.textContent === '系统默认'
+            ? '已切换为系统默认，保存后生成配置 PR（演示）'
+            : '已切换为项目版本，保存后生成配置 PR（演示）', 'info');
+        });
+      });
+    });
+    $$('[data-close-drawer]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var wrap = b.closest('.drawer-wrap');
+        if (wrap) wrap.classList.remove('open');
+      });
+    });
+
+    document.addEventListener('repo:change', function (e) {
+      var t = $('#settings-repo');
+      if (t) t.textContent = e.detail.repo;
+    });
+  }
+
+  /* ── 启动 ─────────────────────────────────────────────────────────────── */
+  document.addEventListener('DOMContentLoaded', function () {
+    initTheme();
+    initRepoSwitcher();
+    initPalette();
+
+    // 全局：没有写接口的动作，点了只解释原因，不假装成功
+    $$('[data-disabled-reason]').forEach(function (b) {
+      b.addEventListener('click', function () { toast(b.dataset.disabledReason, 'warn'); });
+    });
+
+    // 全局：可点击行支持 Enter
+    $$('[role="link"][tabindex]').forEach(function (row) {
+      row.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); row.click(); }
+      });
+    });
+
+    // 全局：开关（技能卡片有自己的提示，跳过）
+    $$('.switch:not([data-skill])').forEach(function (sw) {
+      sw.addEventListener('click', function () {
+        sw.setAttribute('aria-checked', sw.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+      });
+    });
+
+    // 全局：Esc 关闭浮层
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      $$('.drawer-wrap.open, .overlay.open').forEach(function (el) {
+        if (el.id === 'palette-overlay') return;
+        el.classList.remove('open');
+      });
+      document.body.style.overflow = '';
+    });
+
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(redrawCharts, 160);
+    });
+
+    var page = document.body.dataset.page;
+    var map = {
+      home: initHome,
+      issues: initIssues,
+      run: initRun,
+      costs: initCosts,
+      quality: initQuality,
+      audit: initAudit,
+      skills: initSkills,
+      system: initSystem,
+      settings: initSettings
+    };
+    if (map[page]) map[page]();
+
+    var menu = $('#menu-btn');
+    if (menu) menu.addEventListener('click', function () { $('#rail').classList.toggle('open'); });
+  });
+})();
+
+</script>
+</body>
+</html>

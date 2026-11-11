@@ -1,0 +1,224 @@
+<!--@title 审计-->
+<!--@page audit-->
+<!--@nav audit-->
+<!--@crumb 全部项目|审计-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 最近 24 小时</div>
+    <h1>审计</h1>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta" id="audit-count">8 / 8 条</span>
+    <button class="btn sm" type="button" id="audit-export">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2.4v7.2M5.2 6.8 8 9.6l2.8-2.8M3 12.4h10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      导出 CSV
+    </button>
+  </div>
+</div>
+
+<div class="filter-row">
+  <div class="search">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7.2" cy="7.2" r="4.4"/><path d="m10.6 10.6 3 3" stroke-linecap="round"/></svg>
+    <input class="input" id="audit-search" type="search" placeholder="目标、执行者、动作" aria-label="搜索审计记录" />
+  </div>
+  <select class="select" id="audit-action" style="width:150px" aria-label="按动作筛选">
+    <option value="">全部动作</option>
+    <option value="comment.create">comment.create</option>
+    <option value="label.add">label.add</option>
+    <option value="issue.create">issue.create</option>
+    <option value="pr.open">pr.open</option>
+    <option value="review.draft">review.draft</option>
+    <option value="branch.push">branch.push</option>
+  </select>
+  <select class="select" style="width:130px" aria-label="按结果筛选">
+    <option>全部结果</option>
+    <option>applied</option>
+    <option>deduped</option>
+    <option>failed</option>
+  </select>
+  <div class="seg" role="group" aria-label="时间窗" style="margin-left:auto">
+    <button type="button" aria-pressed="true">24h</button>
+    <button type="button" aria-pressed="false">7d</button>
+    <button type="button" aria-pressed="false">30d</button>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tb">
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>执行者</th>
+          <th>动作</th>
+          <th>目标</th>
+          <th>仓库</th>
+          <th>结果</th>
+          <th class="r">延迟</th>
+        </tr>
+      </thead>
+      <tbody id="audit-body">
+        <tr data-audit-row data-action="comment.create" style="cursor:pointer">
+          <td class="num">10:05:12</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">comment.create</td>
+          <td class="mono">issue#322</td>
+          <td class="mono">web-console</td>
+          <td><span class="pill ok"><i class="dot"></i>applied</span></td>
+          <td class="r">312ms</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <div class="mono" style="font-size:10.5px;color:var(--ink-3)">dedupe_key · comment:322:stage-format:v2</div>
+            <pre class="code audit-json" style="max-height:150px">{
+  "intent": "comment.create",
+  "target": "acme/web-console#322",
+  "body_md": "这个 issue 缺少复现步骤。请补充：浏览器版本、导出入口、原始列名。",
+  "marker": "&lt;!-- pi-bot:v1:9f2c --&gt;",
+  "result": { "github_id": 188422001, "applied_at": "2026-11-11T10:05:12Z" }
+}</pre>
+          </td>
+        </tr>
+
+        <tr data-audit-row data-action="label.add" style="cursor:pointer">
+          <td class="num">10:05:09</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">label.add</td>
+          <td class="mono">issue#322</td>
+          <td class="mono">web-console</td>
+          <td><span class="pill ok"><i class="dot"></i>applied</span></td>
+          <td class="r">268ms</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <div class="mono" style="font-size:10.5px;color:var(--ink-3)">标签归属校验 · 两个标签均在仓库词表内</div>
+            <pre class="code audit-json" style="max-height:130px">{
+  "intent": "label.add",
+  "labels": ["bug", "needs-info"],
+  "owner_check": "passed",
+  "result": { "applied_at": "2026-11-11T10:05:09Z" }
+}</pre>
+          </td>
+        </tr>
+
+        <tr data-audit-row data-action="review.draft" style="cursor:pointer">
+          <td class="num">10:04:51</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">review.draft</td>
+          <td class="mono">pr#409</td>
+          <td class="mono">web-console</td>
+          <td><span class="pill bad"><i class="dot"></i>failed</span></td>
+          <td class="r">1.2s</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <div class="notice bad" style="margin-bottom:8px"><span class="dot tone-bad"></span><span>写回闸门拒绝：本轮没有通过 zod 校验的信封。</span></div>
+            <pre class="code audit-json" style="max-height:130px">{
+  "intent": "review.draft",
+  "target": "acme/web-console#409",
+  "error": "envelope_missing",
+  "run_id": "tsk_01J8K4M2QD",
+  "rejected_at": "2026-11-11T10:06:29Z"
+}</pre>
+          </td>
+        </tr>
+
+        <tr data-audit-row data-action="pr.open" style="cursor:pointer">
+          <td class="num">09:58:20</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">pr.open</td>
+          <td class="mono">pr#408</td>
+          <td class="mono">infra-terraform</td>
+          <td><span class="pill ok"><i class="dot"></i>applied</span></td>
+          <td class="r">1.8s</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <div class="mono" style="font-size:10.5px;color:var(--ink-3)">分支 bot/docs-local-env → 默认分支 · 不合并</div>
+            <pre class="code audit-json" style="max-height:130px">{
+  "intent": "pr.open",
+  "branch": "bot/docs-local-env",
+  "base": "main",
+  "title": "docs: 补充本地开发环境的容器说明",
+  "mergeable": true,
+  "merged": false
+}</pre>
+          </td>
+        </tr>
+
+        <tr data-audit-row data-action="branch.push" style="cursor:pointer">
+          <td class="num">09:58:02</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">branch.push</td>
+          <td class="mono">bot/docs-local-env</td>
+          <td class="mono">infra-terraform</td>
+          <td><span class="pill ok"><i class="dot"></i>applied</span></td>
+          <td class="r">2.4s</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <pre class="code audit-json" style="max-height:110px">{
+  "intent": "branch.push",
+  "sha": "9c41d02",
+  "parent": "4f21ac9",
+  "files": ["docs/local-dev.md"]
+}</pre>
+          </td>
+        </tr>
+
+        <tr data-audit-row data-action="issue.create" style="cursor:pointer">
+          <td class="num">09:31:44</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">issue.create</td>
+          <td class="mono">issue#321</td>
+          <td class="mono">web-console</td>
+          <td><span class="pill"><i class="dot"></i>deduped</span></td>
+          <td class="r">96ms</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <div class="faint" style="font-size:11.5px">指纹命中已有 issue #299，未重复创建。日配额：3 / 5。</div>
+            <pre class="code audit-json" style="max-height:110px">{
+  "intent": "issue.create",
+  "fingerprint": "upload-progress-stall:web-console",
+  "matched_issue": 299,
+  "quota": { "used": 3, "limit": 5 }
+}</pre>
+          </td>
+        </tr>
+
+        <tr data-audit-row data-action="comment.create" style="cursor:pointer">
+          <td class="num">09:12:18</td>
+          <td class="mono">pi-issue-bot</td>
+          <td class="mono strong">comment.create</td>
+          <td class="mono">issue#296</td>
+          <td class="mono">infra-terraform</td>
+          <td><span class="pill ok"><i class="dot"></i>applied</span></td>
+          <td class="r">402ms</td>
+        </tr>
+        <tr class="audit-detail" hidden>
+          <td colspan="7">
+            <pre class="code audit-json" style="max-height:130px">{
+  "intent": "comment.create",
+  "target": "acme/infra-terraform#296",
+  "body_md": "请确认 algolia.index.json 是否包含在本次发布产物里…",
+  "marker": "&lt;!-- pi-bot:v1:71ab --&gt;"
+}</pre>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="home-todo-foot" style="margin:0;border-top:1px solid var(--line)">
+    <span>keyset 分页 · 每页 200 条上限</span>
+    <div style="margin-left:auto;display:flex;gap:6px">
+      <button class="btn sm" type="button" disabled>上一页</button>
+      <button class="btn sm" type="button">下一页</button>
+    </div>
+  </div>
+</div>
+
+<div class="faint" style="font-size:10.5px;margin-top:10px">
+  审计记录只追加、不修改；正文里不落 token 与完整提示词，只落 dedupe_key 与结果。
+</div>

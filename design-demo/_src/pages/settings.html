@@ -1,0 +1,393 @@
+<!--@title 设置-->
+<!--@page settings-->
+<!--@nav settings-->
+<!--@crumb 全部项目|{repo}|设置-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">当前仓库 · <span class="mono" id="settings-repo" data-repo-name>acme/web-console</span></div>
+    <h1>设置</h1>
+    <div class="phead-sub">流水线只需要三类配置：通知谁、标签怎么落、每个阶段说什么</div>
+  </div>
+  <div class="phead-actions">
+    <span class="phead-meta">唯一事实源 <span class="mono">.github/pi-bot.yml</span></span>
+    <button class="btn sm" type="button" data-disabled-reason="写接口未就绪：配置只能通过 PR 修改">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6.4 3.2H3.4v9.6h9.2V9.6M9.2 3.2h3.6v3.6M12.6 3.4 7 9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      在 GitHub 查看
+    </button>
+  </div>
+</div>
+
+<div class="settings-layout">
+  <div class="settings-nav" role="tablist" aria-label="设置分区">
+    <button type="button" role="tab" aria-selected="true" data-section="managers">管理人员</button>
+    <button type="button" role="tab" aria-selected="false" data-section="labels">标签词表</button>
+    <button type="button" role="tab" aria-selected="false" data-section="prompt">提示词</button>
+    <button type="button" role="tab" aria-selected="false" data-section="constants">系统常量</button>
+    <button type="button" role="tab" aria-selected="false" data-section="runtime">运行时</button>
+  </div>
+
+  <div class="settings-body">
+    <div class="settings-scroll">
+      <div class="section-switch on" data-section="managers">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+          <h2 style="font-size:13px;font-weight:600">管理人员</h2>
+          <span class="faint" style="font-size:10.5px">分类出结论后按类别 @ 一次，不重复催办</span>
+        </div>
+        <div class="settings-form" style="max-width:none">
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="tb">
+                <thead><tr><th>分类结果</th><th>通知谁</th><th>时机</th><th class="r">可解析</th></tr></thead>
+                <tbody>
+                  <tr><td><span class="pill info"><i class="dot"></i>requirement</span></td><td class="mono">@chenmo · @wangjing</td><td class="faint">阶段 1 出结论后，本次 issue 首次</td><td class="r"><span class="pill ok"><i class="dot"></i>2 / 2</span></td></tr>
+                  <tr><td><span class="pill bad"><i class="dot"></i>defect</span></td><td class="mono">@linwei · @zhangyu</td><td class="faint">阶段 1 出结论后，本次 issue 首次</td><td class="r"><span class="pill ok"><i class="dot"></i>2 / 2</span></td></tr>
+                  <tr><td><span class="pill"><i class="dot"></i>not_found</span></td><td class="faint">不通知</td><td class="faint">只回「当前查不到」+ 已查范围</td><td class="r"><span class="pill ok"><i class="dot"></i>—</span></td></tr>
+                  <tr><td><span class="pill"><i class="dot"></i>other</span></td><td class="faint">不通知</td><td class="faint">只写回分类结论</td><td class="r"><span class="pill ok"><i class="dot"></i>—</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="form-line" style="margin-top:12px">
+            <div class="form-line-main">
+              <div class="form-line-title">同类别只 @ 一次</div>
+              <div class="form-line-sub">由代码保证（<span class="mono">once_per_category</span>），配置里没有开关；后续轮次只回评论</div>
+            </div>
+            <span class="pill line">固定行为</span>
+          </div>
+          <div class="form-row" style="align-items:flex-end">
+            <div class="field">
+              <label for="new-manager">新增管理人员</label>
+              <input class="input" id="new-manager" placeholder="GitHub 用户名" />
+              <span class="field-hint">必须是组织成员，保存时会做一次 users.resolve</span>
+            </div>
+            <div class="field">
+              <label for="new-manager-cat">负责类别</label>
+              <div style="display:flex;gap:6px">
+                <select class="select" id="new-manager-cat">
+                  <option>requirement</option>
+                  <option>defect</option>
+                </select>
+                <button class="btn" type="button" data-disabled-reason="写接口未就绪：先在 .github/pi-bot.yml 的 managers 里添加">添加</button>
+              </div>
+            </div>
+          </div>
+          <div class="notice">
+            <span class="dot tone-warn"></span>
+            <span>有一个用户名解析不到时，该类别降级为「只回评论、不 @」并记一条审计，不会让整个阶段失败。</span>
+          </div>
+
+          <div class="sec-h" style="padding:16px 0 8px"><h2 style="font-size:11.5px">通知行为</h2><div class="sec-actions"><span class="sec-note">由流水线控制，配置里只改「通知谁」</span></div></div>
+          <div class="panel panel-pad" style="padding-top:2px;padding-bottom:2px">
+            <div class="flag-row">
+              <div class="flag-main"><div class="flag-name">阶段 1 出结论</div><div class="flag-desc">按类别 @ 一次；not_found 与 other 不 @，只写结论</div></div>
+              <span class="pill ok"><i class="dot"></i>启用</span>
+            </div>
+            <div class="flag-row">
+              <div class="flag-main"><div class="flag-name">阶段 2 追问</div><div class="flag-desc">只在该 issue 里回评论，不再 @ 管理人员</div></div>
+              <span class="pill line">固定</span>
+            </div>
+            <div class="flag-row">
+              <div class="flag-main"><div class="flag-name">流水线关闭</div><div class="flag-desc">自动关闭与人工关闭都不发通知，避免制造噪音</div></div>
+              <span class="pill line">固定</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-switch" data-section="labels">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+          <h2 style="font-size:13px;font-weight:600">标签词表</h2>
+          <span class="faint" style="font-size:10.5px">两个独立概念：阶段标记由流水线写，类别标签由分类结论写</span>
+        </div>
+        <div class="settings-form" style="max-width:none">
+          <div class="sec-h" style="padding:0 0 8px"><h2 style="font-size:11.5px">阶段标记</h2><div class="sec-actions"><span class="sec-note">每个 issue 同时只有一个</span></div></div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="tb">
+                <thead><tr><th>阶段</th><th>仓库标签</th><th>写入时机</th><th class="r">颜色</th></tr></thead>
+                <tbody>
+                  <tr><td>阶段 0 · 格式检查</td><td class="mono">pipeline:format</td><td class="faint">进入阶段时替换上一个阶段标记</td><td class="r"><span class="pill line">灰</span></td></tr>
+                  <tr><td>阶段 1 · 标签分类</td><td class="mono">pipeline:classify</td><td class="faint">阶段 0 通过后</td><td class="r"><span class="pill line">灰</span></td></tr>
+                  <tr><td>阶段 2 · Agent</td><td class="mono">pipeline:agent</td><td class="faint">阶段 1 出结论后</td><td class="r"><span class="pill info">蓝</span></td></tr>
+                  <tr><td>已结束</td><td class="mono">pipeline:done</td><td class="faint">关闭时；待人补充另打 needs-info</td><td class="r"><span class="pill ok">绿</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="sec-h" style="padding:16px 0 8px"><h2 style="font-size:11.5px">类别标签映射（role）</h2><div class="sec-actions"><span class="sec-note">分类结论 → 仓库已有标签</span></div></div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="tb">
+                <thead><tr><th>role</th><th>仓库标签</th><th>来源</th><th class="r">动作</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">requirement</td><td class="mono">enhancement</td><td class="faint">仓库既有标签</td><td class="r"><button class="btn sm ghost" type="button" data-disabled-reason="标签词表只读，修改走配置文件">编辑</button></td></tr>
+                  <tr><td class="mono">defect</td><td class="mono">bug</td><td class="faint">仓库既有标签</td><td class="r"><button class="btn sm ghost" type="button" data-disabled-reason="标签词表只读，修改走配置文件">编辑</button></td></tr>
+                  <tr><td class="mono">other</td><td class="mono">question</td><td class="faint">仓库既有标签</td><td class="r"><button class="btn sm ghost" type="button" data-disabled-reason="标签词表只读，修改走配置文件">编辑</button></td></tr>
+                  <tr><td class="mono">not_found</td><td class="faint">不加标签</td><td class="faint">只回评论，避免误伤</td><td class="r"><span class="pill line">固定</span></td></tr>
+                  <tr><td class="mono">needs_info</td><td class="mono">needs-info</td><td class="faint">任意阶段待人补充时</td><td class="r"><button class="btn sm ghost" type="button" data-disabled-reason="标签词表只读，修改走配置文件">编辑</button></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="notice" style="margin-top:12px">
+            <span class="dot tone-warn"></span>
+            <span>词表外的标签不会被打；写回闸门直接拒绝并记审计，不静默丢弃。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-switch" data-section="prompt">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <h2 style="font-size:13px;font-weight:600">提示词</h2>
+          <span class="pill line mono">sha 71ab3c2</span>
+          <span class="faint" style="font-size:10.5px;margin-left:auto">四种 kind 都有系统默认，也都可以被项目版本整体覆盖</span>
+        </div>
+        <div class="settings-form" style="max-width:none">
+          <div class="panel panel-pad" style="padding-top:2px;padding-bottom:2px">
+            <div class="prompt-line">
+              <div>
+                <div class="prompt-name">项目约定</div>
+                <div class="prompt-meta"><span>project</span><span>·</span><span>v7</span><span>·</span><span>620 字符</span><span>·</span><span>系统默认</span></div>
+              </div>
+              <div class="seg" data-prompt-src="project">
+                <button type="button" aria-pressed="true">系统默认</button>
+                <button type="button" aria-pressed="false">项目版本</button>
+              </div>
+              <button class="btn sm ghost" type="button" data-preview="project">预览</button>
+            </div>
+
+            <div class="prompt-line">
+              <div>
+                <div class="prompt-name">阶段 0 · 格式检查</div>
+                <div class="prompt-meta"><span>format_check</span><span>·</span><span>v3</span><span>·</span><span>1 860 字符</span><span>·</span><span>3 天前更新</span></div>
+              </div>
+              <div class="seg" data-prompt-src="format">
+                <button type="button" aria-pressed="false">系统默认</button>
+                <button type="button" aria-pressed="true">项目版本</button>
+              </div>
+              <button class="btn sm ghost" type="button" data-preview="format">预览</button>
+            </div>
+
+            <div class="prompt-line">
+              <div>
+                <div class="prompt-name">阶段 1 · 标签分类</div>
+                <div class="prompt-meta"><span>classify</span><span>·</span><span>v2</span><span>·</span><span>2 240 字符</span><span>·</span><span>9 天前更新</span></div>
+              </div>
+              <div class="seg" data-prompt-src="classify">
+                <button type="button" aria-pressed="false">系统默认</button>
+                <button type="button" aria-pressed="true">项目版本</button>
+              </div>
+              <button class="btn sm ghost" type="button" data-preview="classify">预览</button>
+            </div>
+
+            <div class="prompt-line">
+              <div>
+                <div class="prompt-name">阶段 2 · Agent</div>
+                <div class="prompt-meta"><span>agent</span><span>·</span><span>v4</span><span>·</span><span>3 700 字符</span><span>·</span><span>昨天更新</span></div>
+              </div>
+              <div class="seg" data-prompt-src="agent">
+                <button type="button" aria-pressed="false">系统默认</button>
+                <button type="button" aria-pressed="true">项目版本</button>
+              </div>
+              <button class="btn sm ghost" type="button" data-preview="agent">预览</button>
+            </div>
+          </div>
+
+          <div class="sec-h" style="padding:16px 0 8px">
+            <h2 style="font-size:11.5px">预算与层序</h2>
+            <div class="sec-actions"><span class="sec-note">超预算时按固定顺序丢弃，head / tail 永不丢</span></div>
+          </div>
+          <div class="panel panel-pad">
+            <div class="budget">
+              <div class="budget-row"><span class="budget-name">head 硬骨架 <span class="mono">never-drop</span></span><span class="budget-track"><i style="width:31%"></i></span><span class="num">1 240</span></div>
+              <div class="budget-row"><span class="budget-name">P1 项目约定</span><span class="budget-track"><i style="width:15.5%"></i></span><span class="num">620</span></div>
+              <div class="budget-row"><span class="budget-name">AGENTS.md</span><span class="budget-track"><i style="width:26%"></i></span><span class="num">1 040</span></div>
+              <div class="budget-row"><span class="budget-name">技能 frontmatter</span><span class="budget-track"><i style="width:9%"></i></span><span class="num">360</span></div>
+              <div class="budget-row"><span class="budget-name">tail 输出契约 <span class="mono">never-drop</span></span><span class="budget-track"><i style="width:11%"></i></span><span class="num">440</span></div>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)">
+              <span class="faint" style="font-size:10.5px">合计</span>
+              <span class="num" style="font-size:12px">3 700</span>
+              <span class="faint" style="font-size:10.5px">/ available 4 000 · 未触发丢弃</span>
+              <span class="pill ok" style="margin-left:auto"><i class="dot"></i>余 300</span>
+            </div>
+            <div class="faint" style="font-size:10px;margin-top:8px;line-height:1.7">
+              <span class="mono">available = min(PROMPT_LIMITS.body, 12000 − (baseChars + agentsChars + skillChars))</span><br />
+              超预算时丢弃顺序：就近 AGENTS → P1 → 技能 → 根 AGENTS。<br />
+              <span class="mono">AGENTS.md</span> 在三个阶段都注入；P1 与技能层只在阶段 2 注入。
+            </div>
+          </div>
+
+          <div class="panel" style="margin-top:12px">
+            <div class="table-wrap">
+              <table class="tb">
+                <thead><tr><th>kind</th><th>来源</th><th class="r">当前字符</th><th class="r">阶段任务上限</th><th class="r">上次校验</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">project</td><td class="faint">系统默认（未覆盖）</td><td class="r">620</td><td class="r faint">—</td><td class="r faint">今天 09:02</td></tr>
+                  <tr><td class="mono">format_check</td><td class="faint">项目版本 v3</td><td class="r">1 860</td><td class="r">4 000</td><td class="r faint">3 天前</td></tr>
+                  <tr><td class="mono">classify</td><td class="faint">项目版本 v2</td><td class="r">2 240</td><td class="r">4 000</td><td class="r faint">9 天前</td></tr>
+                  <tr><td class="mono">agent</td><td class="faint">项目版本 v4</td><td class="r">3 700</td><td class="r">4 000</td><td class="r faint">昨天 18:40</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-switch" data-section="constants">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+          <h2 style="font-size:13px;font-weight:600">系统常量</h2>
+          <span class="pill line">只读</span>
+          <span class="faint" style="font-size:10.5px">收为系统级，不开放按仓库覆盖</span>
+        </div>
+        <div class="settings-form" style="max-width:none">
+          <div class="panel panel-pad" style="padding-top:4px;padding-bottom:6px">
+            <div class="const-row"><span class="const-name">PIPELINE_FORMAT_MAX_FAILS</span><span class="const-val">5<small>次</small></span></div>
+            <div class="const-note" style="padding-bottom:8px">格式验证累计 5 次不通过 → <b>自动关闭 issue</b>（不是 blocked）；第 5 次的评论即最后反馈。</div>
+            <div class="const-row"><span class="const-name">PIPELINE_CLOSE_AFTER_HOURS</span><span class="const-val">48<small>小时</small></span></div>
+            <div class="const-note" style="padding-bottom:8px">只扫 <span class="mono">format/awaiting_info</span>；<span class="mono">classify/awaiting_info</span> 等管理员，<span class="mono">info_requested_at=NULL</span> 不进扫描。</div>
+            <div class="const-row"><span class="const-name">fail_streak → blocked</span><span class="const-val">2<small>次</small></span></div>
+            <div class="const-note" style="padding-bottom:8px">运行失败 / 信封不合法连续 2 次 → blocked；重跑不限次数，<span class="mono">/pipeline next</span> 可解禁。</div>
+            <div class="const-row"><span class="const-name">SESSION_MAX_TURNS</span><span class="const-val">30<small>轮</small></span></div>
+            <div class="const-row"><span class="const-name">SESSION_MAX_AGE</span><span class="const-val">7<small>天</small></span></div>
+            <div class="const-note" style="padding-bottom:8px">任一超限即轮换会话，结论摘要带入新会话。</div>
+            <div class="const-row"><span class="const-name">PROMPT_LIMITS.body</span><span class="const-val">4 000<small>字符</small></span></div>
+            <div class="const-note" style="padding-bottom:8px">项目提示词超过即拒绝保存，不截断。</div>
+            <div class="const-row"><span class="const-name">COMMENT_COOLDOWN_SECONDS</span><span class="const-val">120<small>秒</small></span></div>
+            <div class="const-note">评论优先时让位给补充内容；同一 issue 不重复回复。</div>
+          </div>
+          <div class="notice info" style="margin-top:12px">
+            <span class="dot tone-info"></span>
+            <span>常量改一次要发版；配置里刻意没有 <span class="mono">close_after_hours</span>、<span class="mono">max_runs_per_stage</span>，也没有「重跑上限」这个概念。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-switch" data-section="runtime">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+          <h2 style="font-size:13px;font-weight:600">运行时</h2>
+          <span class="faint" style="font-size:10.5px">只影响当前仓库</span>
+        </div>
+        <div class="settings-form">
+          <div class="form-line" style="margin-top:4px">
+            <div class="form-line-main">
+              <div class="form-line-title">接受 @ 提及</div>
+              <div class="form-line-sub">关掉只影响 @ 触发；webhook 仍入库，阶段推进不受影响</div>
+            </div>
+            <button class="switch" type="button" role="switch" aria-checked="true" aria-label="接受 @ 提及"></button>
+          </div>
+          <div class="form-line">
+            <div class="form-line-main">
+              <div class="form-line-title">dry-run</div>
+              <div class="form-line-sub">只生成信封，不写 GitHub；照常消耗 token</div>
+            </div>
+            <button class="switch" type="button" role="switch" aria-checked="false" aria-label="dry-run"></button>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label for="dedupe-window">@ 去重窗口</label>
+              <input class="input" id="dedupe-window" value="10 分钟" />
+              <span class="field-hint">同一个人连续 @ 只算一条</span>
+            </div>
+            <div class="field">
+              <label for="comment-cooldown">评论冷却</label>
+              <input class="input" id="comment-cooldown" value="120 秒" disabled />
+              <span class="field-hint">系统常量，不可改</span>
+            </div>
+          </div>
+          <div class="form-line">
+            <div class="form-line-main">
+              <div class="form-line-title">写回闸门</div>
+              <div class="form-line-sub">不合并 PR · 标签必须在词表 · 隐藏标记去重 · 无 merge 能力</div>
+            </div>
+            <span class="pill line">固定行为</span>
+          </div>
+          <div class="notice">
+            <span class="dot tone-warn"></span>
+            <span>面板不直接写库：保存会生成一个配置 PR，合并后才生效。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="save-bar" id="save-bar">
+      <span class="dot tone-warn"></span>
+      <span class="txt">有未保存的更改<span class="faint"> · 保存会生成配置 PR</span></span>
+      <div class="acts">
+        <button class="btn sm" type="button" id="reset-btn">丢弃</button>
+        <button class="btn sm primary" type="button" id="save-btn">保存更改</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="drawer-wrap" id="prompt-drawer">
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="prompt-drawer-title">
+    <div class="drawer-h">
+      <h3 id="prompt-drawer-title">提示词预览</h3>
+      <button class="icon-btn" type="button" data-close-drawer aria-label="关闭" style="margin-left:auto">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 4 8 8M12 4l-8 8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer-b" id="prompt-drawer-body"></div>
+    <div class="drawer-f">
+      <button class="btn sm" type="button" data-close-drawer>关闭</button>
+      <button class="btn sm" type="button" data-disabled-reason="写接口未就绪：提示词只能通过配置 PR 修改" style="margin-left:auto">编辑</button>
+    </div>
+  </div>
+</div>
+
+<pre id="pv-project" hidden>你是 acme/web-console 的 issue 处理助手。
+
+## 项目约定
+- 结论必须带证据：文件行号、命令、退出码。
+- 不合并 PR，不设置信阈值，不做主观猜测。
+- 写 GitHub 前先产出信封；没有信封的动作一律不执行。
+- 评论用中文，代码与命令保持原文。</pre>
+
+<pre id="pv-format" hidden>## 角色
+你只做一件事：判断 issue 正文是否满足本仓库的模板要求。
+
+## 必查四项
+1. 复现步骤（可照做）
+2. 期望结果
+3. 实际结果
+4. 环境版本（浏览器 / Node / 提交）
+
+## 输出
+- 齐全 → 通过，不写评论。
+- 有缺失 → 列出缺失项，按自然语言回复一次，打 needs-info。
+- 不评判问题是否真实，不推测原因。</pre>
+
+<pre id="pv-classify" hidden>## 角色
+你只做一件事：把 issue 归到 requirement / defect / not-found / other。
+
+## 判定
+- defect：能在当前代码里指出偏离预期的位置，必须给 path:line。
+- requirement：现有能力不足，需要新增。
+- not-found：按描述检索后查不到，输出「当前查不到」+ 已查范围。
+- other：文档、构建、提问等。
+
+## 约束
+- 必须有证据，不允许只给类别。
+- not-found 不阻塞流水线，继续进入阶段 2。
+- 同一类别只 @ 一次管理人员。</pre>
+
+<pre id="pv-agent" hidden>## 角色
+你在一个按 issue 复用的会话里持续处理同一个 issue。
+
+## 输入
+- 正文快照（tasks.target_body）
+- 阶段 0 / 1 结论（只读，不重跑）
+- 历史轮次与补充内容（tasks.supplement）
+
+## 行为
+- 回答作者的追问；需要信息时只问一次，等回复。
+- 复现成功才开 PR；失败给 failure_class 与最后 40 行日志。
+- 不接受 PR merge，不修改 CI 配置。
+
+## 输出
+- 先产出信封，再写回。
+- 评论由你自由组织，服务端不套模板。</pre>

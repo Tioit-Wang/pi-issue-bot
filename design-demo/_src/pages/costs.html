@@ -1,0 +1,120 @@
+<!--@title 成本-->
+<!--@page costs-->
+<!--@nav costs-->
+<!--@crumb 全部项目|成本-->
+
+<div class="phead">
+  <div>
+    <div class="eyebrow">跨仓库 · 最近 30 天 · UTC</div>
+    <h1>成本</h1>
+  </div>
+  <div class="phead-actions">
+    <div class="seg" role="group" aria-label="时间窗">
+      <button type="button" data-window="7" aria-pressed="false">7 天</button>
+      <button type="button" data-window="14" aria-pressed="false">14 天</button>
+      <button type="button" data-window="30" aria-pressed="true">30 天</button>
+    </div>
+  </div>
+</div>
+
+<div class="kpi-inline">
+  <div class="k"><span class="k-label">总成本</span><span class="k-val" id="cost-total">$142.86</span></div>
+  <div class="k"><span class="k-label">日均</span><span class="k-val" id="cost-avg">$4.76</span></div>
+  <div class="k"><span class="k-label">单任务均价</span><span class="k-val" id="cost-unit">$0.104</span><span class="k-sub" id="cost-tasks">1 374 个任务</span></div>
+  <div class="k"><span class="k-label">峰值日</span><span class="k-val" id="cost-peak">$7.12</span><span class="k-sub" id="cost-peak-date">11/03</span></div>
+  <div class="k" style="margin-left:auto"><span class="k-sub">口径：usage_costs 汇总，不含沙箱机器成本</span></div>
+</div>
+
+<section class="sec" style="border-top:0;margin-top:6px">
+  <div class="sec-h">
+    <h2>成本趋势</h2>
+    <div class="sec-actions"><span class="sec-note" id="cost-note">最近 30 天 · UTC</span></div>
+  </div>
+  <div class="panel">
+    <div class="panel-pad" style="padding-top:12px">
+      <div class="chart" id="cost-chart"></div>
+    </div>
+  </div>
+</section>
+
+<div class="grid g-2" style="margin-top:22px">
+  <section class="sec">
+    <div class="sec-h"><h2>按仓库</h2><div class="sec-actions"><span class="sec-note">30 天</span></div></div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table class="tb">
+          <thead>
+            <tr>
+              <th class="sortable">仓库</th>
+              <th class="sortable r">任务</th>
+              <th class="sortable r">成本</th>
+              <th class="sortable r">占比</th>
+              <th class="r">均价</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-repo-row data-base-cost="78.42" data-base-tasks="712"><td class="mono strong">acme/web-console</td><td class="r" data-cell="tasks">712</td><td class="r strong" data-cell="cost">$78.42</td><td class="r" data-cell="share">54.9%</td><td class="r" data-cell="avg">$0.110</td></tr>
+            <tr data-repo-row data-base-cost="46.08" data-base-tasks="431"><td class="mono strong">acme/payments-api</td><td class="r" data-cell="tasks">431</td><td class="r strong" data-cell="cost">$46.08</td><td class="r" data-cell="share">32.3%</td><td class="r" data-cell="avg">$0.107</td></tr>
+            <tr data-repo-row data-base-cost="18.36" data-base-tasks="231"><td class="mono strong">acme/infra-terraform</td><td class="r" data-cell="tasks">231</td><td class="r strong" data-cell="cost">$18.36</td><td class="r" data-cell="share">12.8%</td><td class="r" data-cell="avg">$0.079</td></tr>
+            <tr id="cost-total-row" style="background:var(--surface-2)"><td class="strong">合计</td><td class="r" data-cell="tasks">1 374</td><td class="r strong" data-cell="cost">$142.86</td><td class="r" data-cell="share">100%</td><td class="r" data-cell="avg">$0.104</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h"><h2>按命令</h2><div class="sec-actions"><span class="sec-note">30 天 · 成本</span></div></div>
+    <div class="panel panel-pad" style="padding-top:14px">
+      <div class="hbars">
+        <div class="hbar"><span class="hbar-label mono">/review-pr</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:100%"></i></span><span class="hbar-val">$68.24</span></div>
+        <div class="hbar"><span class="hbar-label mono">/deep-review</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:58%"></i></span><span class="hbar-val">$39.60</span></div>
+        <div class="hbar"><span class="hbar-label mono">issue-pipeline</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:33%"></i></span><span class="hbar-val">$22.74</span></div>
+        <div class="hbar"><span class="hbar-label">自动分类</span><span class="hbar-track"><i class="hbar-fill" style="display:block;width:18%"></i></span><span class="hbar-val">$12.28</span></div>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <table class="tb" style="font-size:11.5px">
+          <thead>
+            <tr><th>模型</th><th class="r">占比</th><th class="r">缓存命中</th><th class="r">成本</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="mono">claude-sonnet-4.5</td><td class="r">71%</td><td class="r">64%</td><td class="r">$101.42</td></tr>
+            <tr><td class="mono">claude-haiku-4.5</td><td class="r">24%</td><td class="r">48%</td><td class="r">$34.28</td></tr>
+            <tr><td class="mono">gpt-5.1-mini</td><td class="r">5%</td><td class="r">39%</td><td class="r">$7.16</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<section class="sec" style="margin-top:22px">
+  <div class="sec-h">
+    <h2>最贵的运行</h2>
+    <div class="sec-actions"><a class="link" href="audit.html" style="font-size:11px">在审计中查看</a></div>
+  </div>
+  <div class="panel">
+    <div class="table-wrap">
+      <table class="tb">
+        <thead>
+          <tr>
+            <th class="sortable">时间</th>
+            <th>运行</th>
+            <th>仓库</th>
+            <th>命令</th>
+            <th class="sortable r">tokens</th>
+            <th class="sortable r">成本</th>
+            <th class="r">结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="num">11/10 22:14</td><td class="mono"><a class="link" href="run.html">tsk_8f2c1a</a></td><td class="mono">web-console</td><td class="mono">/review-pr</td><td class="r">412 880</td><td class="r strong">$0.087</td><td class="r"><span class="pill bad"><i class="dot"></i>失败</span></td></tr>
+          <tr><td class="num">11/09 16:02</td><td class="mono">tsk_6a91de</td><td class="mono">web-console</td><td class="mono">/deep-review</td><td class="r">386 102</td><td class="r strong">$0.081</td><td class="r"><span class="pill ok"><i class="dot"></i>成功</span></td></tr>
+          <tr><td class="num">11/08 09:41</td><td class="mono">tsk_1c77b3</td><td class="mono">web-console</td><td class="mono">/review-pr</td><td class="r">361 940</td><td class="r strong">$0.076</td><td class="r"><span class="pill ok"><i class="dot"></i>成功</span></td></tr>
+          <tr><td class="num">11/07 14:28</td><td class="mono">tsk_9b04aa</td><td class="mono">infra-terraform</td><td class="mono">/deep-review</td><td class="r">338 615</td><td class="r strong">$0.071</td><td class="r"><span class="pill warn"><i class="dot"></i>超时</span></td></tr>
+          <tr><td class="num">11/06 11:07</td><td class="mono">tsk_4d1f68</td><td class="mono">payments-api</td><td class="mono">/review-pr</td><td class="r">301 226</td><td class="r strong">$0.063</td><td class="r"><span class="pill ok"><i class="dot"></i>成功</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
