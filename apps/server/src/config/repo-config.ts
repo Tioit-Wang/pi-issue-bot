@@ -218,7 +218,7 @@ export const UNKNOWN_REPO_POLICY: RepoPolicy = Object.freeze({
 
 /** 读一个仓库的策略（含 settings 解析与 last-known-good 语义）。 */
 export async function readRepoPolicy(db: SqlRunner, repo: string): Promise<RepoPolicy> {
-  const result = await db.query(REPO_SQL.selectOne, [repo]);
+  const result = await selectRepoRow(db, repo);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (row === undefined) {
     return UNKNOWN_REPO_POLICY;
@@ -255,6 +255,27 @@ export async function readRepoPolicy(db: SqlRunner, repo: string): Promise<RepoP
     configError: settingsError,
   };
   return policy;
+}
+
+/**
+ * 读 `repos` 行，并把「库没迁移」这类数据库错误翻成能照做的提示。
+ *
+ * 为什么需要这层：`settings` 等列是 0003 才加的。库停在 0002 时 `select` 直接抛
+ * `42703 undefined_column`，上层只能显示「配置不可用」，运维看不出真实原因是「没跑迁移」。
+ */
+async function selectRepoRow(db: SqlRunner, repo: string) {
+  try {
+    return await db.query(REPO_SQL.selectOne, [repo]);
+  } catch (error) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (code === '42703' || code === '42P01') {
+      throw new Error(
+        '数据库结构未迁移：repos 缺少多仓库改造的列/表，请先执行 `pi-bot migrate`（migrations/0003_multi_repo、0004_seed_settings_from_legacy）再启动',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 /** 库里的 jsonb → `RepoConfig`。手改过库、或版本升级后旧结构都是这条路径失败。 */
