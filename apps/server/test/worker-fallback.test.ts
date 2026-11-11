@@ -98,6 +98,9 @@ describe('supportsCommentFallback：只有评论类命令才兜底', () => {
     expect(supportsCommentFallback('/issue-repro')).toBe(true);
     expect(supportsCommentFallback('@answer')).toBe(true);
     expect(supportsCommentFallback('@answer:5L2g5aW9')).toBe(true);
+    // v0.3 issue agent 的两个入口（产出默认就是一条评论）
+    expect(supportsCommentFallback('agent:mention')).toBe(true);
+    expect(supportsCommentFallback('agent:event')).toBe(true);
   });
 
   it('`/review-pr`、push 类与自动分诊不兜底（结论不可信时不该发布）', () => {

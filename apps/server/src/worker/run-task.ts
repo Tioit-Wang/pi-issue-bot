@@ -501,23 +501,33 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     }
   }
 
-  // ── 兜底回复：信封不可信时**唯一**允许的写回 ────────────────────────────────
+  // ── 兜底回复：信封不可信、或信封没给 comment 动作时**唯一**允许的写回 ─────────
   //
-  // 真实故障：`@answer` 的 turn 正常跑完（`turn.completed`、工具也跑了），
-  // 但事件流里没有能通过 Ajv 的信封 → 按「没有可信信封 → 不写回」的设计，用户看到「@ 了没反应」。
+  // 两个真实故障（都在实机出现过）：
+  //   a. `@answer` 的 turn 正常跑完（`turn.completed`、工具也跑了），事件流里没有能通过 Ajv
+  //      的信封 → 按「没有可信信封 → 不写回」的设计，用户看到「@ 了没反应」；
+  //   b. v0.3 agent：信封**合规**但 `actions` 是空数组（模型把结论写在第一段里），
+  //      run 记为 succeeded，issue 上同样一个字都没有。
   // 信封校验是安全边界，一步都不能松；但「agent 已经写出面向人的答案」不该被一起丢掉。
   //
   // 五个条件同时成立才兜底（缺一条就只留痕、不写任何东西）：
-  //   1. 有一封信封且**不合规**（`missing-envelope` 也算不合规）；
-  //   2. 命令是评论类（`/issue-triage`、`/issue-repro`、`@answer`）——
+  //   1. 信封不合规（`missing-envelope` 也算）、或合规但没有 `comment` 动作；
+  //   2. 命令是评论类（`agent:mention`、`agent:event`、`/issue-triage`、`/issue-repro`、`@answer`）——
   //      `/review-pr` 的结论若不可信就不该发出去，push 类任务更没有可发的东西；
   //   3. turn 正常收尾（`turn.completed`）：半路结束的 turn 没有「交付物」可言；
   //   4. 不是 dry-run（零副作用是 M0 的验收口径，`actions` 也必须 0 行）；
   //   5. 没有命中熔断（退化输出不值得发布）。
   //
-  // 兜底**不改结局**：run 仍然是 `failure_class=parse`，打标与其它写回仍然只认合规信封。
+  // 兜底**不改结局**：信封不合规时 run 仍是 `failure_class=parse`；合规但缺 comment 时 run 照旧
+  //成功，只是把第一段补发成评论。打标与其它写回仍然只认合规信封。
   let fallback: ActionOutcome | null = null;
-  if (prepared !== null && !prepared.valid) {
+  // v0.3：**信封合法但没有 comment 动作**也要补发（需求 §1「默认产出一条评论」）。
+  // 实机 2026-11-11：模型把结论写在第一段、`actions` 给 `[]`，run 记为 succeeded，
+  // issue 上却一个字都没有 —— 用户视角就是「@ 了没反应」。
+  const envelopeValid = prepared !== null && prepared.valid;
+  const hasCommentAction =
+    prepared !== null && prepared.valid && prepared.accepted.some((item) => item.intent === 'comment');
+  if (prepared !== null && (!prepared.valid || !hasCommentAction)) {
     const agentText =
       turnResult !== undefined && terminal === 'turn.completed' ? findLastAgentText(captured) : null;
     const body = agentText === null ? null : buildFallbackCommentBody(agentText);
@@ -528,7 +538,7 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     } else if (degeneracyHit !== null) {
       blocked = '熔断命中：不发布退化输出';
     } else if (!supportsCommentFallback(input.command)) {
-      blocked = `命令 ${input.command} 不在兜底白名单（仅 /issue-triage、/issue-repro、@answer）`;
+      blocked = `命令 ${input.command} 不在兜底白名单（仅 /issue-triage、/issue-repro、@answer、agent:mention、agent:event）`;
     } else if (terminal !== 'turn.completed') {
       blocked = `turn 未正常收尾（terminal=${String(terminal)}）`;
     } else if (body === null) {
@@ -549,13 +559,20 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         store: deps.store,
         clock,
       });
+      const cause = envelopeValid ? 'no-comment-action' : 'invalid-envelope';
       appendEvent('writeback.fallback', {
         status: fallback.status,
         target: fallback.target,
         reason: fallback.reason,
         command: input.command,
+        cause,
       });
-      logger.warn({ status: fallback.status, target: fallback.target }, '信封不可信，已按 last assistant 文本兜底发评论');
+      logger.warn(
+        { status: fallback.status, target: fallback.target, cause },
+        cause === 'no-comment-action'
+          ? '信封没有 comment 动作，已按 last assistant 文本补发评论'
+          : '信封不可信，已按 last assistant 文本兜底发评论',
+      );
     }
   }
 

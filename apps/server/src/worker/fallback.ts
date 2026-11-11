@@ -36,8 +36,20 @@ export const FALLBACK_INTENT = 'fallback';
 /** 兜底正文上限：GitHub 上限 65536，这里按「按字符算」留余量（同 `packages/envelope` 的 60000）。 */
 export const MAX_FALLBACK_BODY_CHARS = 60_000;
 
-/** 允许兜底的命令（评论类）。`/review-pr` 与 push 类任务**不**兜底。 */
-export const COMMENT_FALLBACK_COMMANDS = ['/issue-triage', '/issue-repro'] as const;
+/**
+ * 允许兜底的命令（评论类）。`/review-pr` 与 push 类任务**不**兜底。
+ *
+ * v0.3 收敛成 `agent:mention` / `agent:event`（见 `agent/store.ts::agentTaskCommand`）：
+ * 它们是 issue agent 的全部入口，产出默认就是一条评论。原来只列了 `/issue-triage`、
+ * `/issue-repro` 和 `@answer`，于是 agent 任务一条都兜不住（实机 2026-11-11：模型只给
+ * verdict、`actions` 空数组时，issue 上什么都没发出去）。
+ */
+export const COMMENT_FALLBACK_COMMANDS = [
+  '/issue-triage',
+  '/issue-repro',
+  'agent:mention',
+  'agent:event',
+] as const;
 
 /**
  * 自由问答的 `tasks.command`。

@@ -1046,3 +1046,74 @@ describe('无感反馈：终态 reaction（W2-D）', () => {
     expect(harness.store.actions).toHaveLength(0);
   });
 });
+
+describe('兜底回复（信封合规但没给 comment 动作：v0.3「默认一条评论」）', () => {
+  /** 合规信封，但 `actions` 是空数组 —— 实机上模型把结论写在第一段里就是这样。 */
+  const verdictOnlyEnvelope = (): string =>
+    JSON.stringify({
+      verdict: {
+        kind: 'issue',
+        labels: [],
+        evidence: [{ rule: 'repro-steps', quote: '复现步骤：…', passed: true }],
+      },
+      actions: [],
+      usage: { inputTokens: 900, outputTokens: 200, costUsd: 0.01 },
+    });
+
+  it('agent:mention 只给 verdict → 补发第一段评论，run 仍然 succeeded', async () => {
+    const harness = createHarness({
+      events: () =>
+        asyncFrom([
+          env('item.completed', { text: `结论：还缺复现步骤与版本号。\n\`\`\`json\n${verdictOnlyEnvelope()}\n\`\`\`` }, 0),
+          env('turn.completed', { status: 'completed' }, 1),
+        ]),
+    });
+
+    const report = await runTask(makeInput({ command: 'agent:mention' }), harness.deps);
+
+    // 信封是合规的：run 不该被记成 parse 失败
+    expect(report.outcome).toBe('succeeded');
+    expect(report.failureClass).toBeNull();
+    expect(report.actions).toHaveLength(0);
+    expect(report.fallback?.intent).toBe('fallback');
+    expect(report.fallback?.status).toBe('applied');
+
+    // 第一段原样补发，机器段（信封）不许出现在评论里
+    expect(harness.github.comments).toHaveLength(1);
+    const body = harness.github.comments[0] ?? '';
+    expect(body).toContain('结论：还缺复现步骤与版本号。');
+    expect(body).not.toContain('verdict');
+    const event = harness.store.runEvents.find((item) => item.kind === 'writeback.fallback');
+    expect(event?.payload).toMatchObject({ cause: 'no-comment-action' });
+  });
+
+  it('已经给了 comment 动作 → 不重复兜底（只发信封里那一条）', async () => {
+    const harness = createHarness({
+      events: () =>
+        asyncFrom([
+          env(
+            'item.completed',
+            {
+              text:
+                '结论：信息齐全。\n```json\n' +
+                JSON.stringify({
+                  verdict: { kind: 'issue', labels: [], evidence: [] },
+                  actions: [{ intent: 'comment', body: '信封里的正式回复' }],
+                  usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.001 },
+                }) +
+                '\n```',
+            },
+            0,
+          ),
+          env('turn.completed', { status: 'completed' }, 1),
+        ]),
+    });
+
+    const report = await runTask(makeInput({ command: 'agent:mention' }), harness.deps);
+
+    expect(report.fallback).toBeNull();
+    expect(harness.github.comments).toHaveLength(1);
+    expect(harness.github.comments[0]).toContain('信封里的正式回复');
+    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback')).toBe(false);
+  });
+});
