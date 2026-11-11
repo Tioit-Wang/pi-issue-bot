@@ -12,18 +12,23 @@
  *  - 开关不做乐观更新：服务端是唯一事实源（同名覆盖关系会影响实际生效的技能）。
  */
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { AsyncSection } from '../components/AsyncSection.tsx';
 import { PageHeader } from '../components/PageHeader.tsx';
 import { Toolbar } from '../components/Toolbar.tsx';
 import { Section } from '../components/Section.tsx';
+import { EnabledSwitch } from '../components/skills/enabled-switch.tsx';
 import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Dialog, Sheet } from '../components/ui/dialog.tsx';
 import { Select } from '../components/ui/select.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table.tsx';
-import { ApiError } from '../lib/api.ts';
+import {
+  SOURCE_LABEL,
+  SOURCE_TONE,
+  describeSkillWriteError,
+} from '../lib/skill-text.ts';
 import { EMPTY, formatCount, formatDuration, formatTimeCell } from '../lib/format.ts';
 import {
   useSkillDelete,
@@ -34,6 +39,7 @@ import {
   useSkills,
   useSystem,
 } from '../lib/queries.ts';
+import { repoSkillsPath } from '../lib/repo-route.ts';
 import { cn } from '../lib/utils.ts';
 import type {
   SkillDetail,
@@ -46,31 +52,6 @@ import type {
 
 const FILTER_KEYS = ['scope', 'source', 'enabled'] as const;
 type FilterKey = (typeof FILTER_KEYS)[number];
-
-const SOURCE_LABEL: Record<SkillSourceKind, string> = {
-  builtin: '内置',
-  'repo-file': '仓库文件',
-  upload: '面板上传',
-};
-
-const SOURCE_TONE: Record<SkillSourceKind, 'neutral' | 'info' | 'success'> = {
-  builtin: 'neutral',
-  'repo-file': 'info',
-  upload: 'success',
-};
-
-const UPLOAD_ERROR_HINT: Record<string, string> = {
-  'bad-request': 'zip 不合法或校验失败（必须含且只含一个 SKILL.md，frontmatter 要合规）',
-  'payload-too-large': 'zip 超过 5 MB 上限',
-  forbidden: '写操作被拒：缺 X-Pi-Bot-CSRF 头，或服务端 PI_BOT_PANEL_WRITE=off',
-  conflict: '同名技能已存在于该作用域（先删除，或改用另一个名字）',
-  'not-found': '技能不存在（可能已被别人删掉）',
-  SKILL_ZIP_INVALID: 'zip 里必须有且只有一个 SKILL.md（允许一层包裹目录）',
-  SKILL_ZIP_UNSAFE: 'zip 内含不安全路径 / 符号链接 / 超体积条目，已拒绝',
-  SKILL_FRONTMATTER_INVALID: 'frontmatter 不符合技能契约（name / outputs / allowed-tools 等）',
-  SKILL_NAME_CONFLICT: '同名技能已存在于该作用域',
-  SKILL_WRITE_DISABLED: '面板写操作已关闭（PI_BOT_PANEL_WRITE=off）',
-};
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${formatCount(bytes)} B`;
@@ -91,15 +72,6 @@ function formatFrontmatterValue(value: unknown): string {
   if (typeof value === 'object') return JSON.stringify(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return String(value);
-}
-
-function describeWriteError(error: unknown, action: string): string {
-  if (error instanceof ApiError) {
-    const hint = UPLOAD_ERROR_HINT[error.code];
-    return `${action}失败（HTTP ${String(error.status)} ${error.code}）：${hint ?? error.message}`;
-  }
-  if (error instanceof Error) return `${action}失败：${error.message}`;
-  return `${action}失败：未知错误`;
 }
 
 function readFilters(params: URLSearchParams): Record<FilterKey, string> {
@@ -161,7 +133,7 @@ export function SkillsPage() {
       { id: item.id, patch: { enabled: !item.enabled } },
       {
         onError: (caught) => {
-          setNotice({ kind: 'error', text: describeWriteError(caught, '切换启用状态') });
+          setNotice({ kind: 'error', text: describeSkillWriteError(caught, '切换启用状态') });
         },
       },
     );
@@ -178,7 +150,7 @@ export function SkillsPage() {
         setNotice({ kind: 'ok', text: `已删除 ${item.name}` });
       },
       onError: (caught) => {
-        setNotice({ kind: 'error', text: describeWriteError(caught, '删除') });
+        setNotice({ kind: 'error', text: describeSkillWriteError(caught, '删除') });
       },
     });
   };
@@ -188,12 +160,12 @@ export function SkillsPage() {
     event.target.value = '';
     if (file === undefined) return;
     setNotice(null);
-    upload.mutate(file, {
+    upload.mutate({ file }, {
       onSuccess: (result) => {
         setNotice({ kind: 'ok', text: `已上传 ${result.skill.name}（v${formatCount(result.version)}）` });
       },
       onError: (caught) => {
-        setNotice({ kind: 'error', text: describeWriteError(caught, '上传') });
+        setNotice({ kind: 'error', text: describeSkillWriteError(caught, '上传') });
       },
     });
   };
@@ -429,6 +401,16 @@ function SkillRow({
           <span className="truncate font-mono text-2xs text-faint" data-testid="skill-row-scope">
             {scopeText(item)}
           </span>
+          {item.scope === 'repo' && item.repo !== null ? (
+            <Link
+              to={repoSkillsPath(item.repo)}
+              className="shrink-0 text-2xs text-brand underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              title={`打开 ${item.repo} 的项目技能页（这个项目自己的覆盖版在那里改）`}
+              data-testid="skill-row-repo-link"
+            >
+              去所属项目
+            </Link>
+          ) : null}
           {overrideName === null ? null : (
             <span
               className="rounded-full bg-muted px-1.5 py-px text-2xs text-muted-foreground"
@@ -462,7 +444,13 @@ function SkillRow({
 
       <div className="flex items-center justify-end gap-1.5">
         {item.enabled ? null : <span className="text-2xs text-faint">已停用</span>}
-        <EnabledSwitch item={item} pending={toggling} onToggle={onToggleEnabled} />
+        <EnabledSwitch
+          checked={item.enabled}
+          pending={toggling}
+          label={`${item.name}（${scopeText(item)}）启用状态`}
+          testId={`skill-toggle-${item.id}`}
+          onToggle={onToggleEnabled}
+        />
         <Button
           variant="ghost"
           size="sm"
@@ -474,35 +462,6 @@ function SkillRow({
         </Button>
       </div>
     </li>
-  );
-}
-
-/** 真 `<button role="switch">`：键盘可聚焦、状态走 `aria-checked`。 */
-function EnabledSwitch({ item, pending, onToggle }: { item: SkillListItem; pending: boolean; onToggle: () => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={item.enabled}
-      aria-label={`${item.name}（${scopeText(item)}）启用状态`}
-      disabled={pending}
-      data-testid={`skill-toggle-${item.id}`}
-      onClick={onToggle}
-      className={cn(
-        'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-[background-color] duration-[120ms] ease-out-quint',
-        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-        item.enabled ? 'bg-success' : 'bg-neutral/50',
-        pending && 'opacity-50',
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          'block size-3 rounded-full bg-card shadow-sm transition-transform duration-[120ms] ease-out-quint',
-          item.enabled ? 'translate-x-[13px]' : 'translate-x-[2px]',
-        )}
-      />
-    </button>
   );
 }
 
@@ -647,7 +606,7 @@ function VersionsBlock({
     <section data-testid="skill-detail-versions" className="flex flex-col gap-1">
       <BlockTitle>版本</BlockTitle>
       {error !== null && error !== undefined ? (
-        <p className="text-xs text-danger-fg">版本列表读取失败（{describeWriteError(error, '读取版本')}）</p>
+        <p className="text-xs text-danger-fg">版本列表读取失败（{describeSkillWriteError(error, '读取版本')}）</p>
       ) : loading ? (
         <p className="text-xs text-muted-foreground">读取中…</p>
       ) : versions === undefined || versions.length === 0 ? (

@@ -123,7 +123,18 @@ describe('注册表：覆盖、冲突与禁用可见性', () => {
   it('内置技能的摘要能通过契约的 skillSummarySchema（面板直接吃它）', () => {
     const registry = createSkillRegistry();
     const summaries = registry.summaries();
-    expect(summaries.map((s) => s.name)).toEqual(['/issue-repro', '/issue-triage', '/review-pr']);
+    // 内置技能 v0.3 起扩到 6 个（新增 /issue-format、/label-triage、/issue-analysis），
+    // 顺序取决于 `builtin.ts` 的注册顺序，因此比较集合而不是列表。
+    expect([...summaries.map((s) => s.name)].sort()).toEqual(
+      [
+        '/review-pr',
+        '/issue-triage',
+        '/issue-repro',
+        '/issue-format',
+        '/label-triage',
+        '/issue-analysis',
+      ].sort(),
+    );
     for (const summary of summaries) {
       const parsed = skillSummarySchema.safeParse({
         name: summary.name,

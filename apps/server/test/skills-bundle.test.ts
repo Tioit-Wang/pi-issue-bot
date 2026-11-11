@@ -219,13 +219,14 @@ describe('frontmatter 校验失败进 errors（不抛）', () => {
     expect(bundle.validation.errors.join(' ')).toContain('allowed-tools 不合规');
   });
 
-  it('缺少必填字段（outputs）→ errors 指出「缺少」', () => {
+  it('省略 outputs（Agent Skills 标准里可选）→ 仍然合法', () => {
     const zip = makeZip([
       { name: 'SKILL.md', text: skillText().replace('outputs: [comment]\n', '') },
     ]);
     const bundle = extractSkillBundle(zip);
-    expect(bundle.validation.ok).toBe(false);
-    expect(bundle.validation.errors.join(' ')).toContain('缺少 outputs');
+    // 本仓曾把 `outputs` 当必填；对齐 agentskills.io 后它是可选项，
+    // 生效值由 `toSkillEffectiveConfig` 补 `DEFAULT_SKILL_OUTPUTS`（`['comment']`）。
+    expect(bundle.validation.ok).toBe(true);
   });
 
   it('正文为空 → error', () => {

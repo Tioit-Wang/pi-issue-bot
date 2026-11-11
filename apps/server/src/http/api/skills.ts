@@ -17,6 +17,9 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import {
   skillDeleteResponseSchema,
+  skillFilesResponseSchema,
+  skillFileWriteSchema,
+  skillImportResponseSchema,
   skillDetailSchema,
   skillPatchSchema,
   skillRollbackBodySchema,
@@ -29,7 +32,16 @@ import {
 import type { Logger } from '../../../../../packages/shared/src/index.ts';
 import { SkillStoreError } from '../../skills/store.ts';
 import type { SkillStore } from '../../skills/store.ts';
+import { seedProjectDefaults } from '../../skills/defaults.ts';
+import { parseSkillFile } from '../../skills/frontmatter.ts';
 import { ZipError, extractSkillBundle } from '../../skills/bundle.ts';
+import {
+  bundleFromFiles,
+  isEditableSkillPath,
+  normalizeSkillFilePath,
+  replaceFileIn,
+  splitZipBundles,
+} from '../../skills/files.ts';
 import { httpError } from '../errors.ts';
 import type { ZodFastify } from '../types.ts';
 import type { RequireAuth } from './auth.ts';
@@ -214,10 +226,17 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
       schema: { querystring: skillsQuerySchema, response: { 200: skillsResponseSchema } },
       preHandler: guard,
     },
-    async (request) => ({
-      generatedAt: new Date().toISOString(),
-      skills: await deps.store.list(listFilterOf(request.query)),
-    }),
+    async (request) => {
+      // 项目作用域的列表请求顺带补齐「三个默认技能」（幂等）：首次打开项目技能页就能看到并可编辑。
+      const repo = request.query.repo;
+      if (typeof repo === 'string' && repo !== '') {
+        await seedProjectDefaults(deps.store, repo).catch(() => undefined);
+      }
+      return {
+        generatedAt: new Date().toISOString(),
+        skills: await deps.store.list(listFilterOf(request.query)),
+      };
+    },
   );
 
   // ── 2. GET /api/skills/:id ────────────────────────────────────────────────
@@ -390,6 +409,212 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
       } catch (error) {
         return mapStoreError(error);
       }
+    },
+  );
+
+  /**
+   * `PUT /api/skills/:id` —— 面板「在线编辑」保存**整份 SKILL.md**（frontmatter + 正文）。
+   *
+   * 与 `PATCH` 的分工：`PATCH` 是字段级局部更新（`enabled` / `description` / `body`），
+   * 这个接口收编辑器里的整份文本，只在这里拆开；frontmatter 仍走 `parseSkillFile` 的同一套校验
+   * （面板自己的解析不可信）。
+   */
+  app.put(
+    '/api/skills/:id',
+    {
+      schema: {
+        params: skillIdParams,
+        body: z.object({ text: z.string().min(20).max(200_000) }).strict(),
+        response: { 200: skillDetailSchema },
+      },
+      preHandler: writeGuard,
+    },
+    async (request) => {
+      const parsed = parseSkillFile(request.body.text);
+      if (!parsed.ok) {
+        // 走错误处理中间件映射成 400（这条路只声明了 200，不能 reply.status(400)）
+        throw httpError('bad-request', `SKILL_FRONTMATTER_INVALID：${parsed.detail}`);
+      }
+      try {
+        const detail = await deps.store.patch({
+          id: request.params.id,
+          // `description` 列只用于列表展示（契约 200 上限），正文才是真来源
+          patch: { body: parsed.body, description: parsed.frontmatter.description.slice(0, 200) },
+          actor: actorOf(request),
+        });
+        if (detail === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+        return detail;
+      } catch (error) {
+        return mapStoreError(error);
+      }
+    },
+  );
+
+  /**
+   * `GET /api/skills/:id/files` —— 技能目录里**每个文本文件的内容**。
+   *
+   * 面板模态框要显示目录树并允许改任意一个 markdown，所以一次全拉（技能包 ≤200 个文件、
+   * 单个 ≤5 MB，一次全量比逐文件请求省事且没有路径编码问题）。
+   */
+  app.get(
+    '/api/skills/:id/files',
+    {
+      schema: { params: skillIdParams, response: { 200: skillFilesResponseSchema } },
+      preHandler: guard,
+    },
+    async (request) => {
+      const files = await deps.store.fileTexts({ id: request.params.id });
+      if (files === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+      return { generatedAt: new Date().toISOString(), skillId: request.params.id, files };
+    },
+  );
+
+  /**
+   * `PUT /api/skills/:id/files` —— 保存**一个**文件（要求 2「支持 markdown 文件的修改」）。
+   *
+   * 做法：取出当前版本的全部文件文本 → 替换目标文件 → `bundleFromFiles` 重建技能包 →
+   * `store.upload` 落成**新版本**（既有版本的审计/回滚能力因此自动继承，无需新的写库路径）。
+   *
+   * 两道额外约束：
+   * - 只接受文本文件扩展名（二进制在 bundle 层就被排除，改了也不该由编辑器发起）；
+   * - 不允许改 `name`：改名会让 `upload` 变成「新建另一个技能」，用户以为在编辑，实际多出一个。
+   */
+  app.put(
+    '/api/skills/:id/files',
+    {
+      schema: {
+        params: skillIdParams,
+        body: skillFileWriteSchema,
+        response: { 200: skillDetailSchema },
+      },
+      preHandler: writeGuard,
+    },
+    async (request) => {
+      const path = normalizeSkillFilePath(request.body.path);
+      if (path === null) {
+        throw httpError('bad-request', `非法的文件路径：${request.body.path.slice(0, 120)}`);
+      }
+      if (!isEditableSkillPath(path)) {
+        throw httpError('bad-request', `只支持编辑文本文件（md / txt / json / yaml / toml）：${path}`);
+      }
+      const detail = await deps.store.get(request.params.id);
+      if (detail === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+      const current = await deps.store.fileTexts({ id: request.params.id });
+      if (current === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+
+      const bundle = bundleFromFiles(replaceFileIn(current, path, request.body.text));
+      if (!bundle.validation.ok) {
+        throw httpError('bad-request', `技能校验不通过：${bundle.validation.errors.join('；')}`, {
+          errors: bundle.validation.errors,
+        });
+      }
+      if (bundle.name !== detail.name) {
+        throw httpError(
+          'bad-request',
+          `不允许在编辑器里改技能名（当前 ${detail.name}，收到 ${bundle.name}）：请新建技能后再删旧的`,
+        );
+      }
+      try {
+        const result = await deps.store.upload({
+          bundle,
+          scope: detail.scope,
+          repo: detail.repo,
+          enabled: detail.enabled,
+          actor: actorOf(request),
+        });
+        const next = await deps.store.get(result.skill.id);
+        if (next === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+        deps.logger?.info(
+          { skillId: next.id, name: next.name, path, version: result.version },
+          '技能文件已保存为新版本',
+        );
+        return next;
+      } catch (error) {
+        return mapStoreError(error);
+      }
+    },
+  );
+
+  /**
+   * `POST /api/skills/import` —— 一个 zip 里**多个技能目录**批量导入（要求 4）。
+   *
+   * 与 `POST /api/skills` 的区别：那个只认「一个 zip 一个技能」，多目录时会报错；
+   * 这个按「每个含 SKILL.md 的目录 = 一个技能」拆开，逐个走同一个 `store.upload`。
+   * 同名技能自然被覆盖成新版本（`created=false`）—— 这就是「上传覆盖」的语义，
+   * 不需要额外的 mode 参数。
+   *
+   * 部分成功返回 200 + `errors`：客户端据此提示「导入 2 个，跳过 1 个」比整包失败更好用。
+   */
+  app.post(
+    '/api/skills/import',
+    {
+      schema: { querystring: skillUploadQuerySchema, response: { 200: skillImportResponseSchema } },
+      preHandler: writeGuard,
+    },
+    async (request) => {
+      const query = request.query;
+      if (query.scope === 'repo' && (query.repo ?? '') === '') {
+        throw httpError('bad-request', 'scope=repo 时必须同时给 repo=owner/name');
+      }
+      if (!Buffer.isBuffer(request.body)) {
+        throw httpError('bad-request', 'body 必须是原始 zip 字节（Content-Type: application/zip）');
+      }
+      let split;
+      try {
+        split = splitZipBundles(new Uint8Array(request.body));
+      } catch (error) {
+        if (error instanceof ZipError) {
+          throw httpError('bad-request', `zip 解析失败：${error.message}`);
+        }
+        throw error;
+      }
+
+      const imported: {
+        id: string;
+        name: string;
+        version: number;
+        created: boolean;
+      }[] = [];
+      const errors = [...split.errors];
+      const warnings: string[] = [];
+
+      for (const bundle of split.bundles) {
+        if (!bundle.validation.ok) {
+          errors.push(`${bundle.name}：${bundle.validation.errors.join('；')}`);
+          continue;
+        }
+        warnings.push(...bundle.validation.warnings);
+        try {
+          const result = await deps.store.upload({
+            bundle,
+            scope: query.scope,
+            repo: query.repo ?? null,
+            enabled: query.enabled === 'true',
+            actor: actorOf(request),
+          });
+          imported.push({
+            id: result.skill.id,
+            name: result.skill.name,
+            version: result.version,
+            created: result.created,
+          });
+        } catch (error) {
+          errors.push(
+            `${bundle.name}：${error instanceof SkillStoreError ? error.message : String(error)}`,
+          );
+        }
+      }
+
+      deps.logger?.info(
+        { imported: imported.length, skipped: errors.length, repo: query.repo ?? null },
+        '技能 zip 已导入',
+      );
+      return {
+        generatedAt: new Date().toISOString(),
+        imported,
+        errors: errors.slice(0, 50),
+        warnings: [...new Set(warnings)].slice(0, 50),
+      };
     },
   );
 }

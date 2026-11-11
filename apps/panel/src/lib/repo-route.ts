@@ -73,6 +73,11 @@ export function repoRunPath(repo: string, runId: string): string {
   return `${repoRunsPath(repo)}/${encodeURIComponent(runId)}`;
 }
 
+/** 项目技能页（`/repos/:repo/skills`）：只列本项目与内置技能。 */
+export function repoSkillsPath(repo: string): string {
+  return `${repoWorkspacePath(repo)}/skills`;
+}
+
 /** 设置分区（`general|triggers|labels|limits|prompt`）；不传就是设置首页。 */
 export function repoSettingsPath(repo: string, section?: string): string {
   const base = `${repoWorkspacePath(repo)}/settings`;

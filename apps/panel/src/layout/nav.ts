@@ -29,7 +29,7 @@ export const GLOBAL_NAV: readonly GlobalNavItem[] = [
 ];
 
 
-export type RepoNavKey = 'workspace' | 'issues' | 'runs' | 'settings';
+export type RepoNavKey = 'workspace' | 'issues' | 'runs' | 'settings' | 'skills';
 
 export type RepoNavItem = {
   key: RepoNavKey;
@@ -42,7 +42,8 @@ export type RepoNavItem = {
 /**
  * 当前仓库导航。Issue 详情 / 运行详情是子页面（`nav: false`），不在这里。
  *
- * 顺序即信息优先级：工作台 → Issue 中心 → 运行 → 设置。
+ * 顺序即信息优先级：工作台 → Issue 中心 → 运行 → 设置 → 技能。
+ * 「技能」留在最后：它是配置类入口，日常看板与队列排在它前面。
  * v0.3 的「流水线」页与它那一组阶段视图已随固定流水线退役删除。
  */
 export const REPO_NAV: readonly RepoNavItem[] = [
@@ -50,6 +51,7 @@ export const REPO_NAV: readonly RepoNavItem[] = [
   { key: 'issues', label: 'Issue 中心', suffix: '/issues', end: false },
   { key: 'runs', label: '运行', suffix: '/runs', end: false },
   { key: 'settings', label: '设置', suffix: '/settings', end: false },
+  { key: 'skills', label: '技能', suffix: '/skills', end: false },
 ];
 
 /** 拼出某个仓库导航项的绝对路径（`repo` 是 `owner/name`）。 */

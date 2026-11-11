@@ -17,8 +17,21 @@ import { z } from 'zod';
 import { isoDateTimeSchema } from './common.ts';
 import { MODEL_NAME_RE, SKILL_ALLOWED_TOOLS, SKILL_OUTPUTS } from './enums.ts';
 
-/** `^/[a-z][a-z0-9-]{1,30}$`（ASCII 小写，总长 ≤32，必须以 `/` 开头）。 */
-export const SKILL_NAME_RE = /^\/[a-z][a-z0-9-]{1,30}$/;
+/**
+ * 技能的**存储名**：`/` + Agent Skills 标准的 `name`（小写字母/数字/连字符）。
+ *
+ * 为什么保留前导 `/`：技能在本仓同时是「`@bot /技能名`」的触发词（`skill-mentions.ts`），
+ * 会话里靠这个前缀区分「命令」与普通正文。标准格式的 `name`（无斜杠）在解析层归一到这里，
+ * 存储与展示只有一种形状。
+ */
+export const SKILL_NAME_RE = /^\/[a-z][a-z0-9-]{0,62}$/;
+
+/**
+ * Agent Skills 标准的 `name`（`https://agentskills.io/specification`）：
+ * 1–64 字符、只有小写字母/数字/连字符、不得以连字符开头或结尾、不得出现连续连字符。
+ * 本仓额外接受带前导 `/` 的写法（历史与命令触发都这么写）。
+ */
+export const AGENT_SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9]|-(?!-)){0,62}[a-z0-9]$|^[a-z0-9]$/;
 
 /** 保留名：仓库技能不许覆盖人工重跑入口（契约 §3）。 */
 export const SKILL_RESERVED_NAMES = ['/retry', '/help', '/skills'] as const;
@@ -81,21 +94,36 @@ export const skillFrontmatterSchema = z
   .object({
     name: z
       .string()
-      .regex(SKILL_NAME_RE, '必须以 / 开头，小写 ASCII，总长 ≤32')
-      .refine((value) => !(SKILL_RESERVED_NAMES as readonly string[]).includes(value), {
+      // Agent Skills 标准写法（`format-check`）与本仓的命令写法（`/format-check`）都收；
+      // 归一化成 `/format-check` 由 `skills/frontmatter.ts::normalizeSkillName` 负责。
+      .regex(
+        /^\/?[a-z0-9](?:[a-z0-9]|-(?!-)){0,62}[a-z0-9]$|^\/?[a-z0-9]$/u,
+        '小写字母/数字/连字符，1–64 字符（可带前导 /），首尾不能是连字符',
+      )
+      .refine((value) => !(SKILL_RESERVED_NAMES as readonly string[]).includes(`/${value.replace(/^\//u, '')}`), {
         message: `不得使用保留名：${SKILL_RESERVED_NAMES.join(' / ')}`,
       }),
-    description: singleLineText(z.string().min(10).max(200)),
-    'allowed-tools': z.array(z.enum(SKILL_ALLOWED_TOOLS)).min(1).max(SKILL_ALLOWED_TOOLS.length),
+    /**
+     * 一句话描述（**必填**，标准里 ≤1024）。会被拼进提示词的技能目录，所以这里限制 1024
+     * 并把多行归一化成单行（YAML 的块标量在标准里是允许的，`toSkillEffectiveConfig` 负责折行）。
+     */
+    description: z.string().min(10).max(1024),
+    /** 标准里是可选字段（实验性）；缺省见 `toSkillEffectiveConfig`。 */
+    'allowed-tools': z.array(z.enum(SKILL_ALLOWED_TOOLS)).min(1).max(SKILL_ALLOWED_TOOLS.length).optional(),
     /** 缺省 `20m`；超过 `30m` 由 `effectiveSkillTimeout` 截断并 warn。 */
     timeout: z.string().regex(SKILL_TIMEOUT_RE, '只接受 <数字>s / <数字>m，例如 20m').optional(),
     /** `provider/model`；空则用仓库配置的默认模型。不影响 `tasks.idempotency_key`。 */
     model: z.string().regex(MODEL_NAME_RE).optional(),
     /** 参数形状声明，最多 8 项。 */
     inputs: z.array(skillInputsSchema).max(8).optional(),
-    /** 允许产出哪些动作类型；`pr` 隐含 `push_branch`（必须带 `paths`）。 */
-    outputs: z.array(z.enum(SKILL_OUTPUTS)).min(1).max(SKILL_OUTPUTS.length),
+    /** 允许产出哪些动作类型；`pr` 隐含 `push_branch`（必须带 `paths`）。缺省 `['comment']`。 */
+    outputs: z.array(z.enum(SKILL_OUTPUTS)).min(1).max(SKILL_OUTPUTS.length).optional(),
     'requires-repo-config': z.boolean().optional(),
+    // ── 以下是 Agent Skills 标准的可选字段（`agentskills.io/specification`）──────────
+    // 存进 `frontmatter` jsonb、面板原样回显；本仓的加载期不读它们（不影响注册表）。
+    license: z.string().min(1).max(200).optional(),
+    compatibility: z.string().min(1).max(500).optional(),
+    metadata: z.record(z.string().min(1).max(64), z.string().max(500)).optional(),
   })
   .strict()
   .meta({ id: 'SkillFrontmatter' });
@@ -107,8 +135,8 @@ export type SkillFrontmatter = z.infer<typeof skillFrontmatterSchema>;
  */
 export const skillEffectiveConfigSchema = z
   .object({
-    name: z.string().min(1).max(33),
-    description: z.string().min(10).max(200),
+    name: z.string().min(1).max(65),
+    description: z.string().min(10).max(1024),
     allowedTools: z.array(z.enum(SKILL_ALLOWED_TOOLS)).min(1),
     timeoutMs: z.number().int().min(0).max(SKILL_TIMEOUT_MAX_MS),
     /** 生效值是否被上限截断（true 时加载期记 warn）。 */
@@ -123,17 +151,33 @@ export const skillEffectiveConfigSchema = z
 export type SkillEffectiveConfig = z.infer<typeof skillEffectiveConfigSchema>;
 
 /** 把 frontmatter 展开成有效配置（纯函数，不读文件、不查仓库配置）。 */
+/** 缺省工具集：标准里 `allowed-tools` 是可选的，本仓按「只读三件套」兜底（最小授权）。 */
+export const DEFAULT_SKILL_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'] as const;
+
+/** 缺省产出：只发评论（需求 §1「默认产出一条评论」）。 */
+export const DEFAULT_SKILL_OUTPUTS = ['comment'] as const;
+
+/**
+ * 把 frontmatter 展开成有效配置（纯函数，不读文件、不查仓库配置）。
+ *
+ * 两处「标准兼容」的归一化都在这里：
+ *  1. `allowed-tools` / `outputs` 在 Agent Skills 标准里是可选的 → 用上面的缺省值补齐；
+ *  2. `description` 允许块标量（多行）→ 折叠成单行，因为它会被拼进提示词的技能目录。
+ */
 export function toSkillEffectiveConfig(frontmatter: SkillFrontmatter): SkillEffectiveConfig {
   const timeout = effectiveSkillTimeout(frontmatter.timeout);
   return {
-    name: frontmatter.name,
-    description: frontmatter.description,
-    allowedTools: [...frontmatter['allowed-tools']],
+    // 存储/展示口径一律带前导 `/`（`SKILL_NAME_RE`）：frontmatter 允许写成标准形态
+    // `issue-format`，但注册表/命令解析/面板都按 `/issue-format` 索引 —— 不在这里补齐，
+    // 同一个技能会出现「注册名不带斜杠、解析按带斜杠找」的错位（实测 `Skill … not available`）。
+    name: frontmatter.name.startsWith('/') ? frontmatter.name : `/${frontmatter.name}`,
+    description: frontmatter.description.replace(/\s+/gu, ' ').trim(),
+    allowedTools: [...(frontmatter['allowed-tools'] ?? DEFAULT_SKILL_ALLOWED_TOOLS)],
     timeoutMs: timeout.ms,
     timeoutTruncated: timeout.truncated,
     model: frontmatter.model ?? null,
     inputs: frontmatter.inputs ?? [],
-    outputs: [...frontmatter.outputs],
+    outputs: [...(frontmatter.outputs ?? DEFAULT_SKILL_OUTPUTS)],
     requiresRepoConfig: frontmatter['requires-repo-config'] ?? false,
   };
 }
@@ -250,6 +294,77 @@ export const skillUploadResponseSchema = z
   .strict()
   .meta({ id: 'SkillUploadResponse' });
 export type SkillUploadResponse = z.infer<typeof skillUploadResponseSchema>;
+
+/* ── 模态框编辑器：按文件读写 + 多技能导入（docs/plan-skill-editor-modal.md）── */
+
+/**
+ * 技能目录里的一个文本文件。
+ *
+ * 面板的文件树只靠 `path` 的 `/` 分段渲染，所以这里不再给「目录/文件」标记：
+ * 多一段就是目录，末段就是文件名。二进制文件不进这个结构。
+ */
+export const skillFileTextSchema = z
+  .object({
+    /** 相对技能根的路径（`SKILL.md`、`references/API.md`），≤300 字符。 */
+    path: z.string().min(1).max(300),
+    text: z.string().max(5_000_000),
+  })
+  .strict();
+export type SkillFileText = z.infer<typeof skillFileTextSchema>;
+
+/** `GET /api/skills/:id/files`：一次拉全，文件树在端上算。 */
+export const skillFilesResponseSchema = z
+  .object({
+    generatedAt: isoDateTimeSchema,
+    skillId: z.string().min(1).max(64),
+    files: z.array(skillFileTextSchema).max(200),
+  })
+  .strict()
+  .meta({ id: 'SkillFilesResponse' });
+export type SkillFilesResponse = z.infer<typeof skillFilesResponseSchema>;
+
+/**
+ * `PUT /api/skills/:id/files` 的请求体：写入一个文件并生成新版本。
+ *
+ * `path` 由服务端再校验一次（无 `..`、无绝对路径、每段 ≤80 字符），前端校验不可信。
+ */
+export const skillFileWriteSchema = z
+  .object({
+    path: z.string().min(1).max(300),
+    text: z.string().max(5_000_000),
+  })
+  .strict();
+export type SkillFileWrite = z.infer<typeof skillFileWriteSchema>;
+
+/**
+ * `POST /api/skills/import` 的结果：一个 zip 里可能有多个技能目录。
+ *
+ * 部分成功是常态（例如 3 个目录里有 1 个 frontmatter 非法），所以 `imported` 与
+ * `errors` 同时返回；调用方据 `errors.length` 决定是否提示「部分导入」。
+ */
+export const skillImportResponseSchema = z
+  .object({
+    generatedAt: isoDateTimeSchema,
+    imported: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(64),
+            name: z.string().min(2).max(65),
+            version: z.number().int().min(1),
+            /** `true` = 新建，`false` = 同名技能被覆盖成新版本。 */
+            created: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(50),
+    /** 被跳过的技能目录及原因（中文，直接显示给用户）。 */
+    errors: z.array(z.string().max(500)).max(50),
+    warnings: z.array(z.string().max(500)).max(50),
+  })
+  .strict()
+  .meta({ id: 'SkillImportResponse' });
+export type SkillImportResponse = z.infer<typeof skillImportResponseSchema>;
 
 /**
  * 上传时可选的作用域（查询串）。缺省 `global`。

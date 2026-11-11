@@ -67,7 +67,8 @@ describe('/skills 列表', () => {
     const content = await screen.findByTestId('skills-content');
 
     const rows = within(content).getAllByTestId(/^skill-item-/);
-    expect(rows).toHaveLength(3);
+    // 3 个内置技能 + /review-pr（全局）+ /review-pr（本项目）+ /triage + /release-notes
+    expect(rows).toHaveLength(7);
 
     // 1. 全局内置：v2、KB 大小、启用、被同名仓库技能覆盖
     const global = within(content).getByTestId(`skill-item-${ID_GLOBAL_REVIEW}`);
@@ -117,7 +118,7 @@ describe('/skills 列表', () => {
       );
     });
     await waitFor(() => {
-      expect(screen.getAllByTestId(/^skill-item-/)).toHaveLength(1);
+      expect(screen.getAllByTestId(/^skill-item-/)).toHaveLength(4);
     });
   });
 });
@@ -297,6 +298,6 @@ describe('空态分流', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('skills-empty')).toBeNull();
     });
-    expect(screen.getAllByTestId(/^skill-item-/)).toHaveLength(3);
+    expect(screen.getAllByTestId(/^skill-item-/)).toHaveLength(7);
   });
 });

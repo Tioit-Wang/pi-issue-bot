@@ -17,6 +17,7 @@ import { QualityPage } from './routes/quality.tsx';
 import { RepoIssuesPage } from './routes/repo-issues.tsx';
 import { RepoRunsPage } from './routes/repo-runs.tsx';
 import { RepoSettingsPage } from './routes/repo-settings.tsx';
+import { RepoSkillsPage } from './routes/repo-skills.tsx';
 import { RepoWorkspacePage } from './routes/repo-workspace.tsx';
 import { SkillsPage } from './routes/skills.tsx';
 import { SystemPage } from './routes/system.tsx';
@@ -79,6 +80,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     group: 'repo',
     element: <RepoSettingsPage />,
   },
+  { path: '/repos/:repo/skills', label: '技能', nav: true, group: 'repo', element: <RepoSkillsPage /> },
 
   /* ── 旧路径（302 重定向，见 routes/legacy.tsx） ──────────────────────────── */
   { path: '/tasks', label: '任务（旧链接）', nav: false, group: 'legacy', element: <LegacyTaskListRedirect /> },

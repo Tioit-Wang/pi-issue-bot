@@ -24,8 +24,13 @@ import type {
  * （原因与相对路径的取舍见 `lib/api.ts` 顶部同一段说明）。
  */
 import type {
+  SkillDetail,
+  SkillFileWrite,
+  SkillImportResponse,
   SkillPatch,
+  SkillScope,
   SkillsQuery,
+  SkillUploadResponse,
 } from '../../../../packages/contract/src/index.ts';
 
 /** 轮询间隔（毫秒）：总览 / 列表 / 详情。 */
@@ -57,6 +62,8 @@ export const queryKeys = {
   skills: (query: SkillsQuery) => ['skills', 'list', query] as const,
   skillDetail: (id: string) => ['skills', 'detail', id] as const,
   skillVersions: (id: string) => ['skills', 'versions', id] as const,
+  /** 技能目录里每个文件的全文（模态框编辑器用；写后随 `'skills'` 前缀一起失效）。 */
+  skillFiles: (id: string) => ['skills', 'files', id] as const,
 };
 
 /** 面板的 QueryClient 默认值：失败只重试一次（内网接口，重试多了只会拖慢首屏）。 */
@@ -242,6 +249,20 @@ export function useSkillVersions(id: string) {
   });
 }
 
+/**
+ * 技能目录里每个文本文件的全文（模态框左树右编辑器）。
+ *
+ * **不轮询**：内容可能正被用户编辑，5s 一次的后台刷新只会制造「回填覆盖草稿」的错觉；
+ * 写入成功后由 `useInvalidateSkills` 统一失效，那一次刷新足够。
+ */
+export function useSkillFiles(id: string) {
+  return useQuery({
+    queryKey: queryKeys.skillFiles(id),
+    queryFn: () => api.skillFiles(id),
+    refetchInterval: false,
+  });
+}
+
 /** 写操作后的统一失效（列表/详情/版本都在 `'skills'` 前缀下）。 */
 function useInvalidateSkills(): () => Promise<void> {
   const queryClient = useQueryClient();
@@ -264,11 +285,97 @@ export function useSkillPatch() {
   });
 }
 
-/** 上传 zip（原始二进制，上传即生效）：成功后列表立刻刷新。 */
+/**
+ * 上传 zip（原始二进制，上传即生效）：成功后列表立刻刷新。
+ *
+ * 作用域由调用方给（缺省 `global`）：项目技能页必须传 `{ scope: 'repo', repo }`，
+ * 否则技能会挂到全局、在所有项目里生效。
+ */
 export function useSkillUpload() {
   const invalidate = useInvalidateSkills();
   return useMutation({
-    mutationFn: (file: Blob) => api.uploadSkill(file),
+    mutationFn: (vars: { file: Blob; scope?: SkillScope; repo?: string }) =>
+      api.uploadSkill(vars.file, {
+        scope: vars.scope ?? 'global',
+        ...(vars.repo === undefined ? {} : { repo: vars.repo }),
+      }),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/**
+ * 整份 SKILL.md 覆盖保存（`PUT /api/skills/:id { text }`）：成功即产生新版本。
+ *
+ * 与 `useSkillPatch` 的分工：`patch` 改的是「列表行上的开关 / 描述 / 正文」这种局部字段；
+ * 这里改的是**完整文件**（frontmatter + 正文），校验与版本由服务端负责。
+ * 同样不做乐观更新 —— 服务端会改写 `currentVersion`，猜错就得回滚两次。
+ */
+export function useSkillSaveText() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (vars: { id: string; text: string }): Promise<SkillDetail> =>
+      api.saveSkillText(vars.id, vars.text),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/**
+ * 保存**一个文件**（`PUT /api/skills/:id/files { path, text }`）：成功即新版本。
+ *
+ * 与 `useSkillSaveText` 的区别：那条只能整份覆盖 `SKILL.md`，这条能改 `references/x.md`
+ * 之类的附件。400 的 `message` 是给人看的中文，页面直接显示，不要替换成通用文案。
+ */
+export function useSkillSaveFile() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (vars: { id: string; write: SkillFileWrite }): Promise<SkillDetail> =>
+      api.saveSkillFile(vars.id, vars.write),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/**
+ * 用 zip 覆盖**这一个**技能（`POST /api/skills/:id/versions`）：成功即新版本。
+ *
+ * 名字是否一致由服务端判定（不一致 400），面板不预判 —— 猜错的代价是「弹窗说能覆盖、服务端拒绝」。
+ */
+export function useSkillOverwrite() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (vars: { id: string; file: Blob }): Promise<SkillUploadResponse> =>
+      api.overwriteSkillByZip(vars.id, vars.file),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/**
+ * 一个 zip 里多个技能目录的批量导入（`POST /api/skills/import`）。
+ *
+ * 作用域由调用方给：项目技能页必须传 `{ scope: 'repo', repo }`，否则技能会挂到全局。
+ * 成功（含部分成功）后统一失效，列表与详情一起刷新。
+ */
+export function useSkillImport() {
+  const invalidate = useInvalidateSkills();
+  return useMutation({
+    mutationFn: (vars: {
+      file: Blob;
+      scope?: SkillScope;
+      repo?: string;
+      enabled?: boolean;
+    }): Promise<SkillImportResponse> =>
+      api.importSkills(vars.file, {
+        scope: vars.scope ?? 'global',
+        ...(vars.repo === undefined ? {} : { repo: vars.repo }),
+        ...(vars.enabled === undefined ? {} : { enabled: vars.enabled }),
+      }),
     onSuccess: () => {
       void invalidate();
     },

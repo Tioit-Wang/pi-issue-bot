@@ -99,6 +99,97 @@ outputs: [comment]
 `;
 
 /**
+ * `/issue-format`：issue 格式判断（项目默认技能之一）。
+ *
+ * 与大模型对话无关的硬要求写在技能里，而不是散在系统提示词里：这三条默认技能是**每个项目**
+ * 都会拿到的基线能力，编辑后即为该项目的覆盖（技能按 `repo` 作用域解析）。
+ */
+const ISSUE_FORMAT = `---
+name: issue-format
+description: 判断一条 issue 是否写清了复现步骤、期望/实际行为、版本环境这些必填信息；缺项就逐条列出来，不编造、不打标签。
+allowed-tools: [Read, Grep, Glob]
+timeout: 5m
+outputs: [comment]
+metadata:
+  category: triage
+---
+
+你是这个仓库的 issue 格式检查员。仓库：\\\`{{repo}}\\\`，issue：\\\`{{target}}\\\`。
+
+## 判定依据（按顺序看）
+1. **复现步骤**：能照着做的步骤序列（从哪个入口、点什么、用什么数据），不是「点一下就坏了」。
+2. **期望 vs 实际**：期望发生什么、实际发生了什么，两者要能对上。
+3. **版本环境**：应用版本 + 操作系统/浏览器（至少一项能定位到具体构建）。
+4. 可选：日志、堆栈、截图、录屏。
+
+项目的必填项以「项目规范」一节为准；那一节没说就用上面四条。
+
+## 输出
+- 只发**一条**评论：先结论（合规 / 不合规），再逐条列出缺什么、怎么补。
+- 缺项引用**原文片段**作为证据；正文里没有就写「正文未提及」，不要推测。
+- 缺必需信息时**不打任何标签**（缺项本身不构成缺陷）。
+- 合规时只在评论里说合规，不要为了「表示看过」而发明标签。
+
+## 常见误判
+- 只有标题没有正文 → 不合规。
+- 只有「帮忙看看」「有个 bug」→ 不合规，且要明确说缺的是哪几项，而不是让对方「补全所有信息」。
+`;
+
+/** `/label-triage`：判定类型并**真正打上**标签（项目默认技能之一）。 */
+const LABEL_TRIAGE = `---
+name: label-triage
+description: 判定 issue 属于缺陷、需求还是提问，并给出标签；标签必须通过 actions 里的 label 动作写回，否则不会生效。
+allowed-tools: [Read, Grep, Glob]
+timeout: 5m
+outputs: [comment, labels]
+metadata:
+  category: triage
+---
+
+你是这个仓库的分诊员。仓库：\\\`{{repo}}\\\`，issue：\\\`{{target}}\\\`。
+
+## 判定
+1. 读标题与正文，先判断这是**缺陷**（行为与预期不符）、**需求**（想要新能力）还是**提问**（使用咨询）。
+2. 只从「项目标签」一节里挑标签；不在表里的一律不写，也不自己发明（如 \`needs-info\` 不在表里就不打）。
+3. 证据不足时宁可不打标签，并把「为什么不足」写进证据列表。
+
+## 打标的唯一生效方式（最容易错的一步）
+- \`verdict.labels\` **只是判定说明，不会写回 GitHub**；要让标签真的出现，必须在 \`actions\` 里给一条
+  \`{"intent":"label","add":["<标签名>"],"remove":[]}\`。
+- 打标与发评论可以同时给：\`actions\` 里放 label 动作 + comment 动作。
+- 已经在 issue 上的标签不要重复添加；只加不减，除非证据表明之前的标签是错的（那时用 \`remove\`）。
+
+## 输出
+- 评论里用一句话说清「判为什么、依据是什么」；不要罗列内部推理过程。
+- 评论里说「已打 X 标签」时，\`actions\` 里必须有对应的 label 动作 —— 说了没做是最严重的错误。
+`;
+
+/** `/issue-analysis`：issue 分析（项目默认技能之一）。 */
+const ISSUE_ANALYSIS = `---
+name: issue-analysis
+description: 分析一条 issue 的根因假设、影响面与下一步验证动作，给出可执行的结论而不是泛泛复述。
+allowed-tools: [Read, Grep, Glob, Bash]
+timeout: 20m
+outputs: [comment]
+metadata:
+  category: analysis
+---
+
+你是这个仓库的分析员。仓库：\\\`{{repo}}\\\`，issue：\\\`{{target}}\\\`。
+
+## 步骤
+1. 先在仓库里定位相关代码：按报错文案、界面文案、接口路径去搜，不要凭文件名猜。
+2. 给出**根因假设**：最多 3 条，按可能性排序，每条都要指到具体文件与行（或明确写「未定位到」）。
+3. 说明**影响面**：影响的用户路径、数据结构、是否有兼容性问题。
+4. 给出**下一步验证**：能在本仓库跑的命令/测试，或需要作者补充的一条关键信息。
+
+## 输出
+- 一条评论：结论 → 依据（文件:行）→ 影响面 → 下一步。
+- 没有把握就写「未验证」并说明缺什么，不要编造代码位置。
+- 不要在这里改代码、推分支；需要改代码时在评论里说明改动范围，由人确认。
+`;
+
+/**
  * 内置技能清单。顺序不影响加载结果（注册表按名排序输出），只为可读。
  *
  * `path` 用契约 §1 的内置路径形态，日志与面板据此区分来源。
@@ -107,11 +198,40 @@ export const BUILTIN_SKILL_FILES: readonly SkillFile[] = Object.freeze([
   { path: 'skills/builtin/review-pr/SKILL.md', text: REVIEW_PR },
   { path: 'skills/builtin/issue-triage/SKILL.md', text: ISSUE_TRIAGE },
   { path: 'skills/builtin/issue-repro/SKILL.md', text: ISSUE_REPRO },
+  // 每个项目都该有的三个基线技能（需求：issue 格式判断 / 打标 / issue 分析）
+  { path: 'skills/builtin/issue-format/SKILL.md', text: ISSUE_FORMAT },
+  { path: 'skills/builtin/label-triage/SKILL.md', text: LABEL_TRIAGE },
+  { path: 'skills/builtin/issue-analysis/SKILL.md', text: ISSUE_ANALYSIS },
 ]);
 
-/** 内置技能名（归一化后）。用于「面板里至少应该有这三条」的断言与文档。 */
+/** 内置技能名（归一化后）。用于「面板里至少应该有这几条」的断言与文档。 */
 export const BUILTIN_SKILL_NAMES: readonly string[] = Object.freeze([
   '/review-pr',
   '/issue-triage',
   '/issue-repro',
+  '/issue-format',
+  '/label-triage',
+  '/issue-analysis',
 ]);
+
+/**
+ * **每个项目默认就有的三个技能**（需求 §1）。按这个顺序展示，且面板里排在最前。
+ *
+ * 与 `BUILTIN_SKILL_FILES` 的关系：那六个是「随二进制发布的内置技能」，
+ * 这三个是其中的子集 —— 项目级技能页要保证它们一定存在（缺失时按内置正文播种一份可编辑的副本）。
+ */
+export const DEFAULT_PROJECT_SKILL_NAMES: readonly string[] = Object.freeze([
+  '/issue-format',
+  '/label-triage',
+  '/issue-analysis',
+]);
+
+/** 按名字取内置技能的 SKILL.md 正文（播种 / 物化用）。 */
+export function builtinSkillText(name: string): string | null {
+  const normalized = name.startsWith('/') ? name : `/${name}`;
+  const file = BUILTIN_SKILL_FILES.find((item) => {
+    const match = /^name:\s*\/?([a-z0-9-]+)\s*$/mu.exec(item.text);
+    return match !== null && `/${match[1]}` === normalized;
+  });
+  return file === undefined ? null : file.text;
+}

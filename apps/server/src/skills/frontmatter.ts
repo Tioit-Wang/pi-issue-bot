@@ -78,8 +78,18 @@ export function splitFrontmatter(text: string): FrontmatterSplit {
 }
 
 /** 归一化命令名：小写（契约 §2 表 `name` 行：匹配大小写不敏感，存储与展示归一化为小写）。 */
+/**
+ * 归一化命令名：小写 + **补前导 `/`**。
+ *
+ * 只做小写是不够的：Agent Skills 标准写 `name: issue-format`，而本仓的注册表键、
+ * 命令解析（`@bot /issue-format`）、面板与 `store.upload` 的 `SKILL_NAME_RE` 全部按
+ * `/issue-format` 索引。少了这一步，同一个技能会「注册成 `issue-format`、按 `/issue-format` 找」，
+ * 表现就是运行时 `Skill … not available`（实测踩过）。
+ */
 export function normalizeSkillName(raw: string): string {
-  return raw.trim().toLowerCase();
+  const lowered = raw.trim().toLowerCase();
+  if (lowered === '') return '';
+  return lowered.startsWith('/') ? lowered : `/${lowered}`;
 }
 
 /** 把 zod 的 issue 列表压成 `path: message` 的行，便于一次看全。 */

@@ -366,7 +366,7 @@ export function renderSkillPrompt(input: RenderSkillPromptInput): RenderSkillPro
     `# 技能 ${skill.name}`,
     '',
     `说明：${skill.frontmatter.description}`,
-    `允许的工具（上限，不构成授权；矩阵外一律 deny）：${skill.frontmatter['allowed-tools'].join(', ')}`,
+    `允许的工具（上限，不构成授权；矩阵外一律 deny）：${(skill.frontmatter['allowed-tools'] ?? skill.effective.allowedTools).join(', ')}`,
     `允许产出的动作：${skill.effective.outputs.join(', ')}`,
     `单任务时限：${Math.round(skill.effective.timeoutMs / 60_000)} 分钟`,
     '',

@@ -51,7 +51,11 @@ import type {
  */
 import type {
   SkillDetail,
+  SkillFileWrite,
+  SkillFilesResponse,
+  SkillImportResponse,
   SkillPatch,
+  SkillScope,
   SkillsQuery,
   SkillsResponse,
   SkillUploadResponse,
@@ -242,15 +246,94 @@ export const api = {
 
   /**
    * 上传 zip：**原始二进制**（`application/zip`），不是 multipart（spec §6 的「不引入新依赖」）。
-   * 查询串固定 `scope=global&enabled=true`：上传即生效（spec D0）；同 `name` 再传 = 新版本。
+   * 缺省 `scope=global` + `enabled=true`（上传即生效，spec D0）；项目页传
+   * `{ scope: 'repo', repo: 'owner/name' }` 把技能挂到该项目上。同 `name` 再传 = 新版本。
    */
-  uploadSkill: async (file: Blob): Promise<SkillUploadResponse> => {
+  uploadSkill: async (
+    file: Blob,
+    target: { scope: SkillScope; repo?: string } = { scope: 'global' },
+  ): Promise<SkillUploadResponse> => {
     const bytes = await file.arrayBuffer();
     return write<SkillUploadResponse>(
       '/api/skills',
       { method: 'POST', body: bytes, contentType: 'application/zip' },
-      { scope: 'global', enabled: 'true' },
+      { scope: target.scope, repo: target.repo, enabled: 'true' },
     );
+  },
+
+  /**
+   * 技能目录里**每个文本文件的内容**（`GET /api/skills/:id/files`）。
+   *
+   * 一次全拉而不是逐文件请求：技能包 ≤200 文件、单个 ≤5 MB，一次全量省事，
+   * 也避开了「路径里的 `/` 怎么编码进 URL」这个问题（树在端上按 `/` 分段算）。
+   */
+  skillFiles: (id: string): Promise<SkillFilesResponse> =>
+    request<SkillFilesResponse>(`/api/skills/${encodeURIComponent(id)}/files`),
+
+  /**
+   * 保存**一个文件**（`PUT /api/skills/:id/files`，body `{ path, text }`）→ 裸 `SkillDetail`。
+   *
+   * 成功 = 生成新版本（服务端重建整个技能包再走 `upload`，见 `docs/plan-skill-editor-modal.md`）。
+   * 400 的 `message` 是**可直接展示的中文**（非法路径 / 非文本扩展名 / 改了技能名 / 校验不通过），
+   * 所以调用方必须原样显示它，不要翻译成「保存失败」。
+   */
+  saveSkillFile: async (id: string, write_: SkillFileWrite): Promise<SkillDetail> =>
+    write<SkillDetail>(`/api/skills/${encodeURIComponent(id)}/files`, {
+      method: 'PUT',
+      body: JSON.stringify({ path: write_.path, text: write_.text }),
+      contentType: 'application/json',
+    }),
+
+  /**
+   * 用 zip **覆盖这一个技能**（`POST /api/skills/:id/versions`，原始二进制）。
+   *
+   * 与 `uploadSkill` 的区别：那条按「同名同作用域 = 新版本，否则新建」，这条**强制同名**
+   * （名字不一致服务端直接 400，原文展示）—— 正是「在弹窗里覆盖当前技能」要的语义。
+   */
+  overwriteSkillByZip: async (id: string, file: Blob): Promise<SkillUploadResponse> => {
+    const bytes = await file.arrayBuffer();
+    return write<SkillUploadResponse>(`/api/skills/${encodeURIComponent(id)}/versions`, {
+      method: 'POST',
+      body: bytes,
+      contentType: 'application/zip',
+    });
+  },
+
+  /**
+   * 一个 zip 里**多个技能目录**的批量导入（`POST /api/skills/import`，原始二进制）。
+   *
+   * 部分成功也是 200：`imported` 是要显示的成果，`errors` / `warnings` 要**逐条**显示
+   * （只报条数等于让用户自己猜哪个目录被跳过了）。作用域与单技能上传同一套查询参数。
+   */
+  importSkills: async (
+    file: Blob,
+    target: { scope: SkillScope; repo?: string; enabled?: boolean } = { scope: 'global' },
+  ): Promise<SkillImportResponse> => {
+    const bytes = await file.arrayBuffer();
+    return write<SkillImportResponse>(
+      '/api/skills/import',
+      { method: 'POST', body: bytes, contentType: 'application/zip' },
+      {
+        scope: target.scope,
+        repo: target.repo,
+        enabled: target.enabled === false ? 'false' : 'true',
+      },
+    );
+  },
+
+  /**
+   * 整份 SKILL.md 覆盖保存（`PUT /api/skills/:id`，body `{ text }`）。
+   *
+   * 响应按 `{ skill: SkillDetail }` 读（新增接口的形状）；万一服务端返回的是裸
+   * `SkillDetail`（`GET /api/skills/:id` 就是裸的），这里也照收不误 —— 调用方只关心
+   * 「拿到最新的那一份」。
+   */
+  saveSkillText: async (id: string, text: string): Promise<SkillDetail> => {
+    const body = await write<SkillDetail | { skill: SkillDetail }>(
+      `/api/skills/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify({ text }), contentType: 'application/json' },
+    );
+    return isWrappedSkill(body) ? body.skill : body;
   },
 
   /** 局部更新（只允许 `enabled` / `description` / `body`；`name`/`scope` 不可改）。 */
@@ -267,3 +350,8 @@ export const api = {
     await write<unknown>(`/api/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 };
+
+/** 写接口把技能包一层（`{ skill }`），读接口是裸的 —— 两种响应都要能读。 */
+function isWrappedSkill(body: SkillDetail | { skill: SkillDetail }): body is { skill: SkillDetail } {
+  return typeof (body as { skill?: unknown }).skill === 'object' && (body as { skill?: unknown }).skill !== null;
+}

@@ -69,6 +69,7 @@ describe('路由表', () => {
       '/repos/:repo/runs/:id',
       '/repos/:repo/settings',
       '/repos/:repo/settings/:section',
+      '/repos/:repo/skills',
       '/tasks',
       '/tasks/:id',
       '/issues',
@@ -79,7 +80,7 @@ describe('路由表', () => {
   it('导航只有两组：全局 6 条（NAV_ITEMS）+ 当前仓库 4 条；详情页与旧路径不进导航', () => {
     expect(NAV_ITEMS.map((item) => item.path)).toEqual(['/', '/costs', '/quality', '/audit', '/skills', '/system']);
     // v0.3：「流水线」导航项随流水线页一起退役，仓库组只剩这 4 条
-    expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'runs', 'settings']);
+    expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'runs', 'settings', 'skills']);
     expect(PANEL_ROUTES.filter((route) => route.nav).map((route) => route.path)).toEqual([
       '/',
       '/costs',
@@ -91,6 +92,7 @@ describe('路由表', () => {
       '/repos/:repo/issues',
       '/repos/:repo/runs',
       '/repos/:repo/settings',
+      '/repos/:repo/skills',
     ]);
   });
 

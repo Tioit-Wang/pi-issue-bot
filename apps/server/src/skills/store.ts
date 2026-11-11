@@ -101,6 +101,8 @@ export interface SkillStore {
   patch(input: { id: string; patch: SkillPatch; actor: string | null }): Promise<SkillDetail | null>;
   remove(input: { id: string; hard: boolean; actor: string | null }): Promise<boolean>;
   rollback(input: { id: string; version: number; actor: string | null }): Promise<SkillVersion | null>;
+    /** 见实现处的注释：本技能目录下的全部文件文本。 */
+    fileTexts(input: { id: string }): Promise<SkillFileText[] | null>;
   /**
    * 装配用：把「当前启用的上传技能」按优先级（仓库 > 全局）读成 `{path,text}` 列表。
    * 正文只在 SKILL.md 里，所以这里做一次磁盘读；调用方（enricher）只关心顺序。
@@ -569,6 +571,23 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       }
 
       return this.get(input.id);
+    },
+
+    /**
+     * 当前版本里**每个文件的文本**（面板模态框的文件树 + 编辑器用）。
+     *
+     * 与 `activeSkillFiles` 的区别：那个是「装配给 agent 的生效集合」（跨技能、按作用域合并），
+     * 这个是「这一个技能自己目录里有什么」，所以不做任何归一/过滤，只按 path 字典序返回。
+     */
+    async fileTexts(input: { id: string }): Promise<SkillFileText[] | null> {
+      const row = await rowById(input.id);
+      if (row === null) return null;
+      const version = await currentVersionRow(input.id, row.current_version);
+      const files = asFiles(version?.files);
+      const tree = await readVersionTree(input.id, row.current_version, files);
+      return tree
+        .map((file) => ({ path: file.path, text: file.text }))
+        .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
     },
 
     async remove(input) {
