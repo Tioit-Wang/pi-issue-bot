@@ -189,8 +189,14 @@ export function toSkillEffectiveConfig(frontmatter: SkillFrontmatter): SkillEffe
  * 这份定义**面板接口传什么**。两者共用同一批字段名（`name` / `description` /
  * `allowed-tools` / `outputs` …），不要在这里另起一套命名。
  */
-
-export const skillScopeSchema = z.enum(['global', 'repo']);
+/**
+ * 技能作用域 —— **只剩仓库级**（`'repo'`）。
+ *
+ * 为什么保留这个 schema 而不是直接删字段：`SkillListItem` / `SkillDetail` 仍带 `scope`
+ * （列仍在库里，见 `migrations/0008_skills_repo_only.sql`），值恒为 `'repo'`。
+ * 保留单一字面量可以让面板/服务端不必改名，同时任何 `'global'` 都会被 zod 直接拒掉。
+ */
+export const skillScopeSchema = z.literal('repo');
 export type SkillScope = z.infer<typeof skillScopeSchema>;
 
 export const skillSourceSchema = z.enum(['builtin', 'repo-file', 'upload']);
@@ -225,13 +231,14 @@ export const skillListItemSchema = z
     /** 规范名：`/xxx`（入库归一，见 spec D2）。 */
     name: z.string().min(2).max(33),
     description: z.string().min(1).max(200),
+    /** 恒为 `'repo'`：全局技能已移除（API 不再接受 `scope` 参数）。 */
     scope: skillScopeSchema,
-    /** `scope='repo'` 时为 `owner/name`，否则 `null`。 */
+    /** 技能所属项目 `owner/name`（库列 NOT NULL；全局技能已移除）。 */
     repo: z.string().max(200).nullable(),
     source: skillSourceSchema,
     enabled: z.boolean(),
     currentVersion: z.number().int().min(1),
-    /** 同 scope 下被更高优先级的同名技能覆盖时为覆盖者 id；否则 `null`。 */
+    /** 恒为 `null`：同名在同一仓库内就是新版本，没有「覆盖另一作用域」这回事。 */
     overriddenBy: z.string().max(64).nullable(),
     /** 目录总字节数（列表页展示「多大」）。 */
     sizeBytes: z.number().int().min(0).max(50_000_000),
@@ -367,16 +374,16 @@ export const skillImportResponseSchema = z
 export type SkillImportResponse = z.infer<typeof skillImportResponseSchema>;
 
 /**
- * 上传时可选的作用域（查询串）。缺省 `global`。
- * `scope=repo` 时必须同时给 `repo=owner/name`。
+ * 上传时的查询串（`POST /api/skills` 与 `POST /api/skills/import` 共用）。
+ *
+ * **`repo` 必填**（`owner/name`）、**不再接受 `scope`**：技能只能是项目级的，
+ * 传 `scope=...` 会被 `.strict()` 拒成 400（这正是「移除全局技能」的落地点）。
  */
 export const skillUploadQuerySchema = z
   .object({
-    scope: skillScopeSchema.default('global'),
     repo: z
       .string()
-      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'repo 必须是 owner/name')
-      .optional(),
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'repo 必须是 owner/name'),
     /** `enabled=false` 表示「传上来但先别启用」。缺省 `true`（上传即生效，spec D0）。 */
     enabled: z.enum(['true', 'false']).default('true'),
   })
@@ -385,7 +392,7 @@ export type SkillUploadQuery = z.infer<typeof skillUploadQuerySchema>;
 
 /**
  * 局部更新：只允许改这三样。
- * **`name` / `scope` / `repo` 不可改**（改了就是另一个技能，语义是「删了再传」）。
+ * **`name` / `repo` 不可改**（改了就是另一个技能，语义是「删了再传」）。
  */
 export const skillPatchSchema = z
   .object({
@@ -401,11 +408,12 @@ export const skillPatchSchema = z
   );
 export type SkillPatch = z.infer<typeof skillPatchSchema>;
 
-/** 列表筛选（查询串）。 */
+/** 列表筛选（查询串）：**`repo` 必填**，不再接受 `scope`。 */
 export const skillsQuerySchema = z
   .object({
-    scope: skillScopeSchema.optional(),
-    repo: z.string().max(200).optional(),
+    repo: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'repo 必须是 owner/name'),
     /** 缺省 = 不过滤（面板的「全部」）。给 `true` 只看启用的，给 `false` 只看停用的。 */
     enabled: z.enum(['true', 'false']).optional(),
     source: skillSourceSchema.optional(),

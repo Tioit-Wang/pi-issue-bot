@@ -4,8 +4,8 @@
  * 为什么不能只靠代码里的 `BUILTIN_SKILL_FILES`：
  *  - 代码里的内置技能是只读的，面板上没法编辑，也没法按项目覆盖；
  *  - 需求要求「每个项目的技能各不相同，按项目加载 / 创建 / 上传」——所以第一次打开某个项目的
- *    技能页时，把三个默认技能按**该项目的作用域**（`scope='repo'`）落一份可编辑副本；
- *  - 已存在同名同作用域的行就跳过（幂等），用户改过的内容不会被覆盖回去。
+ *    技能页时，把三个默认技能按**该项目**（`repo=owner/name`）落一份可编辑副本；
+ *  - 已存在同名同仓库的行就跳过（幂等），用户改过的内容不会被覆盖回去。
  */
 import { createHash } from 'node:crypto';
 import type { SkillBundle } from './bundle.ts';
@@ -47,7 +47,7 @@ export function bundleOfBuiltinSkill(name: string): SkillBundle | null {
  * 幂等：只补缺失的行；失败不抛（技能缺失不该让「打开技能页」整体失败）。
  */
 export async function seedProjectDefaults(store: SkillStore, repo: string): Promise<readonly string[]> {
-  const existing = await store.list({ scope: 'repo', repo });
+  const existing = await store.list({ repo });
   const present = new Set(existing.map((item) => item.name));
   const created: string[] = [];
   for (const name of DEFAULT_PROJECT_SKILL_NAMES) {
@@ -59,7 +59,7 @@ export async function seedProjectDefaults(store: SkillStore, repo: string): Prom
       continue;
     }
     try {
-      await store.upload({ bundle, scope: 'repo', repo, enabled: true, actor: DEFAULT_SKILLS_ACTOR });
+      await store.upload({ bundle, repo, enabled: true, actor: DEFAULT_SKILLS_ACTOR });
       created.push(name);
     } catch {
       // 并发请求可能同时插入（唯一索引冲突）：视为已存在，不打断列表

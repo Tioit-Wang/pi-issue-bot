@@ -344,9 +344,9 @@ describe('技能 frontmatter（contract-skill.md 逐字段）', () => {
   });
 
   it('契约 §5.3 的五处越界逐条被拒', () => {
-    // 1. description 块标量（多行）
+    // 1. 未知顶层键（description 的多行写法在 Agent Skills 标准里允许，见下方正向用例）
     expect(
-      skillFrontmatterSchema.safeParse({ ...minimal, description: '审查这个 PR，跑测试。\n会推 bot 分支。' }).success,
+      skillFrontmatterSchema.safeParse({ ...minimal, description: '审查这个 PR，跑测试。', unknownKey: 'x' }).success,
     ).toBe(false);
     // 2. allowed-tools 含枚举外工具：整份非法，不截断
     expect(skillFrontmatterSchema.safeParse({ ...minimal, 'allowed-tools': ['Read', 'WebFetch'] }).success).toBe(false);
@@ -364,17 +364,19 @@ describe('技能 frontmatter（contract-skill.md 逐字段）', () => {
   });
 
   it('名字规则：必须 / 开头、小写、非保留名', () => {
-    expect(skillFrontmatterSchema.safeParse({ ...minimal, name: 'review-pr' }).success).toBe(false);
+    // 标准允许省略前导 /（解析期归一成 /review-pr），见 contract-skill.md D2
+    expect(skillFrontmatterSchema.safeParse({ ...minimal, name: 'review-pr' }).success).toBe(true);
     expect(skillFrontmatterSchema.safeParse({ ...minimal, name: '/Review-Pr' }).success).toBe(false);
     for (const reserved of SKILL_RESERVED_NAMES) {
       expect(skillFrontmatterSchema.safeParse({ ...minimal, name: reserved }).success).toBe(false);
     }
-    expect(skillFrontmatterSchema.safeParse({ ...minimal, name: '/a' }).success).toBe(false);
+    expect(skillFrontmatterSchema.safeParse({ ...minimal, name: '/a-' }).success).toBe(false); /* 单字符名在标准里合法，这里改用「尾随连字符」*/
   });
 
   it('description 长度 10–200', () => {
     expect(skillFrontmatterSchema.safeParse({ ...minimal, description: '太短' }).success).toBe(false);
-    expect(skillFrontmatterSchema.safeParse({ ...minimal, description: 'a'.repeat(201) }).success).toBe(false);
+    expect(skillFrontmatterSchema.safeParse({ ...minimal, description: 'a'.repeat(201) }).success).toBe(true);
+    expect(skillFrontmatterSchema.safeParse({ ...minimal, description: 'a'.repeat(1025) }).success).toBe(false);
   });
 
   it('allowed-tools / outputs 都是非空枚举，且工具枚举与审批矩阵同源', () => {

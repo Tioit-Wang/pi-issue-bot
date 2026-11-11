@@ -54,13 +54,12 @@ function renderAt(path: string): void {
 }
 
 describe('路由表', () => {
-  it('冻结的路由表：全局 6 条 + 当前仓库 7 条 + 旧路径 4 条', () => {
+  it('冻结的路由表：全局 5 条 + 当前仓库 7 条 + 旧路径 4 条', () => {
     expect(PANEL_ROUTES.map((route) => route.path)).toEqual([
       '/',
       '/costs',
       '/quality',
       '/audit',
-      '/skills',
       '/system',
       '/repos/:repo',
       '/repos/:repo/issues',
@@ -77,8 +76,8 @@ describe('路由表', () => {
     ]);
   });
 
-  it('导航只有两组：全局 6 条（NAV_ITEMS）+ 当前仓库 4 条；详情页与旧路径不进导航', () => {
-    expect(NAV_ITEMS.map((item) => item.path)).toEqual(['/', '/costs', '/quality', '/audit', '/skills', '/system']);
+  it('导航只有两组：全局 5 条（NAV_ITEMS）+ 当前仓库 5 条；详情页与旧路径不进导航', () => {
+    expect(NAV_ITEMS.map((item) => item.path)).toEqual(['/', '/costs', '/quality', '/audit', '/system']);
     // v0.3：「流水线」导航项随流水线页一起退役，仓库组只剩这 4 条
     expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'runs', 'settings', 'skills']);
     expect(PANEL_ROUTES.filter((route) => route.nav).map((route) => route.path)).toEqual([
@@ -86,7 +85,6 @@ describe('路由表', () => {
       '/costs',
       '/quality',
       '/audit',
-      '/skills',
       '/system',
       '/repos/:repo',
       '/repos/:repo/issues',
@@ -106,7 +104,6 @@ describe('路由表', () => {
     { path: '/costs', heading: '成本' },
     { path: '/quality', heading: '质量' },
     { path: '/audit', heading: '审计' },
-    { path: '/skills', heading: '技能' },
     { path: '/system', heading: '系统' },
     // 当前仓库
     { path: '/repos/acme__widgets', heading: 'acme/widgets' },
@@ -150,7 +147,7 @@ describe('路由表', () => {
     renderAt('/repos/acme__widgets/runs');
     expect(await screen.findByRole('heading', { level: 1, name: '运行' })).toBeTruthy();
 
-    // 全局导航的 6 个链接都在左栏
+    // 全局导航的 5 个链接都在左栏
     for (const item of NAV_ITEMS) {
       expect(screen.getAllByRole('link', { name: item.label }).length).toBeGreaterThan(0);
     }

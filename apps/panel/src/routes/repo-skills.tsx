@@ -1,10 +1,8 @@
 /**
  * 项目技能页（`/repos/:repo/skills`）——「这个项目实际会用到哪些技能」。
  *
- * 与全局页（`routes/skills.tsx`）的分工：
- *  - 全局页是**库**：所有作用域的技能 + 筛选 + 详情抽屉 + 删除；
- *  - 这一页是**生效视图**：只列本项目（`scope=repo&repo=…`）与三个内置技能，
- *    并且就地把它改成「一个技能 = 一个目录」的编辑方式。
+ * 技能**只属于项目**（没有全局技能这一层），所以这一页就是技能的唯一入口：
+ * 列表（本项目自己的技能 + 三个引擎内置技能）、启用开关、文件树编辑器、导入 zip。
  *
  * 两个入口，各自管一类事：
  *  - 点技能名 / 「编辑」→ **模态框**（左文件树、右纯文本；可改任一 markdown，可传 zip 覆盖本技能）；
@@ -77,17 +75,14 @@ function importErrorMessage(caught: unknown): string {
 
 function RepoSkillsBody({ repo }: { repo: string }) {
   const toast = useToast();
-  /** 本项目的技能（`scope=repo` + `repo=owner/name`）。 */
+  /** 本项目的技能（`?repo=owner/name`）。 */
   const project = useSkills({ repo });
-  /** 三个内置技能是全局行（`scope=global`、`source=builtin`），单独取一次再并进列表。 */
-  const builtin = useSkills({ source: 'builtin' });
+  /** 三个内置技能是引擎自带的（`source=builtin`），单独取一次再并进列表。 */
+  const builtin = useSkills({ repo, source: 'builtin' });
 
   const projectRows = useMemo(() => project.data?.skills ?? [], [project.data]);
   const builtinRows = useMemo(
-    () =>
-      (builtin.data?.skills ?? []).filter(
-        (item) => item.scope === 'global' && isBuiltinSkillName(item.name),
-      ),
+    () => (builtin.data?.skills ?? []).filter((item) => isBuiltinSkillName(item.name)),
     [builtin.data],
   );
 
@@ -140,9 +135,9 @@ function RepoSkillsBody({ repo }: { repo: string }) {
     if (file === undefined) return;
     setImportResult(null);
     setImportError(null);
-    // 作用域必须显式给 `repo`：缺省是 `global`，那会把技能挂到所有项目上
+    // 技能只属于项目：`repo` 必填，导入一定落在当前项目
     importSkills.mutate(
-      { file, scope: 'repo', repo },
+      { file, repo },
       {
         onSuccess: (result) => {
           setImportResult(result);
@@ -158,7 +153,7 @@ function RepoSkillsBody({ repo }: { repo: string }) {
     <div className="flex min-w-0 flex-col gap-3">
       <PageHeader
         title="技能"
-        description="同名技能按「本项目 > 全局 > 仓库文件 > 内置」取高优先级"
+        description="同名技能按「本项目 > 内置」取高优先级"
         actions={
           <div className="flex items-center gap-1.5">
             {project.isFetching && !project.isLoading ? (
@@ -242,7 +237,7 @@ function RepoSkillsBody({ repo }: { repo: string }) {
         first
         title="本项目技能"
         count={rows.length}
-        footnote="只列本项目与三个内置技能；其余全局技能在「技能」页管理。"
+        footnote="内置技能对所有项目生效；同名的本项目技能优先。"
       >
         <AsyncSection
           isLoading={project.isLoading || builtin.isLoading}

@@ -25,6 +25,10 @@ import {
   responseSchemas,
   revertsResponseSchema,
   saveRepoSettingsRequestSchema,
+  skillListItemSchema,
+  skillScopeSchema,
+  skillsQuerySchema,
+  skillUploadQuerySchema,
   systemQuerySchema,
   systemResponseSchema,
   taskDetailResponseSchema,
@@ -555,3 +559,52 @@ function baseSystem() {
     ],
   };
 }
+
+/**
+ * 技能只能是项目级：`scope` 这个维度从 API 面上消失（只剩 `'repo'` 一个取值）。
+ *
+ * 为什么把这几条钉在契约层：面板与服务端都从这里取 schema，任何一处「把 scope 加回来」的
+ * 改动都会先在契约测试里红掉，而不是等到某个人在面板上发现多了一个「全局」选项。
+ */
+describe('技能只能是项目级（repo-only）', () => {
+  it('skillScopeSchema 只接受 repo（global 被拒）', () => {
+    expect(skillScopeSchema.safeParse('repo').success).toBe(true);
+    expect(skillScopeSchema.safeParse('global').success).toBe(false);
+  });
+
+  it('列表查询串：repo 必填、不再接受 scope', () => {
+    expect(skillsQuerySchema.safeParse({ repo: 'acme/widgets' }).success).toBe(true);
+    // 不带 repo
+    expect(skillsQuerySchema.safeParse({}).success).toBe(false);
+    // 带 scope（strict 拒绝）
+    expect(skillsQuerySchema.safeParse({ repo: 'acme/widgets', scope: 'repo' }).success).toBe(false);
+    // repo 必须是 owner/name
+    expect(skillsQuerySchema.safeParse({ repo: 'widgets' }).success).toBe(false);
+  });
+
+  it('上传查询串：repo 必填、不再接受 scope、enabled 缺省 true', () => {
+    const parsed = skillUploadQuerySchema.safeParse({ repo: 'acme/widgets' });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success ? parsed.data.enabled : null).toBe('true');
+    expect(skillUploadQuerySchema.safeParse({}).success).toBe(false);
+    expect(skillUploadQuerySchema.safeParse({ repo: 'acme/widgets', scope: 'global' }).success).toBe(false);
+  });
+
+  it('列表行：scope 恒为 repo、overriddenBy 恒为 null', () => {
+    const row = {
+      id: 's_01',
+      name: '/issue-format',
+      description: '格式化 issue',
+      scope: 'repo',
+      repo: 'acme/widgets',
+      source: 'upload',
+      enabled: true,
+      currentVersion: 1,
+      overriddenBy: null,
+      sizeBytes: 100,
+      updatedAt: '2026-06-01T00:00:00Z',
+    };
+    expect(skillListItemSchema.safeParse(row).success).toBe(true);
+    expect(skillListItemSchema.safeParse({ ...row, scope: 'global' }).success).toBe(false);
+  });
+});

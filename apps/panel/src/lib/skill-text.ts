@@ -1,9 +1,9 @@
 /**
  * 技能页的**共享纯函数**：来源文案、内置技能的排序、SKILL.md 文本的拼/拆、写操作错误 → 人话。
  *
- * 为什么单独一个文件：全局页（`routes/skills.tsx`）与项目页（`routes/repo-skills.tsx`）
- * 都要「来源徽章」「保存失败提示」「内置技能排在前面」这三件事。各写一份的话，
- * 迟早会出现「全局页说内置、项目页说默认」这种同一事物的两种说法。
+ * 为什么单独一个文件：项目技能页（`routes/repo-skills.tsx`）与技能编辑器模态框
+ * （`components/skills/skill-editor-modal.tsx`）都要「来源徽章」「保存失败提示」「内置技能排在前面」。
+ * 各写一份的话，迟早会出现「列表说内置、弹窗说默认」这种同一事物的两种说法。
  *
  * 三条诚实约定：
  *  - 三个内置技能只按**名字**排序（不认 id：id 是运行时生成的，重装就变）；
@@ -31,7 +31,7 @@ export const SOURCE_TONE: Record<SkillSourceKind, 'neutral' | 'info' | 'success'
 /**
  * 三个内置技能的固定顺序。
  *
- * 只按名字排：它们在 `/api/skills` 里可能出现在任意位置（列表默认按名字/作用域排序），
+ * 只按名字排：它们在 `/api/skills` 里可能出现在任意位置（列表默认按名字排序），
  * 而用户打开项目技能页最想先看到的是「引擎默认就有的那三个」。
  */
 export const BUILTIN_SKILL_ORDER = ['/issue-format', '/label-triage', '/issue-analysis'] as const;
@@ -49,7 +49,7 @@ export function builtinRank(name: string): number {
 
 /**
  * 项目技能页的排序：三个内置技能按固定顺序在最前，其余按名字；
- * 同名时**本项目那份在前**（它才是真正生效的那一份）。
+ * 同名时先列本项目那份（它才是真正生效的那一份）。
  */
 export function sortProjectSkills(items: readonly SkillListItem[]): SkillListItem[] {
   return [...items].sort((left, right) => {
@@ -57,8 +57,9 @@ export function sortProjectSkills(items: readonly SkillListItem[]): SkillListIte
     if (byRank !== 0) return byRank;
     const byName = left.name.localeCompare(right.name);
     if (byName !== 0) return byName;
-    if (left.scope === right.scope) return 0;
-    return left.scope === 'repo' ? -1 : 1;
+    // 技能只属于项目，同名同项目不会有第二份；同名的内置技能排在本项目那份之后
+    if (left.source === right.source) return 0;
+    return left.source === 'builtin' ? 1 : -1;
   });
 }
 
@@ -148,14 +149,14 @@ export const SKILL_WRITE_ERROR_HINT: Record<string, string> = {
   'bad-request': '服务端不接受这份内容：检查 frontmatter 是否完整、是否含不可见字符或超长正文',
   'payload-too-large': 'zip 超过 5 MB 上限',
   forbidden: '写操作被拒：缺 X-Pi-Bot-CSRF 头，或服务端 PI_BOT_PANEL_WRITE=off',
-  conflict: '同名技能已存在于该作用域（先删除，或改用另一个名字）',
+  conflict: '同名技能已存在于本项目（先删除，或改用另一个名字）',
   'not-found': '技能不存在（可能已被别人删掉）',
   SKILL_FRONTMATTER_INVALID:
     'frontmatter 不合规：name 必须以 / 开头、description 必须单行，allowed-tools / outputs 只能用契约里的值',
   SKILL_LIMIT: '技能数量已达上限：先删掉不用的技能再保存',
   SKILL_ZIP_INVALID: 'zip 里必须有且只有一个 SKILL.md（允许一层包裹目录）',
   SKILL_ZIP_UNSAFE: 'zip 内含不安全路径 / 符号链接 / 超体积条目，已拒绝',
-  SKILL_NAME_CONFLICT: '同名技能已存在于该作用域',
+  SKILL_NAME_CONFLICT: '同名技能已存在于本项目',
   SKILL_WRITE_DISABLED: '面板写操作已关闭（PI_BOT_PANEL_WRITE=off）',
 };
 

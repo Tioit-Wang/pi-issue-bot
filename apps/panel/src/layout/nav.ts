@@ -24,7 +24,6 @@ export const GLOBAL_NAV: readonly GlobalNavItem[] = [
   { path: '/costs', label: '成本' },
   { path: '/quality', label: '质量' },
   { path: '/audit', label: '审计' },
-  { path: '/skills', label: '技能' },
   { path: '/system', label: '系统' },
 ];
 

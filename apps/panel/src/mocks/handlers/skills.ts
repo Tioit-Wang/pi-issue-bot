@@ -22,18 +22,19 @@ import { composeSkillText } from '../../lib/skill-text.ts';
 import { scenarioResponse } from './shared.ts';
 
 /**
- * 技能页（`/skills`）的拦截器 —— 覆盖 `docs/spec/skill-management.md` §6 的 6 条路由。
+ * 技能（`/api/skills*`）的拦截器 —— 覆盖 `docs/spec/skill-management.md` §6 的路由。
  *
- * 这份 mock 是**有状态**的（`Map` 存详情 + 版本），因为这一页是面板里第一个有写操作的页面：
+ * 技能**只属于项目**（`repo=owner/name` 必填）：种子都挂在 `acme/widgets` 上，
+ * 三个内置技能（`source=builtin`）对任何项目都可见，用来验证「内置排在最前 + 可被本项目同名技能覆盖」。
+ *
+ * 这份 mock 是**有状态**的（`Map` 存详情 + 版本），因为技能页有写操作：
  * 开关、上传、删除都必须让「随即刷新的列表」真的变了，否则页面看起来像没生效。
  * 测试里用 `resetSkillsMock()` 在每例前复位（`server.resetHandlers()` 不会清模块状态）。
  *
- * 种子的三条技能刻意覆盖页面的每个分支：
- *  1. `/review-pr`（全局 · 内置 · v2）**被同名的仓库技能覆盖** ⇒ 「被 /review-pr（acme/widgets）覆盖」灰标；
- *  2. `/review-pr`（`acme/widgets` · 面板上传 · v1）⇒ 作用域筛选、来源筛选、覆盖者本尊；
- *  3. `/triage`（全局 · 面板上传 · v3 · 停用 · 1.2 MB）⇒ 关闭状态的开关与 MB 大小格式。
+ * 种子刻意覆盖页面的每个分支：
+ *  1. `/review-pr`（`acme/widgets` · 面板上传 · v1）⇒「面板上传」徽章、可编辑的仓库技能；
+ *  2. `/release-notes`（`acme/widgets` · 面板上传 · v2 · 两层目录）⇒ 文件树嵌套与保存路径。
  *
- * 校验结果也两样：第 1 条 `ok` + 一条 warning；第 3 条 `ok` 无告警。
  * 上传按 spec §8 的边界做最小面校验（必须是 zip 的 `PK` 魔数、≤5 MB、必须带 CSRF 头），
  * 不做真正的解包（面板不需要知道解包细节，服务端才是真相）。
  */
@@ -93,23 +94,6 @@ const REVIEW_BODY = `## 何时用
 const REVIEW_FILES: SkillFileMeta[] = [
   fileMeta('SKILL.md', 2_480),
   fileMeta('assets/checklist.md', 1_220),
-];
-
-const TRIAGE_BODY = `## 何时用
-
-issue 刚进来、还没有人认领时。
-
-## 步骤
-
-1. 判断类型（bug / feature / question），打对应的 label
-2. 缺信息就回一条「需要什么」的评论
-3. 有复现步骤的，挂上 \`needs-repro\` 之前先自己试一次
-`;
-
-const TRIAGE_FILES: SkillFileMeta[] = [
-  fileMeta('SKILL.md', 1_960),
-  fileMeta('assets/labels.json', 640),
-  fileMeta('assets/triage.sh', 1_100),
 ];
 
 /*
@@ -211,7 +195,8 @@ function builtinSeed(input: {
     id: input.id,
     name: input.name,
     description: input.description,
-    scope: 'global',
+    // 内置技能不归属任何项目（`repo: null`），所有项目都能看到它们
+    scope: 'repo',
     repo: null,
     source: 'builtin',
     enabled: true,
@@ -261,86 +246,35 @@ function seededFiles(detail: SkillDetail): SkillFileText[] {
 let records = new Map<string, SkillRecord>();
 
 export function resetSkillsMock(): void {
-  const reviewValidation: SkillValidation = {
-    ok: true,
-    errors: [],
-    warnings: ['timeout 未声明，按默认 20m 生效'],
-  };
   const cleanValidation: SkillValidation = { ok: true, errors: [], warnings: [] };
 
-  const globalReview: SkillDetail = {
-    id: 'sk-review-pr-global',
-    name: '/review-pr',
-    description: '按清单审 PR：先看 diff 范围，再逐条核对测试与边界条件。',
-    scope: 'global',
-    repo: null,
-    source: 'builtin',
-    enabled: true,
-    currentVersion: 2,
-    // 同名的仓库技能优先级更高（spec §7：面板-仓库 > 面板全局 > 仓库文件 > 内置）
-    overriddenBy: 'sk-review-pr-repo',
-    sizeBytes: REVIEW_FILES.reduce((sum, file) => sum + file.bytes, 0),
-    updatedAt: isoAt(-26 * 60 * 60 * 1000),
-    frontmatter: {
-      name: '/review-pr',
-      description: '按清单审 PR：先看 diff 范围，再逐条核对测试与边界条件。',
-      'allowed-tools': ['Bash', 'Read', 'Grep'],
-      outputs: ['comment', 'labels'],
-      'requires-repo-config': false,
-    },
-    body: REVIEW_BODY,
-    files: REVIEW_FILES,
-    validation: reviewValidation,
-    treeSha256: fakeSha('review-tree-v2'),
-  };
-
+  /** `acme/widgets` 自己上传的一条技能（页面上可编辑、可停用）。 */
   const repoReview: SkillDetail = {
-    ...globalReview,
     id: 'sk-review-pr-repo',
-    description: '（仓库覆盖版）审 PR：额外检查 acme/widgets 的发布流程与双写迁移。',
+    name: '/review-pr',
+    description: '审 PR：额外检查 acme/widgets 的发布流程与双写迁移。',
     scope: 'repo',
     repo: 'acme/widgets',
     source: 'upload',
+    enabled: true,
     currentVersion: 1,
     overriddenBy: null,
+    sizeBytes: REVIEW_FILES.reduce((sum, file) => sum + file.bytes, 0),
     updatedAt: isoAt(-10 * 60 * 1000),
     frontmatter: {
       name: '/review-pr',
-      description: '（仓库覆盖版）审 PR：额外检查 acme/widgets 的发布流程与双写迁移。',
+      description: '审 PR：额外检查 acme/widgets 的发布流程与双写迁移。',
       'allowed-tools': ['Bash', 'Read'],
       outputs: ['comment'],
       timeout: '10m',
     },
+    body: REVIEW_BODY,
+    files: REVIEW_FILES,
     validation: cleanValidation,
     treeSha256: fakeSha('repo-review-tree-v1'),
   };
 
-  const triage: SkillDetail = {
-    id: 'sk-triage',
-    name: '/triage',
-    description: '新 issue 分类：打标签、判断类型，缺信息时回一条「需要什么」。',
-    scope: 'global',
-    repo: null,
-    source: 'upload',
-    enabled: false,
-    currentVersion: 3,
-    overriddenBy: null,
-    sizeBytes: 1_200 * KB,
-    updatedAt: isoAt(-2 * 60 * 60 * 1000),
-    frontmatter: {
-      name: '/triage',
-      description: '新 issue 分类：打标签、判断类型，缺信息时回一条「需要什么」。',
-      'allowed-tools': ['Read', 'Grep'],
-      outputs: ['comment', 'labels', 'issue'],
-      timeout: '5m',
-    },
-    body: TRIAGE_BODY,
-    files: TRIAGE_FILES,
-    validation: cleanValidation,
-    treeSha256: fakeSha('triage-tree-v3'),
-  };
-
-  /* 三个内置技能（项目技能页要求它们始终排在最前）+ 本项目的一条自定义技能。 */
+  /* 三个内置技能（项目技能页要求它们始终排在最前）+ 本项目的两条自定义技能。 */
   const listedBuiltins: SkillDetail[] = [
     builtinSeed({
       id: 'sk-builtin-issue-format',
@@ -384,72 +318,9 @@ export function resetSkillsMock(): void {
     sizeBytes: RELEASE_NOTES_FILES.reduce((sum, file) => sum + file.bytes, 0),
   };
 
-  records = new Map<string, SkillRecord>([
-    [
-      globalReview.id,
-      {
-        detail: globalReview,
-        fileTexts: seededFiles(globalReview),
-        versions: [
-          {
-            version: 1,
-            treeSha256: fakeSha('review-tree-v1'),
-            files: [fileMeta('SKILL.md', 2_040)],
-            validation: cleanValidation,
-            createdAt: isoAt(-3 * 24 * 60 * 60 * 1000),
-          },
-          {
-            version: 2,
-            treeSha256: globalReview.treeSha256,
-            files: REVIEW_FILES,
-            validation: reviewValidation,
-            createdAt: globalReview.updatedAt,
-          },
-        ],
-      },
-    ],
-    [
-      repoReview.id,
-      {
-        detail: repoReview,
-        fileTexts: seededFiles(repoReview),
-        versions: [
-          {
-            version: 1,
-            treeSha256: repoReview.treeSha256,
-            files: REVIEW_FILES,
-            validation: cleanValidation,
-            createdAt: repoReview.updatedAt,
-          },
-        ],
-      },
-    ],
-    [
-      triage.id,
-      {
-        detail: triage,
-        fileTexts: seededFiles(triage),
-        versions: [
-          {
-            version: 2,
-            treeSha256: fakeSha('triage-tree-v2'),
-            files: TRIAGE_FILES,
-            validation: cleanValidation,
-            createdAt: isoAt(-4 * 24 * 60 * 60 * 1000),
-          },
-          {
-            version: 3,
-            treeSha256: triage.treeSha256,
-            files: TRIAGE_FILES,
-            validation: cleanValidation,
-            createdAt: triage.updatedAt,
-          },
-        ],
-      },
-    ],
-  ]);
-
-  for (const seeded of [...listedBuiltins, releaseNotes]) {
+  // 全部种子走同一段「详情 + 版本 + 文件全文」的装配，避免两处字段漂移
+  records = new Map<string, SkillRecord>();
+  for (const seeded of [...listedBuiltins, releaseNotes, repoReview]) {
     records.set(seeded.id, {
       detail: seeded,
       fileTexts: seededFiles(seeded),
@@ -470,20 +341,23 @@ resetSkillsMock();
 
 /* ── 与 handler 共用的纯函数（测试里覆写拦截器时也调用它们，保持同一份状态） ────────── */
 
-/** 列表：按 spec §6 的查询串过滤（缺省 = 全部，不默认只看启用的）。 */
+/**
+ * 列表：按 spec §6 的查询串过滤（缺省 = 全部，不默认只看启用的）。
+ *
+ * 技能只属于项目，所以 `repo` 是主过滤器；三个内置技能（`source='builtin'`、`repo=null`）
+ * 对**任何**项目都可见 —— 它们在界面上恒等于「引擎自带的三个」。
+ */
 export function listSkillsMock(params?: URLSearchParams): SkillsResponse {
-  const scope = params?.get('scope') ?? '';
   const source = params?.get('source') ?? '';
   const enabled = params?.get('enabled') ?? '';
   const repo = params?.get('repo') ?? '';
 
   const skills = [...records.values()]
     .map((record) => toListItem(record.detail))
-    .filter((item) => (scope === '' ? true : item.scope === scope))
     .filter((item) => (source === '' ? true : item.source === source))
     .filter((item) => (enabled === '' ? true : String(item.enabled) === enabled))
-    .filter((item) => (repo === '' ? true : item.repo === repo))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
+    .filter((item) => (repo === '' ? true : item.repo === repo || item.source === 'builtin'))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return { generatedAt: new Date().toISOString(), skills };
 }
@@ -636,13 +510,14 @@ export function saveSkillTextMock(id: string, text: string): SkillDetail | null 
 }
 /**
  * `POST /api/skills`：真正解包不在面板 mock 的范围里，这里只按字节数决定版本号，
- * 让「同名再传 = 版本 +1」这条交互在页面上看得见。
+ * 让「同项目同名再传 = 版本 +1」这条交互在页面上看得见。
+ *
+ * `repo` 由 handler 校验后传入（缺失就是 400，绝不会走到这里）。
  */
-export function uploadSkillMock(bytes: Uint8Array, params?: URLSearchParams): SkillUploadResponse {
-  const scope: 'global' | 'repo' = params?.get('scope') === 'repo' ? 'repo' : 'global';
-  const repo = scope === 'repo' ? (params?.get('repo') ?? 'acme/widgets') : null;
-  // 不同作用域是不同的技能行：id 里带仓库，免得「传了仓库版、全局版也跟着变」
-  const id = repo === null ? 'sk-uploaded-demo' : `sk-uploaded-demo-${repo.replace(/[^A-Za-z0-9]+/gu, '-')}`;
+export function uploadSkillMock(bytes: Uint8Array, repo: string): SkillUploadResponse {
+  // 不同项目是不同的技能行：id 里带仓库，免得「传了 A 项目、B 项目也跟着变」
+  const slug = repo.replace(/[^A-Za-z0-9]+/gu, '-');
+  const id = `sk-uploaded-demo-${slug}`;
   const existing = records.get(id);
   const name = '/uploaded-demo';
   const validation: SkillValidation = { ok: true, errors: [], warnings: [] };
@@ -653,7 +528,7 @@ export function uploadSkillMock(bytes: Uint8Array, params?: URLSearchParams): Sk
     id,
     name,
     description: '面板上传的示例技能（mock：真实内容在 zip 里，面板只展示元数据）。',
-    scope,
+    scope: 'repo',
     repo,
     source: 'upload',
     enabled: true,
@@ -885,13 +760,16 @@ function skillNameOfDir(dir: string): string | null {
 /**
  * `POST /api/skills/import`：一个 zip 里每个含 `SKILL.md` 的目录 = 一个技能。
  *
- * 同名（同作用域）覆盖成新版本（`created=false`），这正是「上传 zip 新增/覆盖」的语义；
+ * 同项目同名覆盖成新版本（`created=false`），这正是「上传 zip 新增/覆盖」的语义；
  * 目录名不能当技能名的只进 `errors`，其余照常导入（部分成功是常态）。
+ *
+ * `repo` 由 handler 校验后传入（缺失就是 400，绝不会走到这里）。
  */
-export function importSkillsMock(bytes: Uint8Array, params?: URLSearchParams): SkillImportResponse {
-  const scope: 'global' | 'repo' = params?.get('scope') === 'repo' ? 'repo' : 'global';
-  const repo = scope === 'repo' ? (params?.get('repo') ?? 'acme/widgets') : null;
-  const enabled = params?.get('enabled') !== 'false';
+export function importSkillsMock(
+  bytes: Uint8Array,
+  repo: string,
+  enabled = true,
+): SkillImportResponse {
 
   const imported: SkillImportResponse['imported'] = [];
   const errors: string[] = [];
@@ -909,7 +787,7 @@ export function importSkillsMock(bytes: Uint8Array, params?: URLSearchParams): S
     }
 
     const slug = name.replace(/^\//u, '');
-    const repoSlug = repo === null ? '' : `-${repo.replace(/[^A-Za-z0-9]+/gu, '-')}`;
+    const repoSlug = `-${repo.replace(/[^A-Za-z0-9]+/gu, '-')}`;
     const id = `sk-import-${slug}${repoSlug}`;
     const existing = records.get(id);
     const version = existing === undefined ? 1 : existing.detail.currentVersion + 1;
@@ -918,7 +796,7 @@ export function importSkillsMock(bytes: Uint8Array, params?: URLSearchParams): S
       id,
       name,
       description,
-      scope,
+      scope: 'repo',
       repo,
       source: 'upload',
       enabled,
@@ -996,6 +874,18 @@ async function readZipBytes(request: Request): Promise<Uint8Array | Response> {
   return bytes;
 }
 
+/**
+ * 写接口的 `repo` 闸：技能只属于项目，缺 `?repo=owner/name` 一律 400。
+ * 返回 `Response` 表示被拒（与 `readZipBytes` 同一个约定）。
+ */
+function requireRepo(request: Request): string | Response {
+  const repo = new URL(request.url).searchParams.get('repo') ?? '';
+  if (repo.trim() === '') {
+    return errorResponse(400, 'bad-request', '缺少 repo：技能只属于项目，必须带 ?repo=owner/name');
+  }
+  return repo;
+}
+
 export const skillsHandlers: HttpHandler[] = [
   // 具体路径在前（`/versions` / `/files` / `/import` 不会被 `/api/skills/:id` 抢走，
   // 但顺序约定与 index.ts 一致：段数多的在前）
@@ -1024,14 +914,18 @@ export const skillsHandlers: HttpHandler[] = [
     return HttpResponse.json(result.detail);
   }),
 
-  /** 一个 zip 里多个技能目录的批量导入（部分成功也是 200）。 */
+  /** 一个 zip 里多个技能目录的批量导入（部分成功也是 200；`repo` 必填）。 */
   http.post('/api/skills/import', async ({ request }) => {
     const rejected = csrfRejected(request);
     if (rejected !== null) return rejected;
 
+    const repo = requireRepo(request);
+    if (repo instanceof Response) return repo;
+
     const bytes = await readZipBytes(request);
     if (bytes instanceof Response) return bytes;
-    return HttpResponse.json(importSkillsMock(bytes, new URL(request.url).searchParams));
+    const enabled = new URL(request.url).searchParams.get('enabled') !== 'false';
+    return HttpResponse.json(importSkillsMock(bytes, repo, enabled));
   }),
 
   /** 用 zip 覆盖**这一个**技能（同名才能覆盖，名字不一致由真实服务端拒绝）。 */
@@ -1065,19 +959,21 @@ export const skillsHandlers: HttpHandler[] = [
     }),
   ),
 
+  /** 上传 zip（原始二进制；`repo` 必填，缺失 400）。 */
   http.post('/api/skills', async ({ request }) => {
     const rejected = csrfRejected(request);
     if (rejected !== null) return rejected;
 
+    const repo = requireRepo(request);
+    if (repo instanceof Response) return repo;
+
     const bytes = await readZipBytes(request);
     if (bytes instanceof Response) return bytes;
 
-    return HttpResponse.json(uploadSkillMock(bytes, new URL(request.url).searchParams), {
-      status: 201,
-    });
+    return HttpResponse.json(uploadSkillMock(bytes, repo), { status: 201 });
   }),
 
-  // 整份 SKILL.md 覆盖保存（`{ text }` → `{ skill }`）：与全局页的 PATCH 分工见 `lib/api.ts`
+  // 整份 SKILL.md 覆盖保存（`{ text }` → `{ skill }`）：与 PATCH 的分工见 `lib/api.ts`
   http.put('/api/skills/:id', async ({ request, params }) => {
     const rejected = csrfRejected(request);
     if (rejected !== null) return rejected;

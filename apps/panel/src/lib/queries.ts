@@ -28,7 +28,6 @@ import type {
   SkillFileWrite,
   SkillImportResponse,
   SkillPatch,
-  SkillScope,
   SkillsQuery,
   SkillUploadResponse,
 } from '../../../../packages/contract/src/index.ts';
@@ -222,8 +221,8 @@ export function useRepoSettings(repo: string) {
 
 /* ── 技能管理（spec §6） ───────────────────────────────────────────────────── */
 
-/** 技能列表（筛选在服务端做，所以筛选参数进 `queryKey`）。 */
-export function useSkills(query: SkillsQuery = {}) {
+/** 技能列表（技能只属于项目，`repo` 必填；筛选在服务端做，所以筛选参数进 `queryKey`）。 */
+export function useSkills(query: SkillsQuery) {
   return useQuery({
     queryKey: queryKeys.skills(query),
     queryFn: () => api.skills(query),
@@ -288,17 +287,13 @@ export function useSkillPatch() {
 /**
  * 上传 zip（原始二进制，上传即生效）：成功后列表立刻刷新。
  *
- * 作用域由调用方给（缺省 `global`）：项目技能页必须传 `{ scope: 'repo', repo }`，
- * 否则技能会挂到全局、在所有项目里生效。
+ * 技能只属于项目，`repo` 必填（缺了服务端 400）—— 不会再有「挂到全局」这种默认值。
  */
 export function useSkillUpload() {
   const invalidate = useInvalidateSkills();
   return useMutation({
-    mutationFn: (vars: { file: Blob; scope?: SkillScope; repo?: string }) =>
-      api.uploadSkill(vars.file, {
-        scope: vars.scope ?? 'global',
-        ...(vars.repo === undefined ? {} : { repo: vars.repo }),
-      }),
+    mutationFn: (vars: { file: Blob; repo: string }) =>
+      api.uploadSkill(vars.file, { repo: vars.repo }),
     onSuccess: () => {
       void invalidate();
     },
@@ -359,7 +354,7 @@ export function useSkillOverwrite() {
 /**
  * 一个 zip 里多个技能目录的批量导入（`POST /api/skills/import`）。
  *
- * 作用域由调用方给：项目技能页必须传 `{ scope: 'repo', repo }`，否则技能会挂到全局。
+ * 技能只属于项目：`repo` 必填，导入一定落在当前项目。
  * 成功（含部分成功）后统一失效，列表与详情一起刷新。
  */
 export function useSkillImport() {
@@ -367,13 +362,11 @@ export function useSkillImport() {
   return useMutation({
     mutationFn: (vars: {
       file: Blob;
-      scope?: SkillScope;
-      repo?: string;
+      repo: string;
       enabled?: boolean;
     }): Promise<SkillImportResponse> =>
       api.importSkills(vars.file, {
-        scope: vars.scope ?? 'global',
-        ...(vars.repo === undefined ? {} : { repo: vars.repo }),
+        repo: vars.repo,
         ...(vars.enabled === undefined ? {} : { enabled: vars.enabled }),
       }),
     onSuccess: () => {

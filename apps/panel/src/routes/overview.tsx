@@ -37,6 +37,7 @@ import {
   repoRunPath,
   repoSettingsPath,
   repoWorkspacePath,
+  repoSkillsPath,
 } from '../lib/repo-route.ts';
 import { useRepoDirectory } from '../lib/repos.ts';
 import { cn } from '../lib/utils.ts';
@@ -585,6 +586,8 @@ const TIMELINE_ROWS = 10;
 function ActivitySection() {
   const { data, error, isLoading, refetch } = useAudit({ limit: 20 });
   const rows = data?.items ?? [];
+  // 技能只属于项目：知道上次打开的项目才给「看技能」的落点，否则不给空态动作
+  const lastRepo = readLastRepo();
 
   return (
     <Section
@@ -602,9 +605,14 @@ function ActivitySection() {
         isEmpty={rows.length === 0}
         emptyText="还没有任何动作记录"
         emptyAction={
-          <Link className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'mt-1')} to="/skills">
-            看装了哪些技能
-          </Link>
+          lastRepo === null ? undefined : (
+            <Link
+              className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'mt-1')}
+              to={repoSkillsPath(lastRepo)}
+            >
+              看这个项目装了哪些技能
+            </Link>
+          )
         }
         onRetry={() => {
           void refetch();
@@ -898,9 +906,14 @@ function QuickSection({ overview }: { overview: OverviewResponse }) {
         >
           最近的运行
         </Link>
-        <Link className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))} to="/skills">
-          技能
-        </Link>
+        {targetRepo === null ? null : (
+          <Link
+            className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}
+            to={repoSkillsPath(targetRepo)}
+          >
+            本项目技能
+          </Link>
+        )}
         <Link className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))} to="/system">
           系统与仓库
         </Link>

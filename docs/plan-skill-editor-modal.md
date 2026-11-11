@@ -54,7 +54,7 @@
 
 - `GET /api/skills/:id/files` → `{ generatedAt, skillId, files: [{ path, text }] }`，技能不存在 404。
 - `PUT /api/skills/:id/files`（body `{ path, text }`）→ 200 裸 `SkillDetail`，产生新版本；路径非法/非文本扩展名/frontmatter 非法/改 `name` → 400（message 为可直接展示的中文）。
-- `POST /api/skills/import?scope&repo&enabled`（body 原始 zip，`Content-Type: application/zip`）→ `{ imported: [{id,name,version,created}], errors, warnings }`；部分成功仍 200。
+- `POST /api/skills/import?repo&enabled`（body 原始 zip，`Content-Type: application/zip`）→ `{ imported: [{id,name,version,created}], errors, warnings }`；部分成功仍 200。`repo` 必填（**全局技能已移除**，`scope` 参数一并删除）。
 
 ### 3.2 面板（已实现）
 

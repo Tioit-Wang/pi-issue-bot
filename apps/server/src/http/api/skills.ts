@@ -29,6 +29,7 @@ import {
   skillsQuerySchema,
   skillsResponseSchema,
 } from '../../../../../packages/contract/src/index.ts';
+import type { SkillsQuery } from '../../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../../packages/shared/src/index.ts';
 import { SkillStoreError } from '../../skills/store.ts';
 import type { SkillStore } from '../../skills/store.ts';
@@ -59,12 +60,22 @@ export type SkillApiDeps = {
   readonly writeMode?: SkillWriteMode;
 };
 
-/** 默认只看启用的：`skillsQuerySchema.enabled` 是 `'true'|'false'` 字符串。 */
-const listFilterOf = (query: z.infer<typeof skillsQuerySchema>) => ({
-  scope: query.scope,
+/** 列表筛选：`enabled` 是 `'true'|'false'` 字符串，存储层要 boolean。 */
+const listFilterOf = (query: SkillsQuery) => ({
   repo: query.repo,
   enabled: query.enabled === undefined ? undefined : query.enabled === 'true',
   source: query.source,
+});
+
+/**
+ * 路由层用的列表查询串：**在契约 schema 上把 `repo` 放宽成可选**。
+ *
+ * 为什么放宽：契约里 `repo` 必填（技能只有项目级），但 fastify 的 zod 校验失败只会回
+ * 一句泛泛的「请求参数不合法」；这里让 handler 自己抛一条中文可读的错误，告诉调用方
+ * 「全局技能已移除」，比让面板猜 issue 靠谱。`.strict()` 仍然保留 —— 传 `scope=...` 一律 400。
+ */
+const skillsListQuerySchema = skillsQuerySchema.extend({
+  repo: skillsQuerySchema.shape.repo.optional(),
 });
 
 const isLoopbackAddress = (address: string | undefined): boolean => {
@@ -223,18 +234,19 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
   app.get(
     '/api/skills',
     {
-      schema: { querystring: skillsQuerySchema, response: { 200: skillsResponseSchema } },
+      schema: { querystring: skillsListQuerySchema, response: { 200: skillsResponseSchema } },
       preHandler: guard,
     },
     async (request) => {
-      // 项目作用域的列表请求顺带补齐「三个默认技能」（幂等）：首次打开项目技能页就能看到并可编辑。
       const repo = request.query.repo;
-      if (typeof repo === 'string' && repo !== '') {
-        await seedProjectDefaults(deps.store, repo).catch(() => undefined);
+      if (repo === undefined) {
+        throw httpError('bad-request', '必须指定 repo=owner/name：全局技能已移除');
       }
+      // 顺带补齐「三个默认技能」（幂等）：首次打开项目技能页就能看到并可编辑。
+      await seedProjectDefaults(deps.store, repo).catch(() => undefined);
       return {
         generatedAt: new Date().toISOString(),
-        skills: await deps.store.list(listFilterOf(request.query)),
+        skills: await deps.store.list(listFilterOf({ ...request.query, repo })),
       };
     },
   );
@@ -280,8 +292,7 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
       try {
         const result = await deps.store.upload({
           bundle,
-          scope: query.scope,
-          repo: query.repo ?? null,
+          repo: query.repo,
           enabled: query.enabled === 'true',
           actor: actorOf(request),
         });
@@ -312,6 +323,11 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
     async (request) => {
       const existing = await deps.store.get(request.params.id);
       if (existing === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+      const repo = existing.repo;
+      if (repo === null) {
+        // 全局技能已移除；老行（repo 为空）不能作为「新版本」的目标。
+        throw httpError('conflict', `技能缺少所属项目（repo）：${request.params.id}`);
+      }
       const bundle = bundleOf(request.body);
       if (bundle.name !== existing.name) {
         throw httpError(
@@ -322,8 +338,7 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
       try {
         const result = await deps.store.upload({
           bundle,
-          scope: existing.scope,
-          repo: existing.repo,
+          repo,
           enabled: existing.enabled,
           actor: actorOf(request),
         });
@@ -514,11 +529,14 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
           `不允许在编辑器里改技能名（当前 ${detail.name}，收到 ${bundle.name}）：请新建技能后再删旧的`,
         );
       }
+      const repo = detail.repo;
+      if (repo === null) {
+        throw httpError('conflict', `技能缺少所属项目（repo）：${request.params.id}`);
+      }
       try {
         const result = await deps.store.upload({
           bundle,
-          scope: detail.scope,
-          repo: detail.repo,
+          repo,
           enabled: detail.enabled,
           actor: actorOf(request),
         });
@@ -553,9 +571,6 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
     },
     async (request) => {
       const query = request.query;
-      if (query.scope === 'repo' && (query.repo ?? '') === '') {
-        throw httpError('bad-request', 'scope=repo 时必须同时给 repo=owner/name');
-      }
       if (!Buffer.isBuffer(request.body)) {
         throw httpError('bad-request', 'body 必须是原始 zip 字节（Content-Type: application/zip）');
       }
@@ -587,8 +602,7 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
         try {
           const result = await deps.store.upload({
             bundle,
-            scope: query.scope,
-            repo: query.repo ?? null,
+            repo: query.repo,
             enabled: query.enabled === 'true',
             actor: actorOf(request),
           });

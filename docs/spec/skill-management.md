@@ -155,8 +155,10 @@
 create table skills (
   id            text primary key,           -- uuid
   name          text not null,              -- 契约：/xxx（见 §12 决策 D2）
-  scope         text not null,              -- 'global' | 'repo'
-  repo          text,                       -- scope='repo' 时非空
+  -- 决策（2026-11）：**全局技能已移除**，技能只能是项目级的。列先保留（历史行 + 索引），
+  -- 值恒为 'repo'，并由 `skills_scope_repo_only` 约束住；API 已不再暴露这个概念。
+  scope         text not null default 'repo' check (scope = 'repo'),
+  repo          text not null,              -- 所属项目（= 仓库 owner/name）
   source        text not null,              -- 'builtin' | 'repo-file' | 'upload'
   enabled       boolean not null default true,
   current_version integer not null default 1,
@@ -167,7 +169,7 @@ create table skills (
   updated_at    timestamptz not null default now(),
   deleted_at    timestamptz
 );
-create unique index skills_name_scope_uidx on skills (name, scope, coalesce(repo, '')) where deleted_at is null;
+create unique index skills_name_repo_uidx on skills (repo, name) where deleted_at is null;
 
 -- 不可变版本（内容落盘，库里只存清单与哈希）
 create table skill_versions (

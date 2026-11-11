@@ -5,7 +5,7 @@
  *  2. **编辑走模态框**：点「编辑」弹出弹窗，左边文件树、右边等宽 textarea，
  *     回填的是 `GET /api/skills/:id/files` 拿到的 `SKILL.md`（frontmatter + 正文），不是 Markdown 渲染；
  *  3. **保存失败给服务端原文**：`不允许在编辑器里改技能名…` 要原样贴在弹窗里，不吞成「保存失败」；
- *  4. **导入 zip 必须落在当前项目**（`scope=repo&repo=…`），且结果逐条展示（不是只报个数字）。
+ *  4. **导入 zip 必须落在当前项目**（`?repo=…`，没有 `scope` 这个概念了），且结果逐条展示（不是只报个数字）。
  *
  * 断言方式沿用 `skills.test.tsx`：请求侧记录真实 URL / body，mock 状态用
  * `mocks/handlers/skills.ts` 的同一份纯函数推进（测试里覆写拦截器时也调它们）。
@@ -94,7 +94,7 @@ describe('/repos/:repo/skills 列表', () => {
     renderPage();
     await screen.findByTestId('repo-skills-list');
 
-    // 内置技能在列表接口里是**全局行**（`source=builtin`），本项目那份是 `repo=acme/widgets`
+    // 内置技能是引擎自带的（`source=builtin`），本项目自己的那份是 `repo=acme/widgets`
     expect(
       requests.some((url) => url.includes('/api/skills') && url.includes('repo=acme%2Fwidgets')),
     ).toBe(true);
@@ -131,55 +131,46 @@ describe('/repos/:repo/skills 列表', () => {
   });
 
   it('空态：本项目没有自定义技能时是一句话 + 内置技能仍在列表里（不是空卡片）', async () => {
+    // 本项目那条查询返回空；`source=builtin` 那条照常返回三个内置技能
+    const builtinRow = (id: string, name: string, description: string, sizeBytes: number) => ({
+      id,
+      name,
+      description,
+      scope: 'repo',
+      repo: null,
+      source: 'builtin',
+      enabled: true,
+      currentVersion: 1,
+      overriddenBy: null,
+      sizeBytes,
+      updatedAt: new Date().toISOString(),
+    });
     server.use(
       http.get('/api/skills', ({ request }) => {
         const params = new URL(request.url).searchParams;
-        const repo = params.get('repo');
-        // 只把「本项目的技能」这条查询清空；内置技能那条照常返回
         const data =
-          repo === null
+          params.get('source') === 'builtin'
             ? {
                 generatedAt: new Date().toISOString(),
                 skills: [
-                  {
-                    id: ID_ISSUE_FORMAT,
-                    name: '/issue-format',
-                    description: '把 issue 正文整理成固定结构：现象、复现步骤、期望行为、环境。',
-                    scope: 'global',
-                    repo: null,
-                    source: 'builtin',
-                    enabled: true,
-                    currentVersion: 1,
-                    overriddenBy: null,
-                    sizeBytes: 1_840,
-                    updatedAt: new Date().toISOString(),
-                  },
-                  {
-                    id: 'sk-builtin-label-triage',
-                    name: '/label-triage',
-                    description: '按标签词表给 issue 打标签；与人工标签冲突时保留人工的那一个。',
-                    scope: 'global',
-                    repo: null,
-                    source: 'builtin',
-                    enabled: true,
-                    currentVersion: 1,
-                    overriddenBy: null,
-                    sizeBytes: 1_620,
-                    updatedAt: new Date().toISOString(),
-                  },
-                  {
-                    id: 'sk-builtin-issue-analysis',
-                    name: '/issue-analysis',
-                    description: '读代码与日志给出一句话结论，不猜实现细节。',
-                    scope: 'global',
-                    repo: null,
-                    source: 'builtin',
-                    enabled: true,
-                    currentVersion: 1,
-                    overriddenBy: null,
-                    sizeBytes: 2_100,
-                    updatedAt: new Date().toISOString(),
-                  },
+                  builtinRow(
+                    ID_ISSUE_FORMAT,
+                    '/issue-format',
+                    '把 issue 正文整理成固定结构：现象、复现步骤、期望行为、环境。',
+                    1_840,
+                  ),
+                  builtinRow(
+                    'sk-builtin-label-triage',
+                    '/label-triage',
+                    '按标签词表给 issue 打标签；与人工标签冲突时保留人工的那一个。',
+                    1_620,
+                  ),
+                  builtinRow(
+                    'sk-builtin-issue-analysis',
+                    '/issue-analysis',
+                    '读代码与日志给出一句话结论，不猜实现细节。',
+                    2_100,
+                  ),
                 ],
               }
             : { generatedAt: new Date().toISOString(), skills: [] };
@@ -329,7 +320,7 @@ describe('编辑走模态框', () => {
 });
 
 describe('页面级导入技能 zip 落在当前项目', () => {
-  it('POST /api/skills/import?scope=repo&repo=acme/widgets（原始字节 + CSRF），结果逐条展示', async () => {
+  it('POST /api/skills/import?repo=acme/widgets&enabled=true（原始字节 + CSRF，无 scope），结果逐条展示', async () => {
     const uploads: { url: string; csrf: string | null; bytes: number[] }[] = [];
     server.use(
       http.post('/api/skills/import', async ({ request }) => {
@@ -372,8 +363,27 @@ describe('页面级导入技能 zip 落在当前项目', () => {
     );
 
     expect(uploads).toHaveLength(1);
-    expect(uploads[0]?.url).toContain('/api/skills/import?scope=repo&repo=acme%2Fwidgets&enabled=true');
+    expect(uploads[0]?.url).toContain('/api/skills/import?repo=acme%2Fwidgets&enabled=true');
+    expect(uploads[0]?.url).not.toContain('scope=');
     expect(uploads[0]?.csrf).toBe('1');
     expect(uploads[0]?.bytes).toEqual(bytes);
+  });
+});
+
+/**
+ * 回归：技能只属于项目 —— 列表请求**一定带 `repo=`**、**一定不带 `scope=`**。
+ * 这条断言是「全局技能」被移除后的护栏：谁再把 `scope` 拼回查询串（或漏掉 `repo`），这里就红。
+ */
+describe('技能查询串只认 repo', () => {
+  it('每一次 GET /api/skills 都带 repo=acme%2Fwidgets，且都没有 scope=', async () => {
+    renderPage();
+    await screen.findByTestId('repo-skills-list');
+
+    const listCalls = requests.filter((url) => url.includes('/api/skills?'));
+    expect(listCalls.length).toBeGreaterThan(0);
+    for (const url of listCalls) {
+      expect(url).toContain('repo=acme%2Fwidgets');
+      expect(url).not.toContain('scope=');
+    }
   });
 });

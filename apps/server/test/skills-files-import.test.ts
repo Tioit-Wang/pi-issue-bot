@@ -351,7 +351,7 @@ describe('技能按文件读写与批量导入（HTTP 层）', () => {
   async function uploadSkill(zip: Buffer): Promise<{ id: string; name: string; version: number }> {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills?scope=global',
+      url: '/api/skills?repo=o%2Fn',
       headers: { 'content-type': 'application/zip', 'x-pi-bot-csrf': '1' },
       payload: zip,
     });
@@ -518,7 +518,7 @@ describe('技能按文件读写与批量导入（HTTP 层）', () => {
   it('POST /api/skills/import 含两个技能目录的 zip → imported 长度 2', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills/import?scope=repo&repo=o%2Fn',
+      url: '/api/skills/import?repo=o%2Fn',
       headers: { 'content-type': 'application/zip', 'x-pi-bot-csrf': '1' },
       payload: makeZip([
         { name: 'alpha/SKILL.md', text: skillMd('/import-alpha') },
@@ -553,7 +553,7 @@ describe('技能按文件读写与批量导入（HTTP 层）', () => {
   it('POST /api/skills/import 的 zip 里没有 SKILL.md → 200 且 errors 非空', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills/import?scope=global',
+      url: '/api/skills/import?repo=o%2Fn',
       headers: { 'content-type': 'application/zip', 'x-pi-bot-csrf': '1' },
       payload: makeZip([{ name: 'README.md', text: '这不是技能，只是一份说明。\n' }]),
     });
@@ -567,7 +567,7 @@ describe('技能按文件读写与批量导入（HTTP 层）', () => {
   it('POST /api/skills/import 缺 X-Pi-Bot-CSRF → 403（写面第一道门）', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills/import?scope=global',
+      url: '/api/skills/import?repo=o%2Fn',
       headers: { 'content-type': 'application/zip' },
       payload: makeZip([{ name: 'SKILL.md', text: skillMd('/csrf-skill') }]),
     });

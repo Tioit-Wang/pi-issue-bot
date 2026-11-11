@@ -29,7 +29,6 @@ import type {
   SkillFileMeta,
   SkillListItem,
   SkillPatch,
-  SkillScope,
   SkillSourceKind,
   SkillValidation,
   SkillVersion,
@@ -69,16 +68,16 @@ export interface SkillStoreOptions {
 }
 
 export type SkillListFilter = {
-  readonly scope?: SkillScope;
-  readonly repo?: string;
+  /** 技能所属项目 `owner/name`（**必填**：技能只有项目级，全局技能已移除）。 */
+  readonly repo: string;
   readonly enabled?: boolean;
   readonly source?: SkillSourceKind;
 };
 
 export type SkillUploadInput = {
   readonly bundle: SkillBundle;
-  readonly scope: SkillScope;
-  readonly repo: string | null;
+  /** 落库的 `repo`（必填、非空；`skills.repo` 列已是 NOT NULL）。 */
+  readonly repo: string;
   readonly enabled: boolean;
   readonly actor: string | null;
 };
@@ -94,7 +93,8 @@ export type SkillUploadResult = {
 export type SkillFileText = { readonly path: string; readonly text: string };
 
 export interface SkillStore {
-  list(filter?: SkillListFilter): Promise<SkillListItem[]>;
+  /** `repo` 必填：技能只有项目级，没有「列出全部技能」这种调用（全局技能已移除）。 */
+  list(filter: SkillListFilter): Promise<SkillListItem[]>;
   get(id: string): Promise<SkillDetail | null>;
   versions(id: string): Promise<SkillVersion[]>;
   upload(input: SkillUploadInput): Promise<SkillUploadResult>;
@@ -104,12 +104,13 @@ export interface SkillStore {
     /** 见实现处的注释：本技能目录下的全部文件文本。 */
     fileTexts(input: { id: string }): Promise<SkillFileText[] | null>;
   /**
-   * 装配用：把「当前启用的上传技能」按优先级（仓库 > 全局）读成 `{path,text}` 列表。
+   * 装配用：把**该仓库**当前启用的上传技能读成 `{path,text}` 列表。
    * 正文只在 SKILL.md 里，所以这里做一次磁盘读；调用方（enricher）只关心顺序。
+   * 不再有「全局 → 仓库」的合并：技能只属于一个项目。
    */
-  activeSkillFiles(repo: string | null): Promise<SkillFileText[]>;
-  /** 当前启用的上传技能名（`['/demo']`）：供 webhook 的命令门禁放行。 */
-  activeSkillNames(repo: string | null): Promise<string[]>;
+  activeSkillFiles(repo: string): Promise<SkillFileText[]>;
+  /** 该仓库当前启用的上传技能名（`['/demo']`）：供 webhook 的命令门禁放行。 */
+  activeSkillNames(repo: string): Promise<string[]>;
 }
 
 /* ── 行形状 ──────────────────────────────────────────────────────────────── */
@@ -257,65 +258,46 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
   async function currentVersionRow(id: string, currentVersion: number): Promise<VersionRow | null> {
     return versionByNumber(id, currentVersion);
   }
-
-  /** 行 + 当前版本 → 列表项。`overriddenBy` 由 `list()` 统一补。 */
-  function toListItem(row: SkillRow, files: readonly SkillFileMeta[], overriddenBy: string | null): SkillListItem {
+  /**
+   * 行 + 当前版本 → 列表项。
+   *
+   * `scope` 恒为 `'repo'`、`overriddenBy` 恒为 `null`：技能只有项目级，
+   * 同名在同一仓库内就是新版本，没有「另一个作用域的同类技能压过它」这回事。
+   */
+  function toListItem(row: SkillRow, files: readonly SkillFileMeta[]): SkillListItem {
     const sizeBytes = files.reduce((sum, file) => sum + file.bytes, 0);
     return {
       id: row.id,
       name: row.name,
       description: row.description,
-      scope: row.scope === 'repo' ? 'repo' : 'global',
+      scope: 'repo',
       repo: row.repo,
       source: row.source === 'repo-file' || row.source === 'builtin' ? row.source : 'upload',
       enabled: row.enabled,
       currentVersion: row.current_version,
-      overriddenBy,
+      overriddenBy: null,
       sizeBytes,
       updatedAt: iso(row.updated_at),
     };
   }
 
   return {
-    async list(filter = {}) {
+    async list(filter) {
       const result = await pool.query(
         `select ${SELECT_COLUMNS}, v.files
            from skills s
            left join skill_versions v on v.skill_id = s.id and v.version = s.current_version
           where s.deleted_at is null
-            and ($1::text is null or s.scope = $1)
-            and ($2::text is null or s.repo = $2)
-            and ($3::boolean is null or s.enabled = $3)
-            and ($4::text is null or s.source = $4)
-          order by s.name asc, s.scope asc`,
-        [
-          filter.scope ?? null,
-          filter.repo ?? null,
-          filter.enabled ?? null,
-          filter.source ?? null,
-        ],
+            and s.repo = $1
+            and ($2::boolean is null or s.enabled = $2)
+            and ($3::text is null or s.source = $3)
+          order by s.name asc`,
+        [filter.repo, filter.enabled ?? null, filter.source ?? null],
       );
       const rows = result.rows as (SkillRow & { files: unknown })[];
 
-      // 覆盖关系（§7 优先级：面板-仓库 > 面板全局 > 仓库文件 > 内置）。
-      // 本表只有上传技能，所以「高优先级」= 同名且启用的 repo 作用域行压过 global 行。
-      const winnerByName = new Map<string, string>();
-      for (const row of rows) {
-        if (!row.enabled) continue;
-        const current = winnerByName.get(row.name);
-        if (current === undefined) {
-          winnerByName.set(row.name, row.id);
-          continue;
-        }
-        const currentIsRepo = rows.find((candidate) => candidate.id === current)?.scope === 'repo';
-        if (!currentIsRepo && row.scope === 'repo') winnerByName.set(row.name, row.id);
-      }
-
-      return rows.map((row) => {
-        const winner = winnerByName.get(row.name);
-        const overriddenBy = row.enabled && winner !== undefined && winner !== row.id ? winner : null;
-        return toListItem(row, asFiles(row.files), overriddenBy);
-      });
+      // 没有覆盖关系可算：本表只有上传技能、且按仓库隔离，同名同仓库只会有一行（唯一索引）。
+      return rows.map((row) => toListItem(row, asFiles(row.files)));
     },
 
     async get(id) {
@@ -339,7 +321,7 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
           ? (row.frontmatter as Record<string, unknown>)
           : {};
       return {
-        ...toListItem(row, files, null),
+        ...toListItem(row, files),
         frontmatter,
         body,
         files,
@@ -370,8 +352,8 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       if (bundle.name === '' || !bundle.name.startsWith('/')) {
         throw new SkillStoreError('invalid-skill', `技能名不合规：${bundle.name}`);
       }
-      if (input.scope === 'repo' && (input.repo === null || input.repo === '')) {
-        throw new SkillStoreError('bad-request', 'scope=repo 时必须给 repo=owner/name');
+      if (input.repo === '') {
+        throw new SkillStoreError('bad-request', '必须给 repo=owner/name（技能只能是项目级，全局技能已移除）');
       }
 
       const files: SkillFileMeta[] = bundle.files.map((file) => ({
@@ -380,12 +362,13 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
         sha256: file.sha256,
       }));
       const treeSha = bundle.treeSha256 === '' ? treeHashOf(files) : bundle.treeSha256;
-      const repo = input.scope === 'repo' ? input.repo : null;
+      const repo = input.repo;
 
+      // 同名 = 同一行（唯一索引 `(name, scope, coalesce(repo,''))`）：同仓库同名只能是新版本。
       const existing = await pool.query(
-        `select id, current_version, scope from skills
-          where name = $1 and scope = $2 and coalesce(repo, '') = coalesce($3, '') and deleted_at is null`,
-        [bundle.name, input.scope, repo],
+        `select id, current_version from skills
+          where name = $1 and repo = $2 and deleted_at is null`,
+        [bundle.name, repo],
       );
       const found = (existing.rows as { id: string; current_version: number }[])[0];
 
@@ -395,11 +378,10 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
         await writeVersionTree(id, version, bundle.files);
         await pool.query(
           `insert into skills (id, name, scope, repo, source, enabled, current_version, description, frontmatter, created_by, created_at, updated_at)
-           values ($1, $2, $3, $4, 'upload', $5, $6, $7, $8::jsonb, $9, $10, $10)`,
+           values ($1, $2, 'repo', $3, 'upload', $4, $5, $6, $7::jsonb, $8, $9, $9)`,
           [
             id,
             bundle.name,
-            input.scope,
             repo,
             input.enabled,
             version,
@@ -428,7 +410,6 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
           actor: input.actor,
           detail: {
             name: bundle.name,
-            scope: input.scope,
             repo,
             enabled: input.enabled,
             version,
@@ -440,14 +421,14 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
         const created = await rowById(id);
         if (created === null) throw new SkillStoreError('not-found', '刚插入的技能读不回来');
         return {
-          skill: toListItem(created, files, null),
+          skill: toListItem(created, files),
           version,
           validation: bundle.validation,
           created: true,
         };
       }
 
-      // 同名同作用域已存在 → 新版本（上传即新的 current_version，spec R4）。
+      // 同仓库同名已存在 → 新版本（上传即新的 current_version，spec R4）。
       const version = found.current_version + 1;
       await writeVersionTree(found.id, version, bundle.files);
       await pool.query(
@@ -482,7 +463,7 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       });
       const updated = await rowById(found.id);
       if (updated === null) throw new SkillStoreError('not-found', '刚更新的技能读不回来');
-      return { skill: toListItem(updated, files, null), version, validation: bundle.validation, created: false };
+      return { skill: toListItem(updated, files), version, validation: bundle.validation, created: false };
     },
 
     async patch(input) {
@@ -576,7 +557,7 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
     /**
      * 当前版本里**每个文件的文本**（面板模态框的文件树 + 编辑器用）。
      *
-     * 与 `activeSkillFiles` 的区别：那个是「装配给 agent 的生效集合」（跨技能、按作用域合并），
+     * 与 `activeSkillFiles` 的区别：那个是「装配给 agent 的生效集合」（跨技能合并），
      * 这个是「这一个技能自己目录里有什么」，所以不做任何归一/过滤，只按 path 字典序返回。
      */
     async fileTexts(input: { id: string }): Promise<SkillFileText[] | null> {
@@ -604,7 +585,7 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
           skillId: input.id,
           action: 'purge',
           actor: input.actor,
-          detail: { name: row.name, scope: row.scope, repo: row.repo },
+          detail: { name: row.name, repo: row.repo },
         });
         return true;
       }
@@ -616,7 +597,7 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
         skillId: input.id,
         action: 'delete',
         actor: input.actor,
-        detail: { name: row.name, scope: row.scope, repo: row.repo, soft: true },
+        detail: { name: row.name, repo: row.repo, soft: true },
       });
       return true;
     },
@@ -663,19 +644,26 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       };
     },
 
-    /** 当前启用的上传技能名：webhook 的命令门禁靠它放行（`/demo` 不必进仓库配置）。 */
+    /**
+     * 该仓库当前启用的上传技能名：webhook 的命令门禁靠它放行（`/demo` 不必进仓库配置）。
+     * 只有项目级技能，没有「全局兜底」。
+     */
     async activeSkillNames(repo) {
       const result = await pool.query(
         `select distinct name from skills
           where deleted_at is null
             and enabled = true
-            and ((scope = 'repo' and repo = $1) or scope = 'global')
+            and repo = $1
           order by name asc`,
         [repo],
       );
       return (result.rows as { name: string }[]).map((row) => row.name);
     },
 
+    /**
+     * 该仓库当前启用的上传技能 → `{path,text}`。同名只取 `current_version` 那一行
+     * （唯一索引保证每个 (name, repo) 只有一行，这里仍按 name 去重以防历史脏数据）。
+     */
     async activeSkillFiles(repo) {
       const result = await pool.query(
         `select ${SELECT_COLUMNS}, v.files
@@ -683,17 +671,14 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
            left join skill_versions v on v.skill_id = s.id and v.version = s.current_version
           where s.deleted_at is null
             and s.enabled = true
-            and (
-              (s.scope = 'repo' and s.repo = $1)
-              or s.scope = 'global'
-            )
-          order by case when s.scope = 'repo' then 0 else 1 end asc, s.name asc`,
+            and s.repo = $1
+          order by s.name asc`,
         [repo],
       );
       const rows = result.rows as (SkillRow & { files: unknown })[];
       const picked = new Map<string, SkillFileText>();
       for (const row of rows) {
-        if (picked.has(row.name)) continue; // 仓库作用域先出现，先到先得
+        if (picked.has(row.name)) continue;
         const dir = versionDir(row.id, row.current_version);
         try {
           const text = await readFile(nodePath.join(dir, 'SKILL.md'), 'utf8');

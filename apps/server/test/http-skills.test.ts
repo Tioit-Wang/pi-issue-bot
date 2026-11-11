@@ -63,24 +63,50 @@ describe('/api/skills（HTTP 层）', () => {
   });
 
   it('GET /api/skills 未登录 → 401（沿用既有 requireAuth）', async () => {
-    const response = await deniedApp.inject({ method: 'GET', url: '/api/skills' });
+    const response = await deniedApp.inject({ method: 'GET', url: '/api/skills?repo=o%2Fn' });
     expect(response.statusCode).toBe(401);
   });
 
-  it('GET /api/skills → 200 + 契约形状（空列表也有 generatedAt）', async () => {
-    await db.sql('truncate table skills, skill_versions, skills_audit cascade');
+  it('GET /api/skills 不给 repo → 400（全局技能已移除）', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/skills' });
+    expect(response.statusCode).toBe(400);
+    const body = response.json() as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('bad-request');
+    expect(body.error.message).toContain('必须指定 repo=owner/name');
+    expect(body.error.message).toContain('全局技能已移除');
+  });
+
+  it('GET /api/skills?repo=... → 200 + 契约形状（首次访问补齐三个默认技能）', async () => {
+    await db.sql('truncate table skills, skill_versions, skills_audit cascade');
+    const response = await app.inject({ method: 'GET', url: '/api/skills?repo=o%2Fn' });
     expect(response.statusCode).toBe(200);
-    const body = response.json() as { generatedAt: string; skills: unknown[] };
-    expect(body.skills).toEqual([]);
+    const body = response.json() as {
+      generatedAt: string;
+      skills: { name: string; scope: string; repo: string | null; overriddenBy: string | null }[];
+    };
     expect(Number.isNaN(Date.parse(body.generatedAt))).toBe(false);
     expect(response.headers['cache-control']).toBe('no-store');
+    // 播种：项目第一次打开技能页就有一份可编辑副本
+    expect(body.skills.map((item) => item.name).sort()).toEqual([
+      '/issue-analysis',
+      '/issue-format',
+      '/label-triage',
+    ]);
+    expect(body.skills.every((item) => item.scope === 'repo' && item.repo === 'o/n')).toBe(true);
+    expect(body.skills.every((item) => item.overriddenBy === null)).toBe(true);
+  });
+
+  it('GET /api/skills 另一个仓库 → 只看得到自己的技能（互不干扰）', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/skills?repo=other%2Flib' });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { skills: { repo: string | null }[] };
+    expect(body.skills.every((item) => item.repo === 'other/lib')).toBe(true);
   });
 
   it('POST 缺少 X-Pi-Bot-CSRF → 403（写面第一道门）', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills',
+      url: '/api/skills?repo=o%2Fn',
       headers: { 'content-type': 'application/zip' },
       payload: Buffer.from('not a zip'),
     });
@@ -91,7 +117,7 @@ describe('/api/skills（HTTP 层）', () => {
   it('POST 带 CSRF 但 Origin 是外站 → 403', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills',
+      url: '/api/skills?repo=o%2Fn',
       headers: {
         'content-type': 'application/zip',
         'x-pi-bot-csrf': '1',
@@ -106,7 +132,7 @@ describe('/api/skills（HTTP 层）', () => {
   it('POST 带 CSRF + Sec-Fetch-Site: cross-site → 403', async () => {
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills',
+      url: '/api/skills?repo=o%2Fn',
       headers: {
         'content-type': 'application/zip',
         'x-pi-bot-csrf': '1',
@@ -118,9 +144,10 @@ describe('/api/skills（HTTP 层）', () => {
   });
 
   it('POST 校验通过后：body 不是 zip → 400 bad-request（不 500、不入库）', async () => {
+    await db.sql('truncate table skills, skill_versions, skills_audit cascade');
     const response = await app.inject({
       method: 'POST',
-      url: '/api/skills',
+      url: '/api/skills?repo=o%2Fn',
       headers: {
         'content-type': 'application/zip',
         'x-pi-bot-csrf': '1',
@@ -142,7 +169,7 @@ describe('/api/skills（HTTP 层）', () => {
     try {
       const response = await offApp.inject({
         method: 'POST',
-        url: '/api/skills',
+        url: '/api/skills?repo=o%2Fn',
         headers: { 'content-type': 'application/zip', 'x-pi-bot-csrf': '1' },
         payload: Buffer.from('not a zip'),
       });

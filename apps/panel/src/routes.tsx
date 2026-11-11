@@ -19,7 +19,6 @@ import { RepoRunsPage } from './routes/repo-runs.tsx';
 import { RepoSettingsPage } from './routes/repo-settings.tsx';
 import { RepoSkillsPage } from './routes/repo-skills.tsx';
 import { RepoWorkspacePage } from './routes/repo-workspace.tsx';
-import { SkillsPage } from './routes/skills.tsx';
 import { SystemPage } from './routes/system.tsx';
 import { TaskDetailPage } from './routes/task-detail.tsx';
 
@@ -32,7 +31,7 @@ import { TaskDetailPage } from './routes/task-detail.tsx';
  * 为什么 `:repo` 是**单段** `owner__name`：见 `lib/repo-route.ts` 的说明（编码/解码与往返）。
  *
  * 三组路径：
- * - `global`：不带仓库（总览/成本/质量/审计/技能/系统），URL 与改造前一致；
+ * - `global`：不带仓库（总览/成本/质量/审计/系统），URL 与改造前一致；
  * - `repo`：`/repos/:repo/*`，左栏「当前仓库」分组只用这几条；
  * - `legacy`：旧路径，只做 302 重定向（`routes/legacy.tsx`），不出现在导航里。
  *
@@ -57,7 +56,6 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { path: '/costs', label: '成本', nav: true, group: 'global', element: <CostsPage /> },
   { path: '/quality', label: '质量', nav: true, group: 'global', element: <QualityPage /> },
   { path: '/audit', label: '审计', nav: true, group: 'global', element: <AuditPage /> },
-  { path: '/skills', label: '技能', nav: true, group: 'global', element: <SkillsPage /> },
   { path: '/system', label: '系统', nav: true, group: 'global', element: <SystemPage /> },
 
   /* ── 当前仓库 ──────────────────────────────────────────────────────────── */
