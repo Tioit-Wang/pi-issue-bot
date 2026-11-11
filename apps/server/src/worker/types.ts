@@ -216,17 +216,14 @@ export const RUN_OUTCOMES = ['succeeded', 'failed', 'timed-out', 'cancelled', 'd
 
 
 /**
- * `tasks.source` 的取值（与 `db/schema.ts` 的 `TASK_SOURCE` 同值，**刻意不 import**：
- * worker 不该为了三个字面量去依赖 db 层）。
+ * `tasks.source` 的取值（与 `db/schema.ts` 的 `dbTaskSource` 同值，**刻意不 import**：
+ * worker 不该为了几个字面量去依赖 db 层）。
  *
- * `command` = 人工通道（`@bot /命令`、`@bot 提问`）→ 允许一条最终回答；
- * `webhook` / `cron` = 自动通道 → 只留 reaction + 标签，零评论（plan §5）；
- * `pipeline` = **固定流水线的阶段任务**（`pipeline:format|classify|notice`）→
- * 唯一允许自动评论的来源，且只放行这三种命令（`worker/writeback.ts::isWriteBackAllowed`）。
- * 这一项与契约层 `TASK_SOURCES` 对齐后，`writeback.ts` 里那个
- * `WritebackTaskSource = TaskSourceKind | 'pipeline'` 的临时放宽可以删掉（S2-b 遗留说明）。
+ * `command` = 人工通道（`@bot /名字`、`@bot 提问`）→ 允许一条最终回答；
+ * `agent` = issue agent（v0.3 的事件 / 提及通道）→ 允许一条最终回答（`docs/req-issue-agent.md` §5）；
+ * `webhook` / `cron` = 自动通道 → 只留 reaction + 标签，零评论（plan §5）。
  */
-export const TASK_SOURCE_KINDS = ['webhook', 'command', 'cron', 'pipeline'] as const;
+export const TASK_SOURCE_KINDS = ['webhook', 'command', 'cron', 'agent'] as const;
 
 export type TaskSourceKind = (typeof TASK_SOURCE_KINDS)[number];
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];

@@ -14,7 +14,6 @@ import {
   costsResponseSchema,
   issueFeedbackEventSchema,
   issueLabelDecisionSummarySchema,
-  issuePipelineSchema,
   issueSessionParamsSchema,
   issueSessionResponseSchema,
   issuesListResponseSchema,
@@ -36,7 +35,7 @@ import {
   webhookAcceptedResponseSchema,
 } from './api.ts';
 import { errorBodySchema } from './common.ts';
-import { labelsConfigSchema, pipelineConfigSchema, promptConfigSchema, repoSettingsSchema } from './repo-config.ts';
+import { labelsConfigSchema, repoSettingsSchema } from './repo-config.ts';
 import { skillFrontmatterSchema } from './skills.ts';
 import { triggersConfigSchema } from './trigger.ts';
 
@@ -57,16 +56,9 @@ export const responseSchemas = {
   /** 无感反馈与打标判定的两个子形状（W3-H：面板统计/详情要用，单列出来便于引用）。 */
   IssueFeedbackEvent: issueFeedbackEventSchema,
   IssueLabelDecisionSummary: issueLabelDecisionSummarySchema,
-  /** 固定流水线：状态投影（`issue_pipeline`）与配置段（`settings.pipeline`）。 */
-  IssuePipeline: issuePipelineSchema,
-  RepoPipelineConfig: pipelineConfigSchema,
-  /**
-   * 仓库配置（`repos.settings` 的 jsonb 形状）与它的两个子段：面板要展示字段说明，一并发布。
-   * `RepoConfig` 这个组件名随 `repoConfigSchema → repoSettingsSchema` 更名而退役（`docs/impl-multi-repo.md` §3）。
-   */
+  /** 仓库配置（`repos.settings` 的 jsonb 形状）与它的子段：面板要展示字段说明，一并发布。 */
   RepoSettings: repoSettingsSchema,
   RepoLabels: labelsConfigSchema,
-  RepoPromptConfig: promptConfigSchema,
   /** 触发体系（`triggers` 段）：面板要展示字段说明。 */
   TriggersConfig: triggersConfigSchema,
   SkillFrontmatter: skillFrontmatterSchema,

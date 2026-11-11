@@ -1270,128 +1270,6 @@
         ],
         "additionalProperties": false
       },
-      "IssuePipeline": {
-        "type": "object",
-        "properties": {
-          "stage": {
-            "type": "string",
-            "enum": [
-              "format",
-              "classify",
-              "agent",
-              "closed"
-            ]
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "running",
-              "awaiting_info",
-              "ready",
-              "blocked",
-              "closed"
-            ]
-          },
-          "category": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "requirement",
-                  "defect",
-                  "not-found",
-                  "other"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "formatFailCount": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "infoRequestedAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "blockedReason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 500
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "readyAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "staleAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sessionId": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 128
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sessionTurns": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          }
-        },
-        "required": [
-          "stage",
-          "state",
-          "category",
-          "formatFailCount",
-          "infoRequestedAt",
-          "blockedReason",
-          "readyAt",
-          "staleAt",
-          "sessionId",
-          "sessionTurns"
-        ],
-        "additionalProperties": false
-      },
       "IssueSessionResponse": {
         "type": "object",
         "properties": {
@@ -1633,65 +1511,6 @@
         ],
         "additionalProperties": false
       },
-      "RepoPipelineConfig": {
-        "type": "object",
-        "properties": {
-          "managers": {
-            "default": [],
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
-            }
-          },
-          "format_prompt_version": {
-            "default": 0,
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          },
-          "classify_prompt_version": {
-            "default": 0,
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          },
-          "agent_prompt_version": {
-            "default": 0,
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          }
-        },
-        "required": [
-          "managers",
-          "format_prompt_version",
-          "classify_prompt_version",
-          "agent_prompt_version"
-        ],
-        "additionalProperties": false
-      },
-      "RepoPromptConfig": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "default": true,
-            "type": "boolean"
-          },
-          "current_version": {
-            "default": 0,
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          }
-        },
-        "required": [
-          "enabled",
-          "current_version"
-        ],
-        "additionalProperties": false
-      },
       "RepoSettings": {
         "type": "object",
         "properties": {
@@ -1715,10 +1534,6 @@
           "triggers": {
             "type": "object",
             "properties": {
-              "enabled": {
-                "default": true,
-                "type": "boolean"
-              },
               "aliases": {
                 "minItems": 1,
                 "maxItems": 8,
@@ -1729,47 +1544,8 @@
                   "maxLength": 39,
                   "pattern": "^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$"
                 }
-              },
-              "merge_defaults": {
-                "default": true,
-                "type": "boolean"
-              },
-              "remove": {
-                "default": [],
-                "maxItems": 8,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 2,
-                  "maxLength": 39,
-                  "pattern": "^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$"
-                }
-              },
-              "users": {
-                "default": "all",
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "const": "all"
-                  },
-                  {
-                    "minItems": 1,
-                    "maxItems": 50,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
-                    }
-                  }
-                ]
               }
             },
-            "required": [
-              "enabled",
-              "merge_defaults",
-              "remove",
-              "users"
-            ],
             "additionalProperties": false
           },
           "labels": {
@@ -1883,116 +1659,16 @@
             ],
             "additionalProperties": false
           },
-          "create_issue": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "default": false,
-                "type": "boolean"
-              },
-              "daily_quota": {
-                "default": 10,
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100
-              },
-              "scenarios": {
-                "default": [
-                  "pr-review"
-                ],
-                "minItems": 1,
-                "maxItems": 3,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "pr-review",
-                    "dependency",
-                    "regression"
-                  ]
-                }
-              }
-            },
-            "required": [
-              "enabled",
-              "daily_quota",
-              "scenarios"
-            ],
-            "additionalProperties": false
-          },
-          "commands": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "default": true,
-                "type": "boolean"
-              },
-              "allowed": {
-                "default": [
-                  "/review-pr",
-                  "/issue-triage",
-                  "/issue-repro"
-                ],
-                "maxItems": 32,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^\\/[a-z][a-z0-9-]{1,30}$"
-                }
-              },
-              "author_associations": {
-                "default": [
-                  "OWNER",
-                  "MEMBER",
-                  "COLLABORATOR"
-                ],
-                "minItems": 1,
-                "maxItems": 3,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "OWNER",
-                    "MEMBER",
-                    "COLLABORATOR"
-                  ]
-                }
-              },
-              "allow_users": {
-                "default": [],
-                "maxItems": 50,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
-                }
-              },
-              "rate_limit_per_hour": {
-                "default": 20,
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 200
-              }
-            },
-            "required": [
-              "enabled",
-              "allowed",
-              "author_associations",
-              "allow_users",
-              "rate_limit_per_hour"
-            ],
-            "additionalProperties": false
-          },
           "skills": {
             "type": "object",
             "properties": {
-              "repo_skills": {
+              "project_skills": {
                 "default": true,
                 "type": "boolean"
               }
             },
             "required": [
-              "repo_skills"
+              "project_skills"
             ],
             "additionalProperties": false
           },
@@ -2039,27 +1715,7 @@
             ],
             "additionalProperties": false
           },
-          "prompt": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "default": true,
-                "type": "boolean"
-              },
-              "current_version": {
-                "default": 0,
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000000
-              }
-            },
-            "required": [
-              "enabled",
-              "current_version"
-            ],
-            "additionalProperties": false
-          },
-          "pipeline": {
+          "agent": {
             "type": "object",
             "properties": {
               "managers": {
@@ -2071,30 +1727,48 @@
                   "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
                 }
               },
-              "format_prompt_version": {
-                "default": 0,
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000000
+              "on_opened": {
+                "default": "format-check",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
-              "classify_prompt_version": {
-                "default": 0,
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000000
+              "on_edited": {
+                "default": "format-check",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
-              "agent_prompt_version": {
-                "default": 0,
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000000
+              "auto_label_after_format_pass": {
+                "default": false,
+                "type": "boolean"
+              },
+              "project_prompt": {
+                "default": "",
+                "type": "string",
+                "maxLength": 4000
               }
             },
             "required": [
               "managers",
-              "format_prompt_version",
-              "classify_prompt_version",
-              "agent_prompt_version"
+              "on_opened",
+              "on_edited",
+              "auto_label_after_format_pass",
+              "project_prompt"
             ],
             "additionalProperties": false
           }
@@ -2105,12 +1779,9 @@
           "dry_run",
           "triggers",
           "labels",
-          "create_issue",
-          "commands",
           "skills",
           "limits",
-          "prompt",
-          "pipeline"
+          "agent"
         ],
         "additionalProperties": false
       },
@@ -2958,10 +2629,6 @@
       "TriggersConfig": {
         "type": "object",
         "properties": {
-          "enabled": {
-            "default": true,
-            "type": "boolean"
-          },
           "aliases": {
             "minItems": 1,
             "maxItems": 8,
@@ -2972,47 +2639,8 @@
               "maxLength": 39,
               "pattern": "^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$"
             }
-          },
-          "merge_defaults": {
-            "default": true,
-            "type": "boolean"
-          },
-          "remove": {
-            "default": [],
-            "maxItems": 8,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 2,
-              "maxLength": 39,
-              "pattern": "^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$"
-            }
-          },
-          "users": {
-            "default": "all",
-            "anyOf": [
-              {
-                "type": "string",
-                "const": "all"
-              },
-              {
-                "minItems": 1,
-                "maxItems": 50,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
-                }
-              }
-            ]
           }
         },
-        "required": [
-          "enabled",
-          "merge_defaults",
-          "remove",
-          "users"
-        ],
         "additionalProperties": false
       },
       "WebhookAcceptedResponse": {
@@ -3957,16 +3585,6 @@
             "items": {
               "$ref": "#/components/schemas/IssueFeedbackEvent"
             }
-          },
-          "pipeline": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/IssuePipeline"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -3990,8 +3608,7 @@
           "lastPreview",
           "reactionState",
           "labelDecisions",
-          "feedback",
-          "pipeline"
+          "feedback"
         ],
         "additionalProperties": false
       },
@@ -4082,16 +3699,6 @@
             "items": {
               "$ref": "#/components/schemas/IssueFeedbackEvent"
             }
-          },
-          "pipeline": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/IssuePipeline"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -4105,8 +3712,7 @@
           "labels",
           "participants",
           "reactionState",
-          "pendingFeedback",
-          "pipeline"
+          "pendingFeedback"
         ],
         "additionalProperties": false
       },
@@ -5006,7 +4612,7 @@
               "webhook",
               "command",
               "cron",
-              "pipeline"
+              "agent"
             ]
           },
           "command": {

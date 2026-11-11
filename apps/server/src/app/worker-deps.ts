@@ -12,7 +12,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import { AppError } from '../../../../packages/shared/src/index.ts';
-import type { PromptKind, RepoSettings } from '../../../../packages/contract/src/index.ts';
+import type { RepoSettings } from '../../../../packages/contract/src/index.ts';
 import { parseRepoSettings } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import { createPgFeedbackLedger, createPgReactionsFlagStore } from '../feedback/index.ts';
@@ -21,8 +21,6 @@ import { createGithubClient, createGithubReactionApi, createGithubWriteApi } fro
 import type { BotLabelLedger, GithubClient, GithubReactionApi, GithubWriteApi } from '../github/index.ts';
 import { splitRepo } from '../github/types.ts';
 import type { SqlExecutor } from '../db/index.ts';
-import type { SqlRunner } from '../config/repo-config.ts';
-import { activePromptBody, recordAssembleStats } from '../prompt/store.ts';
 import {
   AGENTS_MD_FILENAME,
   AGENTS_MD_LIMITS,
@@ -31,19 +29,14 @@ import {
   collectAgentsMd,
 } from '../skills/agents-md.ts';
 import type { AgentsMdResult } from '../skills/agents-md.ts';
-import { assemblePrompt, splitBasePrompt } from '../skills/assemble.ts';
-import type { AssemblePromptStats, AssembleStage } from '../skills/assemble.ts';
+import { assemblePrompt } from '../skills/assemble.ts';
 import {
   fenceUntrusted,
-  renderGateNoticePrompt,
   renderLabelVocabulary,
   renderSkillPrompt,
-  renderStagePrompt,
   sanitizeUntrustedText,
 } from '../skills/prompt.ts';
-import type { SkillPromptContext, StagePromptSupplement, StagePromptVars } from '../skills/prompt.ts';
-import { stagePromptDefault } from '../skills/stage-prompts.ts';
-import type { PipelineRow } from '../workflows/pipeline.ts';
+import type { SkillPromptContext } from '../skills/prompt.ts';
 import { REPO_SKILLS_DIR, createSkillRegistry } from '../skills/registry.ts';
 import type { SkillRepoConfig } from '../skills/registry.ts';
 import type { SkillFile } from '../skills/types.ts';
@@ -373,309 +366,6 @@ export function buildAnswerPrompt(input: {
   ].join('\n');
 }
 
-/* ── 阶段提示词（S2-b：阶段 0/1/2 的装配点）──────────────────────────────────── */
-
-/**
- * 装配 stage → `prompt_versions.kind`（`ASSEMBLE_STAGE_OF_KIND` 的反向映射）。
- *
- * 两个名字是有意的：kind 是**版本线**的名字（`format_check`），stage 是**装配位置**的名字（`format`）。
- * 写错这一处，阶段 0 会去读分类的版本线，面板上「改了没生效」但没有任何报错。
- */
-export const STAGE_PROMPT_KIND_OF = {
-  format: 'format_check',
-  classify: 'classify',
-  agent: 'agent',
-} as const satisfies Record<AssembleStage, PromptKind>;
-
-/** 阶段提示词需要的那几列（`TaskJobRow` 的子集，单测可以直接造对象）。 */
-export type StagePromptTask = Pick<
-  TaskJobRow,
-  | 'repo'
-  | 'targetKind'
-  | 'targetNumber'
-  | 'actorLogin'
-  | 'targetTitle'
-  | 'targetBody'
-  | 'targetSupplement'
->;
-
-export interface BuildStagePromptInput {
-  readonly task: StagePromptTask;
-  /** 装配位置（`format` = 阶段 0 格式检查 / `classify` = 阶段 1 / `agent` = 阶段 2）。 */
-  readonly stage: AssembleStage;
-  /** 仓库配置快照（`readRepoPolicy().settings`）：`{{labels}}` 渲染词表。 */
-  readonly settings?: RepoSettings | null;
-  /** `prompt_versions` 的读取端口（`activePromptBody`）。不给 = 一律用内置默认模板。 */
-  readonly db?: SqlRunner | undefined;
-  /** 已收集的 AGENTS.md（Q9：**任意阶段都注入**）。light 运行时由调用方预先给。 */
-  readonly agentsMd?: AgentsMdResult | null;
-  /** 流水线行：`recheck` 判据之一（`format_fail_count > 0`）。 */
-  readonly pipeline?: PipelineRow | null;
-  readonly dryRun?: boolean;
-  /**
-   * 输出契约（信封形状）。缺省从 `buildTaskPrompt()` 的尾部取 —— 契约**由代码给、不可配**，
-   * 永远是最后一段（§4.4 / V16）。
-   */
-  readonly outputContract?: string | null;
-  readonly logger?: Logger;
-}
-
-export interface BuildStagePromptResult {
-  /** 用的是哪条版本线（`format_check` / `classify` / `agent`）。 */
-  readonly kind: PromptKind;
-  /** 最终 prompt（阶段系统提示词 + AGENTS.md + 输出契约）。 */
-  readonly prompt: string;
-  /** 渲染后的阶段系统提示词（`assemblePrompt` 的 head 位置）。 */
-  readonly stagePrompt: string;
-  readonly stats: AssemblePromptStats;
-  /** 不可信内容被截断（正文 / 补充评论 / 标题）。 */
-  readonly truncated: boolean;
-  /** 丢掉的东西（`body` / `title` / `supplement#n` / `supplement@author`）。 */
-  readonly dropped: readonly string[];
-  /** 模板里未识别的占位符（保存期已 400，这里只是运行期留痕）。 */
-  readonly unknownPlaceholders: readonly string[];
-  /** 本轮是否「重跑」（D8：重检通过必须有确认评论）。 */
-  readonly recheck: boolean;
-}
-
-/**
- * 这一轮是不是「重跑」（D8 / V4）。
- *
- * 两条判据，任一成立即算：
- *  1. `issue_pipeline.format_fail_count > 0` —— 上一次不通过之后的重检；
- *  2. 任务带补充评论段（`target_supplement` 非空）—— 评论触发的重跑。
- *
- * 为什么不能靠 `tasks.idempotency_key` 判断：那是 `sha256` 前 32 位，锚（含 `:<commentId>`）
- * 已经不可读了 —— 拿哈希去 grep 一个 comment id 只会得到「永远 false」这种静默错误。
- */
-export function isRecheckTask(input: {
-  readonly pipeline?: PipelineRow | null;
-  readonly supplements: readonly TaskSupplementRow[];
-}): boolean {
-  if (input.supplements.length > 0) {
-    return true;
-  }
-  return (input.pipeline?.formatFailCount ?? 0) > 0;
-}
-
-/** 阶段模板的占位符来源（§5：title/body/repo/target/labels/author/url/recheck）。 */
-export function stagePromptVarsOf(input: BuildStagePromptInput): StagePromptVars {
-  const target = `${input.task.targetKind === 'pr' ? 'PR' : 'issue'} #${String(input.task.targetNumber)}`;
-  return {
-    repo: input.task.repo,
-    target,
-    title: input.task.targetTitle,
-    body: input.task.targetBody,
-    labels: input.settings?.labels.vocabulary ?? [],
-    author: input.task.actorLogin,
-    url: `https://github.com/${input.task.repo}/issues/${String(input.task.targetNumber)}`,
-    recheck: isRecheckTask({
-      pipeline: input.pipeline ?? null,
-      supplements: input.task.targetSupplement,
-    }),
-  };
-}
-
-/**
- * 补充评论段（E4：最近 3 条、每条 ≤1000、**置顶**在正文之前）。
- *
- * 抽出来是因为**两条装配路径都要它**：`buildStagePrompt()`（阶段 0/1 在装 worktree 之前就拼好）
- * 与 `createPromptEnricher({stage:'agent'})`（阶段 2 在 worktree 之后才拼）。
- * 两处各写一份映射，就会出现「阶段 1 的补充评论进了提示词、阶段 2 的没进」这种没人发现的偏差。
- */
-export function stagePromptSupplementsOf(
-  task: Pick<StagePromptTask, 'targetSupplement'>,
-): StagePromptSupplement[] {
-  return task.targetSupplement.map((item) => ({
-    author: item.author,
-    createdAt: item.at === '' ? null : item.at,
-    body: item.body,
-  }));
-}
-
-export interface RenderAgentStagePromptInput {
-  readonly repo: string;
-  /** `prompt_versions` 的读取端口；不给 = 一律用内置默认模板（单测 / 未接库）。 */
-  readonly db?: SqlRunner | undefined;
-  /** 插值原料（`{{title}}` / `{{body}}` / `{{labels}}` …）；缺省按空值渲染。 */
-  readonly vars?: StagePromptVars | undefined;
-  /** 置顶的补充评论（E4）。 */
-  readonly supplements?: readonly StagePromptSupplement[] | undefined;
-  readonly logger?: Logger;
-}
-
-/**
- * 阶段 2 的阶段系统提示词（`kind=agent`）：**项目版整体覆盖内置默认**（Q1），渲染后交给 `assemblePrompt`
- * 当 head。
- *
- * 为什么要单独一个函数：`buildStagePrompt()` 负责阶段 0/1（在 worktree 之前拼），而阶段 2 的装配发生在
- * **worktree 就绪之后**（enricher 里，要读 AGENTS.md 与技能层），两条时序不同、但「读哪条版本线 + 怎么插值」
- * 必须只有一处实现 —— 否则面板改了 agent 提示词，阶段 2 的实际行为会和 §16.3 的矩阵对不上。
- *
- * 读库失败 / 正文为空 → 退回内置默认 + 一条 warn：**不让一段坏配置把整轮任务变成失败**。
- */
-export async function renderAgentStagePrompt(input: RenderAgentStagePromptInput): Promise<string> {
-  const kind = 'agent' as const;
-  let body = stagePromptDefault(kind);
-  if (input.db !== undefined) {
-    try {
-      body = await activePromptBody(input.db, input.repo, kind);
-    } catch (error) {
-      input.logger?.warn(
-        { repo: input.repo, kind, err: error instanceof Error ? error.message : String(error) },
-        `读 ${kind} 阶段提示词失败，本轮用内置默认模板`,
-      );
-    }
-  }
-  if (body.trim() === '') {
-    body = stagePromptDefault(kind);
-  }
-  return renderStagePrompt({
-    kind,
-    body,
-    vars: input.vars ?? {},
-    supplements: input.supplements ?? [],
-  }).text;
-}
-
-/**
- * 拼一次阶段提示词（阶段 0/1/2 共用）。
- *
- * 三步，顺序固定（§10.5 / §16.3）：
- *  1. `activePromptBody(db, repo, kind)` —— 版本 0 / 没有行 → **内置默认模板**，项目版存在 → **整体覆盖**；
- *  2. `renderStagePrompt({body, vars, supplements})` —— 插值 + 清洗 + `{{body}}`（补充段置顶）+ 截断标注；
- *  3. `assemblePrompt({stage, stagePrompt, agentsMd, basePrompt: 输出契约})` —— 阶段系统提示词占 head，
- *     AGENTS.md 照常成层（Q9），P1 与技能层**不出现**（`projectPrompt: ''` / `skill: null`），
- *     输出契约永远最后（代码给、不可配）。
- *
- * 读库失败**不让任务失败**：退回内置默认模板 + 一条 warn（同 P1 的处理）。
- */
-export async function buildStagePrompt(input: BuildStagePromptInput): Promise<BuildStagePromptResult> {
-  const kind = STAGE_PROMPT_KIND_OF[input.stage];
-  const repo = input.task.repo;
-  const logger = input.logger;
-
-  let body = stagePromptDefault(kind);
-  if (input.db !== undefined) {
-    try {
-      body = await activePromptBody(input.db, repo, kind);
-    } catch (error) {
-      logger?.warn(
-        { repo, kind, err: error instanceof Error ? error.message : String(error) },
-        `读 ${kind} 阶段提示词失败，本轮用内置默认模板`,
-      );
-    }
-  }
-  // 空正文 = 项目把模板清空了：退回内置默认（否则阶段提示词整段消失，模型没有任何判据）
-  if (body.trim() === '') {
-    body = stagePromptDefault(kind);
-  }
-
-  const vars = stagePromptVarsOf(input);
-  const supplements = stagePromptSupplementsOf(input.task);
-  const rendered = renderStagePrompt({ kind, body, vars, supplements });
-
-  // 输出契约：代码固定、不可配、永远最后一段（V16）。缺省取 `buildTaskPrompt()` 的尾部。
-  const contract =
-    input.outputContract ??
-    splitBasePrompt(
-      buildTaskPrompt({
-        command: 'pipeline',
-        repo,
-        targetKind: input.task.targetKind,
-        targetNumber: input.task.targetNumber,
-        dryRun: input.dryRun === true,
-        settings: input.settings ?? null,
-      }),
-    ).tail;
-
-  const assembled = assemblePrompt({
-    basePrompt: contract,
-    // 阶段 0/1 明确**不注入 P1**（§16.3）；阶段 2 的 P1 由 enricher 负责（四层齐全）
-    projectPrompt: '',
-    agentsMd: input.agentsMd ?? null,
-    skill: null,
-    stage: input.stage,
-    stagePrompt: rendered.text,
-    outputContract: contract,
-  });
-
-  if (rendered.truncated) {
-    logger?.warn(
-      { repo, kind, dropped: rendered.dropped },
-      '阶段提示词有不可信内容被截断（截断处已标注）',
-    );
-  }
-  if (rendered.unknownPlaceholders.length > 0) {
-    logger?.warn(
-      { repo, kind, unknown: rendered.unknownPlaceholders },
-      '阶段提示词里有未识别的占位符（原样保留）',
-    );
-  }
-
-  return {
-    kind,
-    prompt: assembled.prompt,
-    stagePrompt: rendered.text,
-    stats: assembled.stats,
-    truncated: rendered.truncated,
-    dropped: rendered.dropped,
-    unknownPlaceholders: rendered.unknownPlaceholders,
-    recheck: vars.recheck === true,
-  };
-}
-
-/* ── 门禁回执（`pipeline:notice`，§8 / Q8）───────────────────────────────────── */
-
-/** 从 `tasks.prompt_text` 里取门禁状态（webhook 写入 `gate_state=<stage>/<state>; …`）。 */
-export function gateStateOfPromptText(promptText: string | null): string {
-  const matched = /(?:^|[;\s])gate_state=([^;\s]+)/u.exec(promptText ?? '');
-  return matched?.[1] ?? 'unknown';
-}
-
-export interface BuildNoticePromptInput {
-  readonly task: StagePromptTask & { readonly promptText?: string | null };
-  readonly settings?: RepoSettings | null;
-  readonly dryRun?: boolean;
-}
-
-/**
- * 门禁回执的提示词（§8 / Q8）。
- *
- * 与阶段提示词的三点不同，都是**有意的**：
- *  1. 模板是代码常量（`GATE_NOTICE_PROMPT`）——**不可配、不占版本号**；
- *  2. 装配走 light（没有 worktree）：不注入 P1、不注入技能层，AGENTS.md 也没有（light 无检出）；
- *  3. 用 `stage:'format'` 的帧：阶段系统提示词占 head、输出契约永远最后（V16 同样适用）。
- *
- * 产出只有**一条评论**：判据与建议动作都在模板里，控制面只管限速/长度/`@`（Q8）。
- */
-export function buildNoticePrompt(input: BuildNoticePromptInput): { prompt: string; gateState: string } {
-  const repo = input.task.repo;
-  const target = `${input.task.targetKind === 'pr' ? 'PR' : 'issue'} #${String(input.task.targetNumber)}`;
-  const gateState = gateStateOfPromptText(input.task.promptText ?? null);
-  const stagePrompt = renderGateNoticePrompt({ repo, target, gateState });
-  const contract = splitBasePrompt(
-    buildTaskPrompt({
-      command: 'pipeline:notice',
-      repo,
-      targetKind: input.task.targetKind,
-      targetNumber: input.task.targetNumber,
-      dryRun: input.dryRun === true,
-      settings: input.settings ?? null,
-    }),
-  ).tail;
-  const assembled = assemblePrompt({
-    basePrompt: contract,
-    projectPrompt: '',
-    agentsMd: null,
-    skill: null,
-    stage: 'format',
-    stagePrompt,
-    outputContract: contract,
-  });
-  return { prompt: assembled.prompt, gateState };
-}
-
 /* ── 端口集合 ─────────────────────────────────────────────────────────────── */
 
 /** worker 需要的全部端口（`ops` / `events` 由每一次 run 的 RACP 通道提供）。 */
@@ -952,35 +642,6 @@ export interface PromptEnricherOptions {
    * 优先级同 spec §7：面板-仓库 > 面板全局 > 仓库文件 > 内置。
    */
   readonly extraSkillFiles?: readonly SkillFile[];
-  /**
-   * 装配阶段（`docs/plan-fixed-pipeline.md` §16.3 的作用域矩阵）。**缺省 = 现状**。
-   *
-   *  - `undefined` / `null`：P1 + AGENTS.md + 技能层，装配结果与接线前**逐字节一致**；
-   *  - `format` / `classify`：`projectPrompt: ''`、**不注入技能层**，但 AGENTS.md 照常注入（Q9）；
-   *  - `agent`：四层齐全（阶段系统提示词已在 `basePrompt` 的 head 位置，由 `buildStagePrompt` 拼好）。
-   */
-  readonly stage?: AssembleStage | null;
-  /**
-   * P1「项目人格层」与装配统计的落库端口（`prompt_versions` / `runtime_flags`）。
-   *
-   * 为什么是「给库、不给正文」：每轮任务都要读一次**当前启用**的版本正文
-   * （`activePromptBody()`），在进程启动时缓存住就等于「面板改了要重启才生效」。
-   * 不给 = 装配结果与「没有 P1」逐字节一致（老装配 / 单测）。
-   */
-  readonly db?: SqlRunner | undefined;
-  /**
-   * 阶段系统提示词（`kind=agent`）的渲染原料（**只在 `stage === 'agent'` 时用**）。
-   *
-   * 为什么由调用方给：`{{title}}` / `{{body}}` / `{{labels}}` 全部来自**任务行**与仓库配置，
-   * 而 enricher 的入参只有 worktree/basePrompt/command（`worker/types.ts` 的约定）。
-   * 不给 = 阶段 2 的 head 退回 `basePrompt` 的第一段（接线前的行为，逐字节一致）。
-   */
-  readonly stageVars?: StagePromptVars | undefined;
-  /**
-   * 阶段提示词要置顶的补充评论（§16.2 第 2 条：评论优先）。
-   * 与 `buildStagePrompt()` 用的是同一份原料（`stagePromptSupplementsOf()`）。
-   */
-  readonly stageSupplements?: readonly StagePromptSupplement[] | undefined;
 }
 
 /**
@@ -1156,13 +817,11 @@ export function createRepoAgentsMdLoader(
  *     所以即使仓库一个技能文件都没有，`/issue-triage` 这类内置技能照样能装配）；
  *  3. `command` 命中技能 → `renderSkillPrompt()` → `assemblePrompt({ basePrompt, agentsMd, skill })`。
  *
- * **阶段作用域**（`options.stage`，§16.3）：
- *  - 缺省（不传）：P1 + AGENTS.md + 技能层，装配结果与接线前**逐字节一致**；
- *  - `format` / `classify`：`projectPrompt: ''`、**不读技能层**，只补 AGENTS.md（Q9）——
- *    这两个阶段的 `basePrompt` 已经是 `buildStagePrompt()` 装好的「阶段系统提示词 + 输出契约」，
- *    所以这里用**缺省层序**（head + AGENTS.md + 其余），等价于矩阵里的「只加 AGENTS.md」，
- *    而不会把阶段系统提示词从 head 位置挤掉；
- *  - `agent`：四层齐全（阶段系统提示词已在 head 位置，这里补 P1 / AGENTS.md / 技能）。
+ *
+ * 层序（v0.3 收窄后）：`basePrompt`（head，含命令级输出契约）→ AGENTS.md → 技能正文（命中时）。
+ * 阶段系统提示词（`buildStagePrompt` / `renderAgentStagePrompt`）与 P1（`prompt_versions`）
+ * 已随「固定流水线」与提示词子系统退役删除；项目级补充提示词改由 `settings.agent.project_prompt`
+ * 在 S2/S4 接入（`docs/dev-plan-issue-agent.md` §2.6）。
  *
  * **不抛异常**是调用方（`worker/run-task.ts`）的责任，但这里也尽量把「读不到」变成「少一段」：
  * 唯一的抛错来源是 `assemblePrompt`（纯函数，实际不会抛）。
@@ -1170,62 +829,28 @@ export function createRepoAgentsMdLoader(
 export function createPromptEnricher(options: PromptEnricherOptions): PromptEnricher {
   const logger = options.logger;
   const extraSkillFiles = options.extraSkillFiles ?? [];
-  const stage = options.stage ?? null;
-  /** 阶段 0/1 不注入 P1 与技能层（§16.3 矩阵）；AGENTS.md 例外（Q9：任意时刻生效）。 */
-  const personaAllowed = stage !== 'format' && stage !== 'classify';
 
   return async (input) => {
-    // 阶段 0/1 用不到仓库技能：连目录都不读（light 的 worktreeDir 是临时目录，读了也是空）
-    const repoSkillFiles = personaAllowed ? await readRepoSkillFiles(input.worktreeDir, logger) : [];
-    const repoSkills = personaAllowed ? [...repoSkillFiles, ...extraSkillFiles] : [];
+    const repoSkillFiles = await readRepoSkillFiles(input.worktreeDir, logger);
+    const repoSkills = [...repoSkillFiles, ...extraSkillFiles];
     const registry = createSkillRegistry({
       ...(repoSkills.length === 0 ? {} : { repoSkills }),
       config: options.config ?? null,
       ...(logger === undefined ? {} : { logger }),
     });
-    const skill = !personaAllowed || input.command === null ? undefined : registry.resolve(input.command);
+    const skill = input.command === null ? undefined : registry.resolve(input.command);
 
     const agentsMd = await collectAgentsMd({
       worktreeDir: input.worktreeDir,
-      // 任务涉及路径：本轮拿不到「issue 正文里提到的文件/报错路径」（要读正文，见 M3），
-      // 所以先只进根 AGENTS.md；`hintPaths` 一有值，就近层就自动生效（逻辑已在 agents-md 里）。
+      // 任务涉及路径：本轮拿不到「issue 正文里提到的文件/报错路径」，所以先只进根 AGENTS.md；
+      // `hintPaths` 一有值，就近层就自动生效（逻辑已在 agents-md 里）。
       hintPaths: [],
     });
 
-    // ── P1「项目人格层」（W3-G）：插在 head 之后、AGENTS.md 之前 ────────────────
-    // 读库失败 / 没有版本 / 开关关掉 一律给空串 —— 装配结果与「没有 P1」逐字节一致，
-    // 所以这里不需要区分「没有 P1」与「P1 读不到」（后者多记一条 warn）。
     const repo = options.context.repo;
-    let projectPrompt = '';
-    if (options.db !== undefined && personaAllowed) {
-      try {
-        projectPrompt = await activePromptBody(options.db, repo);
-      } catch (error) {
-        logger?.warn(
-          { repo, err: error instanceof Error ? error.message : String(error) },
-          '读项目提示词（P1）失败，本轮按「没有 P1」装配',
-        );
-      }
-    }
-
-    // ── 阶段 2 的阶段系统提示词（`kind=agent`）占 head（S4 / §7 / §16.3 矩阵）────────
-    // 四层 = head（agent 阶段系统提示词）→ P1 → AGENTS.md → 技能 → 输出契约（最后，代码给）。
-    // `agent` 与 P1 **不是替代关系**（Q3 撤销）：一个管「流程怎么跑」，一个管「项目是谁」，
-    // 内容矛盾属于项目配置写坏了，系统不仲裁。
-    const stagePrompt =
-      stage === 'agent'
-        ? await renderAgentStagePrompt({
-            repo,
-            ...(options.db === undefined ? {} : { db: options.db }),
-            ...(options.stageVars === undefined ? {} : { vars: options.stageVars }),
-            ...(options.stageSupplements === undefined ? {} : { supplements: options.stageSupplements }),
-            ...(logger === undefined ? {} : { logger }),
-          })
-        : null;
-
     const assembled = assemblePrompt({
       basePrompt: input.basePrompt,
-      projectPrompt,
+      projectPrompt: '',
       agentsMd,
       skill:
         skill === undefined
@@ -1241,37 +866,18 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
                     ? options.context
                     : { ...options.context, config: options.config },
                 // 输出契约由 `basePrompt` 的尾部负责，且必须是**最后**一段；
-                // 这里再塞一份会让模型看到两个互相冲突的信封格式（`renderSkillPrompt` 自带的那份
-                // 用的是技能自己的 outputs，与 `buildTaskPrompt` 的命令级契约不是一回事）。
+                // 这里再塞一份会让模型看到两个互相冲突的信封格式。
                 includeEnvelopeInstruction: false,
               }).prompt,
             },
-      // 阶段 2 传 `stage:'agent'`：head 换成 agent 阶段系统提示词，`stats.baseChars` 如实算进
-      //「agent 阶段提示词 + 输出契约」（§16.3.1 / V18）；输出契约仍是 `basePrompt` 的尾部
-      //（**不可配**，V16 的判据就是「改坏 agent 提示词也不影响最后一段」）。
-      // 阶段 0/1 不传：它们的 head 必须是 `buildStagePrompt()` 装好的整段阶段系统提示词。
-      ...(stage === 'agent' ? { stage, ...(stagePrompt === null ? {} : { stagePrompt }) } : {}),
     });
 
     // 整段丢弃（超预算）必须出声：静默丢层会让「技能/AGENTS.md 明明写了却不生效」难以归因。
     if (assembled.stats.truncated.length > 0) {
       logger?.warn(
         { repo, truncated: assembled.stats.truncated, totalChars: assembled.stats.totalChars },
-        '提示词超出总预算：已按层整段丢弃（面板「最终装配预览」看得到丢弃标记）',
+        '提示词超出总预算：已按层整段丢弃',
       );
-    }
-
-    // 装配统计落库（`runtime_flags{key:'assemble:prompt:stats'}`）：面板保存 P1 时的预算预演要读它。
-    // 写失败只 warn：统计不是判定，缺一次不该让任务或装配失败。
-    if (options.db !== undefined) {
-      try {
-        await recordAssembleStats(options.db, repo, assembled.stats);
-      } catch (error) {
-        logger?.warn(
-          { repo, err: error instanceof Error ? error.message : String(error) },
-          '装配统计写库失败（已忽略）',
-        );
-      }
     }
 
     logger?.debug(

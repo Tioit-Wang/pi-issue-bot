@@ -28,23 +28,10 @@ import type { Pool } from 'pg';
 
 import { AppError, createLogger } from '../../../../packages/shared/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
-import {
-  DEFAULT_TRIGGER_ALIASES,
-  PIPELINE_COMMANDS,
-  resolveTriggerAliases,
-} from '../../../../packages/contract/src/index.ts';
-import type { PipelineCommand, RepoConfig } from '../../../../packages/contract/src/index.ts';
+import { DEFAULT_TRIGGER_ALIASES, resolveTriggerAliases } from '../../../../packages/contract/src/index.ts';
 import type { SqlExecutor } from '../db/index.ts';
 import { closePool, createPool } from '../db/index.ts';
 import { readRepoPolicy } from '../config/index.ts';
-import {
-  PIPELINE_CLASSIFY_MAX_MINUTES,
-  PIPELINE_SESSION_MAX_AGE_DAYS,
-  PIPELINE_SESSION_MAX_TURNS,
-  createPipelineLimits,
-} from '../config/pipeline-constants.ts';
-import type { PipelineLimits } from '../config/pipeline-constants.ts';
-import { MAX_COMMENT_BODY } from '../../../../packages/envelope/src/schema.ts';
 import { resolveGithubAuth } from './github-auth.ts';
 import { createGithubWriteApi } from '../github/index.ts';
 import type { GithubClient, GithubReactionApi, GithubWriteApi } from '../github/index.ts';
@@ -58,8 +45,6 @@ import {
   createMetricsServer,
   createOctokitVerifier,
   createQueueEnqueuer,
-  idempotencyKeyFor,
-  WEBHOOK_SQL,
   createAllowAllAuth,
   decodeFreeQuestion,
   createSessionAuth,
@@ -73,7 +58,6 @@ import type {
   SessionStore,
   ReactionContent,
   WebhookAck,
-  WebhookTaskPlan,
   WebhookVerify,
 } from '../http/index.ts';
 import { JOB_SCHEDULES, registerJobs } from '../jobs/index.ts';
@@ -84,6 +68,7 @@ import {
   cancelTaskJob,
   createBoss,
   enqueueRetry,
+  expireInSecondsForCommand,
   registerScheduleWorker,
   registerTaskWorker,
 } from '../queue/index.ts';
@@ -108,35 +93,28 @@ import { createRacpChannelFactory } from './racp.ts';
 import type { RacpChannelFactory } from './racp.ts';
 import {
   buildAnswerPrompt,
-  buildNoticePrompt,
-  buildStagePrompt,
   buildTaskPrompt,
   createBotLabelLedger,
   createGithubLabelCatalog,
-  createGithubRepoFileReader,
   createLabelWritebackPolicy,
   createPromptEnricher,
-  createRepoAgentsMdLoader,
   createUnavailableHostPort,
   createWorkerFeedbackDeps,
   createWorkerPorts,
   createWorkflowReactionPort,
-  gateStateOfPromptText,
   readTaskRow,
-  stagePromptSupplementsOf,
-  stagePromptVarsOf,
 } from './worker-deps.ts';
-import type { RepoFileReader, TaskJobRow, WorkerPorts } from './worker-deps.ts';
-import type { PipelineRow, PipelineTransition } from '../workflows/index.ts';
-import { applyTransition, loadPipeline, pipelineAnchor } from '../workflows/index.ts';
-import { loadHumanVetoed } from '../workflows/bot-labels.ts';
-import { toSqlRunner } from '../workflows/ports.ts';
-import type { AssembleStage } from '../skills/assemble.ts';
-import { clampCommentBody, executeClassifyPlan, planClassifyOutcome } from '../workflows/pipeline-classify.ts';
-import { executeFormatPlan, planFormatOutcome } from '../workflows/pipeline-format.ts';
-import { commentBodyOf } from '../workflows/stage-result.ts';
+import type { TaskJobRow, WorkerPorts } from './worker-deps.ts';
 import { createSkillStore } from '../skills/store.ts';
 import { concurrencyPerRepoOf } from '../queue/repo-concurrency.ts';
+import {
+  dispatchNextForIssue,
+  finishMessageAndContinue,
+  loadSession as loadAgentSessionRow,
+  parseAgentTaskIdempotencyKey,
+  saveSession as saveAgentSessionRow,
+} from '../agent/index.ts';
+import type { AgentDispatchDeps } from '../agent/index.ts';
 
 /* ── 队列的最小接口（结构可替换）────────────────────────────────────────────── */
 
@@ -145,7 +123,6 @@ export type QueueStatsLike = {
   readonly queuedCount: number;
   readonly activeCount: number;
 };
-
 /**
  * 装配层用的队列接口：**恰好**覆盖本文件用到的成员。
  *
@@ -196,57 +173,36 @@ export const APP_ERROR_CODES = {
   alreadyStarted: 'APP_ALREADY_STARTED',
 } as const;
 
-
-/* ── 固定流水线：按命令决定运行时 / 会话 / 提示词（S2-b，§5 / §7 / §10.5）──────── */
+/* ── issue agent 会话：复用 / 轮换（`docs/req-issue-agent.md` §1.2）────────────────── */
 
 /**
- * `pipeline:*` → 运行时模式。
+ * 会话轮换的阈值（系统级常量：30 轮 / 7 天）。
  *
- * 用 `Record<PipelineCommand, …>` 而不是散落的 `command === 'pipeline:format'`：
- * 契约里加一条阶段命令时这里**编译期**就红，不会静默落到 `sandboxed`（白起一个容器）。
+ * 这两个数字原来在 `config/pipeline-constants.ts`（已随流水线删除），现在就近定义在这里 ——
+ * 它们是「上下文预算法」的一部分，v0.3 的 `docs/agent-context.md`（D-2）定稿后若调整，
+ * 只改这一处。
  */
-export const PIPELINE_RUNTIME_MODE: Readonly<Record<PipelineCommand, 'light' | 'sandboxed'>> =
-  Object.freeze({
-    'pipeline:format': 'light',
-    // 分类要起容器装依赖、可读代码（D6）：这是唯一保持 sandboxed 的阶段
-    'pipeline:classify': 'sandboxed',
-    'pipeline:notice': 'light',
-  });
-
-/** `pipeline:*` → 装配位置（`notice` 不是阶段，给 `null`）。 */
-const ASSEMBLE_STAGE_OF_PIPELINE: Readonly<Record<PipelineCommand, AssembleStage | null>> =
-  Object.freeze({
-    'pipeline:format': 'format',
-    'pipeline:classify': 'classify',
-    'pipeline:notice': null,
-  });
-
-/** 流水线命令 → 装配阶段；不是流水线命令给 `null`。 */
-export function assembleStageOfCommand(command: string): AssembleStage | null {
-  return (PIPELINE_COMMANDS as readonly string[]).includes(command)
-    ? ASSEMBLE_STAGE_OF_PIPELINE[command as PipelineCommand]
-    : null;
-}
-
-/** 是不是流水线命令（`source='pipeline'` 的那三条）。 */
-export function isPipelineTaskCommand(command: string): command is PipelineCommand {
-  return (PIPELINE_COMMANDS as readonly string[]).includes(command);
-}
-
-/* ── 阶段 2 会话：复用 / 轮换（§7 / §12 V13，S4）─────────────────────────────── */
-
-/** 会话轮换的阈值（系统级常量，§7「`session_turns ≥ 30` 或超 7 天」）。 */
 export const AGENT_SESSION_POLICY = Object.freeze({
-  maxTurns: PIPELINE_SESSION_MAX_TURNS,
-  maxAgeDays: PIPELINE_SESSION_MAX_AGE_DAYS,
+  maxTurns: 30,
+  maxAgeDays: 7,
 });
 
 /** 轮换原因（面板要能解释「为什么这一轮换了会话」）。 */
 export type AgentSessionRotationReason = 'turns' | 'age';
 
-/** 一次阶段 2 run 的会话计划（`executeTask()` 用它决定 attach / archive / 新建）。 */
+/** `agent_sessions` 的一行（会话状态的**唯一**来源；原来住在 `issue_pipeline`）。 */
+export type AgentSessionRow = {
+  readonly sessionId: string | null;
+  /** `events/subscribe` 的 `after` 游标 */
+  readonly cursor: number;
+  /** 该会话已用轮数 */
+  readonly turns: number;
+  readonly startedAt: Date | null;
+};
+
+/** 一次 agent run 的会话计划（`executeTask()` 用它决定 attach / archive / 新建）。 */
 export interface AgentSessionPlan {
-  /** 交给 `runTask()` 的会话计划；`undefined` = 缺省 `ephemeral`（非阶段 2 任务）。 */
+  /** 交给 `runTask()` 的会话计划；`undefined` = 缺省 `ephemeral`（非 agent 任务）。 */
   readonly session: SessionPlan | undefined;
   readonly rotate: boolean;
   readonly rotateReason: AgentSessionRotationReason | null;
@@ -255,18 +211,18 @@ export interface AgentSessionPlan {
 }
 
 /**
- * 阶段 2 的会话决策（**纯函数**：时钟由参数给，便于单测把「第 30 轮」「第 8 天」直接摆出来）。
+ * agent 任务的会话决策（**纯函数**：时钟由参数给，便于单测把「第 30 轮」「第 8 天」直接摆出来）。
  *
- * 四条规则（§7 / V13）：
- *  1. **阶段间独立**（D1）：行不是 `agent` 阶段 → `undefined`（ephemeral，跑完归档；
- *     阶段 0/1 因此**不会**往 `issue_pipeline.session_id` 里写东西）；
+ * 四条规则：
+ *  1. **不是 agent 任务** → `undefined`（ephemeral，跑完归档；`/review-pr`、`@answer` 都是这样）；
  *  2. **第一次**：没有 `session_id` → `{mode:'persistent'}`（新建会话，本轮结束后落 id）；
- *  3. **复用**：有 id → `{mode:'persistent', sessionId, after: session_cursor}`（`after` 防重放旧事件）；
- *  4. **轮换**：`session_turns >= maxTurns` 或存活超过 `maxAgeDays` → 先 archive 旧会话再新建，
- *     并落 `blocked_reason='session-reset'`（**不阻塞**：面板解释「上下文断了一次」）。
+ *  3. **复用**：有 id → `{mode:'persistent', sessionId, after: cursor}`（`after` 防重放旧事件）；
+ *  4. **轮换**：`turns >= maxTurns` 或存活超过 `maxAgeDays` → 先 archive 旧会话再新建。
  */
 export function planAgentSession(input: {
-  readonly pipeline: PipelineRow | null;
+  readonly session: AgentSessionRow | null;
+  /** 这一轮是不是 agent 任务（`tasks.source === 'agent'`）。 */
+  readonly isAgentTask: boolean;
   readonly at: Date;
   readonly maxTurns?: number;
   readonly maxAgeDays?: number;
@@ -277,22 +233,21 @@ export function planAgentSession(input: {
     rotateReason: null,
     archiveSessionId: null,
   };
-  const pipeline = input.pipeline;
-  if (pipeline === null || pipeline.stage !== 'agent') {
+  if (!input.isAgentTask) {
     return idle;
   }
   const maxTurns = input.maxTurns ?? AGENT_SESSION_POLICY.maxTurns;
   const maxAgeDays = input.maxAgeDays ?? AGENT_SESSION_POLICY.maxAgeDays;
-  const sessionId = pipeline.sessionId;
+  const sessionId = input.session?.sessionId ?? null;
   if (sessionId === null || sessionId === '') {
     // 第一轮：新建（`persistent` 不 archive，下一轮才能 attach）
     return { session: { mode: 'persistent' }, rotate: false, rotateReason: null, archiveSessionId: null };
   }
 
-  const startedAt = pipeline.sessionStartedAt;
+  const startedAt = input.session?.startedAt ?? null;
   const ageMs = startedAt === null ? 0 : input.at.getTime() - startedAt.getTime();
   const reason: AgentSessionRotationReason | null =
-    pipeline.sessionTurns >= maxTurns
+    (input.session?.turns ?? 0) >= maxTurns
       ? 'turns'
       : ageMs >= maxAgeDays * 86_400_000
         ? 'age'
@@ -306,15 +261,16 @@ export function planAgentSession(input: {
       archiveSessionId: sessionId,
     };
   }
+  const cursor = input.session?.cursor ?? 0;
   return {
     session: {
       mode: 'persistent',
       sessionId,
-      // **只在本轮真的有过游标时才传 `after`**：恒传 `after: sessionCursor`（缺省 0）会让
+      // **只在本轮真的有过游标时才传 `after`**：恒传 `after: cursor`（缺省 0）会让
       // `turn-driver` 的「没给 `after` 时用 attach 快照游标兜底」分支永不生效 ——
-      // `session_id` 有值但 `session_cursor` 还没回填（0）时，会 `subscribe{after:0}`
+      // `session_id` 有值但 `cursor` 还没回填（0）时，会 `subscribe{after:0}`
       // 把整段旧事件重放一遍，旧信封有机会污染本轮。
-      ...(pipeline.sessionCursor > 0 ? { after: pipeline.sessionCursor } : {}),
+      ...(cursor > 0 ? { after: cursor } : {}),
     },
     rotate: false,
     rotateReason: null,
@@ -322,69 +278,6 @@ export function planAgentSession(input: {
   };
 }
 
-/* ── 门禁回执（`pipeline:notice`，§8 / Q8）────────────────────────────────────── */
-
-/**
- * dry-run 下阶段 0 的留痕（写进 `issue_pipeline.blocked_reason`，面板与 `/api` 都看得到）。
- *
- * 为什么要有这一条：dry-run 下 `executeFormatPlan()` 不写转移，行会停在 `format/pending`。
- * 光看面板只会觉得「卡住了」，所以把「为什么停在这里」写成一个可见的事实。
- */
-export const DRY_RUN_STAGE_NOTE =
-  'dry-run：仅推进内部状态（未入队下一阶段、未发任何 GitHub 写动作）';
-
-/**
- * 门禁回执正文的兜底句（Q8：**唯一**允许的控制面文案 —— 模型没写评论时才会用到）。
- *
- * 按门禁状态给最小安全提示：说清「卡在哪一步、下一步做什么」，不复述内部实现细节。
- */
-export function noticeFallbackBody(gateState: string): string {
-  if (gateState === 'blocked' || gateState.endsWith('/blocked')) {
-    return '自动流程在这一步暂停了：维护者可以用 `/recheck --force` 或 `/pipeline next` 继续。';
-  }
-  if (gateState.startsWith('classify/')) {
-    return '这条 issue 已转给管理员分类，请稍等处理结果。';
-  }
-  if (gateState.startsWith('format/')) {
-    return '这条 issue 还在等补充信息：请按上一条评论补齐后重发，补齐后会自动复查。';
-  }
-  return '当前流程卡在这一步，这条命令暂时无法执行，请稍后再试或联系维护者。';
-}
-
-/**
- * 门禁回执的**唯一**正文：模型写的那条评论（Q8：AI 撰写），模型没写才用兜底句。
- *
- * 为什么不直接发 `buildNoticePrompt()` / `renderGateNoticePrompt()` 的产出：那两份是
- * **给模型的提示词**（含输出契约与判据），发到 issue 里等于把内部指令贴给用户看。
- * 回执的可见正文只能来自模型（Q8），控制面只负责限速、长度与「模型漏写时的兜底」。
- */
-export function noticeCommentBodyOf(input: {
-  readonly envelope: unknown;
-  readonly gateState: string;
-}): string {
-  const modelBody = commentBodyOf(input.envelope);
-  if (modelBody !== null) {
-    // 长度上限与其它阶段评论同源（`MAX_COMMENT_BODY`），超长才加截断标记
-    return clampCommentBody(modelBody);
-  }
-  // 兜底句同样走长度上限（与其它阶段评论同源）
-  return clampCommentBody(noticeFallbackBody(input.gateState), MAX_COMMENT_BODY);
-}
-
-/**
- * `pipeline:classify` 的任务级时间闸（毫秒）。
- *
- * 取 `min(settings.limits.max_task_minutes, PIPELINE_CLASSIFY_MAX_MINUTES)`：
- * 项目配置可以调低（省成本），但不能调高过系统硬上限（§6 / §13「30min 闸」）。
- * `settings` 缺失时用系统常量兜底。
- */
-export function classifyTimeoutMsOf(
-  settings: Pick<RepoConfig, 'limits'> | null | undefined,
-): number {
-  const projectMinutes = settings?.limits.max_task_minutes ?? PIPELINE_CLASSIFY_MAX_MINUTES;
-  const minutes = Math.min(projectMinutes, PIPELINE_CLASSIFY_MAX_MINUTES);
-  return Math.max(1, Math.trunc(minutes)) * 60_000;
-}
 
 /* ── 注入面 ───────────────────────────────────────────────────────────────── */
 
@@ -413,11 +306,6 @@ export interface ApplicationOverrides {
   readonly metricsServer?: MetricsServer;
   readonly requireAuth?: BuildServerDeps['requireAuth'];
   readonly now?: () => Date;
-  /**
-   * 固定流水线的阈值（`createPipelineLimits()` 的注入面）。
-   * 不给 = 生产常量（48h / 5 次）；测试注入 `0.01` 小时或 `formatMaxFails: 2`（V12 / V19）。
-   */
-  readonly pipelineLimits?: PipelineLimits;
   /** 不注册定时作业（测试里不需要 pg-boss 的 cron）。 */
   readonly skipSchedules?: boolean;
 }
@@ -604,6 +492,10 @@ export const REQUIRED_TABLES = [
   'skills',
   'skill_versions',
   'skills_audit',
+  // 0006：issue agent（缺表 → 会话连续性 / 消息队列 / 拒绝记账全废，同样纳入启动自检）
+  'agent_sessions',
+  'agent_messages',
+  'agent_denials',
 ] as const;
 
 /**
@@ -724,19 +616,41 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
   const enqueuer = createQueueEnqueuer(queue);
 
   /**
+   * agent 串行调度（v0.3 S1）：`agent_messages` 本身就是队列，这里只负责「领一条 + 投 run-task」。
+   *
+   * `singletonKey` 按**消息**唯一（`agent:<repo>#<n>:<fingerprint>`）：同一条消息被重复投递会
+   * 被队列去重，而不同消息各自独立 —— 这正是「排队」的语义（用 `taskId` 或 issue 粒度的 key
+   * 会让第二条消息被丢掉，见 `queue/boss.ts` 的注释）。
+   */
+  const agentDispatch: AgentDispatchDeps = {
+    db: pool,
+    logger: {
+      info: (detail, message) => {
+        logger.info(detail, message);
+      },
+      warn: (detail, message) => {
+        logger.warn(detail, message);
+      },
+    },
+    enqueue: async ({ taskId, repo, command, message }) =>
+      queue.send(
+        QUEUE.runTask,
+        { taskId, command, repo },
+        {
+          singletonKey: `agent:${repo}#${String(message.issueNumber)}:${message.fingerprint}`,
+          expireInSeconds: expireInSecondsForCommand(command),
+          retryLimit: 0,
+        },
+      ),
+  };
+
+  /**
    * 无 worktree 时的 AGENTS.md（Q9：任意阶段生效）。
    *
    * 阶段 1（sandboxed）从 worktree 读（enricher 负责）；**阶段 0 是 light**，没有检出，
    * 所以走 GitHub `contents` 端点读仓库根那一份 —— 带 5 分钟缓存，读不到就 `null` + 一次 warn。
    * 没有 GitHub 读面（本机没装 App）时 `reader: null` = 永远 `null`，一条日志都不刷。
    */
-  const repoFileReader: RepoFileReader | null =
-    baseGithubClient === null ? null : createGithubRepoFileReader(baseGithubClient);
-  const repoAgentsMd = createRepoAgentsMdLoader({
-    reader: repoFileReader,
-    logger,
-  });
-
   const queueHealth = async (): Promise<HealthCheck[]> => {
     const stats = await queue.getQueueStats(QUEUE.runTask);
     const latest = stats.at(-1);
@@ -766,6 +680,19 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       // 面板上传且启用的技能名：让 `/demo` 这类命令不必先进仓库配置就能被调用
       // （spec D0「上传即生效」；关掉开关后下一份投递就不再放行）。
       listSkills: (repo) => skillStore.activeSkillNames(repo),
+      // reaction 写面（`agent/ack.ts`）：与终态反馈共用同一个 App 客户端；没有写面时静默。
+      ...(feedback === null ? {} : { reactions: feedback.reactions }),
+      appSlug: config.github.mention,
+      // 非管理员的「无权限」回复（同 issue 同 actor 只回一次；dry-run 时由 webhook 侧跳过）
+      replyDenied: async (input) => {
+        await ports.github.createIssueComment({
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          body: input.text,
+        });
+      },
+      // agent 消息落库后**立刻**为这个 issue 领一条（cron 那条只是兜底）
+      dispatchAgent: (key) => dispatchNextForIssue(agentDispatch, key),
       now,
     },
     metrics,
@@ -776,377 +703,122 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     now,
   });
 
-  // ── 四类提示词的面板接口 ─────────────────────────────────────────────────────
-  //
-  // `registerPromptRoutes()` 已经在 `http/api/index.ts` 里按 `deps.repos` 挂上了
-  // （`/api/repos/:owner/:name/prompt`，S2-a + S1 的接法），**不要在这里再注册一次**：
-  // Fastify 对同一路由重复声明会直接抛 `Method 'GET' already declared`，整个进程起不来。
-
   // ── 任务执行（job handler 与测试共用的唯一路径）───────────────────────────
   let shutdownSteps: ShutdownStep[] = [];
   let started = false;
   let stopping = false;
   let addresses: ApplicationAddresses | null = null;
 
-  /** 固定流水线的阈值（生产常量；测试注入 `closeAfterHours: 0.01` / `formatMaxFails: 2`）。 */
-  const pipelineLimits: PipelineLimits = overrides.pipelineLimits ?? createPipelineLimits();
-
   /**
-   * 阶段任务入队：写一条 `tasks` 行 + 送进 `run-task` 队列。
+   * 这个 issue 的持久会话（`agent_sessions` 一行）。
    *
-   * 复用 webhook 的 SQL 与幂等键公式（`WEBHOOK_SQL.insertTask` / `idempotencyKeyFor`）：
-   * 「同一版本只入队一次」这条不变量只该有一处实现，在这里抄一份 SQL 等于给它开第二份真相。
-   * 返回新 taskId；`null` = 同版本已经入过队（幂等命中，什么都不做）。
+   * 会话状态原来是 `issue_pipeline` 的四列；流水线退役后它搬到 `agent_sessions`
+   * （`docs/dev-plan-issue-agent.md` §4）。读失败 → `null`（按「还没有会话」处理，
+   * 本轮新建；不影响任务结论）。
    */
-  const enqueueStageTask = async (params: {
-    readonly repo: string;
-    readonly row: TaskJobRow;
-    readonly pipeline: PipelineRow;
-    readonly command: 'pipeline:format' | 'pipeline:classify';
-  }): Promise<string | null> => {
-    const channel = params.command === 'pipeline:classify' ? 'classify' : 'format';
-    const plan: WebhookTaskPlan = {
-      command: params.command,
-      kind: 'pipeline',
-      source: 'pipeline',
-      targetKind: 'issue',
-      targetNumber: params.pipeline.issueNumber,
-      headSha: null,
-      // 锚 = `pipeline:<stage>:<issueVersion>`（§4.6）：同一版内容只跑一次
-      issueVersionHash: pipelineAnchor(channel, params.pipeline.issueVersion),
-      actorLogin: params.row.actorLogin ?? 'pipeline',
-      association: null,
-      commentId: null,
-      // 幂等键里的触发者固定 `pipeline`：同一份内容谁触发都落到同一个键上
-      idempotencyActor: 'pipeline',
-      // 正文快照照抄上一轮任务（入队时已按 8000 字符截断过）
-      targetTitle: params.row.targetTitle,
-      targetBody: params.row.targetBody,
-      supplements: params.row.targetSupplement.map((item) => ({ ...item })),
-    };
-    const idempotencyKey = idempotencyKeyFor(plan, params.repo);
-    const taskId = randomUUID();
-    const inserted = await pool.query(WEBHOOK_SQL.insertTask, [
-      taskId,
-      plan.source,
-      params.repo,
-      plan.targetKind,
-      plan.targetNumber,
-      plan.headSha,
-      plan.command,
-      plan.actorLogin,
-      idempotencyKey,
-      // delivery_id：阶段交接不是投递（审计看 `pipeline:*` 命令本身）
-      null,
-      plan.promptText ?? null,
-      plan.targetTitle ?? null,
-      plan.targetBody ?? null,
-      JSON.stringify(plan.supplements ?? []),
-    ]);
-    if ((inserted.rowCount ?? 0) === 0) {
-      logger.info(
-        { repo: params.repo, issue: params.pipeline.issueNumber, command: params.command },
-        '阶段任务已存在（幂等命中），不再入队',
-      );
-      return null;
-    }
-    await enqueuer({ taskId, command: plan.command, repo: params.repo, attempt: 0 });
-    logger.info(
-      { taskId, command: plan.command, repo: params.repo, issue: params.pipeline.issueNumber },
-      '已入队阶段任务',
-    );
-    return taskId;
-  };
-
-  /**
-   * 本 issue 最近一小时已经发出去的评论条数（频率上限的判据，§13）。
-   *
-   * 按 `actions` 算：那是写面的唯一记账表（`target = 'repo#N'`，`intent='comment'`）。
-   * 读失败按 0（限速不是判定，缺一次不该让分类卡死）。
-   */
-  const countRecentComments = async (key: {
+  const loadAgentSession = async (key: {
     readonly repo: string;
     readonly issueNumber: number;
-  }): Promise<number> => {
+  }): Promise<AgentSessionRow | null> => {
     try {
-      const result = await pool.query(
-        `select count(*)::int as n from "actions"
-where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interval '1 hour'`,
-        [`${key.repo}#${String(key.issueNumber)}`],
-      );
-      const row = result.rows[0] as { readonly n?: unknown } | undefined;
-      const value = row?.n;
-      const parsed = typeof value === 'number' ? value : Number(value ?? 0);
-      return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+      return await loadAgentSessionRow(pool, key);
     } catch (error) {
       logger.warn(
         { repo: key.repo, issue: key.issueNumber, err: String(error) },
-        '统计最近一小时评论数失败：按 0 处理（本轮不限速）',
+        '读 agent_sessions 失败：本轮按「还没有会话」处理',
       );
-      return 0;
+      return null;
     }
   };
 
-  /**
-   * 门禁回执的**唯一一条评论**（§8 / Q8；阶段评论一律由控制面发）。
-   *
-   * 三条边界：
-   *  1. dry-run 一条都不发（M0 的「GitHub 零副作用」口径优先于回执）；
-   *  2. 正文只取模型写的评论（`noticeCommentBodyOf()`），模型没写才用兜底常量句；
-   *  3. 失败只 warn —— 回执是装饰，**不能**影响任务结论，也不能让 webhook 重投。
-   */
-  const postGateNotice = async (params: {
-    readonly repo: string;
-    readonly issueNumber: number;
+  /** 写回会话字段（`agent_sessions` 的 UPSERT：一个 issue 一行）。 */
+  const persistAgentSessionAfterRun = async (params: {
     readonly row: TaskJobRow;
+    readonly session: AgentSessionRow | null;
     readonly report: TaskRunReport;
-    readonly dryRun: boolean;
-  }): Promise<void> => {
-    const gateState = gateStateOfPromptText(params.row.promptText);
-    if (params.dryRun) {
-      logger.info(
-        { repo: params.repo, issue: params.issueNumber, gateState },
-        'dry-run：门禁回执不发评论（零副作用口径）',
-      );
-      return;
-    }
-    const body = noticeCommentBodyOf({
-      envelope: params.report.envelope?.envelope ?? null,
-      gateState,
-    });
-    try {
-      await ports.github.createIssueComment({
-        repo: params.repo,
-        issueNumber: params.issueNumber,
-        body,
-      });
-      logger.info(
-        { repo: params.repo, issue: params.issueNumber, gateState, chars: body.length },
-        '门禁回执已发出（恰好一条，状态机不动）',
-      );
-    } catch (error) {
-      // 失败也算用掉了这一小时的额度（`gate_notice_at` 在入队前就写了）：方向是少发、不刷屏
-      logger.warn(
-        { repo: params.repo, issue: params.issueNumber, gateState, err: String(error) },
-        '门禁回执发送失败（不影响任务结论；这一小时的额度已用掉）',
-      );
-    }
-  };
-
-  /**
-   * `executeTask()` 之后把结论写回状态机（S2-b / S3 / S4）。
-   *
-   * 四类任务四条路，都在这里收口（别在别处再写一份 `issue_pipeline`）：
-   *  - `pipeline:format` → `planFormatOutcome()` + `executeFormatPlan()`（阶段 0 三条路径）+
-   *    `effects.enqueue` 交接入队（pass → `pipeline:classify`；第 N 次不通过**不入队**）；
-   *  - `pipeline:classify` → `planClassifyOutcome()` + `executeClassifyPlan()`（阶段 1 四分支，S3）；
-   *  - `pipeline:notice` → **由控制面发恰好一条评论**（`postGateNotice()`），状态机不动（§8）；
-   *  - 其它（阶段 2 的 `@`）→ 会话字段（`session_id / session_turns / session_cursor /
-   *    session_started_at`；复用与轮换见 `planAgentSession()`）。
-   *
-   * 阶段 0/1 **不写会话字段**：它们各自 ephemeral（D1 / V13「三个阶段 session_id 两两不同」），
-   * 落 id 的只有阶段 2。
-   */
-  const persistPipelineAfterRun = async (params: {
-    readonly row: TaskJobRow;
-    readonly pipeline: PipelineRow | null;
-    readonly report: TaskRunReport;
-    readonly dryRun: boolean;
-    readonly config: RepoConfig | null;
-    /** 本轮阶段 2 的会话计划（`executeTask()` 已经用它决定 attach / archive）。 */
     readonly agentSession: AgentSessionPlan;
-    /**
-     * 第几次尝试（从 1 起）。**由 `executeTask()` 从 `input.attempt ?? row.attempt + 1` 传来**：
-     * `tasks.attempt` 这一列全仓**没有任何自增**（`markTask()` 只写 status/ended_at），
-     * 所以直接读它算「连续失败次数」会恒等于 1，`run-invalid` 的 `consecutive >= 2`
-     * 分支永远不可达（阶段任务重试耗尽后停在 `format/pending`，门禁只打 eyes）。
-     * 真实来源是队列载荷里的 `job.data.attempt + 1`（`queue/boss.ts` 重投时 +1）。
-     */
-    readonly attempt: number;
   }): Promise<void> => {
-    const key = { repo: params.row.repo, issueNumber: params.row.targetNumber };
-    const command = params.row.command;
-
-    if (command === 'pipeline:format') {
-      const plan = planFormatOutcome({
-        repo: key.repo,
-        issueNumber: key.issueNumber,
-        pipeline: params.pipeline,
-        envelope: params.report.envelope?.envelope ?? null,
-        envelopeValid: params.report.envelope?.valid === true,
-        runOutcome: params.report.outcome,
-        // 连续失败次数 = 本轮是第几次尝试（第二次起才算「连续」，见参数 `attempt` 的注释）
-        consecutiveFailures: params.attempt,
-        command,
-        config: params.config,
-        limits: pipelineLimits,
-        at: now(),
-        logger,
-      });
-      const executed = await executeFormatPlan({
-        plan,
-        db: pool,
-        key,
-        api: ports.github,
-        ...(feedback === null ? {} : { reactions: feedback.reactions }),
-        dryRun: params.dryRun,
-        logger,
-      });
-      if (plan.outcome !== 'noop') {
-        logger.info(
-          {
-            repo: key.repo,
-            issue: key.issueNumber,
-            outcome: plan.outcome,
-            applied: executed.applied,
-            errors: executed.errors,
-            notes: plan.notes,
-          },
-          '阶段 0 结论已落库',
-        );
-      }
-      // 入队只看状态机给的 effects（`ignore` 型转移没有它；第 N 次不通过只有 closeIssue）
-      const next = plan.transition?.effects?.enqueue ?? null;
-      if (next !== null && params.pipeline !== null) {
-        if (params.dryRun) {
-          // dry-run 的取舍（**有意为之**）：
-          //  1. `executeFormatPlan()` 在 dry-run 下**不写转移**，所以行会停在 `format/pending`；
-          //  2. 那就不能再入队下一阶段 —— 否则分类任务会跑在一个「还不是 classify」的行上，
-          //     结局必然是 `not-classify-running` 的 noop，白花一次 sandboxed 调用；
-          //  3. 代价是 dry-run 仓库的 `@` 会被门禁降级成 eyes（`format/pending`）。这是
-          //     dry-run 的语义（只推进内部状态、不发任何 GitHub 写动作），不是缺陷。
-          // 面板可见性：把这件事写进 `blocked_reason`（dry-run 下这是唯一的写库动作），
-          // 让人一眼看出「为什么这个 issue 一直停在格式检查」。
-          await applyTransition(pool, key, { blockedReason: DRY_RUN_STAGE_NOTE });
-          logger.info(
-            { repo: key.repo, issue: key.issueNumber, next },
-            'dry-run：不入队下一阶段（仅推进内部状态）',
-          );
-        } else {
-          await enqueueStageTask({
-            repo: key.repo,
-            row: params.row,
-            pipeline: {
-              ...params.pipeline,
-              issueVersion: plan.transition?.issueVersion ?? params.pipeline.issueVersion,
-            },
-            command: next === 'pipeline:classify' ? 'pipeline:classify' : 'pipeline:format',
-          });
-        }
-      }
-      return;
-    }
-
-    if (command === 'pipeline:classify') {
-      // 人工否决（`bot_labels`）：人撕掉的标签不许被这一轮又贴回去
-      let humanVetoed: readonly string[] = [];
-      try {
-        humanVetoed = await loadHumanVetoed(toSqlRunner(pool), key);
-      } catch (error) {
-        logger.warn(
-          { repo: key.repo, issue: key.issueNumber, err: String(error) },
-          '读人工否决标签失败：本轮按「没有否决」打标',
-        );
-      }
-      const plan = planClassifyOutcome({
-        repo: key.repo,
-        issueNumber: key.issueNumber,
-        pipeline: params.pipeline,
-        envelope: params.report.envelope?.envelope ?? null,
-        envelopeValid: params.report.envelope?.valid === true,
-        runOutcome: params.report.outcome,
-        // 同阶段 0：连续失败次数 = 本轮是第几次尝试（`tasks.attempt` 不自增，别读它）
-        consecutiveFailures: params.attempt,
-        command,
-        settings: params.config,
-        humanVetoed,
-        commentsLastHour: await countRecentComments(key),
-        at: now(),
-        logger,
-      });
-      const executed = await executeClassifyPlan({
-        plan,
-        db: pool,
-        key,
-        api: ports.github,
-        dryRun: params.dryRun,
-        logger,
-      });
-      if (plan.outcome !== 'noop') {
-        logger.info(
-          {
-            repo: key.repo,
-            issue: key.issueNumber,
-            outcome: plan.outcome,
-            category: plan.category,
-            mention: plan.mention,
-            applied: executed.applied,
-            errors: executed.errors,
-            notes: plan.notes,
-          },
-          '阶段 1 结论已落库',
-        );
-      }
-      return;
-    }
-
-    if (command === 'pipeline:notice') {
-      // ── 门禁回执（§8 / Q8）：**控制面发唯一的一条评论**，状态机不动 ─────────────────
-      //
-      // 为什么由控制面发而不是 worker 的写回通道：阶段评论（format / classify / notice）
-      // 一律由控制面发 —— worker 侧 `executeActions()` 对 `source='pipeline'` 的评论仍然
-      // 一律 skipped（`run-task.ts` 故意不传 `command`），两边各发一半正是「回执一条都发不出去」
-      // 的原因（写回闸门判 false → 评论被丢；而这里当时直接 return）。
-      //
-      // 限速说明：`gate_notice_at` 由 webhook 在**入队前**就写了，所以哪怕这条评论最终发不出去
-      // （限流 / 权限 / 网络），这一个小时的额度也算用掉了 —— 方向是**少发、不刷屏**。
-      await postGateNotice({
-        repo: key.repo,
-        issueNumber: key.issueNumber,
-        row: params.row,
-        report: params.report,
-        dryRun: params.dryRun,
-      });
-      return;
-    }
-
-    if (isPipelineTaskCommand(command)) {
-      logger.debug({ repo: key.repo, issue: key.issueNumber, command }, '未接线的流水线命令：不动状态机');
-      return;
-    }
-
-    // 阶段 2（`@` 任务）：写会话字段（复用 / 轮换见 `planAgentSession()`）
-    if (params.pipeline === null) {
+    // 非 agent 任务不落会话字段：它们各自 ephemeral（跑完归档）。
+    if (params.agentSession.session === undefined) {
       return;
     }
     const rotate = params.agentSession.rotate;
-    // 轮换那一轮的 `session_turns` 从 **1** 起（本轮已经跑在新会话上）；
-    // 若按「归零」字面实现，新会话的第一轮永远不被计数，实际会变成每 31 轮才轮换一次。
-    const sessionTurns = rotate ? 1 : params.pipeline.sessionTurns + 1;
-    const transition: PipelineTransition = {
-      // 轮换时旧会话已归档：新 id 可能是 `null`（本轮没建起会话），那就把列清空，
-      // 免得下一轮去 attach 一个已经归档的会话
-      ...(rotate
-        ? { sessionId: params.report.sessionId }
-        : params.report.sessionId === null
-          ? {}
-          : { sessionId: params.report.sessionId }),
-      ...(params.report.sessionCursor === null ? {} : { sessionCursor: params.report.sessionCursor }),
-      sessionTurns,
-      ...(rotate || params.pipeline.sessionStartedAt === null ? { sessionStartedAt: now() } : {}),
-      // 轮换（§7）与 attach 失败改新建：都记一条原因（不阻塞，面板要能解释「上下文为什么断了一次」）
-      ...(rotate || params.report.sessionReset ? { blockedReason: 'session-reset' } : {}),
-    };
-    await applyTransition(pool, key, transition);
+    // 轮换那一轮的 `turns` 从 **1** 起（本轮已经跑在新会话上）；按「归零」字面实现会让
+    // 新会话的第一轮永远不被计数，实际变成每 31 轮才轮换一次。
+    const turns = rotate ? 1 : (params.session?.turns ?? 0) + 1;
+    // 轮换时旧会话已归档：新 id 可能是 `null`（本轮没建起会话），那就把列清空，
+    // 免得下一轮去 attach 一个已经归档的会话。
+    const sessionId =
+      params.report.sessionId !== null ? params.report.sessionId : rotate ? null : (params.session?.sessionId ?? null);
+    const cursor = params.report.sessionCursor ?? params.session?.cursor ?? 0;
+    const startedAt = rotate || params.session?.startedAt == null ? now() : params.session.startedAt;
+    if (rotate || params.report.sessionReset) {
+      logger.info(
+        { repo: params.row.repo, issue: params.row.targetNumber, reason: params.agentSession.rotateReason },
+        'agent 会话重置：上下文断了一次（不阻塞下一轮）',
+      );
+    }
+    await saveAgentSessionRow(
+      pool,
+      { repo: params.row.repo, issueNumber: params.row.targetNumber },
+      { sessionId, cursor, turns, startedAt },
+    );
+  };
+
+  /**
+   * agent 消息的终态收尾（`done` / `failed`）+ **立刻**领这个 issue 的下一条。
+   *
+   * 任务与消息的连接键是 `tasks.idempotency_key`（`agent:message:<repo>#<n>:<fingerprint>`，
+   * 见 `agent/store.ts::agentTaskIdempotencyKey`）：`tasks` 没有指向 `agent_messages` 的外键，
+   * 而这条键是唯一索引 + 我们自己拼的字符串，天然一对一。
+   *
+   * 失败**不影响**任务结论：run 已经跑完并落库，消息状态下一轮 dispatch 还能再修。
+   */
+  const finishAgentMessage = async (params: {
+    readonly row: TaskJobRow;
+    readonly report: TaskRunReport;
+  }): Promise<void> => {
+    if (params.row.source !== 'agent') {
+      return;
+    }
+    const key = parseAgentTaskIdempotencyKey({
+      repo: params.row.repo,
+      issueNumber: params.row.targetNumber,
+      idempotencyKey: params.row.idempotencyKey,
+    });
+    if (key === null) {
+      return;
+    }
+    try {
+      const outcome = await finishMessageAndContinue(agentDispatch, {
+        repo: key.repo,
+        issueNumber: key.issueNumber,
+        fingerprint: key.fingerprint,
+        status: params.report.outcome === 'succeeded' ? 'done' : 'failed',
+      });
+      logger.info(
+        {
+          repo: key.repo,
+          issue: key.issueNumber,
+          fingerprint: key.fingerprint,
+          outcome: params.report.outcome,
+          nextClaimed: outcome.message !== null,
+        },
+        'agent 消息已收尾，并尝试取下一条',
+      );
+    } catch (error) {
+      logger.warn(
+        { repo: key.repo, issue: key.issueNumber, err: error instanceof Error ? error.message : String(error) },
+        'agent 消息状态写回失败（不影响本轮任务结论）',
+      );
+    }
   };
 
   /**
    * 一条任务的**完整执行**（job handler 与端到端测试共用的唯一路径）。
    *
-   * 按 `tasks.command` 分三档（§5 / §7 / §10.5）：
-   *  - `pipeline:format` / `pipeline:notice` → **light**（零容器、零 worktree）+ ephemeral 会话；
-   *  - `pipeline:classify` → **sandboxed**（要读代码、跑命令）+ ephemeral 会话；
-   *  - 其它（`/review-pr`、`@answer`、阶段 2 的 `@`）→ 现状不变（sandboxed + 四层提示词）。
+   * 运行时固定 `sandboxed`（v0.3 没有 light 阶段）；会话按 `agent_sessions` 决定
+   * 复用 / 新建 / 轮换，其余任务保持 ephemeral。
    */
   const executeTask = async (input: TaskExecutionInput): Promise<TaskRunReport> => {
     const row = await readTaskRow(pool, input.taskId);
@@ -1174,48 +846,54 @@ where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interva
       ...(workflowReactions === undefined ? {} : { reactions: workflowReactions }),
     });
 
+    // agent 任务（v0.3）：`tasks.prompt_text` 里是**组装好的那一条消息**（模板渲染 / 原话改写），
+    // 所以不能当「自由问答」处理 —— 那条路径会用 `buildAnswerPrompt` 把系统段整段丢掉，
+    // 而需求 §1.5 要求两种输入的系统提示**完全相同**（只差一句「先加载谁」）。
+    const isAgentTask = row.source === 'agent';
+    const agentMessageBody = isAgentTask ? (row.promptText ?? '').trim() : null;
     // 自由问答任务：问题正文优先读 `tasks.prompt_text`（新格式），
     // 兼容历史行 `command=@answer:<base64url>` 的解码
-    const answerQuestion = row.promptText ?? decodeFreeQuestion(row.command);
+    const answerQuestion = isAgentTask ? null : (row.promptText ?? decodeFreeQuestion(row.command));
     // 面板上传技能的当前快照（仓库作用域优先，见 `SkillStore.activeSkillFiles`）。
     const uploadedSkills = await skillStore.activeSkillFiles(row.repo);
 
-    // ── 按命令决定运行时 / 会话 / 提示词（S2-b）──────────────────────────────
-    const pipelineCommand = isPipelineTaskCommand(row.command) ? row.command : null;
-    const assembleStage = assembleStageOfCommand(row.command);
-    const runtimeMode = pipelineCommand === null ? 'sandboxed' : PIPELINE_RUNTIME_MODE[pipelineCommand];
-    // 流水线行：阶段任务要用它算 `recheck` / 转移；阶段 2 要用它拿会话
-    const pipeline =
+    // ── 运行时 / 会话（v0.3：一个 issue 一个持久会话）──────────────────────────
+    const runtimeMode = 'sandboxed' as const;
+    /**
+     * 会话行（`agent_sessions`）。v1.5 里它住在 `issue_pipeline`，那张表已随流水线退役删除 ——
+     * 会话连续性是 agent 唯一有状态的资产，必须从新表读（`docs/dev-plan-issue-agent.md` §4）。
+     */
+    const agentSessionRow =
       row.targetKind === 'issue'
-        ? await loadPipeline(pool, { repo: row.repo, issueNumber: row.targetNumber })
+        ? await loadAgentSession({ repo: row.repo, issueNumber: row.targetNumber })
         : null;
 
-    // 会话计划（D1 / E2 / §7）：
-    //  - 阶段 0/1 → **ephemeral**（create → run → archive；不落 `session_id`，V13「三个阶段两两不同」）；
-    //  - 阶段 2（`agent`）→ `planAgentSession()` 决定复用 / 新建 / 轮换（attach 失败不阻塞，见 turn-driver）。
-    const agentSession = planAgentSession({ pipeline, at: now() });
-    const session: SessionPlan | undefined =
-      pipelineCommand !== null ? { mode: 'ephemeral' } : agentSession.session;
+    // 会话计划（E2 / §7）：agent 任务复用 / 新建 / 轮换；其余任务仍是 ephemeral。
+    const agentSession = planAgentSession({
+      session: agentSessionRow,
+      isAgentTask: row.source === 'agent',
+      at: now(),
+    });
+    const session: SessionPlan | undefined = agentSession.session;
 
     let prompt: string;
-    if (pipelineCommand === 'pipeline:notice') {
-      prompt = buildNoticePrompt({ task: row, settings: policy.settings, dryRun }).prompt;
-    } else if (assembleStage !== null) {
-      // 阶段 0/1：阶段系统提示词 + AGENTS.md。
-      // 阶段 0 是 light（没有检出）→ AGENTS.md 从 GitHub 读（Q9）；阶段 1 的 AGENTS.md
-      // 由 enricher 在 worktree 就绪后补（那里才有检出）。
-      prompt = (
-        await buildStagePrompt({
-          task: row,
-          stage: assembleStage,
-          settings: policy.settings,
-          db: pool,
-          pipeline,
-          ...(assembleStage === 'format' ? { agentsMd: await repoAgentsMd(row.repo) } : {}),
+    if (isAgentTask) {
+      // 系统段沿用 `buildTaskPrompt`（需求 §1.5：两种输入的系统提示完全相同），
+      // 后面接「这一条消息」—— 就是 `agent_messages.comment_body` 里那条。
+      prompt = [
+        buildTaskPrompt({
+          command: row.command,
+          repo: row.repo,
+          targetKind: row.targetKind,
+          targetNumber: row.targetNumber,
           dryRun,
-          logger,
-        })
-      ).prompt;
+          settings: policy.settings,
+        }),
+        '',
+        '## 这一条消息',
+        '',
+        agentMessageBody === null || agentMessageBody === '' ? '（消息为空）' : agentMessageBody,
+      ].join('\n');
     } else if (answerQuestion === null) {
       prompt = buildTaskPrompt({
         command: row.command,
@@ -1246,61 +924,23 @@ where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interva
      *  - `pipeline:format` / `pipeline:notice`（light）：没 worktree，提示词已在上面装配好，**不回调**。
      */
     /**
-     * 阶段 2 的判定：**这个 issue 已经走到 `agent/ready`**，本轮就是阶段 2 的 `@` 轮次。
+     * 提示词装配钩子（worktree 就绪后回调一次）。
      *
-     * 为什么不用「非流水线命令」当判据：`/review-pr`、`@answer` 落在 PR 或未走完三段的 issue 上时
-     * 不是阶段 2（它们没有「阶段 2 会话」这回事）。误判会把 agent 阶段系统提示词塞进它们的 head，
-     * 那是静默改变既有提示词 —— §16.3 的矩阵只说「阶段 2 四层」，没说「所有命令四层」。
+     * v0.3 只有一层：`basePrompt`（head）+ AGENTS.md + 命中的技能正文。
+     * 阶段系统提示词（`buildStagePrompt`）与 P1（`prompt_versions`）已随退役删除；
+     * 项目级补充提示词由 `settings.agent.project_prompt` 在 S2/S4 接入。
      */
-    const isAgentStageRun =
-      pipeline !== null &&
-      pipeline.stage === 'agent' &&
-      pipeline.state === 'ready' &&
-      row.targetKind === 'issue';
-
-    const promptEnricher: TaskRunnerDeps['promptEnricher'] =
-      pipelineCommand === null
-        ? createPromptEnricher({
-            logger,
-            config: policy.config,
-            // P1「项目人格层」+ 装配统计：每轮读一次当前版本（面板改了下一轮就生效）。
-            db: pool,
-            context: {
-              repo: row.repo,
-              targetKind: row.targetKind,
-              targetNumber: row.targetNumber,
-              ...(row.headSha === null ? {} : { headSha: row.headSha }),
-            },
-            extraSkillFiles: uploadedSkills,
-            // 阶段 2：head = `kind=agent` 的阶段系统提示词（四层齐全，V9 / §7）
-            ...(isAgentStageRun
-              ? {
-                  stage: 'agent' as const,
-                  stageVars: stagePromptVarsOf({
-                    task: row,
-                    stage: 'agent',
-                    settings: policy.settings,
-                    pipeline,
-                  }),
-                  stageSupplements: stagePromptSupplementsOf(row),
-                }
-              : {}),
-          })
-        : assembleStage === null
-          ? undefined
-          : createPromptEnricher({
-              logger,
-              config: policy.config,
-              db: pool,
-              stage: assembleStage,
-              context: {
-                repo: row.repo,
-                targetKind: row.targetKind,
-                targetNumber: row.targetNumber,
-                ...(row.headSha === null ? {} : { headSha: row.headSha }),
-              },
-              extraSkillFiles: uploadedSkills,
-            });
+    const promptEnricher: TaskRunnerDeps['promptEnricher'] = createPromptEnricher({
+      logger,
+      config: policy.config,
+      context: {
+        repo: row.repo,
+        targetKind: row.targetKind,
+        targetNumber: row.targetNumber,
+        ...(row.headSha === null ? {} : { headSha: row.headSha }),
+      },
+      extraSkillFiles: uploadedSkills,
+    });
 
     const endpoint = await ports.host.ready();
     const channel = await racp(endpoint);
@@ -1376,19 +1016,9 @@ where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interva
           // 是在建 worktree 之前拼好的 —— 所以装配只能由 worker 在建完 worktree 之后回调补一次。
           // light 运行时没有 worktree，worker 自己会跳过这个钩子（§10.5）。
           ...(promptEnricher === undefined ? {} : { promptEnricher }),
-          // §4.1 P3：阶段任务的信封**只开 `comment`** —— 在 `prepareEnvelope()` 就把 `label` /
-          // `create_issue` / `push_branch` 挡掉，模型即使声明了也进不了动作列表。
-          // 写回闸门里那道「pipeline 只允许 comment」是第二道保险（两道都要，别只留一道）。
-          ...(pipelineCommand === null ? {} : { allowedIntents: ['comment' as const] }),
           image: config.worker.image,
-          // 任务级时间闸（P2-5）：`pipeline:classify` 取
-          // `min(settings.limits.max_task_minutes, PIPELINE_CLASSIFY_MAX_MINUTES)` ——
-          // 项目上限是**软**的（可调低），系统常量是**硬**的（不可越过）。
-          // 其它命令沿用 `timeoutMsForCommand()`（`/review-pr` 30min、其余 20min）。
-          timeoutForCommand: (command) =>
-            command === 'pipeline:classify'
-              ? classifyTimeoutMsOf(policy.settings)
-              : timeoutMsForCommand(command),
+          // 任务级时间闸：`/review-pr` 30min、其余 20min（`worker/index.ts::timeoutMsForCommand`）。
+          timeoutForCommand: (command) => timeoutMsForCommand(command),
           networkMode: config.worker.network,
           allowPushBranch: config.worker.allowPushBranch,
           logger,
@@ -1401,23 +1031,23 @@ where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interva
       // 结论写回状态机（阶段 0 三条路径 / 阶段 2 会话字段）。
       // 失败**不影响**任务结论：run 已经跑完并落库，状态机下一轮还能再修
       // （写库失败比「丢掉一次跑完的结论」更容易被发现，因为面板上的阶段会停住）。
+      // 会话字段写回（`agent_sessions`；复用 / 轮换见 `planAgentSession()`）。
+      // 失败**不影响**任务结论：run 已经跑完并落库，会话字段下一轮还能再修。
       try {
-        await persistPipelineAfterRun({
+        await persistAgentSessionAfterRun({
           row,
-          pipeline,
+          session: agentSessionRow,
           report,
-          dryRun,
-          config: policy.config,
           agentSession,
-          // 第几次尝试（`job.data.attempt + 1`）：`run-invalid` 的「连续 2 次」只能靠它（见参数注释）
-          attempt,
         });
       } catch (error) {
         logger.warn(
           { taskId: row.id, repo: row.repo, err: error instanceof Error ? error.message : String(error) },
-          '流水线状态写回失败（不影响本轮任务结论）',
+          'agent 会话字段写回失败（不影响本轮任务结论）',
         );
       }
+      // agent 消息终态（done/failed）+ 立刻取下一条：串行的「立刻」在这里兑现
+      await finishAgentMessage({ row, report });
       return report;
     } finally {
       await channel.close();
@@ -1493,10 +1123,6 @@ where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interva
         docker: ports.docker,
         proxy: ports.proxy,
         ...(baseGithubClient === null ? {} : { github: baseGithubClient }),
-        // 自动关闭（D5）：要 GitHub **写面**的 `closeIssue`，读接口（上面那条）不够
-        githubWrite: ports.github,
-        // 「等多久算超时」是系统常量；测试注入 `closeAfterHours: 0.01`
-        pipelineLimits,
         diskPath: config.dataDir,
         // 排队闸门（§4.7）：排队超时 → 取消 job + `confused` reaction（不是发一条评论）。
         // `ack` 与 webhook 的入队 `+eyes` 是同一个对象（同一个 App 客户端），

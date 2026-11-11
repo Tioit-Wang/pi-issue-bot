@@ -1,15 +1,14 @@
 /**
- * 合法 `repos.settings` 夹具工厂（固定流水线契约收紧之后，`docs/plan-fixed-pipeline.md` §4.5 / Q4）。
+ * 合法 `repos.settings` 夹具工厂（配置形状收紧之后，`docs/dev-plan-issue-agent.md` §2.6 / Q4）。
  *
  * 为什么需要它：`repoSettingsSchema` 现在是「形状 + 跨字段约束」两层，夹具**不再能只写自己关心的字段**
  * （`parseRepoSettings({ labels: {...} })` 会直接抛错）：
  *
- * 1. `pipeline.managers` **必须非空**（superRefine 无条件校验）。空 = 整份配置解析失败 →
+ * 1. `agent.managers` **必须非空**（superRefine 无条件校验）。空 = 整份配置解析失败 →
  *    该仓库 `settings_valid=false` → webhook 忽略事件。症状是 `expected 'ignored' to be 'enqueued'`。
  * 2. `labels.vocabulary[].role` **必填**（`requirement | defect | other`），缺键即解析失败。
- * 3. `triggers.faces` / `pipeline.enabled` / `pipeline.close_after_hours` / `pipeline.max_runs_per_stage`
- *    已删除，`.strict()` 拒收 —— 夹具里不许再出现。
- * 4. `DEFAULT_REPO_SETTINGS` 已降级为**形状默认值**（`pipeline.managers: []`），**不是**合法运行配置；
+ * 3. `triggers.faces` / `agent.enabled` 等已删除的键 `.strict()` 拒收 —— 夹具里不许再出现。
+ * 4. `DEFAULT_REPO_SETTINGS` 已降级为**形状默认值**（`agent.managers: []`），**不是**合法运行配置；
  *    想要「一份能跑的配置」就走这里，不要把它塞进 `repos.settings`。
  *
  * 用法（保持最小改动：只声明关心的字段，其余由契约默认值补）：
@@ -27,10 +26,10 @@ import { parseRepoSettings } from '../../../../packages/contract/src/index.ts';
 import type { LabelRole, LabelVocabularyEntry, RepoSettings } from '../../../../packages/contract/src/index.ts';
 
 /**
- * 夹具里的管理员 login（`pipeline.managers`）。
+ * 夹具里的管理员 login（`agent.managers`）。
  *
  * 取值与 webhook 夹具里的 `sender.login` 一致，避免「配置里的人和事件里的人不是一个」的困惑。
- * 需要多个管理员时在 `overrides.pipeline.managers` 里显式给。
+ * 需要多个管理员时在 `overrides.agent.managers` 里显式给。
  */
 export const TEST_MANAGER = 'alice';
 
@@ -51,16 +50,16 @@ const DEFAULT_VOCABULARY: readonly LabelVocabularyInput[] = [
 /**
  * 一份**合法**的 `repos.settings`（普通对象，可直接 `JSON.stringify` 后落库 / 塞进 env）。
  *
- * `overrides` 是浅合并，但 `pipeline` / `labels` 段是**深一层**合并：只想改提示词版本号或标签映射时
+ * `overrides` 是浅合并，但 `agent` / `labels` 段是**深一层**合并：只想改 skills 开关或标签映射时
  * 不用重复写 `managers` / 默认词表（显式给的 `labels.vocabulary` 仍然原样生效，负例才写得出来）。
  */
 export function validRepoSettings(overrides: RepoSettingsOverrides = {}): RepoSettingsOverrides {
-  const pipeline = (overrides['pipeline'] ?? {}) as RepoSettingsOverrides;
+  const agent = (overrides['agent'] ?? {}) as RepoSettingsOverrides;
   const labels = (overrides['labels'] ?? {}) as RepoSettingsOverrides;
   return {
     ...overrides,
     labels: { vocabulary: DEFAULT_VOCABULARY, ...labels },
-    pipeline: { managers: [TEST_MANAGER], ...pipeline },
+    agent: { managers: [TEST_MANAGER], ...agent },
   };
 }
 

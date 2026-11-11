@@ -27,9 +27,6 @@ import type {
   IssuesResponse,
   OverviewQuery,
   OverviewResponse,
-  PromptKind,
-  PromptResponse,
-  PromptVersionsResponse,
   QualityQuery,
   RepoSettingsResponse,
   ReposResponse,
@@ -228,43 +225,6 @@ export const api = {
       contentType: 'application/json',
     }),
 
-  /* ── 提示词：四条版本线（`?kind=`，`docs/plan-fixed-pipeline.md` §4.4） ──────────
-   * 形状来自 `http/api/prompt.ts` 的 `viewOf()`；五个接口返回同一份 `PromptResponse`
-   * （`prompt/versions` 是轻量版），所以面板不用分四套解析。
-   * `kind` 省略 = `project`（服务端默认），旧调用点不用改。
-   */
-
-  /** 一个 kind 的当前版本 + 全部版本 + 预算预演 + 层序 + 装配预览。 */
-  prompt: (repo: RepoRef, kind?: PromptKind): Promise<PromptResponse> =>
-    request<PromptResponse>(`${repoBasePath(repo)}/prompt`, { kind }),
-
-  /** 保存（保存即新建版本）：占位符/长度不合法 → 400 + `details.code`。 */
-  savePrompt: async (repo: RepoRef, kind: PromptKind, body: string, note?: string): Promise<PromptResponse> =>
-    write<PromptResponse>(
-      `${repoBasePath(repo)}/prompt`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(note === undefined ? { body } : { body, note }),
-        contentType: 'application/json',
-      },
-      { kind },
-    ),
-
-  /** 回滚（= 以旧版正文新建一个版本，历史不丢）。 */
-  rollbackPrompt: async (repo: RepoRef, kind: PromptKind, version: number): Promise<PromptResponse> =>
-    write<PromptResponse>(
-      `${repoBasePath(repo)}/prompt/rollback`,
-      { method: 'POST', body: JSON.stringify({ version }), contentType: 'application/json' },
-      { kind },
-    ),
-
-  /** 恢复默认（指针回 0，不删历史）。 */
-  restorePrompt: async (repo: RepoRef, kind: PromptKind): Promise<PromptResponse> =>
-    write<PromptResponse>(`${repoBasePath(repo)}/prompt/restore`, { method: 'POST' }, { kind }),
-
-  /** 只取历史版本（不跑装配预览，比 `prompt()` 轻得多）。 */
-  promptVersions: (repo: RepoRef, kind: PromptKind): Promise<PromptVersionsResponse> =>
-    request<PromptVersionsResponse>(`${repoBasePath(repo)}/prompt/versions`, { kind }),
 
   /** 审计 CSV 的下载地址（`limit` 被服务端忽略，上限固定 50000）。 */
   auditCsvUrl: (query: AuditQuery = {}): string => `/api/audit/export.csv${toSearch({ ...query })}`,

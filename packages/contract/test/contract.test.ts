@@ -5,14 +5,7 @@ import {
   CONTRACT_VERSION,
   EXECUTOR_ACTION_INTENTS,
   FAILURE_CLASS_PRIORITY_GROUPS,
-  FORMAT_STAGE_RESULTS,
   OUTCOMES,
-  PIPELINE_CATEGORIES,
-  PIPELINE_COMMANDS,
-  PIPELINE_STAGES,
-  PIPELINE_STATES,
-  PROMPT_KINDS,
-  STAGE_RESULTS,
   TASK_SOURCES,
   TASK_STATUSES,
   addRepoRequestSchema,
@@ -21,7 +14,6 @@ import {
   costsResponseSchema,
   errorBodySchema,
   failureClassPriority,
-  issuePipelineSchema,
   issueSessionResponseSchema,
   issuesListResponseSchema,
   overviewQuerySchema,
@@ -80,16 +72,9 @@ describe('枚举与契约版本', () => {
     expect([...OUTCOMES]).toContain('parse-failed');
   });
 
-  it('固定流水线枚举是固定集合（DB 列 / 提示词 kind / 任务 command 同源）', () => {
-    expect([...PIPELINE_STAGES]).toEqual(['format', 'classify', 'agent', 'closed']);
-    expect([...PIPELINE_STATES]).toEqual(['pending', 'running', 'awaiting_info', 'ready', 'blocked', 'closed']);
-    expect([...PIPELINE_CATEGORIES]).toEqual(['requirement', 'defect', 'not-found', 'other']);
-    expect([...FORMAT_STAGE_RESULTS]).toEqual(['pass', 'fail']);
-    expect([...STAGE_RESULTS]).toEqual(['pass', 'fail', 'requirement', 'defect', 'not-found', 'other']);
-    expect([...PROMPT_KINDS]).toEqual(['project', 'format_check', 'classify', 'agent']);
-    expect([...PIPELINE_COMMANDS]).toEqual(['pipeline:format', 'pipeline:classify', 'pipeline:notice']);
-    // `tasks.source` 的新取值**追加在末尾**（老取值顺序不动）
-    expect([...TASK_SOURCES]).toEqual(['webhook', 'command', 'cron', 'pipeline']);
+  it('枚举是固定集合（`tasks.source` 新取值追加在末尾）', () => {
+    expect([...TASK_STATUSES]).toEqual(['queued', 'running', 'succeeded', 'failed', 'cancelled']);
+    expect([...TASK_SOURCES]).toEqual(['webhook', 'command', 'cron', 'agent']);
   });
 
   it('失败分类优先级：超时/中断/退化 1 级，sandbox-oom 2 级，sandbox-crash 3 级，其余 4 级', () => {
@@ -321,10 +306,10 @@ describe('多仓库改造后的契约（W3-H）', () => {
       archivedAt: '2026-06-01T00:00:00Z',
     };
     expect(repoSettingsResponseSchema.safeParse(view).success).toBe(true);
-    // 请求体 = settings 本身（默认值会被补齐；`managers` 非空 + 词表含 requirement/defect，Q4 / §4.5）
+    // 请求体 = settings 本身（默认值会被补齐；`agent.managers` 非空 + 词表含 requirement/defect）
     expect(
       saveRepoSettingsRequestSchema.parse({
-        pipeline: { managers: ['alice'] },
+        agent: { managers: ['alice'] },
         labels: { vocabulary: [{ name: '需求', role: 'requirement' }, { name: '缺陷', role: 'defect' }] },
       }).version,
     ).toBe(1);
@@ -367,8 +352,6 @@ describe('多仓库改造后的契约（W3-H）', () => {
         blocked: [{ reason: 'not-in-vocabulary', count: 1 }],
       },
       feedback: [{ ...feedbackEvent, stage: 'received', content: 'eyes' }, feedbackEvent],
-      // 没有 `issue_pipeline` 行时整个字段为 null（不是一个空对象）
-      pipeline: null,
     };
     const list = { generatedAt: '2026-06-02T00:02:00Z', issues: [issue], hasMore: false, nextCursor: null };
     expect(issuesListResponseSchema.safeParse(list).success).toBe(true);
@@ -385,36 +368,7 @@ describe('多仓库改造后的契约（W3-H）', () => {
       }).success,
     ).toBe(false);
 
-    // `pipeline` 也是必填字段（没有状态行时给 null，不能省键）
-    const { pipeline: _pipeline, ...withoutPipeline } = issue;
-    expect(issuesListResponseSchema.safeParse({ ...list, issues: [withoutPipeline] }).success).toBe(false);
-    // 有状态行时按 `issue_pipeline` 的列校验
-    const pipelineRow = {
-      stage: 'classify',
-      state: 'ready',
-      category: 'defect',
-      formatFailCount: 1,
-      infoRequestedAt: null,
-      blockedReason: null,
-      readyAt: '2026-06-02T00:04:00Z',
-      staleAt: null,
-      sessionId: 's_1',
-      sessionTurns: 3,
-    };
-    expect(issuesListResponseSchema.safeParse({ ...list, issues: [{ ...issue, pipeline: pipelineRow }] }).success).toBe(
-      true,
-    );
-    expect(
-      issuesListResponseSchema.safeParse({
-        ...list,
-        issues: [{ ...issue, pipeline: { ...pipelineRow, stage: 'triage' } }],
-      }).success,
-    ).toBe(false);
-    expect(
-      issuesListResponseSchema.safeParse({ ...list, issues: [{ ...issue, pipeline: { ...pipelineRow, extra: 1 } }] })
-        .success,
-    ).toBe(false);
-    // 详情页（会话视图）的 `issue` 用的是同一个形状：`pipeline` 也必须给（无行为 null）
+    // 详情页（会话视图）的 `issue` 用的是同一个形状
     const session = {
       generatedAt: '2026-06-02T00:02:00Z',
       issue: {
@@ -429,32 +383,10 @@ describe('多仓库改造后的契约（W3-H）', () => {
         participants: ['alice'],
         reactionState: feedbackEvent,
         pendingFeedback: [{ ...feedbackEvent, appliedAt: null }],
-        pipeline: null,
       },
       turns: [],
     };
     expect(issueSessionResponseSchema.safeParse(session).success).toBe(true);
-  });
-
-  it('IssuePipeline（`issue_pipeline` 的投影）：字段全在、枚举封闭、无行时整体 null', () => {
-    const row = {
-      stage: 'format',
-      state: 'awaiting_info',
-      category: null,
-      formatFailCount: 2,
-      infoRequestedAt: '2026-06-02T00:03:00Z',
-      blockedReason: '格式一直不通过',
-      readyAt: null,
-      staleAt: null,
-      sessionId: null,
-      sessionTurns: 0,
-    };
-    expect(issuePipelineSchema.safeParse(row).success).toBe(true);
-    // 空对象不是「没有行」的表示法：缺字段一律失败
-    expect(issuePipelineSchema.safeParse({}).success).toBe(false);
-    expect(issuePipelineSchema.safeParse({ ...row, state: 'done' }).success).toBe(false);
-    expect(issuePipelineSchema.safeParse({ ...row, category: 'unknown' }).success).toBe(false);
-    expect(issuePipelineSchema.safeParse({ ...row, formatFailCount: -1 }).success).toBe(false);
   });
 });
 

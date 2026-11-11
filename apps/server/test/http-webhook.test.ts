@@ -13,10 +13,8 @@
  * 幂等的断言只看**行数与调用次数**，不看时间戳：时间戳由注入时钟固定，行数不会骗人。
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { parseRepoConfig } from '../../../packages/contract/src/index.ts';
 import { createNullLogger } from '../../../packages/shared/src/index.ts';
 import {
-  checkCommandGate,
   decideWebhookTask,
   extractCommand,
   handleWebhook,
@@ -24,6 +22,7 @@ import {
   issueVersionHash,
   replayDelivery,
 } from '../src/http/index.ts';
+import { dispatchNextForIssue } from '../src/agent/index.ts';
 import type { WebhookAck, WebhookDeps } from '../src/http/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
@@ -50,7 +49,9 @@ afterAll(async () => {
  * `host_credentials`）。清全库会把别人的行擦掉，制造「有时红有时绿」。
  */
 async function resetTables(): Promise<void> {
-  await db.pool.query('truncate table tasks, webhook_deliveries, repos, runtime_flags cascade');
+  await db.pool.query(
+    'truncate table tasks, webhook_deliveries, repos, runtime_flags, agent_messages, agent_denials, agent_sessions cascade',
+  );
 }
 
 beforeEach(async () => {
@@ -138,6 +139,22 @@ function harness(options: { readonly verify?: boolean } = {}): Harness {
       ack,
       logger: createNullLogger(),
       now: () => FIXED_NOW,
+      /**
+       * agent 消息落库后**立刻**领一条：用的是真 `agent/dispatcher.ts`，只是把「投 run-task」
+       * 换成这里的记账（`events`/`sends`），于是「入队发生在 handler 内」这条断言照旧成立。
+       */
+      dispatchAgent: (key: { readonly repo: string; readonly issueNumber: number }) =>
+        dispatchNextForIssue(
+          {
+            db: db.pool,
+            enqueue: async ({ taskId, repo, command }) => {
+              events.push('enqueue');
+              sends.push({ taskId, repo, command });
+              return 'job-1';
+            },
+          },
+          key,
+        ),
     },
   };
 }
@@ -365,24 +382,6 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(await countRows('tasks')).toBe(0);
   });
 
-  it('命令门禁：author_association=NONE 且不在白名单 → 200 unauthorized', async () => {
-    await enableRepo({ dryRun: false });
-    const payload = commandPayload();
-    (payload['comment'] as Record<string, unknown>)['author_association'] = 'NONE';
-    const h = harness();
-    const result = await handleWebhook(h.deps, {
-      deliveryId: 'dlv-gate',
-      event: 'issue_comment',
-      rawBody: JSON.stringify(payload),
-      signature: 'good-signature',
-      source: 'live',
-    });
-    expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ action: 'unauthorized' });
-    expect(await countRows('tasks')).toBe(0);
-    expect(h.sends).toHaveLength(0);
-  });
-
   it('任务级幂等：不同 delivery、同一 (kind, repo, target, 版本锚, actor) → 只建一个任务', async () => {
     await enableRepo({ dryRun: false });
     const h = harness();
@@ -408,7 +407,7 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(h.sends).toHaveLength(1);
   });
 
-  it('issue 被编辑（updated_at 变）→ 产生新任务', async () => {
+  it('issue 被编辑（updated_at 变）→ 产生第二条 agent 消息（同 issue 串行，第二条先排队）', async () => {
     await enableRepo({ dryRun: false });
     const h = harness();
     await handleWebhook(h.deps, {
@@ -425,7 +424,14 @@ describe('webhook 九步管线（真 PG）', () => {
       signature: 'good-signature',
       source: 'live',
     });
-    expect(await countRows('tasks')).toBe(2);
+    // v0.3：编辑产生**新消息**（event 消息的 fingerprint 含 updated_at，L-07）；
+    // 但同 issue 串行，第一条还在跑时不会并行建第二个任务（X-14）。
+    const messages = await db.pool.query(
+      'select fingerprint, status from agent_messages order by created_at',
+    );
+    expect(messages.rowCount).toBe(2);
+    expect(messages.rows.map((row) => row['status'])).toEqual(['running', 'queued']);
+    expect(await countRows('tasks')).toBe(1);
   });
 
   it('熔断中（runtime_flags.rate_limit_pause 生效）：200 paused，不建任务', async () => {
@@ -510,53 +516,6 @@ describe('webhook 纯函数', () => {
       },
     });
     expect(decision.action).toBe('ignore');
-  });
-
-  it('checkCommandGate：非命令任务不受门禁约束', () => {
-    expect(
-      checkCommandGate(
-        {
-          command: 'auto:triage',
-          kind: 'triage',
-          source: 'webhook',
-          targetKind: 'issue',
-          targetNumber: 1,
-          headSha: null,
-          issueVersionHash: 'x',
-          actorLogin: 'alice',
-          association: 'NONE',
-          commentId: null,
-        },
-        null,
-      ),
-    ).toEqual({ allowed: true });
-  });
-
-  it('checkCommandGate：命令任务在 association 不达标时被拒', () => {
-    // 用契约的 parseRepoConfig 造配置：默认值只有一处来源，测试不手抄 schema 默认值
-    // （`pipeline.managers` 非空是解析前提，§4.5 / Q4）
-    const config = parseRepoConfig(
-      validRepoSettings({
-        version: 1,
-        dry_run: false,
-        commands: { allowed: ['/review-pr'], author_associations: ['OWNER'] },
-      }),
-    );
-    const plan = {
-      command: '/review-pr',
-      kind: 'command:/review-pr',
-      source: 'command' as const,
-      targetKind: 'pr' as const,
-      targetNumber: 12,
-      headSha: null,
-      issueVersionHash: null,
-      actorLogin: 'bob',
-      association: 'CONTRIBUTOR',
-      commentId: 555,
-    };
-    const denied = checkCommandGate(plan, { ...config });
-    expect(denied.allowed).toBe(false);
-    expect(checkCommandGate({ ...plan, association: 'OWNER' }, { ...config })).toEqual({ allowed: true });
   });
 
   it('idempotencyKeyFor：命令任务与判定任务各自稳定', () => {

@@ -86,8 +86,8 @@ const SOURCE_LABEL: Record<TaskListItem['source'], string> = {
   webhook: '事件',
   command: '命令',
   cron: '定时',
-  // 固定流水线的阶段任务（`tasks.source = 'pipeline'`，§4.6）
-  pipeline: '流水线',
+  // v0.3 的 issue agent（`tasks.source = 'agent'`）
+  agent: 'Agent',
 };
 
 /** 只认识的筛选键：同步 URL 时**只动这几个**，其余原样保留。 */

@@ -1,14 +1,13 @@
 /**
  * 触发命中预览的**判定内核**（W3-I）。
  *
- * 这里一行判定逻辑都不新写：别名合并、代码区蒙版、命令/问答解析全部来自
+ * 这里一行判定逻辑都不新写：别名合并、代码区蒙版、提及解析全部来自
  * `packages/contract/src/trigger.ts`（webhook 用的就是这一份）。面板只做两件契约之外的事：
  *  1. 把 `parse.masked` 与原文对比，回列出「被代码块蒙版挡住」的片段（解释为什么没触发）；
- *  2. 把「命中什么」翻译成「这次评论会不会开工」（`triggers.enabled`；事件面已由固定流水线接管，
- *     `triggers.faces` 按 P7 删除，面板不再提供逐面开关）。
+ *  2. 把「命中什么」翻译成「这次评论会不会开工」。
  *
- * 注意：预览**不校验触发人**（`triggers.users` 的名单只在 webhook 里按 `sender.login` 比对，
- * 预览框里没有「谁在说话」这个输入）。这一点必须写在界面上，否则「预览说能触发、线上没反应」。
+ * v0.3 删掉了命令语义与 `triggers.enabled`（触发体系只剩 `aliases`），所以预览只剩下
+ * 「有没有 @ 到我的别名」这一个判定。
  */
 import {
   findAliasHits,
@@ -85,16 +84,6 @@ export function previewTrigger(input: { body: string; triggers: TriggersConfig }
   const hits = [...new Set(findAliasHits(parse.masked, aliases).map((hit) => hit.alias))];
   const codeRegions = codeRegionsOf(input.body, parse.masked);
 
-  if (!input.triggers.enabled) {
-    return {
-      aliases,
-      hits,
-      parse,
-      willTrigger: false,
-      reason: '触发总开关关着（triggers.enabled = false）：该仓库任何触发都不生效。',
-      codeRegions,
-    };
-  }
 
   if (parse.alias === null) {
     return {
@@ -110,13 +99,6 @@ export function previewTrigger(input: { body: string; triggers: TriggersConfig }
     };
   }
 
-  const what =
-    parse.kind === 'command'
-      ? `命令 ${parse.command ?? ''}${parse.args === null ? '' : `（参数：${parse.args}）`}`
-      : parse.kind === 'question'
-        ? '自由提问 → 会有一条最终回答'
-        : '只 @ 了一下（没有命令也没有问题）→ 不建任务';
-
   return {
     aliases,
     hits,
@@ -124,8 +106,8 @@ export function previewTrigger(input: { body: string; triggers: TriggersConfig }
     willTrigger: parse.kind !== 'none',
     reason:
       parse.kind === 'none'
-        ? `命中了 @${parse.alias}，但后面既没有 /命令 也没有提问：不建任务。`
-        : `命中了 @${parse.alias} → ${what}`,
+        ? `命中了 @${parse.alias}，但后面没有正文：当作「只 @ 了一下」，不建任务。`
+        : `命中了 @${parse.alias} → 会交给 agent 处理（/名字 归技能，见 skill-mentions）`,
     codeRegions,
   };
 }

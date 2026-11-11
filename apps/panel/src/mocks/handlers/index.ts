@@ -4,7 +4,6 @@ import { costsHandlers } from './costs.ts';
 import { issueSessionHandlers, issuesHandlers } from './issues.ts';
 import { overviewHandlers } from './overview.ts';
 import { qualityHandlers } from './quality.ts';
-import { promptHandlers } from './prompt.ts';
 import { reposHandlers } from './repos.ts';
 import { skillsHandlers } from './skills.ts';
 import { systemHandlers } from './system.ts';
@@ -33,9 +32,6 @@ export function createHandlers(): HttpHandler[] {
     ...skillsHandlers,
     // 仓库写面（`/api/repos`、`/api/repos/:owner/:name/settings`）：四段路径已按具体在前排好
     ...reposHandlers,
-    // 提示词（`/api/repos/:owner/:name/prompt[/versions|/rollback|/restore]?kind=…`）：
-    // 一条路径四份 fixture（`?kind=`），所以单独一个文件；`prompt/versions` 等长路径在该文件内部在前
-    ...promptHandlers,
     ...systemHandlers,
   ];
 }

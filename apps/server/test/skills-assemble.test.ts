@@ -18,14 +18,6 @@ import { describe, expect, it } from 'vitest';
 import type { AgentsMdSection } from '../src/skills/agents-md.ts';
 import { ASSEMBLE_HEADINGS, assemblePrompt, splitBasePrompt } from '../src/skills/assemble.ts';
 import { UNTRUSTED_SENTINEL } from '../src/skills/prompt.ts';
-import {
-  CONSERVATIVE_OTHER_LAYERS_CHARS,
-  PROMPT_BUDGET_CHARS,
-  PROMPT_LAYER_LIMITS,
-  planPromptBudget,
-  previewBasePrompt,
-  previewPrompt,
-} from '../src/prompt/index.ts';
 
 /** 与 `buildTaskPrompt` / `buildAnswerPrompt` 同构的基座提示词（头部 + 输出契约）。 */
 const BASE = [
@@ -303,75 +295,3 @@ describe('assemblePrompt · P1 项目人格层（projectPrompt）', () => {
 });
 
 /* ── 保存期预算预演（`prompt/budget.ts`）────────────────────────────────────── */
-
-describe('planPromptBudget · 保存期预演', () => {
-  const body = 'x'.repeat(1_000);
-  const layerChars = (text: string): number => `## ${ASSEMBLE_HEADINGS.project}\n\n${text}`.length;
-
-  it('没有历史装配统计：按保守估算（P0 + P2 根 + P4 = 9600），P1 还有 2400', () => {
-    const budget = planPromptBudget({ body });
-    expect(budget.source).toBe('conservative-estimate');
-    expect(budget.otherLayersChars).toBe(CONSERVATIVE_OTHER_LAYERS_CHARS);
-    expect(budget.available).toBe(PROMPT_BUDGET_CHARS - CONSERVATIVE_OTHER_LAYERS_CHARS);
-    expect(budget.available).toBe(2_400);
-    expect(budget.requested).toBe(layerChars(body));
-    expect(budget.ok).toBe(true);
-  });
-
-  it('超预算：保存被拒（ok=false，给出 available 与 requested）', () => {
-    const huge = 'y'.repeat(3_000); // 3000 + 标题 > 2400
-    const budget = planPromptBudget({ body: huge });
-    expect(budget.ok).toBe(false);
-    expect(budget.requested).toBeGreaterThan(budget.available);
-    expect(budget.available).toBe(2_400);
-  });
-
-  it('P1 的软上限是 4000：空格子再多也不让 P1 超 4000', () => {
-    const budget = planPromptBudget({ body, lastStats: { baseChars: 0, agentsChars: 0, skillChars: 0 } });
-    expect(budget.source).toBe('last-assembly');
-    expect(budget.available).toBe(PROMPT_LAYER_LIMITS.p1);
-    const tooLong = planPromptBudget({
-      body: 'z'.repeat(PROMPT_LAYER_LIMITS.p1),
-      lastStats: { baseChars: 0, agentsChars: 0, skillChars: 0 },
-    });
-    expect(tooLong.ok).toBe(false);
-  });
-
-  it('实测统计优先：别的层越大，P1 能占的越少；全占满时只剩 0', () => {
-    const half = planPromptBudget({
-      body,
-      lastStats: { baseChars: 6_000, agentsChars: 3_000, skillChars: 1_000 },
-    });
-    expect(half.source).toBe('last-assembly');
-    expect(half.available).toBe(2_000);
-
-    const full = planPromptBudget({
-      body,
-      lastStats: { baseChars: 6_000, agentsChars: 4_000, skillChars: 4_000 },
-    });
-    expect(full.available).toBe(0);
-    expect(full.ok).toBe(false);
-  });
-});
-
-/* ── 面板预览（`prompt/preview.ts`）─────────────────────────────────────────── */
-
-describe('previewPrompt · 面板预览走同一个装配函数', () => {
-  it('预览文本 = assemblePrompt 的产出，P1 在示例基座的头之后', () => {
-    const body = '项目背景：调度器。';
-    const preview = previewPrompt({ repo: 'octo/demo', body });
-    const expected = assemblePrompt({ basePrompt: previewBasePrompt('octo/demo'), projectPrompt: body });
-
-    expect(preview.text).toBe(expected.prompt);
-    expect(preview.stats).toEqual(expected.stats);
-    expect(preview.text.startsWith(`${splitBasePrompt(previewBasePrompt('octo/demo')).head}\n\n`)).toBe(true);
-    expect(preview.omitted).toContain('AGENTS.md（来自 worktree）');
-  });
-
-  it('没有 P1 时预览与基座逐字节相同（不会渲染出空标题）', () => {
-    const base = previewBasePrompt('octo/demo');
-    const preview = previewPrompt({ repo: 'octo/demo', body: '' });
-    expect(preview.text).toBe(base);
-    expect(preview.text).not.toContain(ASSEMBLE_HEADINGS.project);
-  });
-});

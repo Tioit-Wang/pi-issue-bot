@@ -1,15 +1,16 @@
 /**
  * 仓库配置契约：`repoSettingsSchema` —— 一个仓库的**全部**配置。
  *
- * 依据：`docs/impl-multi-repo.md` §3。三条硬规则不变：
+ * 依据：`docs/req-issue-agent.md` §3（v0.3 只有 5 类可配项）。三条硬规则不变：
  * 1. **未知键一律拒绝**（`.strict()`）：拼错的键静默忽略等于配置写错了却看不出来。
  * 2. **键名用 snake_case**，与 `dry_run` / `settings_valid` 等列名一致。
  * 3. **默认值写在 schema 里**，不写在加载代码里：面板、文档、部署默认都从这份 schema 取默认行为。
  *
- * 多仓库改造（W1-A）后的两处结构性变化：
- * - 配置**只存在于 `repos.settings`（jsonb）**，不再读仓库里的 `.github/pi-bot.yml`；
- * - `compliance` 段**整体删除**：合规缺失项由提示词/技能控制（`docs/impl-multi-repo.md` §0.3），
- *   配置里不再有「哪些规则算必填」这一层。
+ * v0.3（issue agent）的结构性变化（`docs/dev-plan-issue-agent.md` §2.6）：
+ * - `settings.pipeline` → `settings.agent`（`managers` 搬家；三条提示词版本线删）；
+ * - `prompt` / `commands` / `create_issue` 三段整体删除（`project_prompt` 内联进 `agent`）；
+ * - `triggers` 只剩 `aliases`（`enabled` / `users` / `merge_defaults` / `remove` 删）；
+ * - `skills` 收成 `project_skills` 一个布尔。
  *
  * 为什么不像触发器别名那样在这里做归一化（`.transform()`）：注册表测试要求每个 schema 都能
  * 生成 JSON Schema（`packages/contract/test/contract.test.ts`），带 transform 的 schema 生成不了。
@@ -34,10 +35,9 @@ export type LabelTarget = z.infer<typeof labelTargetSchema>;
 export const labelMapSchema = z.record(z.string().min(1).max(40), labelTargetSchema);
 
 /**
- * 标签的**角色**（`docs/plan-fixed-pipeline.md` §4.5 / Q4）：必填，缺 role 一律拒收，**不做回填**。
+ * 标签的**角色**（D5 的依据）：必填，缺 role 一律拒收，**不做回填**。
  *
- * 这是流程分叉的唯一依据，不是展示字段：分类阶段只给结论（`requirement` / `defect` / `other`），
- * 打哪个标签由控制面按「同 role 的词表项」决定。所以词表里没有 `defect` 角色的项 —— 缺陷结论就没有标签可打。
+ * agent 侧据此判断「这个词表项意味着什么」，而不是让模型自由发明标签名。
  */
 export const labelRoleSchema = z.enum(['requirement', 'defect', 'other']);
 export type LabelRole = z.infer<typeof labelRoleSchema>;
@@ -81,51 +81,20 @@ export type LabelsConfig = z.infer<typeof labelsConfigSchema>;
 
 /* ── 其余各段 ──────────────────────────────────────────────────────────────── */
 
-export const createIssueConfigSchema = z
-  .object({
-    /** 默认关闭：主动建 issue 是唯一「无触发的写」，先让 owner 显式打开。 */
-    enabled: z.boolean().default(false),
-    /** 每仓库每日配额。 */
-    daily_quota: z.number().int().min(1).max(100).default(10),
-    /** 允许的场景。`pr-review` = PR 审查顺带发现的独立缺陷（R5 只保留这一项的实现）。 */
-    scenarios: z.array(z.enum(['pr-review', 'dependency', 'regression'])).min(1).max(3).default(['pr-review']),
-  })
-  .strict();
-
-export const commandsConfigSchema = z
-  .object({
-    enabled: z.boolean().default(true),
-    /** 命令白名单：不在其中的 `@bot /cmd` 直接回「未知命令」，不入队。 */
-    allowed: z
-      .array(z.string().regex(/^\/[a-z][a-z0-9-]{1,30}$/u))
-      .max(32)
-      .default(['/review-pr', '/issue-triage', '/issue-repro']),
-    /**
-     * 命令门禁：只认这些 `author_association`。
-     * 默认 OWNER / MEMBER / COLLABORATOR；机器人账号（`type: Bot`）无论 association 一律忽略。
-     */
-    author_associations: z
-      .array(z.enum(['OWNER', 'MEMBER', 'COLLABORATOR']))
-      .min(1)
-      .max(3)
-      .default(['OWNER', 'MEMBER', 'COLLABORATOR']),
-    /** 额外白名单（login），用于组织外的受信用户。 */
-    allow_users: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/u)).max(50).default([]),
-    /** 每仓库每小时命令上限。超限回一条说明，不入队。 */
-    rate_limit_per_hour: z.number().int().min(1).max(200).default(20),
-  })
-  .strict();
-
+/**
+ * 项目级技能目录开关：`true`（默认）= 扫描 `<repo>/.github/pi-bot/skills/`；
+ * 内置技能恒在，不受它影响（需求 §2.1）。
+ */
 export const skillsConfigSchema = z
   .object({
-    /** 是否允许仓库自带的技能（`.github/pi-bot/skills/*.md`，见 `contract-skill.md` §1）。 */
-    repo_skills: z.boolean().default(true),
+    project_skills: z.boolean().default(true),
   })
   .strict();
+export type SkillsConfig = z.infer<typeof skillsConfigSchema>;
 
 export const limitsConfigSchema = z
   .object({
-    /** 每仓库每小时自动评论上限（判定类 + 命令类合计）。 */
+    /** 每仓库每小时自动评论上限（事件类 + 提及类合计）。 */
     max_comments_per_hour: z.number().int().min(1).max(200).default(10),
     /** 单封信封最多执行多少个动作（信封本身也限 8，两处取小）。 */
     max_actions_per_run: z.number().int().min(1).max(8).default(8),
@@ -138,55 +107,44 @@ export const limitsConfigSchema = z
   })
   .strict();
 
-/** 项目提示词层（P1，`prompt_versions` 表）。正文不在配置里，配置只记「启用哪个版本」。 */
-export const promptConfigSchema = z
-  .object({
-    /** 是否把 P1 层注入到提示词（关掉 = 装配结果与没有 P1 时逐字节一致）。 */
-    enabled: z.boolean().default(true),
-    /** 当前启用的版本号；`0` = 还没有任何版本（不注入）。 */
-    current_version: z.number().int().min(0).max(1_000_000).default(0),
-  })
-  .strict();
-export type PromptConfig = z.infer<typeof promptConfigSchema>;
+/* ── issue agent（`docs/req-issue-agent.md` §3）────────────────────────────────── */
 
-/* ── 固定流水线（`docs/plan-fixed-pipeline.md` §4.5）──────────────────────────── */
-
-/** login 字符集：与 `commands.allow_users` / `triggers.users` 同一套（GitHub login 规则）。 */
+/** login 字符集（GitHub login 规则）。 */
 export const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/u;
 
 /**
- * `settings.pipeline` —— v1.2 之后「项目级可配项只剩 3 类」里的第 2 类（`labels.vocabulary[].role`
- * 与 4 条提示词版本线是另外两类，`kind=project` 的指针沿用 `prompt.current_version`）。
+ * `settings.agent` —— v0.3 的**唯一**项目级配置段（`docs/dev-plan-issue-agent.md` §2.6）。
  *
- * 刻意**没有** `enabled`：不存在「关闭流程」的项目配置（E1 全量切换，§16.1）；
- * `repos.enabled=false` 只表示「该仓库未接入」，不是流程开关。
- * 刻意**没有任何阈值**：`close_after_hours` / `max_runs_per_stage` 已收为系统常量（Q2，§1.5），
- * 改常量走发布，面板只读展示。
+ * 刻意**没有** `enabled`：`repos.enabled=false` 只表示「该仓库未接入」，不是 agent 开关。
+ * 刻意**没有任何阈值**：轮换阈值、速率上限等都是系统常量，改常量走发布。
  */
-export const pipelineConfigSchema = z
+export const agentConfigSchema = z
   .object({
     /**
-     * 管理员 login：`/pipeline next|prev` 的权限来源，也是「分类无法判断时等谁回话」的名单。
+     * 管理员 login：`@别名` 提及的唯一权限来源，也是「确认类回复等谁」的名单。
      * schema 层只保证形状；**非空**与**不重复**由 `repoSettingsSchema` 的 superRefine 无条件校验。
      */
     managers: z.array(z.string().regex(LOGIN_RE)).max(20).default([]),
-    /** 阶段 0 的提示词版本号；`0` = 用内置默认模板（§15）。三条版本线互不干扰（§4.4）。 */
-    format_prompt_version: z.number().int().min(0).max(1_000_000).default(0),
-    classify_prompt_version: z.number().int().min(0).max(1_000_000).default(0),
-    agent_prompt_version: z.number().int().min(0).max(1_000_000).default(0),
+    /** `issues.opened` 要加载的技能 id；`null` = 不投递（0 任务）。 */
+    on_opened: z.string().min(1).max(64).nullable().default('format-check'),
+    /** `issues.edited` 要加载的技能 id；`null` = 不投递。 */
+    on_edited: z.string().min(1).max(64).nullable().default('format-check'),
+    /** 格式检查通过后是否自动打标签（默认关：v0.3「默认只产出评论」）。 */
+    auto_label_after_format_pass: z.boolean().default(false),
+    /** 项目级补充提示词（取代 v1.5 的 `prompt_versions` 版本表）。 */
+    project_prompt: z.string().max(4000).default(''),
   })
   .strict();
-export type PipelineConfig = z.infer<typeof pipelineConfigSchema>;
+export type AgentConfig = z.infer<typeof agentConfigSchema>;
 
 /* ── 完整形状 ──────────────────────────────────────────────────────────────── */
 
 /**
  * 配置的**形状**（不含跨字段约束）：`repos.settings` 的 jsonb 形状 + 默认值。
  *
- * 单列一份的理由（`docs/plan-fixed-pipeline.md` §4.5）：`managers` 非空是**运行**前提，
- * 而「部署默认 / 迁移播种」需要一个**形状合法**的初始值（`managers: []` 是形状上的合法空值）。
- * 所以拆成「形状」+「严格」两层，其它调用点（迁移、面板的「恢复默认」）用形状层，
- * 校验一律用 `repoSettingsSchema`。
+ * 单列一份的理由：`managers` 非空是**运行**前提，而「部署默认 / 迁移播种」需要一个**形状合法**的
+ * 初始值（`managers: []` 是形状上的合法空值）。所以拆成「形状」+「严格」两层，其它调用点
+ * （迁移、面板的「恢复默认」）用形状层，校验一律用 `repoSettingsSchema`。
  */
 export const repoSettingsShapeSchema = z
   .object({
@@ -198,16 +156,13 @@ export const repoSettingsShapeSchema = z
     dry_run: z.boolean().default(true),
     /** 该仓库默认模型（`provider/model`）；技能可以覆盖，只影响成本归集。 */
     model: z.string().regex(MODEL_NAME_RE).optional(),
-    /** 触发体系：别名 / 触发人（`faces` 已按 P7 删除，事件面由流水线固定）。 */
+    /** 触发体系：只剩别名（事件面由 agent 固定接管）。 */
     triggers: triggersConfigSchema.prefault({}),
     labels: labelsConfigSchema.prefault({}),
-    create_issue: createIssueConfigSchema.prefault({}),
-    commands: commandsConfigSchema.prefault({}),
     skills: skillsConfigSchema.prefault({}),
     limits: limitsConfigSchema.prefault({}),
-    prompt: promptConfigSchema.prefault({}),
-    /** 固定流水线段（E1 之后**没有** `enabled`，见 `pipelineConfigSchema`）。 */
-    pipeline: pipelineConfigSchema.prefault({}),
+    /** issue agent 段（没有 `enabled`，见 `agentConfigSchema`）。 */
+    agent: agentConfigSchema.prefault({}),
   })
   .strict();
 
@@ -229,28 +184,27 @@ function firstDuplicate(values: readonly string[]): string | null {
  * **不是**「用默认值继续跑」：配置写坏了却照常放评论，等于把错误配置的后果推给仓库维护者。
  *
  * 跨字段约束**无条件生效**，读写同一套（Q4：不为存量配置让步，缺 `role` / `managers` 为空 /
- * 词表缺 `requirement` 或 `defect` / 含已删键（`triggers.faces`、`pipeline.enabled`）一律解析失败、保存 400）：
- * 1. `pipeline.managers` 非空（否则没人能推进被卡住的流程）；
- * 2. `pipeline.managers` 内无重复 login；
+ * 词表缺 `requirement` 或 `defect` / 含已删键一律解析失败、保存 400）：
+ * 1. `agent.managers` 非空（否则没人能 @ 动机器人）；
+ * 2. `agent.managers` 内无重复 login；
  * 3. `labels.vocabulary` 内无重复 `name`（重复会让「同 role 打哪个标签」变成不确定）；
- * 4. `labels.vocabulary` 里 `role='requirement'` 与 `role='defect'` **各至少 1 个**（`other` 可缺省）——
- *    与 `docs/plan-fixed-pipeline.md` §4.5 / V17 字面一致（见 §4.5「`superRefine` 无条件生效」）。
+ * 4. `labels.vocabulary` 里 `role='requirement'` 与 `role='defect'` **各至少 1 个**（`other` 可缺省）。
  */
 export const repoSettingsSchema = repoSettingsShapeSchema
   .superRefine((settings, ctx) => {
-    if (settings.pipeline.managers.length === 0) {
+    if (settings.agent.managers.length === 0) {
       ctx.addIssue({
         code: 'custom',
-        path: ['pipeline', 'managers'],
-        message: 'pipeline.managers 不能为空：至少一个管理员 login（否则卡住的流程没人能推进）',
+        path: ['agent', 'managers'],
+        message: 'agent.managers 不能为空：至少一个管理员 login（否则没人能 @ 动机器人）',
       });
     }
-    const duplicateManager = firstDuplicate(settings.pipeline.managers);
+    const duplicateManager = firstDuplicate(settings.agent.managers);
     if (duplicateManager !== null) {
       ctx.addIssue({
         code: 'custom',
-        path: ['pipeline', 'managers'],
-        message: `pipeline.managers 里重复：${duplicateManager}`,
+        path: ['agent', 'managers'],
+        message: `agent.managers 里重复：${duplicateManager}`,
       });
     }
     const duplicateLabel = firstDuplicate(settings.labels.vocabulary.map((entry) => entry.name));
@@ -262,7 +216,7 @@ export const repoSettingsSchema = repoSettingsShapeSchema
       });
     }
     /**
-     * §4.5：`requirement` / `defect` 是流程分叉的唯一依据，缺哪一类就等于该结论没有标签可打。
+     * `requirement` / `defect` 是打标的唯一依据，缺哪一类就等于该结论没有标签可打。
      * 所以这一条**硬校验**，不再降级成面板提示（`pipelineLabelCoverage()` 只做防御性展示）。
      */
     const missingRoles = (['requirement', 'defect'] as const).filter(
@@ -272,7 +226,7 @@ export const repoSettingsSchema = repoSettingsShapeSchema
       ctx.addIssue({
         code: 'custom',
         path: ['labels', 'vocabulary'],
-        message: `分类需要至少一个需求标签与一个缺陷标签：labels.vocabulary 里缺 role='${missingRoles.join("' / role='")}' 的词表项（role='other' 可缺省）`,
+        message: `打标需要至少一个需求标签与一个缺陷标签：labels.vocabulary 里缺 role='${missingRoles.join("' / role='")}' 的词表项（role='other' 可缺省）`,
       });
     }
   })
@@ -303,17 +257,17 @@ export const parseRepoConfig = parseRepoSettings;
  *
  * 从 `repoSettingsShapeSchema` 生成（不是 `parseRepoSettings({})`：那现在会因为 `managers` 为空、
  * 且 `labels.vocabulary` 缺 `requirement`/`defect` 而抛错）。
- * 用途只有「部署默认 / 迁移播种 / 面板恢复默认」：它的 `pipeline.managers` 是 `[]`，
+ * 用途只有「部署默认 / 迁移播种 / 面板恢复默认」：它的 `agent.managers` 是 `[]`，
  */
 export const DEFAULT_REPO_SETTINGS: RepoSettings = repoSettingsShapeSchema.parse({});
 
 /**
  * 标签角色的覆盖情况 —— 面板用它显示「未配置标签角色」的**防御性**提示（`missingRoles` 为空 = 齐了）。
  *
- * **schema 已经强制覆盖**（`repoSettingsSchema` 的 superRefine 要求 `requirement` 与 `defect` 各至少 1 个，
- * §4.5），所以正常路径走不到 `missingRoles` 非空。本函数只为**防御性展示**保留：
- * 存量数据、迁移后尚未在面板配置的仓库（`settings_valid=false`），面板拿到的是形状默认值（空词表），
- * 这时靠它把「缺哪类角色」直接摆给用户，而不是让用户自己去数词表。
+ * **schema 已经强制覆盖**（`repoSettingsSchema` 的 superRefine 要求 `requirement` 与 `defect` 各至少 1 个），
+ * 所以正常路径走不到 `missingRoles` 非空。本函数只为**防御性展示**保留：存量数据、迁移后尚未在面板
+ * 配置的仓库（`settings_valid=false`），面板拿到的是形状默认值（空词表），这时靠它把「缺哪类角色」
+ * 直接摆给用户，而不是让用户自己去数词表。
  */
 export function pipelineLabelCoverage(settings: Pick<RepoSettings, 'labels'>): {
   missingRoles: ('requirement' | 'defect')[];

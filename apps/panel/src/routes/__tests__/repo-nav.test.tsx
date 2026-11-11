@@ -78,7 +78,7 @@ describe('两级导航', () => {
     expect(trigger.textContent).not.toContain('未选择');
   });
 
-  it('落在仓库页面时：仓库组 5 条链接指向当前仓库，且当前页高亮', async () => {
+  it('落在仓库页面时：仓库组 4 条链接指向当前仓库（不再有「流水线」），且当前页高亮', async () => {
     renderAt('/repos/acme__widgets/runs');
     expect(await screen.findByRole('heading', { level: 1, name: '运行' })).toBeTruthy();
 
@@ -87,9 +87,8 @@ describe('两级导航', () => {
     expect(within(nav).getByRole('link', { name: 'Issue 中心' }).getAttribute('href')).toBe(
       '/repos/acme__widgets/issues',
     );
-    expect(within(nav).getByRole('link', { name: '流水线' }).getAttribute('href')).toBe(
-      '/repos/acme__widgets/pipeline',
-    );
+    // v0.3：「流水线」页已退役，仓库组里不能再有这个链接（否则点过去是 404）
+    expect(within(nav).queryByRole('link', { name: '流水线' })).toBeNull();
     expect(within(nav).getByRole('link', { name: '运行' }).getAttribute('href')).toBe('/repos/acme__widgets/runs');
     expect(within(nav).getByRole('link', { name: '设置' }).getAttribute('href')).toBe('/repos/acme__widgets/settings');
 
@@ -235,12 +234,12 @@ describe('/repos/:repo 工作台', () => {
     expect(await screen.findByTestId('repo-workspace-content', undefined, { timeout: 5000 })).toBeTruthy();
   });
 
-  it('设置分区：5 个分区导航都在，落地页是「通用」的真表单（不是占位说明）', async () => {
+  it('设置分区：4 个分区导航都在，落地页是「通用」的真表单（不是占位说明）', async () => {
     renderAt('/repos/acme__widgets/settings/general');
 
     expect(await screen.findByRole('heading', { level: 1, name: '设置 · 通用' })).toBeTruthy();
     const nav = screen.getByRole('navigation', { name: '设置分区' });
-    for (const label of ['通用', '触发', '标签', '限额', '提示词']) {
+    for (const label of ['通用', '触发', '标签', '限额']) {
       expect(within(nav).getByRole('link', { name: label })).toBeTruthy();
     }
 

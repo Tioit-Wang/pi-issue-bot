@@ -232,6 +232,9 @@ export class FakeRacpHost {
         return { projectId: 'project-e2e', path: readString(params, 'path') ?? '/tmp/e2e' };
       case 'session/create':
         return { session: fakeSession() };
+      case 'session/attach':
+        // 会话复用（v0.3 的「一个 issue 一个持久会话」）：真实 Host 回的是快照。
+        return fakeSessionSnapshot();
       case 'events/subscribe':
         return { subscriptionId: 'sub-e2e', cursor: { epoch: 'epoch-e2e', sequence: 0 } };
       case 'turn/start':
@@ -321,6 +324,29 @@ export function fakeSession(overrides: Record<string, unknown> = {}): Record<str
     revision: 1,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
+  };
+}
+
+/**
+ * `session/attach` 的结果（`isSessionSnapshot` 的完整形状）。
+ *
+ * 为什么需要它：`RacpClient.sessionAttach()` 会校验快照形状，形状不对就抛错，而
+ * `turn-driver` 把「attach 失败」当成「新建会话」（不阻塞本轮）—— 于是会话复用用例会
+ * 静默退化成「每轮新建」，测不出 v0.3 的「一个 issue 一个持久会话」。
+ */
+export function fakeSessionSnapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    session: fakeSession(),
+    queuedTurns: [],
+    items: [],
+    activeItems: [],
+    pendingApprovals: [],
+    pendingInputs: [],
+    hasMoreHistory: false,
+    cursor: { epoch: 'epoch-e2e', sequence: 0 },
+    revision: 0,
+    generatedAt: '2026-06-01T00:00:00.000Z',
     ...overrides,
   };
 }

@@ -56,7 +56,6 @@ type ListSeed = Omit<
   | 'labelDecisions'
   | 'feedback'
   // 固定流水线状态：样本默认「没有状态行」（`null`），单测要覆盖时显式给
-  | 'pipeline'
 > &
   Partial<
     Pick<
@@ -70,7 +69,6 @@ type ListSeed = Omit<
       | 'reactionState'
       | 'labelDecisions'
       | 'feedback'
-      | 'pipeline'
     >
   >;
 type TurnSeed = Omit<IssueTurn, 'commentId' | 'attempts' | 'truncated'> &
@@ -102,7 +100,6 @@ function finalizeList(seed: ListSeed): IssueListItem {
     // `reactionState` 默认从时间线推（显式给了就用显式的，方便测试单独改一处）
     reactionState: seed.reactionState ?? reactionStateOf(feedback),
     labelDecisions: seed.labelDecisions ?? null,
-    pipeline: seed.pipeline ?? null,
   };
 }
 
@@ -301,18 +298,6 @@ function storyEacces(now: number): IssueRecord {
        * 有 `sessionId` 与 `sessionTurns`（阶段 2 复用会话），并且 `staleAt` 非空
        * （ready 之后正文被编辑过一次：只记录，不重跑）。
        */
-      pipeline: {
-        stage: 'agent',
-        state: 'ready',
-        category: 'defect',
-        formatFailCount: 1,
-        infoRequestedAt: null,
-        blockedReason: null,
-        readyAt: at(150),
-        staleAt: at(120),
-        sessionId: 'sess-17-agent',
-        sessionTurns: 3,
-      },
     },
     participants: ['Tioit-Wang', 'alice', BOT_LOGIN],
     turns,
@@ -347,18 +332,6 @@ function storyClosedOne(now: number): IssueRecord {
         { stage: 'succeeded', content: 'rocket', appliedAt: at(89), at: at(89), commentId: '420000' },
       ],
       // 已经结束（人工关闭）：`closed/closed`，类别是 other（只打过标签，没发评论）
-      pipeline: {
-        stage: 'closed',
-        state: 'closed',
-        category: 'other',
-        formatFailCount: 0,
-        infoRequestedAt: null,
-        blockedReason: null,
-        readyAt: at(200),
-        staleAt: null,
-        sessionId: 'sess-42-agent',
-        sessionTurns: 1,
-      },
     },
     participants: ['bob', BOT_LOGIN],
     turns: [
@@ -427,18 +400,6 @@ function storyWaiting(now: number): IssueRecord {
        */
       feedback: [{ stage: 'received', content: 'eyes', appliedAt: null, at: at(6), commentId: '70000' }],
       // 阶段 0 不通过、等作者补充（`infoRequestedAt` 非空 ⇒ 进 48h 自动关闭扫描）
-      pipeline: {
-        stage: 'format',
-        state: 'awaiting_info',
-        category: null,
-        formatFailCount: 2,
-        infoRequestedAt: at(30 * 60),
-        blockedReason: null,
-        readyAt: null,
-        staleAt: null,
-        sessionId: null,
-        sessionTurns: 0,
-      },
     },
     participants: ['carol'],
     turns: [
@@ -491,19 +452,6 @@ function storyLostEvidence(now: number): IssueRecord {
       lastPreview: previewOf(classifyComment),
       lastActorKind: 'bot',
       lastActorLogin: BOT_LOGIN,
-      pipeline: {
-        stage: 'classify',
-        state: 'awaiting_info',
-        category: 'not-found',
-        formatFailCount: 0,
-        // 等管理员（不是等作者）：`info_requested_at = NULL`，不进 48h 关闭扫描
-        infoRequestedAt: null,
-        blockedReason: null,
-        readyAt: null,
-        staleAt: null,
-        sessionId: null,
-        sessionTurns: 0,
-      },
     },
     participants: ['erin', BOT_LOGIN],
     turns: [
@@ -563,40 +511,6 @@ function filler(index: number, now: number): IssueRecord {
       labels: index % 4 === 1 ? ['question'] : [],
       outcomes: { succeeded: 1 },
       lastPreview: previewOf(answer),
-      /*
-       * 三类填充行覆盖看板的三种形态：
-       *  - `index % 3 === 0`：阶段 0 排队（`format/pending`），没有时间锚点 → 停留列走最后活动兜底；
-       *  - `index % 3 === 1`：`agent/blocked`（信封连续 2 次不合法），带 `blockedReason`；
-       *  - 其余：**没有流水线行**（`null`）→ 看板的「未入流水线」与列表的「未入流水线」徽章。
-       */
-      pipeline:
-        index % 3 === 0
-          ? {
-              stage: 'format',
-              state: 'pending',
-              category: null,
-              formatFailCount: 0,
-              infoRequestedAt: null,
-              blockedReason: null,
-              readyAt: null,
-              staleAt: null,
-              sessionId: null,
-              sessionTurns: 0,
-            }
-          : index % 3 === 1
-            ? {
-                stage: 'agent',
-                state: 'blocked',
-                category: 'requirement',
-                formatFailCount: 3,
-                infoRequestedAt: null,
-                blockedReason: '信封连续 2 次不合法（fail_streak=2）',
-                readyAt: at,
-                staleAt: null,
-                sessionId: `sess-demo-${String(number)}`,
-                sessionTurns: 26,
-              }
-            : null,
     },
     participants: ['dana', BOT_LOGIN],
     turns: [
@@ -768,7 +682,6 @@ export function buildIssueSessionResponse(
       reactionState: item.reactionState,
       // 记了台账但还没落地的那几条（dry-run 计划 / 排队中）
       pendingFeedback: item.feedback.filter((event) => event.appliedAt === null),
-      pipeline: item.pipeline,
     },
     turns: record.turns.map(finalizeTurn),
   };
@@ -827,3 +740,4 @@ export const issuesHandlers: HttpHandler[] = [
     return scenarioResponse({ data, empty: buildEmptyIssuesResponse() });
   }),
 ];
+

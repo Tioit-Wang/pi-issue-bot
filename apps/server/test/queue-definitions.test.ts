@@ -27,7 +27,6 @@ import type {
   ScheduleAdminBoss,
 } from '../src/queue/definitions.ts';
 import { queueJobOptions } from '../src/queue/boss.ts';
-import { JOB_PIPELINE_CLOSE_SCHEDULE } from '../src/config/pipeline-constants.ts';
 
 type CreateCall = { readonly name: string; readonly options: CreateQueueOptions };
 type ScheduleCall = {
@@ -74,7 +73,7 @@ describe('queueJobOptions：singletonKey 与 expireInSeconds', () => {
 });
 
 describe('QUEUES 定义', () => {
-  it('7 个队列齐全（含 pipeline-close），命名与常量一致', () => {
+  it('7 个队列齐全，命名与常量一致（`pipeline-close` 随流水线退役；`agent-dispatch` 是 S1 新增）', () => {
     expect(QUEUES.map((spec) => spec.name).sort()).toEqual(
       [
         QUEUE.runTask,
@@ -83,7 +82,7 @@ describe('QUEUES 定义', () => {
         QUEUE.metricsRollup,
         QUEUE.reconcile,
         QUEUE.retentionCleanup,
-        QUEUE.pipelineClose,
+        QUEUE.agentDispatch,
       ].sort(),
     );
   });
@@ -117,7 +116,7 @@ describe('QUEUES 定义', () => {
 });
 
 describe('SCHEDULES 定时任务', () => {
-  it('六条定时任务：排队闸门每分钟、metrics 每天 00:10、reconcile 每小时、保留期每天、自动关闭每 10 分钟', () => {
+  it('六条定时任务：排队闸门每分钟、metrics 每天 00:10、reconcile 每小时、保留期每天、agent 调度每分钟', () => {
     const byQueue = new Map(SCHEDULES.map((spec) => [spec.queue, spec]));
     expect(SCHEDULES).toHaveLength(6);
     expect(byQueue.get(QUEUE.queueGate)?.cron).toBe('* * * * *');
@@ -125,8 +124,8 @@ describe('SCHEDULES 定时任务', () => {
     expect(byQueue.get(QUEUE.metricsRollup)?.cron).toBe('10 0 * * *');
     expect(byQueue.get(QUEUE.reconcile)?.cron).toBe('0 * * * *');
     expect(byQueue.get(QUEUE.retentionCleanup)?.cron).toBe('40 0 * * *');
-    // 自动关闭（D5 / §9）：cron 取自 `config/pipeline-constants.ts::JOB_PIPELINE_CLOSE_SCHEDULE`
-    expect(byQueue.get(QUEUE.pipelineClose)?.cron).toBe(JOB_PIPELINE_CLOSE_SCHEDULE);
+    // agent 调度是兜底：真正的「10 秒」由 webhook 立刻投递 + 任务结束立刻取下一条兑现
+    expect(byQueue.get(QUEUE.agentDispatch)?.cron).toBe('* * * * *');
   });
 
   it('全部按 UTC 解释（不依赖服务器本地时区）', () => {

@@ -1,11 +1,13 @@
 /**
  * `skills/` 的公开出口（tech-plan §8.2 的命令面）。
  *
- * 四个职责各有自己的文件，调用方按需取：
+ * 三个职责各有自己的文件，调用方按需取：
  *  - `parseSkillFile` / `splitFrontmatter`  解析与校验（加载期）
  *  - `createSkillRegistry`                 内置 + 仓库技能的合并、覆盖与冲突（加载期）
- *  - `parseCommand`                        `@bot /cmd k=v` 的解析与参数校验（解析期）
  *  - `renderSkillPrompt`                   插值 + 不可信正文的围栏与截断（运行期前）
+ *
+ * v0.3 删掉了「命令」概念（`/名字` 归技能，`skills/command.ts` 已删）与阶段提示词
+ * （`skills/stage-prompts.ts` 与 `prompt.ts` 的 `renderStagePrompt*` 家族已删）。
  */
 export { BUILTIN_SKILL_FILES, BUILTIN_SKILL_NAMES } from './builtin.ts';
 export { bestEffortName, FRONTMATTER_FENCE, normalizeSkillName, parseSkillFile, splitFrontmatter } from './frontmatter.ts';
@@ -34,8 +36,6 @@ export type {
   RenderSkillPromptStats,
   SkillPromptContext,
 } from './prompt.ts';
-export { DEFAULT_COMMAND_MENTION, parseCommand, parseCommandMention, usageMessage } from './command.ts';
-export type { CommandParseOptions, CommandParseResult, CommandRejectReason, ParsedCommand } from './command.ts';
 export { toSkillSummary } from './types.ts';
 export type {
   SkillDefinition,
@@ -59,35 +59,6 @@ export type {
   AssembleStageLayer,
 } from './assemble.ts';
 
-// ── S2-a：四类提示词（`kind=project|format_check|classify|agent`）────────────────
-export {
-  STAGE_PROMPT_DEFAULTS,
-  STAGE_PROMPT_PLACEHOLDERS,
-  STAGE_REQUIRED_PLACEHOLDERS,
-  STAGE_PROMPT_KINDS,
-  ASSEMBLE_STAGE_OF_KIND,
-  GATE_NOTICE_PROMPT,
-  PIPELINE_PROMPT_LIMITS,
-  isStageKind,
-  pipelinePromptLimit,
-  stagePromptDefault,
-} from './stage-prompts.ts';
-export type { StagePromptKind } from './stage-prompts.ts';
-export {
-  STAGE_SUPPLEMENT_LIMITS,
-  renderGateNoticePrompt,
-  renderStageLabelList,
-  renderStagePrompt,
-  validateStagePrompt,
-} from './prompt.ts';
-export type {
-  RenderStagePromptInput,
-  RenderStagePromptResult,
-  StagePromptIssues,
-  StagePromptLimits,
-  StagePromptSupplement,
-  StagePromptVars,
-} from './prompt.ts';
 
 // ── M2：zip → 技能包 → 存储 ───────────────────────────────────────────────────
 export { readZipEntries, ZIP_LIMITS, ZipError } from './zip.ts';

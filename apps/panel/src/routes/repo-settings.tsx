@@ -1,5 +1,5 @@
 /**
- * 仓库设置 `/repos/:repo/settings/:section`（5 分区：general / triggers / labels / limits / prompt）。
+ * 仓库设置 `/repos/:repo/settings/:section`（4 分区：general / triggers / labels / limits）。
  *
  * 这一页面向的问题只有一个：**「我要把某个仓库调对」**。所以信息组织是
  * 「左二级导航（每项一句话现状） + 右侧连续分区表单 + 吸底保存条」，
@@ -21,8 +21,6 @@ import { Skeleton } from '../components/ui/skeleton.tsx';
 import { GeneralSection } from '../components/settings/general-section.tsx';
 import { LabelsSection } from '../components/settings/labels-section.tsx';
 import { LimitsSection } from '../components/settings/limits-section.tsx';
-import { PromptSection } from '../components/settings/prompt-section.tsx';
-import { PipelineSection } from '../components/settings/pipeline-section.tsx';
 import { TriggersSection } from '../components/settings/triggers-section.tsx';
 import type { SettingsSectionProps } from '../components/settings/section-props.ts';
 import { IssueList } from '../components/settings/save-bar.tsx';
@@ -40,8 +38,6 @@ const SECTION_COMPONENTS: Record<SettingsSectionKey, (props: SettingsSectionProp
   triggers: TriggersSection,
   labels: LabelsSection,
   limits: LimitsSection,
-  pipeline: PipelineSection,
-  prompt: PromptSection,
 };
 
 function sectionLabel(section: SettingsSectionKey): string {

@@ -52,8 +52,7 @@ export function sectionSummary(section: SettingsSectionKey, draft: RepoSettings)
       return `${draft.enabled ? '启用' : '停用'} · ${draft.dry_run ? '干跑' : '真写'}`;
     case 'triggers': {
       const aliases = resolveAliasesFor(draft.triggers);
-      const users = draft.triggers.users === 'all' ? 'all' : `${formatCount(draft.triggers.users.length)} 人`;
-      return `${formatCount(aliases.length)} 个别名 · 触发人 ${users}`;
+      return `${formatCount(aliases.length)} 个别名 · 管理员 ${formatCount(draft.agent.managers.length)} 人`;
     }
     case 'labels': {
       const mapped = Object.keys(draft.labels.map).length;
@@ -61,17 +60,6 @@ export function sectionSummary(section: SettingsSectionKey, draft: RepoSettings)
     }
     case 'limits':
       return `评论 ${formatCount(draft.limits.max_comments_per_hour)}/h · 任务 ${formatCount(draft.limits.max_task_minutes)}m`;
-    case 'pipeline': {
-      // 「项目级只剩 3 类可配项」：管理人员 + 4 条提示词版本线（project 走 settings.prompt）
-      const overridden =
-        (draft.prompt.current_version === 0 ? 0 : 1) +
-        (draft.pipeline.format_prompt_version === 0 ? 0 : 1) +
-        (draft.pipeline.classify_prompt_version === 0 ? 0 : 1) +
-        (draft.pipeline.agent_prompt_version === 0 ? 0 : 1);
-      return `管理员 ${formatCount(draft.pipeline.managers.length)} · 项目版 ${formatCount(overridden)}/4`;
-    }
-    case 'prompt':
-      return `v${formatCount(draft.prompt.current_version)} · ${draft.prompt.enabled ? '注入' : '关闭'}`;
   }
 }
 

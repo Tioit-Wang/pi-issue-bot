@@ -68,8 +68,8 @@ export function buildClassifyTaskFixture(id: string, now: number = Date.now()): 
     task: {
       id,
       repo: 'acme/widgets',
-      source: 'pipeline',
-      command: 'pipeline:classify',
+      source: 'agent',
+      command: 'agent:opened',
       targetKind: 'issue',
       targetNumber: 88,
       headSha: HEAD_SHA,

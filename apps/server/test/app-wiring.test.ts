@@ -2,14 +2,14 @@
  * **装配级**测试（`docs/impl-multi-repo.md` W4-J 的交付标准第 2 条）：
  * 验的不是纯函数，而是「生产装配之后这些东西到底有没有被接上」。
  *
- * 五个接线点各一条（都用真 PG + 假 RACP host + 假 GitHub 端口）：
+ * 四个接线点各一条（都用真 PG + 假 RACP host + 假 GitHub 端口）：
  *
  *  1. 自动通道（`tasks.source='webhook'`）：**零评论** + 打标经 `normalizeDesired`
  *     （词表外的标签被拦 → `label_decisions.blocked_reason` 有值）+ 终态 `rocket`；
  *  2. 人工通道（`tasks.source='command'`）：写回**恰好一条**最终回答；
  *  3. 反馈注入后终态 reaction 真的被调用（成功 rocket / 失败 confused）；
  *  4. `settings.limits.concurrency_per_repo` 真的生效（同仓库串行、另一仓库并行）；
- *  5. `prompt_versions` 里的 P1 正文真的出现在最终 prompt 里（并且装配统计落了库）。
+ * P1 项目提示词那一层（`prompt_versions` → 装配统计 `assemble:prompt:stats`）已随提示词子系统退役，
  *
  * 为什么必须走 `createApplication().executeTask()`：这些依赖（feedback / labelPolicy /
  * ledger / prompt enricher 的 db）全是在 **compose** 里拼的；只测 `runTask` 或只测
@@ -41,10 +41,6 @@ import { parseValidSettings, vocabularyWithRoles } from './helpers/repo-settings
 const REPO_LABELLED = 'acme/wiring';
 /** 默认 settings 的仓库（人工通道、失败路径、并发默认值用它）。 */
 const REPO_PLAIN = 'acme/plain';
-/** 有 P1 项目提示词的仓库。 */
-const REPO_PROMPTED = 'acme/prompted';
-
-const PROMPT_BODY = '- 一律用中文回答；贴代码时给出文件路径与行号。';
 
 /** 记调用的假 reaction 写面（`feedback/` 与 `confused` 端口共用它）。 */
 function createRecordingReactions(): {
@@ -168,11 +164,6 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
       }),
     );
     await seedRepo(REPO_PLAIN, parseValidSettings());
-    await seedRepo(REPO_PROMPTED, parseValidSettings({ prompt: { enabled: true, current_version: 1 } }));
-    await db.sql(
-      `insert into prompt_versions (repo, version, body, note) values ($1, 1, $2, 'wiring test')`,
-      [REPO_PROMPTED, PROMPT_BODY],
-    );
 
     host = await FakeRacpHost.start({ script: { text: envelopeText({ actions: [] }) } });
     queue = createFakeQueue();
@@ -399,39 +390,4 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
     expect(fakePorts.record.worktrees.length).toBe(beforePlain + 2);
   }, 60_000);
 
-  it('⑤ P1 项目提示词出现在最终 prompt 里，且装配统计落库', async () => {
-    await seedTask({
-      id: 't-prompt-wiring',
-      repo: REPO_PROMPTED,
-      source: 'webhook',
-      command: 'auto:triage',
-      targetNumber: 74,
-      actorLogin: 'carol',
-      idempotencyKey: 'idem-prompt-wiring',
-    });
-    const callsBefore = host.calls.length;
-    host.setScript({ text: envelopeText({ actions: [] }) });
-
-    await app.executeTask({ taskId: 't-prompt-wiring' });
-
-    // `turn/start` 的 params.input.text 就是最终交给宿主的提示词
-    const turnStart = host.calls
-      .slice(callsBefore)
-      .filter((call) => call.method === 'turn/start')
-      .at(-1);
-    expect(turnStart).toBeDefined();
-    const text = String(
-      ((turnStart?.params as { input?: { text?: unknown } } | undefined)?.input?.text ?? '') as string,
-    );
-    expect(text).toContain('项目约定');
-    expect(text).toContain(PROMPT_BODY);
-
-    // 装配统计：`runtime_flags{key='assemble:prompt:stats', repo=<repo>}`
-    const stats = await db.sql(
-      "select * from runtime_flags where key = 'assemble:prompt:stats' and repo = $1",
-      [REPO_PROMPTED],
-    );
-    expect(stats).toHaveLength(1);
-    expect(String(stats[0]?.['value'])).toContain('promptChars');
-  }, 60_000);
 });

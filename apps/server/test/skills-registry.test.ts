@@ -29,8 +29,8 @@ function readExample(path: string): string {
  * 造一份仓库配置：**一律过契约 schema**（`repoSettingsSchema`），不手写字面量。
  *
  * 理由：手写的字面量会随契约漂移（`compliance` 段删掉后，本文件原来的两处字面量就编译不过了）。
- * 走 `parseValidSettings()`（= `parseRepoSettings` + 合法 `pipeline.managers`）之后，测试只声明
- * 「我关心哪些字段」，其余用契约默认值；`pipeline.managers` 非空是解析前提（§4.5 / Q4）。
+ * 走 `parseValidSettings()`（= `parseRepoSettings` + 合法 `agent.managers`）之后，测试只声明
+ * 「我关心哪些字段」，其余用契约默认值；`agent.managers` 非空是解析前提（§4.5 / Q4）。
  */
 function skillConfig(patch: Record<string, unknown> = {}): SkillRepoConfig {
   return parseValidSettings(patch);
@@ -236,10 +236,10 @@ describe('注册表：覆盖、冲突与禁用可见性', () => {
     expect(withMap.resolve('/needs-config')).toBeDefined();
   });
 
-  it('skills.repo_skills=false 时仓库技能整批不生效，内置仍然可用', () => {
+  it('skills.project_skills=false 时仓库技能整批不生效，内置仍然可用', () => {
     const registry = createSkillRegistry({
       repoSkills: [{ path: `${REPO_SKILLS_DIR}/x.md`, text: MINIMAL }],
-      config: skillConfig({ skills: { repo_skills: false } }),
+      config: skillConfig({ skills: { project_skills: false } }),
     });
     expect(registry.resolve('/demo-cmd')).toBeUndefined();
     expect(registry.resolve('/issue-triage')).toBeDefined();
@@ -272,12 +272,12 @@ describe('examples/ 是 CI 的校验样本', () => {
     const settings = parseRepoSettings(parsed);
 
     expect(settings.version).toBe(1);
-    expect(settings.commands.allowed).toContain('/review-pr');
+    expect(settings.agent.on_opened).toBe('format-check');
     expect(settings.labels.map['bug']).toBe('bug');
     expect(settings.labels.vocabulary.length).toBeGreaterThan(0);
     expect(settings.labels.missing).toBe('warn');
-    // P1 段：正文不在配置里，只记启用哪个版本
-    expect(settings.prompt.current_version).toBe(0);
+    // agent 段：`project_prompt` 取代了 `prompt_versions` 版本表
+    expect(settings.agent.project_prompt).toBe('');
     // 已删除的段不许再出现（`strict()` 也不会放过它，这里再显式钉一条可读的意图）
     expect(parsed).not.toHaveProperty('compliance');
   });

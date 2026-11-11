@@ -160,9 +160,10 @@ function recordingOps(
   ops: TurnDriverOps,
   sink: { sessionId?: string; turnId?: string },
 ): TurnDriverOps {
-  // `session/attach` 是可选 operation（`RacpOps` 提供、老 Host 不提供）：先取出来再条件透传，
-  // 否则每轮 `driveTurn` 都会认为「Host 不支持 attach」，阶段 2 的会话复用形同虚设（§7）。
-  const attach = ops.sessionAttach;
+  // `session/attach` 是可选 operation（`RacpOps` 提供、老 Host 不提供）：这里判断的是
+  // **有没有这个方法**，调用时仍然从 `ops` 上取（`RacpOps` 是类实例，方法在原型上，
+  // 一旦把方法摘下来当裸函数调，`this` 就丢了 —— 会报 "Cannot read properties of undefined"）。
+  const hasAttach = ops.sessionAttach !== undefined;
   return {
     projectRegister: (params, options) => ops.projectRegister(params, options),
     sessionCreate: async (params, options) => {
@@ -181,7 +182,7 @@ function recordingOps(
     inputRespond: (params, options) => ops.inputRespond(params, options),
     workspaceDiff: (params, options) => ops.workspaceDiff(params, options),
     sessionArchive: (params, options) => ops.sessionArchive(params, options),
-    ...(attach === undefined ? {} : { sessionAttach: (params, options) => attach(params, options) }),
+    ...(hasAttach ? { sessionAttach: (params, options) => ops.sessionAttach!(params, options) } : {}),
   };
 }
 

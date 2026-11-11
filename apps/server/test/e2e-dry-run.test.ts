@@ -144,14 +144,17 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]?.['signature_valid']).toBe(true);
 
-    // 2) 任务行（command / actor / queued_at 在入队时写死，F9）
+    // 2) 任务行（command / queued_at 由 dispatcher 在投递时写死，F9）
     const tasks = await db.sql('select * from tasks');
     expect(tasks).toHaveLength(1);
     expect(tasks[0]?.['id']).toBe(accepted.taskId);
-    // E1 全量切换后 issue 事件一律进三段流水线（老的判定任务已删除，§16.1 第 2 条）
-    expect(tasks[0]?.['command']).toBe('pipeline:format');
-    expect(tasks[0]?.['source']).toBe('pipeline');
-    expect(tasks[0]?.['actor_login']).toBe('alice');
+    // v0.3：issue 事件进 agent（流水线三段已删除）。`agent_messages` 只有 kind（`event`），
+    // 没有 templateId 列（0006 冻结），所以任务侧的命令收敛成 `agent:event`；
+    // 是 opened 还是 edited 看 `agent_messages.comment_body`（模板首句不同）。
+    expect(tasks[0]?.['command']).toBe('agent:event');
+    expect(tasks[0]?.['source']).toBe('agent');
+    // 消息表没有 actor 列 → dispatcher 统一写 `agent`（面板按 agent_messages 找触发评论）
+    expect(tasks[0]?.['actor_login']).toBe('agent');
     expect(tasks[0]?.['status']).toBe('queued');
 
     // 3) 入队恰好一次（singletonKey = taskId）
@@ -193,7 +196,8 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
 
     // 3) 装配确实连到了 host（否则上面全是空跑）
     expect(host.calls.map((call) => call.method)).toContain('turn/start');
-    expect(host.calls.map((call) => call.method)).toContain('session/archive');
+    // 持久会话：首轮走 `session/create`（`session/archive` 只在轮换时发生，不再是每轮固定动作）
+    expect(host.calls.map((call) => call.method)).toContain('session/create');
 
     // 贴给 PM 的证据行（`npx vitest run apps/server/test/e2e-dry-run.test.ts` 时可见）
     console.log(

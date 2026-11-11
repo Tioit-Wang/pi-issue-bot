@@ -52,6 +52,10 @@ function createFakePool(order: Recorder): Pool {
         'skills',
         'skill_versions',
         'skills_audit',
+        // 0006 的三张 agent 表（同上：`REQUIRED_TABLES` 里加了就必须在这里出现）
+        'agent_sessions',
+        'agent_messages',
+        'agent_denials',
       ].map((table) => ({ table_name: table }));
       return { rows, rowCount: rows.length };
     }

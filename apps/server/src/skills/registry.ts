@@ -10,7 +10,7 @@
  * | 仓库技能 frontmatter 非法 | **不回落内置**，该命令不可用并给出原因 |
  * | 仓库技能超时超过 `30m` | 截断到上限并 warn（技能仍可用，由 `toSkillEffectiveConfig` 决定） |
  * | `requires-repo-config: true` 而配置缺失 | 命令不可用，回一条说明 |
- * | `skills.repo_skills: false` | 仓库技能整批不生效（记一条 warn；不逐个占位，避免与内置同名） |
+ * | `skills.project_skills: false` | 仓库技能整批不生效（记一条 warn；不逐个占位，避免与内置同名） |
  *
  * 被禁用的技能仍然留在 `list()` 里（面板要能看见「文件读了、但不能用」），
  * 这是与「跳过这个文件继续跑」最本质的区别。
@@ -41,7 +41,7 @@ export type SkillRegistryOptions = {
   readonly builtin?: readonly SkillFile[];
   /** 仓库自带技能文件（由 `.github/pi-bot/skills/` 拉取，调用方负责读文件）。 */
   readonly repoSkills?: readonly SkillFile[];
-  /** 仓库配置快照；`null`/缺省表示「没有配置」（等价于全默认值，`repo_skills` 默认为 true）。 */
+  /** 仓库配置快照；`null`/缺省表示「没有配置」（等价于全默认值，`project_skills` 默认为 true）。 */
   readonly config?: SkillRepoConfig | null;
   readonly logger?: Logger;
   /**
@@ -253,11 +253,11 @@ export function createSkillRegistry(options: SkillRegistryOptions = {}): SkillRe
 
   const repoSkills = options.repoSkills ?? [];
   if (repoSkills.length > 0) {
-    if (config !== null && config.skills.repo_skills === false) {
+    if (config !== null && config.skills.project_skills === false) {
       record({
         level: 'warn',
         code: 'repo-skills-disabled',
-        message: `仓库配置 skills.repo_skills=false：${repoSkills.length} 个仓库技能不生效`,
+        message: `仓库配置 skills.project_skills=false：${repoSkills.length} 个仓库技能不生效`,
         path: REPO_SKILLS_DIR,
         name: null,
       });

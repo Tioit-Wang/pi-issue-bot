@@ -63,8 +63,8 @@ describe('任务提示词：信封示例必须能通过 Ajv', () => {
 
 describe('任务提示词：标签集来自 settings.labels.vocabulary', () => {
   const settings = parseRepoSettings({
-    // `pipeline.managers` 非空同样是 §4.5 / Q4 的硬要求（否则整份配置解析失败）。
-    pipeline: { managers: ['alice'] },
+    // `agent.managers` 非空同样是 §4.5 / Q4 的硬要求（否则整份配置解析失败）。
+    agent: { managers: ['alice'] },
     labels: {
       vocabulary: [
         // `role` 自 §4.5 / Q4 起必填；`requirement` / `defect` 两类各至少 1 条（§4.5 的硬校验），
@@ -102,7 +102,7 @@ describe('任务提示词：标签集来自 settings.labels.vocabulary', () => {
       baseTaskInput,
       // 空词表在严格层（superRefine 要求两角色各 1 条）已经非法，但「词表为空」正是本用例的前提，
       // 所以走**形状层**（默认值 = 空词表），模拟「仓库没配词表」的历史配置。
-      { ...baseTaskInput, settings: repoSettingsShapeSchema.parse({ pipeline: { managers: ['alice'] } }) },
+      { ...baseTaskInput, settings: repoSettingsShapeSchema.parse({ agent: { managers: ['alice'] } }) },
       { ...baseTaskInput, settings: null },
     ]) {
       const prompt = buildTaskPrompt(input);

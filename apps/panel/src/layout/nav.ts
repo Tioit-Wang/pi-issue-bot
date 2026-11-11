@@ -29,7 +29,7 @@ export const GLOBAL_NAV: readonly GlobalNavItem[] = [
 ];
 
 
-export type RepoNavKey = 'workspace' | 'issues' | 'pipeline' | 'runs' | 'settings';
+export type RepoNavKey = 'workspace' | 'issues' | 'runs' | 'settings';
 
 export type RepoNavItem = {
   key: RepoNavKey;
@@ -42,14 +42,12 @@ export type RepoNavItem = {
 /**
  * 当前仓库导航。Issue 详情 / 运行详情是子页面（`nav: false`），不在这里。
  *
- * 顺序即信息优先级：工作台 → Issue 中心 → 流水线 → 运行 → 设置。
- * 「流水线」排在 Issue 中心后面：它回答的是同一批 issue 的**阶段**视图，
- * 不是另一个对象类型（所以只在仓库分组里出现，不跨到全局分组）。
+ * 顺序即信息优先级：工作台 → Issue 中心 → 运行 → 设置。
+ * v0.3 的「流水线」页与它那一组阶段视图已随固定流水线退役删除。
  */
 export const REPO_NAV: readonly RepoNavItem[] = [
   { key: 'workspace', label: '工作台', suffix: '', end: true },
   { key: 'issues', label: 'Issue 中心', suffix: '/issues', end: false },
-  { key: 'pipeline', label: '流水线', suffix: '/pipeline', end: false },
   { key: 'runs', label: '运行', suffix: '/runs', end: false },
   { key: 'settings', label: '设置', suffix: '/settings', end: false },
 ];
@@ -60,14 +58,12 @@ export function repoNavPath(repo: string, key: RepoNavKey): string {
   return `${repoWorkspacePath(repo)}${item?.suffix ?? ''}`;
 }
 
-/** 设置分区（`docs/impl-multi-repo.md` §4 W3-I 的 5 个分区）。 */
+/** 设置分区（`docs/impl-multi-repo.md` §4 W3-I；提示词分区已随 v0.3 退役，剩 4 个）。 */
 export const SETTINGS_SECTIONS = [
   { key: 'general', label: '通用' },
   { key: 'triggers', label: '触发' },
   { key: 'labels', label: '标签' },
   { key: 'limits', label: '限额' },
-  { key: 'pipeline', label: '流水线' },
-  { key: 'prompt', label: '提示词' },
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]['key'];

@@ -22,7 +22,7 @@ import {
 } from '../src/config/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
-import { validRepoSettings } from './helpers/repo-settings.ts';
+import { TEST_MANAGER, validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 
@@ -33,7 +33,7 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
     expect(DEFAULT_REPO_SETTINGS.version).toBe(1);
     expect(DEFAULT_REPO_SETTINGS.limits.concurrency_per_repo).toBe(2);
     expect(DEFAULT_REPO_SETTINGS.labels.max_per_issue).toBe(6);
-    expect(DEFAULT_REPO_SETTINGS.prompt.enabled).toBe(true);
+    expect(DEFAULT_REPO_SETTINGS.agent.on_opened).toBe('format-check');
   });
 
   it('内联 JSON：在默认值上覆写（未写的键仍有默认值）', () => {
@@ -46,7 +46,7 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
     expect(settings.limits.queue_wait_minutes).toBe(3);
     // 没写的段仍取默认值
     expect(settings.limits.max_comments_per_hour).toBe(10);
-    expect(settings.commands.enabled).toBe(true);
+    expect(settings.agent.managers).toEqual([TEST_MANAGER]);
   });
 
   it('文件路径：读文件后按 JSON 解析（相对路径按 cwd 解析）', () => {
@@ -100,12 +100,12 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
 
 describe('validateRepoSettings', () => {
   it('合法 → ok；非法 → issues 带字段路径', () => {
-    // `{}` 不再是合法运行配置（`pipeline.managers` 非空是 §4.5 / Q4 的硬要求），合法配置要带着它
+    // `{}` 不再是合法运行配置（`agent.managers` 非空是 §4.5 / Q4 的硬要求），合法配置要带着它
     expect(validateRepoSettings(validRepoSettings()).ok).toBe(true);
     const emptyManagers = validateRepoSettings({});
     expect(emptyManagers.ok).toBe(false);
     if (!emptyManagers.ok) {
-      expect(emptyManagers.issues.join(' ')).toContain('pipeline.managers');
+      expect(emptyManagers.issues.join(' ')).toContain('agent.managers');
     }
 
     const invalid = validateRepoSettings({ limits: { max_task_minutes: 999 } });

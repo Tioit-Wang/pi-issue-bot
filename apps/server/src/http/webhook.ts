@@ -34,22 +34,25 @@ import {
   parseTriggerBody,
   resolveTriggerAliases,
   type ErrorBody,
-  type RepoConfig,
   type WebhookAcceptedResponse,
 } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import type { FastifyRequest } from 'fastify';
-import {
-  PIPELINE_GATE_NOTICE_INTERVAL_SECONDS,
-  PIPELINE_LIMITS,
-  PIPELINE_SUPPLEMENT_ITEM_MAX_CHARS,
-  PIPELINE_SUPPLEMENT_MAX_ITEMS,
-  PIPELINE_TARGET_BODY_MAX_CHARS,
-} from '../config/pipeline-constants.ts';
+/* ── 任务快照的截断口径（原 `config/pipeline-constants.ts`，随流水线退役搬到这里）────── */
+
+/** `tasks.target_body` 入队时的截断长度（§4.2）：比进提示词的 4000 大一倍，后续分析才有余地。 */
+export const TARGET_BODY_MAX_CHARS = 8_000;
+
+/** `tasks.target_supplement` 只保留最近几条补充评论（§16.2 第 2 条）。 */
+export const SUPPLEMENT_MAX_ITEMS = 3;
+
+/** 每条补充评论截断到多少字符（§16.2 第 2 条）。 */
+export const SUPPLEMENT_ITEM_MAX_CHARS = 1_000;
+
 import { readRepoPolicy, upsertRepo } from '../config/repo-config.ts';
 import type { RepoPolicy, SqlRunner } from '../config/repo-config.ts';
 import { splitRepo } from '../github/index.ts';
-import type { GithubClient } from '../github/index.ts';
+import type { GithubClient, GithubReactionApi } from '../github/index.ts';
 import {
   RUNTIME_FLAG_SQL,
   buildIdempotencyKey,
@@ -58,23 +61,19 @@ import {
   isPauseFlagActive,
 } from '../queue/index.ts';
 import type { QueueBoss, RunTaskJobData } from '../queue/index.ts';
-import { describeDirective, isPipelineManager, parsePipelineDirective } from '../workflows/pipeline-directives.ts';
+import { REVIEW_PR_COMMAND } from '../queue/definitions.ts';
 import {
-  applyTransition,
-  bareIssueVersion,
-  createReadyRow,
-  decideTransition,
-  ensurePipeline,
-  gateNoticeAllowed,
-  loadPipeline,
-  recheckCooldownElapsed,
-} from '../workflows/pipeline.ts';
-import type {
-  PipelineEvent,
-  PipelineRow,
-  PipelineTransition,
-  SupplementActor,
-} from '../workflows/pipeline.ts';
+  AGENT_DENIAL_REPLY,
+  ackReceived,
+  agentTaskIdempotencyKey,
+  composeAgentMessage,
+  eventTemplateSkillOf,
+  findTaskIdByKey,
+  insertMessage,
+  isManager,
+  recordDenial,
+} from '../agent/index.ts';
+import type { AgentMessageSettings, AgentSkillCatalogEntry, AgentTemplateId } from '../agent/index.ts';
 import { errorBodyOf } from './errors.ts';
 import type { ZodFastify } from './types.ts';
 
@@ -184,7 +183,8 @@ export function triggerAliasList(input: string | readonly string[] | undefined):
 /**
  * 从评论里取「纯 @ 提问」的正文：@ 到了别名、**没有** `/命令`、正文非空。
  *
- * 返回 `null` 表示这条评论不是自由提问（交给命令通道或直接忽略）。
+ * v0.3：`/名字` 归技能（`skill-mentions.ts`，S1），所以以 `/` 开头的正文**不算**自由问答。
+ * 返回 `null` 表示这条评论不是自由提问（交给 `/命令` 通道或直接忽略）。
  */
 export function extractFreeQuestion(
   body: unknown,
@@ -194,7 +194,10 @@ export function extractFreeQuestion(
     return null;
   }
   const parsed = parseTriggerBody(body, triggerAliasList(aliases));
-  return parsed.kind === 'question' ? parsed.question : null;
+  if (parsed.kind !== 'mention' || parsed.text === null) {
+    return null;
+  }
+  return parsed.text.startsWith('/') ? null : parsed.text;
 }
 /** 缺省句柄：App 名为 `pi-bot` 的部署用它（其它 App 用 `PI_BOT_MENTION` 覆盖）。 */
 export const DEFAULT_BOT_MENTION = 'pi-bot';
@@ -207,9 +210,8 @@ function escapeRegExp(value: string): string {
 /**
  * 命令触发正则：`@<handle> /review-pr`。
  *
- * 句柄**必须**可配：文档 §6.4 只规定「`@机器人 /命令`」，而 slug 由 App 名字决定
- * （本仓库实际部署的 App 是 `pi-issue-bot-tioit`）——写死 `pi-bot` 会让真实用户
- * @ 了机器人却没反应。
+ * 句柄**必须**可配：slug 由 App 名字决定（本仓库实际部署的 App 是 `pi-issue-bot-tioit`）
+ * ——写死 `pi-bot` 会让真实用户 @ 了机器人却没反应。
  */
 export function commandMentionPattern(handle: string = DEFAULT_BOT_MENTION): RegExp {
   return new RegExp(`(?:^|\\s)@${escapeRegExp(handle)}\\s+(\\/[a-z][a-z0-9-]{1,30})(?=\\s|$)`, 'u');
@@ -299,6 +301,35 @@ export type WebhookDeps = {
    * 不注入 → 只认仓库配置 `commands.allowed`。
    */
   readonly listSkills?: (repo: string) => Promise<readonly string[]>;
+  /**
+   * 非管理员的「无权限」回复（需求 C-10 / §5 规则 1：同 issue 同 actor **只回一次**）。
+   *
+   * 不注入 = 只记 `agent_denials` 不回话（本机没装 App 的部署）。dry-run 时**不调用**。
+   */
+  readonly replyDenied?: (input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly commentId: number | null;
+    readonly actorLogin: string;
+    readonly text: string;
+  }) => Promise<void>;
+  /**
+   * agent 消息落库后**立刻**为这个 issue 领一条（dispatcher 的即时版，见 `agent/dispatcher.ts`）。
+   *
+   * 不注入 = 只靠 `agent-dispatch` 的每分钟兜底（延迟最多 1 分钟）。失败只记 warn：
+   * 消息已经落库，兜底那轮会再试一次。
+   */
+  readonly dispatchAgent?: (key: {
+    readonly repo: string;
+    readonly issueNumber: number;
+  }) => Promise<unknown>;
+  /**
+   * reaction 写面（`feedback/` 的 `GithubReactionApi`）：给了就走 `agent/ack.ts`，
+   * 没给就回落到 `ack.addEyesReaction`（老装配与单测）。
+   */
+  readonly reactions?: GithubReactionApi;
+  /** App slug（删自己的 reaction 时判归属）。 */
+  readonly appSlug?: string | null;
 };
 
 export type WebhookInput = {
@@ -323,8 +354,8 @@ export type WebhookResult = {
 
 /* ── 白名单与任务判定（纯函数，可单测）────────────────────────────────────── */
 
-/** `issues.*` 里需要判定的事件（plan §6.1：opened / edited / reopened）。 */
-export const ISSUE_ACTIONS: readonly string[] = Object.freeze(['opened', 'edited', 'reopened']);
+/** `issues.*` 里需要判定的事件（opened / edited）。`reopened` 在 v0.3 不再产生任务。 */
+export const ISSUE_ACTIONS: readonly string[] = Object.freeze(['opened', 'edited']);
 
 /** 补充评论的一条（`tasks.target_supplement` 的元素，§16.2 第 2 条）。 */
 export type TaskSupplement = {
@@ -338,20 +369,22 @@ export type TaskSupplement = {
 export type WebhookTaskPlan = {
   /**
    * 落 `tasks.command`：
-   *  - 人工通道：`/review-pr` / `@answer`；
-   *  - 流水线阶段任务：`pipeline:format` / `pipeline:classify` / `pipeline:notice`（§4.6）。
+   *  - 人工通道：`/review-pr`（PR 审查，保留既有命令通道）；`@answer` 只为兼容历史任务行；
+   *  - v0.3 issue agent：`agent:opened` / `agent:edited` / `agent:mention`（真正落库的
+   *    任务由 dispatcher 建，命令收敛为 `agent:event` / `agent:mention`，见 `agent/store.ts`）。
    */
   readonly command: string;
-  /** 幂等键的 kind：`command:/review-pr` / `answer:<hash>` / `pipeline` / `notice`。 */
+  /** 幂等键的 kind：`command:/review-pr` / `answer:<hash>` / `agent:<template>`。 */
   readonly kind: string;
-  /** `tasks.source`：只有 `command`（人工）与 `pipeline`（固定流水线）能写回评论（§4.6）。 */
-  readonly source: 'webhook' | 'command' | 'pipeline';
+  /** `tasks.source`：`command`（人工）与 `agent`（v0.3 issue agent）能写回评论。 */
+  readonly source: 'webhook' | 'command' | 'agent';
   readonly targetKind: 'issue' | 'pr';
   readonly targetNumber: number;
   readonly headSha: string | null;
   /**
    * 任务级幂等锚（进 `buildIdempotencyKey` 的 `anchor`）：
-   *  - 流水线：`pipeline:<stage>:<issueVersion>[:<commentId>]`（§4.6 / §16.2 第 3 条）；
+   *  - agent 事件消息：`<issueVersionHash>[:edit]`（仅为兼容旧断言保留；agent 通道真正的
+   *    幂等由 `agent_messages.fingerprint` 承担）；
    *  - 人工命令：`null`（锚走 `headSha` / `none`）。
    */
   readonly issueVersionHash: string | null;
@@ -362,46 +395,37 @@ export type WebhookTaskPlan = {
   /** 自由问答的问题正文（落 `tasks.prompt_text`；其它任务为 `undefined`）。 */
   readonly promptText?: string;
   /**
-   * 幂等键里的触发者。流水线任务固定写 `'pipeline'`：同一份内容被不同的人触发
+   * 幂等键里的触发者。agent 任务固定写 `'agent'`：同一份内容被不同的人触发
    * 也必须落到同一个键上（`trigger_actor` 是给人工 `/retry` 与 webhook 重投区分用的）。
    */
   readonly idempotencyActor?: string;
-  /** 入队时快照的标题 / 正文（§4.2；流水线任务才有）。 */
+  /** 入队时快照的标题 / 正文（§4.2；agent 事件消息才有）。 */
   readonly targetTitle?: string | null;
   readonly targetBody?: string | null;
   /** 补充评论段（最近 3 条、每条 ≤1000 字符）；评论补充重跑时**整体替换**这个数组。 */
   readonly supplements?: readonly TaskSupplement[];
+  /**
+   * agent 消息计划（v0.3，S1）：给了它就走 `submitAgentMessage()`，
+   * 落 `agent_messages` 而不是直接建 `tasks` —— 建任务与串行由 dispatcher 负责。
+   */
+  readonly agent?: AgentMessagePlan;
 };
 
-/**
- * 「这条普通评论可能是补信息」的判定结果（§16.2 第 1 条，E4 评论优先通道）。
- *
- * 为什么不在 `decideWebhookTask` 里直接决定要不要入队：那是纯函数、**不许查库**，
- * 而「要不要重跑」取决于 `issue_pipeline.stage/state`（只有 `format/awaiting_info` 重跑）。
- * 所以这里只把载荷整理好，`handleWebhook` 查完状态行再决定。
- */
-export type PipelineSupplementDecision = {
-  readonly action: 'pipeline-supplement';
-  readonly targetNumber: number;
-  readonly isPullRequest: boolean;
-  readonly actorLogin: string;
-  readonly association: string | null;
-  readonly commentId: number | null;
-  /** 评论正文（原文，截断留到拼 `target_supplement` 时做） */
-  readonly body: string;
-  /** issue 版本（`issue.updated_at` 派生）：评论补充的锚要再追加 `:<commentId>` */
-  readonly issueVersion: string;
-  /** 顺便带上 issue 的标题 / 正文（comment 载荷里就有，省一次 API 调用） */
-  readonly title: string | null;
-  readonly issueBody: string | null;
-  /** issue 作者的 login（判定「作者补充」vs「路人评论」，§16.2 第 1 条） */
-  readonly issueAuthor: string | null;
+/** 一条 agent 消息的计划（`kind` 决定模板与幂等口径）。 */
+export type AgentMessagePlan = {
+  readonly kind: 'mention' | 'event';
+  /** `kind='event'` 时是哪条模板（`opened` / `edited`） */
+  readonly templateId: AgentTemplateId | null;
+  /** 人消息是原话（后面由 `composeAgentMessage` 摘别名 + 扫技能） */
+  readonly rawText: string;
+  /** `issue.updated_at`（事件消息 fingerprint 的一部分；人消息不用） */
+  readonly issueUpdatedAt: string;
 };
+
 
 export type WebhookDecision =
   | { readonly action: 'task'; readonly plan: WebhookTaskPlan }
-  | { readonly action: 'ignore'; readonly reason: string }
-  | PipelineSupplementDecision;
+  | { readonly action: 'ignore'; readonly reason: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -430,7 +454,7 @@ export function issueVersionHash(updatedAt: unknown): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 }
 
-/** 从评论正文里取命令（`@ibot /review-pr`）；没有则 `null`。 */
+/** 从评论正文里取 `/命令`（`@ibot /review-pr`）；没有则 `null`。 */
 export function extractCommand(
   body: unknown,
   aliases: string | readonly string[] = DEFAULT_BOT_MENTION,
@@ -439,7 +463,8 @@ export function extractCommand(
     return null;
   }
   const parsed = parseTriggerBody(body, triggerAliasList(aliases));
-  return parsed.kind === 'command' ? parsed.command : null;
+  const matched = parsed.text === null ? null : /^(\/[a-z][a-z0-9-]{1,30})(?=\s|$)/iu.exec(parsed.text);
+  return matched === null ? null : (matched[1] ?? '').toLowerCase();
 }
 
 /** 机器人账号（`type: 'Bot'`）无论 association 一律忽略（plan §6.4）。 */
@@ -448,19 +473,34 @@ function isBotActor(user: Record<string, unknown> | null): boolean {
 }
 
 /**
+ * 机器人**登录名**（E-09）：`dependabot[bot]` / `renovate[bot]` 这类账号的载荷有时 `type` 不是
+ * `Bot`（GitHub 的 webhook 里两种都出现过），只判 `type` 会让依赖升级 PR 触发 AI 自我循环。
+ * 纯函数、无白名单硬编码列表里只看 `[bot]` 后缀与三个众所周知的机器人名。
+ */
+export function isBotLogin(login: string): boolean {
+  const normalized = login.trim().toLowerCase();
+  if (normalized === '') {
+    return false;
+  }
+  return normalized.endsWith('[bot]') || BOT_LOGINS.includes(normalized);
+}
+
+/** 已知的机器人 login（`[bot]` 后缀已覆盖绝大多数；这三个在历史载荷里不带后缀也出现过）。 */
+const BOT_LOGINS: readonly string[] = Object.freeze(['dependabot', 'renovate', 'github-actions']);
+
+/**
  * 事件/action 白名单 → 要不要建任务、建什么任务。
  *
  * 覆盖范围有意收窄（其余事件一律 `ignored`，但仍落 `webhook_deliveries` 供审计）：
- *  - `issue_comment.created` 且正文里有 `@pi-bot /cmd` → 命令任务（PR 或 issue）；
- *  - `issue_comment.created` 且是「纯 @ 提问」→ 自由问答任务（PR 或 issue）；
- *    上面两条（命令 / 自由问答）受 `triggersEnabled`（= `settings.triggers.enabled`）约束：
- *    `false` 时一律 `ignored`（`reason=triggers-disabled`，**不打回执**，P8）；
- *    下面两条流水线路径（补充评论、`issues.*`）**不读**这个开关（V10 不可绕过）。
- *  - `issue_comment.created` 且**既没命令也没 @**（issue）→ `pipeline-supplement`（补充信息候选，§16.2）；
- *  - `issues.opened|edited|reopened` → `pipeline:format` 阶段任务（E1 全量切换，§16.1 第 2 条）；
- *  - 其余（含 `pull_request.*`、`push`、`label`…）→ 不建任务。PR 的审查由命令触发（plan §6.4）。
+ *  - `issue_comment.created` 且正文里有 `@别名 /review-pr` → 命令任务（PR 审查，保留既有通道）；
+ *  - `issue_comment.created` 且正文 @ 了别名 → **agent 消息**（`kind='mention'`，永久幂等）；
+ *    权限（`settings.agent.managers`）在接线层判，这里只产出计划；
+ *  - `issue_comment.created` 但**没有 @ 到别名** → 不建任何东西（v0.3 没有「补充评论」通道）；
+ *  - `issues.opened` / `issues.edited`（仅标题/正文变更）→ **agent 消息**（`kind='event'`）；
+ *  - 其余（含 `issues.reopened`、`labeled` / `assigned` / `closed`、`pull_request.*`、`push`）→ 不投递。
  *
- * `issues.closed` 不在这里判定：它只推进状态机（不建任务），由 `handleWebhook` 单独处理。
+ * 机器人（`type=Bot` 与 `dependabot[bot]` / `renovate[bot]` 这类 login）在任何事件里都被忽略，
+ * 避免 AI 自己打标 / 自己编辑后触发自己（D8 / E-08 / E-09）。
  */
 export function decideWebhookTask(input: {
   readonly event: string;
@@ -470,27 +510,16 @@ export function decideWebhookTask(input: {
   readonly aliases?: readonly string[];
   /** 兼容旧签名：单个句柄。与 `aliases` 同时给时以 `aliases` 为准。 */
   readonly mention?: string;
-  /**
-   * 是否把「纯 @ 提问」（不带 `/命令`）也当成任务（`PI_BOT_FREE_MENTION`，默认开）。
-   * 关掉时只有 `@别名 /命令` 会建任务。
-   */
+  /** 是否把「纯 @ 提及」（不带 `/命令`）也当成一条 agent 消息（`PI_BOT_FREE_MENTION`，默认开）。 */
   readonly freeMention?: boolean;
-  /**
-   * `settings.triggers.enabled`（`docs/plan-fixed-pipeline.md` P8）。
-   *
-   * **只关 `@` 提及类触发**（`@bot /命令` 与 `@bot 提问`），**不影响流水线**：
-   * `issues.opened|edited|reopened` 的 `pipeline:format`、评论补充重跑、managers 重分类、
-   * `pipeline:notice` 都不经过这一支（V10「不可绕过」的硬要求）。
-   *
-   * 为什么做成入参而不是在这里读配置：本函数是**纯函数**、不许查库；
-   * `enabled` 由 `handleWebhook` 读完 policy 后传进来。缺省（`undefined`）= 开。
-   */
-  readonly triggersEnabled?: boolean;
 }): WebhookDecision {
   const payload = asRecord(input.payload);
   const actorUser = asRecord(payload?.['sender']);
   if (isBotActor(actorUser)) {
     return { action: 'ignore', reason: '触发者是机器人账号' };
+  }
+  if (isBotLogin(readString(actorUser, 'login') ?? '')) {
+    return { action: 'ignore', reason: '触发者是机器人账号（login 判定：dependabot / renovate / *[bot]）' };
   }
 
   if (input.event === 'issue_comment') {
@@ -508,45 +537,7 @@ export function decideWebhookTask(input: {
     const login = readString(commentUser, 'login') ?? readString(actorUser, 'login') ?? 'unknown';
     const aliases = triggerAliasList(input.aliases ?? input.mention);
 
-    const command = extractCommand(comment?.['body'], aliases);
-    // 纯 @ 提问（没有 `/命令`）：走自由问答通道，问题正文落 `tasks.prompt_text`
-    const question =
-      command === null && input.freeMention === true ? extractFreeQuestion(comment?.['body'], aliases) : null;
-    // ★ P8：`settings.triggers.enabled=false` 只关**提及类触发**（命令 + 自由问答）。
-    // 判定放在 `pipeline-supplement` 之前、只拦「有 @ 且被识别成命令/提问」的评论：
-    // 普通评论（既没命令也没 @）走的是流水线补充通道，与触发开关**无关**（V10 硬要求）。
-    // 回执一律**不打**：配置关掉就安静（只记 reason，不产生任何 GitHub 写动作）。
-    if (input.triggersEnabled === false && (command !== null || question !== null)) {
-      return {
-        action: 'ignore',
-        reason: 'triggers-disabled：仓库配置 settings.triggers.enabled=false（只关 @ 提及类触发，不影响流水线）',
-      };
-    }
-    if (command === null && question === null) {
-      // §16.2 第 1 条（E4 评论优先）：**普通评论不再一律 ignored**。
-      // 只有 issue（PR 不受流水线影响）且正文非空时交回给 `handleWebhook` 查状态行，
-      // 由它判断「stage/state 是否在等补充信息」。这里不查库（纯函数）。
-      const body = readString(comment, 'body');
-      if (isPullRequest || body === null || body.trim() === '') {
-        return { action: 'ignore', reason: `评论里没有 @${aliases.join(' / @')} 命令` };
-      }
-      return {
-        action: 'pipeline-supplement',
-        targetNumber: number,
-        isPullRequest,
-        actorLogin: login,
-        association: readString(comment, 'author_association'),
-        commentId: readNumber(comment, 'id'),
-        body,
-        issueVersion: issueVersionHash(issue?.['updated_at']),
-        title: readString(issue, 'title'),
-        issueBody: readString(issue, 'body'),
-        issueAuthor: readString(asRecord(issue?.['user']), 'login'),
-      };
-    }
-
     const base = {
-      source: 'command' as const,
       targetKind: isPullRequest ? ('pr' as const) : ('issue' as const),
       targetNumber: number,
       // 评论载荷里没有 PR 的 head sha（要额外打一次 API）；锚缺省走 `none`。
@@ -555,34 +546,45 @@ export function decideWebhookTask(input: {
       actorLogin: login,
       association: readString(comment, 'author_association'),
       commentId: readNumber(comment, 'id'),
-      // 回执统一走 eyes reaction（§0.4：自动通道零评论，没有第二种回执形态）
     };
 
-    if (command === null) {
-      const asked = question ?? '';
+    // `/review-pr` 仍是命令通道（PR 审查不在 v0.3 的 agent 范围内，OQ-3）；除此之外
+    // v0.3 的 `/名字` 全部归技能，所以这里只认这一条命令。
+    const command = extractCommand(comment?.['body'], aliases);
+    if (command === REVIEW_PR_COMMAND) {
       return {
         action: 'task',
         plan: {
           ...base,
-          command: FREE_ANSWER_COMMAND,
-          promptText: asked,
-          // 幂等键按**问题正文**区分：同一问题重复 @ 是空操作，换个问题就能得到新回答
-          // 幂等键 = 「问题正文 + 这条评论的 id」：同一条评论的重投仍是空操作，
-          // 但**换个评论再问同一句话**应该得到新回答（只按正文 hash 会静默吞掉第二次提问）。
-          kind: `answer:${createHash('sha256')
-            .update(`${asked}\u0000${String(comment?.['id'] ?? 'none')}`, 'utf8')
-            .digest('hex')
-            .slice(0, 12)}`,
+          source: 'command',
+          command,
+          kind: `command:${command}`,
         },
       };
     }
 
+    // `@别名` → agent 消息（人消息，永久幂等）。权限在接线层判（`submitAgentMessage`）。
+    const parsed = parseTriggerBody(typeof comment?.['body'] === 'string' ? (comment['body'] as string) : '', aliases);
+    if (parsed.kind !== 'mention' || parsed.text === null) {
+      // 没有 @ 到别名：不是给我的消息，零任务（不再有「补充评论」那条隐式通道）
+      return { action: 'ignore', reason: '评论没有 @ 到触发别名' };
+    }
+    if (input.freeMention === false) {
+      return { action: 'ignore', reason: '纯 @ 提问已关闭（PI_BOT_FREE_MENTION=false）' };
+    }
     return {
       action: 'task',
       plan: {
         ...base,
-        command,
-        kind: `command:${command}`,
+        source: 'agent',
+        command: 'agent:mention',
+        kind: 'mention',
+        agent: {
+          kind: 'mention',
+          templateId: null,
+          rawText: parsed.text,
+          issueUpdatedAt: readString(issue, 'updated_at') ?? '',
+        },
       },
     };
   }
@@ -596,32 +598,40 @@ export function decideWebhookTask(input: {
     if (number === null) {
       return { action: 'ignore', reason: 'issues 载荷缺少 issue.number' };
     }
+    if (asRecord(issue?.['pull_request']) !== null) {
+      return { action: 'ignore', reason: 'issues 事件来自 PR，不在 agent 范围' };
+    }
+    // `edited` 只认「标题/正文」变更（E-03）：改标签 / 改指派人也在 `changes` 里，不能投
+    if (input.action === 'edited') {
+      const changes = asRecord(payload?.['changes']);
+      const touched = changes !== null && ('title' in changes || 'body' in changes);
+      if (!touched) {
+        return { action: 'ignore', reason: 'issues.edited 只改了标题/正文以外的字段' };
+      }
+    }
     const actorLogin = readString(actorUser, 'login') ?? 'unknown';
-    const version = issueVersionHash(issue?.['updated_at']);
-    // E1 全量切换：issue 事件一律入流水线（老的判定分支已删除，不保留灰度判断）
+    const updatedAt = readString(issue, 'updated_at') ?? '';
+    const templateId: AgentTemplateId = input.action === 'opened' ? 'opened' : 'edited';
     return {
       action: 'task',
       plan: {
-        command: 'pipeline:format',
-        kind: 'pipeline',
-        source: 'pipeline',
+        command: `agent:${templateId}`,
+        kind: `agent:${templateId}`,
+        source: 'agent',
         targetKind: 'issue',
         targetNumber: number,
         headSha: null,
-        // 幂等锚的原料 = **裸 issueVersion**（`sha256(updated_at)` 前 16 位）；
-        // 锚（`pipeline:format:<issueVersion>`）只由入队处拼一次 —— 这里若写带前缀的锚，
-        // `issue_pipeline.issue_version` 会存成 `pipeline:format:x`，`enqueueStageTask()`
-        // 再拼一次就得到 `pipeline:classify:pipeline:format:x`（同一个 issue 两种锚）。
-        // `issues.edited` 追加编辑标识（同一版本重复投递必须幂等，编辑之后必须产生新任务）
-        issueVersionHash: input.action === 'edited' ? `${version}:edit` : version,
+        // `issues.edited` 追加编辑标识：同一版本重复投递必须幂等，编辑之后必须产生新消息
+        issueVersionHash: input.action === 'edited' ? `${issueVersionHash(issue?.['updated_at'])}:edit` : issueVersionHash(issue?.['updated_at']),
         actorLogin,
         association: readString(issue, 'author_association'),
         commentId: null,
         // 同一份内容被不同人触发也落到同一个键（`trigger_actor` 进键会破坏「同版本只跑一次」）
-        idempotencyActor: 'pipeline',
+        idempotencyActor: 'agent',
         targetTitle: readString(issue, 'title'),
         targetBody: readString(issue, 'body'),
         supplements: [],
+        agent: { kind: 'event', templateId, rawText: '', issueUpdatedAt: updatedAt },
       },
     };
   }
@@ -629,44 +639,6 @@ export function decideWebhookTask(input: {
   return { action: 'ignore', reason: `事件 ${input.event}.${input.action ?? '未知'} 不在白名单` };
 }
 
-/** 命令门禁（plan §6.4）：命令白名单 + `author_association` + login 白名单。 */
-export type CommandGateResult =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly reason: string };
-
-export function checkCommandGate(
-  plan: WebhookTaskPlan,
-  config: RepoConfig | null,
-  /** 面板上传且已启用的技能名（`['/demo']`）：它们不进仓库配置，但同样是合法命令。 */
-  knownSkills: readonly string[] = [],
-): CommandGateResult {
-  if (plan.source !== 'command') {
-    // 判定类事件不走命令门禁：它们由仓库开关与事件白名单控制
-    return { allowed: true };
-  }
-  if (config === null) {
-    return { allowed: false, reason: '仓库没有可用配置（config_valid=false）' };
-  }
-  if (!config.commands.enabled) {
-    return { allowed: false, reason: '仓库配置关闭了命令（commands.enabled=false）' };
-  }
-  // 自由问答（`@answer:<base64>`）不是配置里的命令名，但同样受 enabled/association 约束；
-  // 面板上传的技能同理：**仓库配置不必为它改一行**（spec D0「上传即生效」）。
-  const isFreeAnswer = isFreeAnswerCommand(plan.command);
-  const isKnownSkill = knownSkills.includes(plan.command);
-  if (!isFreeAnswer && !isKnownSkill && !config.commands.allowed.includes(plan.command)) {
-    return { allowed: false, reason: `命令 ${plan.command} 不在白名单` };
-  }
-  if (config.commands.allow_users.includes(plan.actorLogin)) {
-    return { allowed: true };
-  }
-  const association = plan.association ?? 'NONE';
-  const allowedAssociations: readonly string[] = config.commands.author_associations;
-  if (!allowedAssociations.includes(association)) {
-    return { allowed: false, reason: `author_association=${association} 不在门禁白名单` };
-  }
-  return { allowed: true };
-}
 
 /** 任务的幂等键（公式在 `queue/idempotency.ts`，这里只负责喂对锚）。 */
 export function idempotencyKeyFor(plan: WebhookTaskPlan, repo: string): string {
@@ -1145,78 +1117,8 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     configured: policy.settings?.triggers,
     deployment: deploymentAliases,
   });
-  /**
-   * P8：`settings.triggers.enabled=false` 只关 `@` 提及类触发（`@bot /命令`、`@bot 提问`）。
-   *
-   * 这个值**只**喂给 `decideWebhookTask`（命令/自由问答分支），管理员指令（`/recheck`、
-   * `/pipeline next|prev` 属于流水线控制面）与 `issues.*` 的 `pipeline:format`、评论补充重跑、
-   * `pipeline:notice` 都不读它 —— 关掉触发开关不许让任何 issue 绕过三段（V10）。
-   */
-  const triggersEnabled = policy.settings === null || policy.settings.triggers.enabled !== false;
   const at = now();
   const dryRun = policy.dryRun || input.forcedDryRun === true;
-
-  // ── 第 5.5 步 ⓐ：管理员指令（`/recheck`、`/pipeline next|prev`，§1.7 Q7 / §8 / §12 V20）──
-  // **不进命令门禁**：流水线走独立分支（§16.1 第 3 条），`commands.enabled` / 白名单 / 关联白名单
-  // 都管不到它；权限由 `settings.pipeline.managers` + `author_association='OWNER'` 单独判。
-  const directive = await runDirective({
-    db: deps.db,
-    repo,
-    event: input.event,
-    action,
-    payload,
-    aliases,
-    settings: policy.settings,
-    at,
-    dryRun,
-    log,
-  });
-  if (directive !== null) {
-    if (directive.kind === 'ignored') {
-      log.info({ repo, reason: directive.reason }, '管理员指令未执行');
-      // 被拒的指令只打 eyes，**不执行、不回复**（§1.7 Q7）
-      await reactQuietly(deps, {
-        dryRun,
-        repo,
-        issueNumber: directive.plan.targetNumber,
-        commentId: directive.plan.commentId,
-        log,
-      });
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-    }
-    if (directive.kind === 'duplicate') {
-      log.info({ repo, taskId: directive.taskId }, '管理员指令：阶段任务已存在（幂等命中）');
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'duplicate', taskId: directive.taskId, duplicate: true, ackComment: null }));
-    }
-    // 指令触发的阶段任务与其它任务走同一条入队通道
-    try {
-      const jobId = await deps.enqueue({ taskId: directive.taskId, command: directive.plan.command, repo });
-      log.info({ repo, taskId: directive.taskId, command: directive.plan.command, jobId }, '管理员指令：阶段任务已入队');
-    } catch (error) {
-      log.error({ repo, err: describeError(error) }, '管理员指令：入队失败');
-      return finish(500, errorBodyOf('internal', '任务入队失败'));
-    }
-    await reactQuietly(deps, {
-      dryRun,
-      repo,
-      issueNumber: directive.plan.targetNumber,
-      commentId: directive.plan.commentId,
-      log,
-    });
-    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'enqueued', taskId: directive.taskId, duplicate: false, ackComment: null }));
-  }
-
-  // ── `issues.closed`：只推进状态机，不建任务（§2 最后一行）────────────────────
-  if (input.event === 'issues' && action === 'closed') {
-    const closedNumber = readNumber(asRecord(asRecord(payload)?.['issue']), 'number');
-    if (closedNumber !== null) {
-      const closedKey = { repo, issueNumber: closedNumber };
-      const closedRow = await loadPipeline(deps.db, closedKey);
-      await applyTransition(deps.db, closedKey, decideTransition(closedRow, { kind: 'issue-closed', at }));
-    }
-    log.info({ repo }, 'issues.closed：状态机置 closed，不建任务');
-    return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-  }
 
   const decision = decideWebhookTask({
     event: input.event,
@@ -1224,144 +1126,32 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     payload,
     aliases,
     ...(deps.freeMention === undefined ? {} : { freeMention: deps.freeMention }),
-    triggersEnabled,
   });
   if (decision.action === 'ignore') {
     log.info({ repo, reason: decision.reason }, '事件不在白名单，不建任务');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
-  // ── 第 5.5 步 ⓑ：补充评论（E4 评论优先，§16.2 第 1 条）────────────────────────
-  let plan: WebhookTaskPlan;
-  if (decision.action === 'pipeline-supplement') {
-    const key = { repo, issueNumber: decision.targetNumber };
-    const row = await loadPipeline(deps.db, key);
-    const outcome = decideSupplementOutcome(row, decision, policy.settings);
-    if (outcome.kind !== 'rerun') {
-      log.info({ repo, issue: decision.targetNumber, reason: outcome.reason }, '普通评论不触发重跑');
-      // §8：`pending` / `running` 只打 eyes；其余状态（`ready` / `blocked` / 无行）连 eyes 也不必
-      if (outcome.kind === 'silent' && outcome.react) {
-        await reactQuietly(deps, {
-          dryRun,
-          repo,
-          issueNumber: decision.targetNumber,
-          commentId: decision.commentId,
-          log,
-        });
-      }
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-    }
-    const supplementEvent: PipelineEvent =
-      outcome.channel === 'classify'
-        ? { kind: 'manager-comment', fromManager: true, at, issueVersion: decision.issueVersion }
-        : {
-            kind: 'supplement-comment',
-            actor: outcome.actor,
-            commentId: decision.commentId,
-            at,
-            issueVersion: decision.issueVersion,
-          };
-    const supplementTransition = decideTransition(row, supplementEvent);
-    if (supplementTransition.ignore !== undefined) {
-      log.info({ repo, issue: decision.targetNumber, reason: supplementTransition.ignore }, '补充评论被状态机忽略');
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-    }
-    await applyTransition(deps.db, key, supplementTransition);
-    plan = supplementPlanFor(decision, outcome.channel);
-    // 正文快照：评论补充重跑时**整体替换** `target_supplement`（最近 3 条，含这一条）
-    plan = await withTargetSnapshot(deps.db, repo, plan, {
-      commentId: decision.commentId,
-      author: decision.actorLogin,
-      body: decision.body,
-      at: at.toISOString(),
+
+  // ── agent 通道（v0.3）：落 `agent_messages`，建任务与串行交给 dispatcher ──────────
+  if (decision.plan.agent !== undefined) {
+    const result = await submitAgentMessage(deps, {
+      plan: decision.plan,
+      repo,
+      deliveryId: input.deliveryId,
+      dryRun,
+      settings: policy.settings?.agent ?? null,
+      aliases,
+      log,
     });
-    log.info({ repo, issue: decision.targetNumber, command: plan.command }, '评论补充：立即重跑（锚含 commentId）');
-  } else {
-    plan = decision.plan;
+    return finish(result.status, result.body);
   }
 
-  // ── 第 5.5 步 ⓒ：阶段闸门（§8 表格逐行；PR 完全不受影响）────────────────────
-  if (plan.source === 'command' && plan.targetKind === 'issue') {
-    const key = { repo, issueNumber: plan.targetNumber };
-    const row = await loadPipeline(deps.db, key);
-    const gateDecision = decideGateOutcome(row, at);
-    if (gateDecision.kind === 'ignore') {
-      log.info({ repo, issue: plan.targetNumber, reason: gateDecision.reason }, '流水线已关闭，忽略 @');
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-    }
-    if (gateDecision.kind === 'silent') {
-      // `pending` / `running`：只打 eyes，不回复（正在跑，回复是噪音）
-      log.info({ repo, issue: plan.targetNumber }, '流水线跑动中：只打 eyes，不建命令任务');
-      await reactQuietly(deps, {
-        dryRun,
-        repo,
-        issueNumber: plan.targetNumber,
-        commentId: plan.commentId,
-        log,
-      });
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-    }
-    if (gateDecision.kind === 'notice') {
-      // 被拦的命令**不建命令任务**（不进 `tasks`）；回执走轻量 `pipeline:notice`（Q8：AI 撰写）
-      const noticePlan = noticePlanFor(plan, gateDecision.gateState, at);
-      await applyTransition(deps.db, key, { gateNoticeAt: at });
-      log.info(
-        { repo, issue: plan.targetNumber, gateState: gateDecision.gateState },
-        '流水线未 ready：命令被拦，改建 pipeline:notice',
-      );
-      // ★ 门禁回执**只产评论、绝不推状态**：这里立刻建 notice 任务并返回，
-      // 绝不落到第 5.5 步 ⓓ —— 那里会用 `action='created'` 当成「issue 刚开」，
-      // 把 `format/awaiting_info` / `classify/awaiting_info` / `blocked` 全部改写回
-      // `format/pending`（`blocked_reason` 被清空、`issue_version` 被写成回执桶），
-      // 症状就是「issue 永久卡在 format/pending，而门禁只打 eyes」。
-      return await submitPlanTask(deps, {
-        plan: noticePlan,
-        repo,
-        deliveryId: input.deliveryId,
-        dryRun,
-        log,
-      });
-    }
-    if (gateDecision.kind === 'allow' && row === null) {
-      // §1.3：无行 = 放行，并懒创建 `ready` 行（存量 issue 不该被闸门全拦）
-      await createReadyRow(deps.db, key, at);
-      log.info({ repo, issue: plan.targetNumber }, '无流水线行：放行并懒创建 agent/ready 行');
-    }
-  }
-
-  // ── 第 5.5 步 ⓓ：issue 事件推进状态机（§2 前 12 行）──────────────────────────
-  //
-  // `plan.command !== 'pipeline:notice'` 是**双保险**（notice 分支上面已经 return）：
-  // 门禁回执只产评论、绝不推状态。回执要是流到这里，`action='created'` 会被当成
-  // 「issue 刚开」→ `decideTransition({kind:'issue-opened'})` 把 `awaiting_info` / `blocked`
-  // 统统改写回 `format/pending`，issue 就永久卡死在第 0 阶段。
-  if (
-    decision.action === 'task' &&
-    plan.source === 'pipeline' &&
-    plan.command !== 'pipeline:notice'
-  ) {
-    const key = { repo, issueNumber: plan.targetNumber };
-    const row = await loadPipeline(deps.db, key);
-    const transition = pipelineTransitionFor(row, {
-      action,
-      issueVersion: plan.issueVersionHash,
-      at,
-    });
-    if (transition.ignore !== undefined) {
-      log.info({ repo, issue: plan.targetNumber, reason: transition.ignore }, '流水线状态机忽略本次事件');
-      return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
-    }
-    if (row === null) {
-      // §1.3 / §2 第 1 行：无行 → 建 `format/pending` 行
-      await ensurePipeline(deps.db, key, {
-        stage: transition.stage ?? 'format',
-        state: transition.state ?? 'pending',
-        issueVersion: plan.issueVersionHash,
-      });
-    }
-    await applyTransition(deps.db, key, transition);
-    // 正文快照（§4.2）：入队即定型，之后不再依赖 90 天保留期的投递原文
-    plan = await withTargetSnapshot(deps.db, repo, plan);
-  }
+  // 正文快照（§4.2）：入队即定型，之后不再依赖 90 天保留期的投递原文。
+  const plan = await withTargetSnapshot(deps.db, repo, decision.plan);
+  log.info(
+    { repo, issue: plan.targetNumber, command: plan.command, at: at.toISOString() },
+    '已判定要建任务',
+  );
 
   return await submitPlanTask(deps, {
     plan,
@@ -1369,7 +1159,6 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     deliveryId: input.deliveryId,
     dryRun,
     log,
-    settings: policy.settings,
   });
 }
 
@@ -1388,25 +1177,12 @@ async function submitPlanTask(
     readonly deliveryId: string;
     readonly dryRun: boolean;
     readonly log: Logger;
-    /** 仓库配置（命令门禁用）；`null` = 配置不可用。流水线任务绕开门禁，传不传都不影响。 */
-    readonly settings?: RepoConfig | null;
   },
 ): Promise<WebhookResult> {
   const { plan, repo, deliveryId, dryRun, log } = input;
 
-  // 面板上传的技能也是「已知命令」：仓库配置 `commands.allowed` 只列了 git 里声明的命令，
-  // 上传技能不该要求改仓库配置才能被调用（spec D0「上传即生效」）。
-  const knownSkills =
-    plan.source === 'command' && deps.listSkills !== undefined
-      ? await deps.listSkills(repo)
-      : [];
-  // pipeline 任务**绕开**命令门禁：`source !== 'command'` 时 `checkCommandGate` 直接放行
-  // （§16.1 第 3 条：`commands.enabled` / 白名单 / 关联白名单都管不到流水线）。
-  const gate = checkCommandGate(plan, input.settings ?? null, knownSkills);
-  if (!gate.allowed) {
-    log.warn({ repo, command: plan.command, reason: gate.reason }, '命令门禁不通过');
-    return { status: 200, body: accepted({ deliveryId, action: 'unauthorized', taskId: null, duplicate: false, ackComment: null }), elapsedMs: 0 };
-  }
+  // v0.3 没有「命令门禁」：`/名字` 归技能、`@别名` 的权限由 `settings.agent.managers` 判
+  // （`agent/permission.ts`，S3）。这里只保留建任务 → 入队 → eyes → 200 那条通道。
 
   // ── 第 6 步：建任务（command / actor_login / queued_at 在这里写死，F9）────
   const idempotencyKey = idempotencyKeyFor(plan, repo);
@@ -1497,6 +1273,219 @@ async function submitPlanTask(
   return { status: 200, body: accepted({ deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment: null }), elapsedMs: 0 };
 }
 
+/* ── agent 通道（v0.3）：落消息 + 立刻投递 ─────────────────────────────────── */
+
+/** 仓库可用技能的目录（`listSkills` 给的是 `/名字`；这里收成 id 列表，失败 = 空目录）。 */
+export async function skillCatalogOf(
+  deps: WebhookDeps,
+  repo: string,
+): Promise<readonly AgentSkillCatalogEntry[]> {
+  if (deps.listSkills === undefined) {
+    return [];
+  }
+  let names: readonly string[];
+  try {
+    names = await deps.listSkills(repo);
+  } catch {
+    return [];
+  }
+  const seen = new Set<string>();
+  const entries: AgentSkillCatalogEntry[] = [];
+  for (const name of names) {
+    const id = name.trim().replace(/^\//u, '');
+    if (id === '' || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    entries.push({ id });
+  }
+  return entries;
+}
+
+/** 「已收到」回执：有 `reactions` 走 `agent/ack.ts`，否则回落到 `ack.addEyesReaction`。 */
+async function reactToAgentMessage(
+  deps: WebhookDeps,
+  input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly commentId: number | null;
+    readonly log: Logger;
+  },
+): Promise<void> {
+  if (deps.reactions !== undefined) {
+    await ackReceived(
+      {
+        reactions: deps.reactions,
+        ...(deps.appSlug === undefined ? {} : { appSlug: deps.appSlug }),
+        logger: input.log,
+      },
+      { repo: input.repo, issueNumber: input.issueNumber, commentId: input.commentId },
+    );
+    return;
+  }
+  try {
+    await deps.ack.addEyesReaction({
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+      commentId: input.commentId,
+    });
+  } catch (error) {
+    input.log.warn({ err: describeError(error) }, 'agent 回执打 eyes 失败（不影响 200）');
+  }
+}
+
+/**
+ * agent 消息的**唯一**入口（需求 §1.2 / §5）：
+ *
+ * ```
+ * 事件模板没配技能（on_opened/on_edited 置空） → 不投递
+ * 非管理员（mention）                        → 记 agent_denials + 只回一次
+ * 落 agent_messages（幂等）                  → 命中即 duplicate（不建任务、不调模型）
+ * 立刻 dispatch 这个 issue                   → 建 tasks + 投 run-task
+ * 打 eyes                                   → dry-run 一个都不打
+ * ```
+ */
+async function submitAgentMessage(
+  deps: WebhookDeps,
+  input: {
+    readonly plan: WebhookTaskPlan;
+    readonly repo: string;
+    readonly deliveryId: string;
+    readonly dryRun: boolean;
+    readonly settings: AgentMessageSettings;
+    readonly aliases: readonly string[];
+    readonly log: Logger;
+  },
+): Promise<{ readonly status: number; readonly body: WebhookAcceptedResponse | ErrorBody }> {
+  const { plan, repo, deliveryId, dryRun, log } = input;
+  const agent = plan.agent;
+  if (agent === undefined) {
+    // 调用点保证有；这里只是把「不可能」写死，避免以后误用
+    return {
+      status: 500,
+      body: errorBodyOf('internal', 'agent 消息计划缺失（内部错误）'),
+    };
+  }
+  const issueNumber = plan.targetNumber;
+  const ignored = (): { status: number; body: WebhookAcceptedResponse } => ({
+    status: 200,
+    body: accepted({ deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }),
+  });
+
+  // ── 1) 事件模板没点名技能 = 该事件不投递（CF-02 / CF-03）─────────────────────
+  if (agent.kind === 'event') {
+    const skillId = agent.templateId === null ? null : eventTemplateSkillOf(input.settings, agent.templateId);
+    if (skillId === null) {
+      log.info(
+        { repo, issue: issueNumber, template: agent.templateId },
+        '事件模板未配置技能（on_opened / on_edited 置空 = 不投递）',
+      );
+      return ignored();
+    }
+  }
+
+  // ── 2) 权限：@ 仅管理员（拒绝独立记账，同 issue 同 actor 只回一次）────────────
+  if (
+    agent.kind === 'mention' &&
+    !isManager({ agent: { managers: input.settings?.managers ?? [] } }, plan.actorLogin)
+  ) {
+    const denial = await recordDenial(
+      deps.db,
+      { repo, issueNumber, actorLogin: plan.actorLogin },
+      plan.actorLogin,
+    );
+    log.warn(
+      { repo, issue: issueNumber, actor: plan.actorLogin, alreadyReplied: denial.alreadyReplied },
+      '非管理员的 @：记 agent_denials（不参与幂等）',
+    );
+    if (!denial.alreadyReplied && !dryRun && deps.replyDenied !== undefined) {
+      try {
+        await deps.replyDenied({
+          repo,
+          issueNumber,
+          commentId: plan.commentId,
+          actorLogin: plan.actorLogin,
+          text: AGENT_DENIAL_REPLY,
+        });
+      } catch (error) {
+        log.warn({ err: describeError(error) }, '无权限回复发送失败（只回一次的机会就此用掉）');
+      }
+    }
+    return ignored();
+  }
+
+  // ── 3) 组装 + 幂等落库（永久幂等只约束人消息，事件消息 key 含 updated_at）───────
+  const catalog = await skillCatalogOf(deps, repo);
+  const composed = composeAgentMessage({
+    kind: agent.kind,
+    ...(agent.templateId === null ? {} : { templateId: agent.templateId }),
+    rawText: agent.rawText,
+    aliases: input.aliases,
+    catalog,
+    issue: {
+      repo,
+      number: issueNumber,
+      title: plan.targetTitle ?? null,
+      body: plan.targetBody ?? null,
+      updatedAt: agent.issueUpdatedAt,
+    },
+    settings: input.settings,
+  });
+  const key = { repo, issueNumber, fingerprint: composed.fingerprint };
+  const saved = await insertMessage(deps.db, {
+    key,
+    kind: agent.kind,
+    commentId: plan.commentId,
+    body: composed.text,
+  });
+  if (!saved.inserted) {
+    const existingTaskId = await findTaskIdByKey(deps.db, agentTaskIdempotencyKey(key)).catch(() => null);
+    log.info(
+      { repo, issue: issueNumber, fingerprint: key.fingerprint },
+      'agent 消息幂等命中：不建任务、不调模型',
+    );
+    return {
+      status: 200,
+      body: accepted({
+        deliveryId,
+        action: 'duplicate',
+        taskId: existingTaskId,
+        duplicate: true,
+        ackComment: null,
+      }),
+    };
+  }
+
+  // ── 4) 立刻为这个 issue 领一条（cron 兜底；失败不影响 200）───────────────────
+  if (deps.dispatchAgent !== undefined) {
+    try {
+      await deps.dispatchAgent({ repo, issueNumber });
+    } catch (error) {
+      log.warn({ err: describeError(error) }, 'agent 即时投递失败（留给 agent-dispatch 兜底）');
+    }
+  }
+  const taskId = await findTaskIdByKey(deps.db, agentTaskIdempotencyKey(key)).catch(() => null);
+
+  // ── 5) 回执：dry-run 一个 GitHub 写动作都不发 ───────────────────────────────
+  if (dryRun) {
+    log.info({ repo, issue: issueNumber }, 'dry-run：跳过 reaction（不产生任何 GitHub 写动作）');
+    return {
+      status: 200,
+      body: accepted({ deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment: null }),
+    };
+  }
+  await reactToAgentMessage(deps, {
+    repo,
+    issueNumber,
+    commentId: plan.commentId,
+    log,
+  });
+  return {
+    status: 200,
+    body: accepted({ deliveryId, action: 'enqueued', taskId, duplicate: false, ackComment: null }),
+  };
+}
+
 /* ── 流水线接入的帮手（第 5.5 步；导出便于单测逐条断言） ─────────────────── */
 
 /**
@@ -1509,10 +1498,10 @@ export function truncateTargetBody(body: string | null | undefined): string | nu
   if (body === null || body === undefined) {
     return null;
   }
-  if (body.length <= PIPELINE_TARGET_BODY_MAX_CHARS) {
+  if (body.length <= TARGET_BODY_MAX_CHARS) {
     return body;
   }
-  return `${body.slice(0, PIPELINE_TARGET_BODY_MAX_CHARS)}\n\n…（正文已截断：原文 ${String(body.length)} 字符，任务只带前 ${String(PIPELINE_TARGET_BODY_MAX_CHARS)} 字符）`;
+  return `${body.slice(0, TARGET_BODY_MAX_CHARS)}\n\n…（正文已截断：原文 ${String(body.length)} 字符，任务只带前 ${String(TARGET_BODY_MAX_CHARS)} 字符）`;
 }
 
 /** 一条补充评论 → `target_supplement` 的元素（每条截 1000 字符，§16.2 第 2 条）。 */
@@ -1527,9 +1516,9 @@ export function supplementOf(input: {
     commentId: input.commentId,
     author: input.author,
     body:
-      body.length <= PIPELINE_SUPPLEMENT_ITEM_MAX_CHARS
+      body.length <= SUPPLEMENT_ITEM_MAX_CHARS
         ? body
-        : `${body.slice(0, PIPELINE_SUPPLEMENT_ITEM_MAX_CHARS)}…`,
+        : `${body.slice(0, SUPPLEMENT_ITEM_MAX_CHARS)}…`,
     at: input.at,
   };
 }
@@ -1604,176 +1593,13 @@ export async function withTargetSnapshot(
     // 载荷里的正文比历史新（`issues.edited` 的时机就是「正文变了」），优先用它
     targetTitle: plan.targetTitle ?? snapshot.title,
     targetBody: plan.targetBody ?? snapshot.body,
-    supplements: supplements.slice(-PIPELINE_SUPPLEMENT_MAX_ITEMS),
+    supplements: supplements.slice(-SUPPLEMENT_MAX_ITEMS),
   };
 }
 
-/**
- * 补充评论触发的重跑任务（§16.2）。
- *
- * 锚 = `pipeline:<stage>:<issueVersion>:<commentId>`：同一条评论重投是空操作，
- * **换一条评论补同样的内容**要能重跑（只按版本锚会静默吞掉第二次补充）。
- *
- * 这里给的是锚的**原料**（裸 issueVersion + commentId），前缀由入队处拼一次（见 `idempotencyKeyFor`）。
- */
-export function supplementPlanFor(
-  decision: PipelineSupplementDecision,
-  channel: 'format' | 'classify',
-): WebhookTaskPlan {
-  return {
-    command: channel === 'format' ? 'pipeline:format' : 'pipeline:classify',
-    kind: 'pipeline',
-    source: 'pipeline',
-    targetKind: 'issue',
-    targetNumber: decision.targetNumber,
-    headSha: null,
-    issueVersionHash: `${decision.issueVersion}:${String(decision.commentId ?? 'none')}`,
-    actorLogin: decision.actorLogin,
-    association: decision.association,
-    commentId: decision.commentId,
-    idempotencyActor: 'pipeline',
-    targetTitle: decision.title,
-    targetBody: decision.issueBody,
-    supplements: [],
-  };
-}
 
-/** 补充评论要不要触发重跑（§16.2 第 1 条 / §1.8 Q6 修订）。 */
-export type SupplementOutcome =
-  | { readonly kind: 'rerun'; readonly channel: 'format' | 'classify'; readonly actor: SupplementActor }
-  /** 正在跑：只打 eyes，不回复、不入队（§8 第一行） */
-  | { readonly kind: 'silent'; readonly reason: string; readonly react: boolean }
-  /** 不动：`ready` 之后由 Agent 自己处理（D7）/ 无行 / 已关闭 */
-  | { readonly kind: 'ignore'; readonly reason: string };
 
-/**
- * 一条普通评论该不该触发阶段重跑。
- *
- * 判定顺序（与 §16.2 / §1.8 一致，顺序本身是语义）：
- *  1. 无行 → 不动（存量 issue 等 `@` 再懒创建 `ready` 行）；
- *  2. `closed` → 不动；
- *  3. `pending` / `running` → 只打 eyes（正在跑）；
- *  4. `format/awaiting_info` + 作者或 managers → 重跑格式；
- *  5. `classify/awaiting_info` + **仅 managers** → 重跑分类（Q6 修订）；
- *  6. 其余（`ready` / `blocked`）→ 不动。
- */
-export function decideSupplementOutcome(
-  row: PipelineRow | null,
-  decision: PipelineSupplementDecision,
-  settings: RepoConfig | null,
-): SupplementOutcome {
-  if (row === null) {
-    return { kind: 'ignore', reason: 'no-row' };
-  }
-  const actor: SupplementActor = isPipelineManager(settings, {
-    login: decision.actorLogin,
-    association: decision.association,
-  })
-    ? 'manager'
-    : decision.issueAuthor !== null && decision.issueAuthor.toLowerCase() === decision.actorLogin.toLowerCase()
-      ? 'author'
-      : 'other';
 
-  if (row.state === 'closed') {
-    return { kind: 'ignore', reason: 'closed' };
-  }
-  if (row.state === 'pending' || row.state === 'running') {
-    return { kind: 'silent', reason: `${row.stage}/running`, react: true };
-  }
-  if (row.stage === 'format' && row.state === 'awaiting_info') {
-    // 作者与 managers 都能触发格式重跑；其他人只记录（§16.2 第 1 条）
-    if (actor === 'other') {
-      return { kind: 'ignore', reason: 'supplement-actor-not-allowed' };
-    }
-    return { kind: 'rerun', channel: 'format', actor };
-  }
-  if (row.stage === 'classify' && row.state === 'awaiting_info') {
-    // 等管理员：只有 managers 的评论触发重分类（§1.8 Q6 修订）
-    if (actor !== 'manager') {
-      return { kind: 'ignore', reason: 'classify-awaiting-manager' };
-    }
-    return { kind: 'rerun', channel: 'classify', actor };
-  }
-  // `ready`（Agent 阶段自己响应 @）与 `blocked`（要 `/recheck --force`）
-  return { kind: 'ignore', reason: `${row.stage}/${row.state}` };
-}
-
-/** 门禁处置（§8 表格逐行）。 */
-export type GateOutcome =
-  | { readonly kind: 'allow' }
-  /** 只打 eyes，不回复（正在跑） */
-  | { readonly kind: 'silent' }
-  /** 入队 `pipeline:notice`（AI 撰写回执；限速内才有） */
-  | { readonly kind: 'notice'; readonly gateState: string; readonly reason: string }
-  | { readonly kind: 'ignore'; readonly reason: string };
-
-/**
- * `@` 被闸门拦下时怎么处置（§8）：
- *
- * | 当前状态 | 行为 |
- * |---|---|
- * | `format/pending`、`classify/pending`、任一阶段的 `running` | 只打 `eyes` |
- * | `format/awaiting_info` | `pipeline:notice`（请先按上一条评论补充信息） |
- * | `classify/awaiting_info` | `pipeline:notice`（已转管理员分类，请等待） |
- * | `blocked` | `pipeline:notice`（用 `/recheck --force` 或 `/pipeline next`） |
- * | `closed` | 静默 |
- * | 无行 / `ready` | 正常建任务 |
- *
- * 限速：`gate_notice_at` 距今不足 `PIPELINE_GATE_NOTICE_INTERVAL_SECONDS`（1 小时）→
- * 降级成 `silent`（仍然打 eyes，避免用户以为机器人死了）。
- */
-export function decideGateOutcome(row: PipelineRow | null, at: Date): GateOutcome {
-  if (row === null) {
-    return { kind: 'allow' };
-  }
-  if (row.state === 'closed') {
-    return { kind: 'ignore', reason: 'closed' };
-  }
-  if (row.state === 'ready') {
-    return { kind: 'allow' };
-  }
-  if (row.state === 'pending' || row.state === 'running') {
-    return { kind: 'silent' };
-  }
-  const gateState = `${row.stage}/${row.state}`;
-  const reason =
-    row.state === 'blocked'
-      ? 'blocked'
-      : row.stage === 'classify'
-        ? 'classify-awaiting-manager'
-        : 'format-awaiting-info';
-  if (!gateNoticeAllowed(row.gateNoticeAt, at, PIPELINE_GATE_NOTICE_INTERVAL_SECONDS)) {
-    // 限速：一小时一条；被限速时只打 eyes（不是错误，§8 的限速就是这么定的）
-    return { kind: 'silent' };
-  }
-  return { kind: 'notice', gateState, reason };
-}
-
-/**
- * 被拦下的 `@` → `pipeline:notice` 任务（Q8：回执由 AI 撰写，控制面只管限速/长度/`@`）。
- *
- * 命令本身**不执行**（不建命令任务），notice 只产评论；幂等锚按「小时桶」，
- * 同一小时内重复投递不会刷出多条回执。
- */
-export function noticePlanFor(plan: WebhookTaskPlan, gateState: string, at: Date): WebhookTaskPlan {
-  const hourBucket = Math.floor(at.getTime() / 3_600_000);
-  return {
-    command: 'pipeline:notice',
-    kind: 'notice',
-    source: 'pipeline',
-    targetKind: 'issue',
-    targetNumber: plan.targetNumber,
-    headSha: null,
-    issueVersionHash: `notice:${gateState}:${String(hourBucket)}`,
-    actorLogin: plan.actorLogin,
-    association: plan.association,
-    commentId: plan.commentId,
-    idempotencyActor: 'pipeline',
-    // 回执要让模型知道「卡在哪一步、用户刚发了什么」：命令名只进 prompt_text，
-    // **不进 command**（否则 `tasks.command` 会变成一条根本不存在的命令）
-    promptText: `gate_state=${gateState}; blocked_command=${plan.command}`,
-  };
-}
 
 /** 打 eyes，失败只 warn（回执失败不该让 GitHub 重投，§5.3 七要点第三条）。 */
 export async function reactQuietly(
@@ -1800,170 +1626,6 @@ export async function reactQuietly(
   }
 }
 
-/** `issues.*` 动作 → 状态机事件（§2 前三行 + D7 + §16.2 第 3 条的冷却让位）。 */
-export function pipelineTransitionFor(
-  row: PipelineRow | null,
-  input: { readonly action: string | null; readonly issueVersion: string | null; readonly at: Date },
-): PipelineTransition {
-  const version = input.issueVersion;
-  if (input.action === 'edited') {
-    // 冷却让位：评论触发后的 120s 内，编辑不再单独触发重跑（评论优先）
-    if (!recheckCooldownElapsed(row?.lastRecheckAt ?? null, input.at, PIPELINE_LIMITS.recheckCooldownSeconds)) {
-      return { ignore: 'recheck-cooldown' };
-    }
-    return decideTransition(row, { kind: 'issue-edited', at: input.at, issueVersion: version });
-  }
-  // opened / reopened（重开的语义与「新 issue」一致：重新过格式检查）
-  return decideTransition(row, { kind: 'issue-opened', at: input.at, issueVersion: version });
-}
-
-/** 管理员指令的执行结果（`null` = 这条评论不是指令）。 */
-export type DirectiveOutcome =
-  | { readonly kind: 'ignored'; readonly reason: string; readonly plan: WebhookTaskPlan }
-  | { readonly kind: 'enqueued'; readonly taskId: string; readonly plan: WebhookTaskPlan }
-  | { readonly kind: 'duplicate'; readonly taskId: string | null; readonly plan: WebhookTaskPlan };
-
-/**
- * 处理管理员指令（`/recheck`、`/recheck --force`、`/pipeline next|prev`）。
- *
- * 三条纪律：
- *  1. **不进命令门禁**（§16.1 第 3 条）：权限只看 `pipeline.managers` / `OWNER`；
- *  2. **非 managers 只打 eyes**：不执行、不回复（§1.7 Q7）；
- *  3. **PR 不认指令**：PR 不受流水线影响（§8 末条）。
- *
- * 审计落在既有通道：`webhook_deliveries`（这条评论的投递行）+ `tasks`（指令触发的阶段任务）
- * + 一条带 `directive=…` 的日志；不新建审计表。
- */
-export async function runDirective(args: {
-  readonly db: SqlRunner;
-  readonly repo: string;
-  readonly event: string;
-  readonly action: string | null;
-  readonly payload: unknown;
-  readonly aliases: readonly string[];
-  readonly settings: RepoConfig | null;
-  readonly at: Date;
-  readonly dryRun: boolean;
-  readonly log: Logger;
-}): Promise<DirectiveOutcome | null> {
-  if (args.event !== 'issue_comment' || args.action !== 'created') {
-    return null;
-  }
-  const payload = asRecord(args.payload);
-  const issue = asRecord(payload?.['issue']);
-  const comment = asRecord(payload?.['comment']);
-  const number = readNumber(issue, 'number');
-  if (number === null || asRecord(issue?.['pull_request']) !== null) {
-    return null;
-  }
-  const directive = parsePipelineDirective(comment?.['body'], args.aliases);
-  if (directive === null) {
-    return null;
-  }
-  const actor =
-    readString(asRecord(comment?.['user']), 'login') ??
-    readString(asRecord(payload?.['sender']), 'login') ??
-    'unknown';
-  const association = readString(comment, 'author_association');
-  const commentId = readNumber(comment, 'id');
-  const base: WebhookTaskPlan = {
-    command: 'pipeline:format',
-    kind: 'pipeline',
-    source: 'pipeline',
-    targetKind: 'issue',
-    targetNumber: number,
-    headSha: null,
-    issueVersionHash: null,
-    actorLogin: actor,
-    association,
-    commentId,
-    idempotencyActor: 'pipeline',
-  };
-
-  if (!isPipelineManager(args.settings, { login: actor, association })) {
-    return { kind: 'ignored', reason: 'not-manager', plan: base };
-  }
-
-  const key = { repo: args.repo, issueNumber: number };
-  const row = await loadPipeline(args.db, key);
-  if (row === null) {
-    // 没有状态行 = 这条 issue 还没进流水线；指令无从下手（§1.3 的放行只针对 `@`）
-    return { kind: 'ignored', reason: 'no-row', plan: base };
-  }
-
-  const event: PipelineEvent =
-    directive.kind === 'next'
-      ? { kind: 'manual-next', fromManager: true, at: args.at }
-      : directive.kind === 'prev'
-        ? { kind: 'manual-prev', fromManager: true, at: args.at }
-        : { kind: 'manual-recheck', force: directive.force, fromManager: true, at: args.at };
-  const transition = decideTransition(row, event);
-  if (transition.ignore !== undefined) {
-    return { kind: 'ignored', reason: transition.ignore, plan: base };
-  }
-  await applyTransition(args.db, key, transition);
-  args.log.info(
-    {
-      repo: args.repo,
-      issue: number,
-      directive: describeDirective(directive),
-      stage: transition.stage,
-      state: transition.state,
-    },
-    '管理员指令已执行（审计：投递行 + 任务行 + 本条日志）',
-  );
-
-  const enqueue = transition.effects?.enqueue;
-  if (enqueue === undefined || enqueue === null) {
-    // `next` 进到 `agent/ready` 时没有阶段任务要跑（阶段 2 由 @ 触发）
-    return { kind: 'ignored', reason: 'no-stage-task', plan: base };
-  }
-  // 指令的锚带上「动作 + 指令落地的时刻」：同一条指令重复投递不重复跑，
-  // 但「先进再退」这类连续指令不该被唯一键吃掉
-  const plan: WebhookTaskPlan = {
-    ...base,
-    command: enqueue,
-    // 锚 = 裸 issueVersion + 指令动作 + 指令落地时刻（列里只存裸版本，前缀在入队处拼）
-    issueVersionHash: `${bareIssueVersion(row.issueVersion) ?? 'none'}:${describeDirective(directive)}:${String(args.at.getTime())}`,
-  };
-  return insertPipelineTask(args.db, { plan, repo: args.repo, deliveryId: null });
-}
-
-/**
- * 建任务 + 返回结论（**不入队、不打 reaction**）：指令路径用。
- *
- * 入队由调用方做（`deps.enqueue`），因为「建任务」与「送去队列」在 webhook 里是两个可分别失败的步骤。
- */
-async function insertPipelineTask(
-  db: SqlRunner,
-  input: { readonly plan: WebhookTaskPlan; readonly repo: string; readonly deliveryId: string | null },
-): Promise<DirectiveOutcome> {
-  const plan = input.plan;
-  const idempotencyKey = idempotencyKeyFor(plan, input.repo);
-  const taskId = randomUUID();
-  const inserted = await db.query(WEBHOOK_SQL.insertTask, [
-    taskId,
-    plan.source,
-    input.repo,
-    plan.targetKind,
-    plan.targetNumber,
-    plan.headSha,
-    plan.command,
-    plan.actorLogin,
-    idempotencyKey,
-    input.deliveryId,
-    plan.promptText ?? null,
-    plan.targetTitle ?? null,
-    truncateTargetBody(plan.targetBody),
-    JSON.stringify(plan.supplements ?? []),
-  ]);
-  if ((inserted.rowCount ?? 0) === 0) {
-    const existing = await db.query(WEBHOOK_SQL.findTaskByIdempotencyKey, [idempotencyKey]);
-    const existingId = (existing.rows[0] as Record<string, unknown> | undefined)?.['id'];
-    return { kind: 'duplicate', taskId: typeof existingId === 'string' ? existingId : null, plan };
-  }
-  return { kind: 'enqueued', taskId, plan };
-}
 
 /**
  * `pi-bot replay <delivery-id>`：拿 `webhook_deliveries.payload` 原文重放，**强制干跑**。

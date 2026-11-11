@@ -5,8 +5,6 @@ import { repoIssuePath } from '../../lib/repo-route.ts';
 import { Badge, StatusDot } from '../ui/badge.tsx';
 import { TONE_BORDER, TONE_TEXT } from '../ui/status.ts';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '../ui/table.tsx';
-import { CategoryBadge, StageStateBadge } from '../pipeline/pipeline-badge.tsx';
-import { attemptsText, dwellOf } from '../pipeline/pipeline-status.ts';
 import { readLabelDecision, readReactionState, readRunCost } from './contract-extras.ts';
 import { ReactionChip } from './reaction-chip.tsx';
 import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE, presentStatus, shortRepo } from './status.ts';
@@ -14,15 +12,7 @@ import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE, presentStatus, shortRepo } from '.
 /**
  * Issue 中心的**主从列表**（列定义只有这一处）。
  *
- * 列：**编号 / 标题 / 阶段 / 类别 / 标签 / 状态 / reaction / 停留 / 尝试 / 最后活动**
- * （仓库上下文里没有「项目」列）。后四列是固定流水线的投影：
- *
- * | 列 | 来源 | 缺失时 |
- * |---|---|---|
- * | 阶段 | `pipeline.stage + state` 合成一枚徽章 | `pipeline === null` → 中性描边「未入流水线」 |
- * | 类别 | `pipeline.category` | `null` → `—`（没跑分类 / 结论非法被 blocked） |
- * | 停留 | `now − coalesce(infoRequestedAt, readyAt, staleAt, lastActivityAt)` | 无行 → `—`；超 24h 用警示色 |
- * | 尝试 | `pipeline.formatFailCount / 5` | 无行 → `—` |
+ * 列：**编号 / 标题 / 标签 / 状态 / reaction / 最后活动**（仓库上下文里没有「项目」列）。
  *
  * 三处刻意的设计：
  *
@@ -30,8 +20,9 @@ import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE, presentStatus, shortRepo } from '.
  *     选中态用品牌 8% 底 + 左缘 2px 条（`data-state=selected` 由 `TableRow` 处理底色，
  *     左缘条加在编号单元格上），**不是胶囊**。
  *  2. **首列吸顶**（`stickyFirst`）：窄屏横向滚动时「编号」不会跑掉，标题仍然可读。
- *  3. **容错**：`停留 / 尝试 / 类别` 都来自流水线行，没有行就显示 `—`（不是 0，也不是
- *     「阶段 0 待跑」那种假状态）；reaction 与打标理由通过 `contract-extras.ts` 宽容读取。
+ *  3. **容错**：reaction 与打标理由通过 `contract-extras.ts` 宽容读取。
+ *
+ * v0.3 删掉了「阶段 / 类别 / 停留 / 尝试」四列（固定流水线退役，`issue_pipeline` 表已删）。
  */
 export type IssueListProps = {
   rows: readonly IssueListItem[];
@@ -83,16 +74,6 @@ export function IssueTable({
             编号
           </TableHead>
           <TableHead scope="col">标题</TableHead>
-          <TableHead scope="col" className="w-[7.5rem]">
-            阶段
-          </TableHead>
-          <TableHead
-            scope="col"
-            className="w-[4.5rem]"
-            title="issue_pipeline.category：需求 / 缺陷 / 查不到 / 其他；还没跑分类或结论非法被 blocked 时为 —"
-          >
-            类别
-          </TableHead>
           <TableHead scope="col" className="w-[8.5rem]">
             标签
           </TableHead>
@@ -101,20 +82,6 @@ export function IssueTable({
           </TableHead>
           <TableHead scope="col" className="w-[5rem]">
             reaction
-          </TableHead>
-          <TableHead
-            scope="col"
-            className="w-[4.5rem] text-right"
-            title="现在 − coalesce(等补充时刻, 就绪时刻, 判旧时刻, 最后活动)。契约没有「进入阶段时刻」，最后一项是近似口径；超过 24h 用警示色"
-          >
-            停留
-          </TableHead>
-          <TableHead
-            scope="col"
-            className="w-[3.5rem] text-right"
-            title="格式不通过 N 次 / 累计 5 次自动关闭（PIPELINE_FORMAT_MAX_FAILS）"
-          >
-            尝试
           </TableHead>
           <TableHead scope="col" className="w-[6.5rem] text-right">
             最后活动
@@ -163,7 +130,6 @@ function IssueRow({
   const time = formatTimeCell(item.lastActivityAt);
   const reaction = readReactionState(item);
   const decision = readLabelDecision(item);
-  const dwell = item.pipeline === null ? null : dwellOf(item.pipeline, item.lastActivityAt, now);
   const blocked = decision?.blocked[0] ?? null;
   const extraLabels = item.labels.length > 3 ? item.labels.length - 3 : 0;
 
@@ -222,14 +188,6 @@ function IssueRow({
       </TableCell>
 
       <TableCell>
-        <StageStateBadge pipeline={item.pipeline} className="max-w-full truncate" />
-      </TableCell>
-
-      <TableCell>
-        <CategoryBadge category={item.pipeline?.category ?? null} className="text-xs text-subtle" />
-      </TableCell>
-
-      <TableCell>
         {item.labels.length === 0 ? (
           <span className="text-xs text-muted-foreground">没有标签</span>
         ) : (
@@ -282,37 +240,6 @@ function IssueRow({
 
       <TableCell>
         <ReactionChip state={reaction} className="max-w-full truncate" />
-      </TableCell>
-
-      <TableCell className="text-right text-xs tabular-nums">
-        {dwell === null ? (
-          <span className="text-subtle" title="没有 issue_pipeline 行：没有停留口径（§1.3 的「无行放行」）">
-            —
-          </span>
-        ) : (
-          <span
-            className={dwell.overdue ? 'font-medium text-danger-fg' : 'text-muted-foreground'}
-            title={dwell.title}
-            data-testid="issue-row-dwell"
-          >
-            {dwell.text}
-          </span>
-        )}
-      </TableCell>
-
-      <TableCell className="text-right text-xs tabular-nums text-muted-foreground">
-        {item.pipeline === null ? (
-          <span className="text-subtle" title="没有流水线行：格式检查还没跑过">
-            —
-          </span>
-        ) : (
-          <span
-            title={`格式不通过 ${String(item.pipeline.formatFailCount)} 次，累计 5 次自动关闭`}
-            data-testid="issue-row-attempts"
-          >
-            {attemptsText(item.pipeline.formatFailCount)}
-          </span>
-        )}
       </TableCell>
 
       <TableCell className="text-right">

@@ -10,7 +10,6 @@ import {
   parseRepoConfig,
   parseRepoSettings,
   parseSkillTimeoutMs,
-  pipelineConfigSchema,
   pipelineLabelCoverage,
   repoConfigSchema,
   repoSettingsSchema,
@@ -19,101 +18,105 @@ import {
   toSkillEffectiveConfig,
 } from '../src/index.ts';
 
-/** §4.5 的硬校验：`requirement` 与 `defect` 各至少 1 个（`other` 可缺省）。 */
+/** 打标两类硬角色：`requirement` 与 `defect` 各至少 1 个（`other` 可缺省）。 */
 const REQUIRED_ROLES = [
   { name: '需求', role: 'requirement' },
   { name: '缺陷', role: 'defect' },
 ] as const;
 
 /**
- * Q4 之后 `{}` **不再是**合法配置（`pipeline.managers` 必须非空、词表必须含两类角色，§4.5）：
+ * Q4 之后 `{}` **不再是**合法配置（`agent.managers` 必须非空、词表必须含两类角色）：
  * 正例一律带上这一份。负例直接喂原 schema，断言的是「这一项本身不合法」而不是「因为缺 managers / 缺角色而失败」。
  */
-const OK = { pipeline: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } } as const;
+const OK = { agent: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } } as const;
 
 function parses(patch: Record<string, unknown>): boolean {
   return repoSettingsSchema.safeParse({ ...OK, ...patch }).success;
 }
 
 describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
-  it('合法配置的缺省值（含 version、dry-run、并发、队列等待、提示词版本、流水线段）', () => {
+  it('合法配置的缺省值（含 version、dry-run、并发、队列等待、agent 段）', () => {
     const settings = parseRepoSettings(OK);
     expect(settings.version).toBe(1);
     expect(settings.enabled).toBe(true);
     expect(settings.dry_run).toBe(true);
-    expect(settings.create_issue.enabled).toBe(false);
-    expect(settings.create_issue.daily_quota).toBe(10);
-    expect(settings.create_issue.scenarios).toEqual(['pr-review']);
-    expect(settings.commands.allowed).toEqual(['/review-pr', '/issue-triage', '/issue-repro']);
-    expect(settings.commands.author_associations).toEqual(['OWNER', 'MEMBER', 'COLLABORATOR']);
     expect(settings.limits.max_task_minutes).toBe(20);
     expect(settings.limits.concurrency_per_repo).toBe(2);
     expect(settings.limits.queue_wait_minutes).toBe(10);
     expect(settings.labels.map).toEqual({});
-    // 词表本身没有默认值（形状默认空）；§4.5 的「两类角色各至少 1 个」由严格 schema 校验（见下面几条）
+    // 词表本身没有默认值（形状默认空）；「两类角色各至少 1 个」由严格 schema 校验（见下面几条）
     expect(repoSettingsShapeSchema.parse({}).labels.vocabulary).toEqual([]);
     expect(settings.labels.missing).toBe('warn');
     expect(settings.labels.max_per_issue).toBe(6);
-    expect(settings.prompt.enabled).toBe(true);
-    expect(settings.prompt.current_version).toBe(0);
-    expect(settings.triggers.enabled).toBe(true);
-    // 流水线段：三条版本线默认 0（= 用内置模板），没有 enabled、没有任何阈值
-    expect(settings.pipeline).toEqual({
+    // 触发体系只剩别名：不配就是 undefined（webhook 用部署默认）
+    expect(settings.triggers.aliases).toBeUndefined();
+    expect(settings.skills.project_skills).toBe(true);
+    // agent 段：没有 enabled、没有任何阈值；两个技能默认 format-check
+    expect(settings.agent).toEqual({
       managers: ['alice'],
-      format_prompt_version: 0,
-      classify_prompt_version: 0,
-      agent_prompt_version: 0,
+      on_opened: 'format-check',
+      on_edited: 'format-check',
+      auto_label_after_format_pass: false,
+      project_prompt: '',
     });
   });
 
-  it('空对象不再合法：`pipeline.managers` 非空是运行前提（Q4，不做兼容）', () => {
+  it('空对象不再合法：`agent.managers` 非空是运行前提（Q4，不做兼容）', () => {
     const result = repoSettingsSchema.safeParse({});
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues.some((issue) => issue.path.join('.') === 'pipeline.managers')).toBe(true);
+      expect(result.error.issues.some((issue) => issue.path.join('.') === 'agent.managers')).toBe(true);
     }
-    expect(repoSettingsSchema.safeParse({ pipeline: { managers: [] } }).success).toBe(false);
-    expect(repoSettingsSchema.safeParse({ pipeline: {} }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ agent: { managers: [] } }).success).toBe(false);
+    expect(repoSettingsSchema.safeParse({ agent: {} }).success).toBe(false);
   });
 
   it('DEFAULT_REPO_SETTINGS = 形状默认值（managers 为空）：不是合法运行配置', () => {
-    expect(DEFAULT_REPO_SETTINGS.pipeline.managers).toEqual([]);
+    expect(DEFAULT_REPO_SETTINGS.agent.managers).toEqual([]);
     expect(repoSettingsShapeSchema.parse({})).toEqual(DEFAULT_REPO_SETTINGS);
     // 形状默认值喂给严格 schema 直接被拒（settings_valid=false 属预期）
     expect(repoSettingsSchema.safeParse(DEFAULT_REPO_SETTINGS).success).toBe(false);
-    // 只补 managers 仍不合法：词表还缺 requirement / defect（§4.5）
+    // 只补 managers 仍不合法：词表还缺 requirement / defect
     expect(
       repoSettingsSchema.safeParse({
         ...DEFAULT_REPO_SETTINGS,
-        pipeline: { ...DEFAULT_REPO_SETTINGS.pipeline, managers: ['alice'] },
+        agent: { ...DEFAULT_REPO_SETTINGS.agent, managers: ['alice'] },
       }).success,
     ).toBe(false);
     expect(
       repoSettingsSchema.safeParse({
         ...DEFAULT_REPO_SETTINGS,
-        pipeline: { managers: ['alice'] },
+        agent: { managers: ['alice'] },
         labels: { vocabulary: REQUIRED_ROLES },
       }).success,
     ).toBe(true);
   });
 
-  it('managers：login 形状、上限 20、大小写不敏感去重', () => {
-    expect(parses({ pipeline: { managers: ['alice', 'bob-2'] } })).toBe(true);
-    expect(parses({ pipeline: { managers: ['@alice'] } })).toBe(false);
-    expect(parses({ pipeline: { managers: [''] } })).toBe(false);
-    expect(parses({ pipeline: { managers: ['alice', 'Alice'] } })).toBe(false);
-    expect(parses({ pipeline: { managers: Array.from({ length: 21 }, (_unused, index) => `u${String(index)}`) } })).toBe(
+  it('agent.managers：login 形状、上限 20、大小写不敏感去重', () => {
+    expect(parses({ agent: { managers: ['alice', 'bob-2'] } })).toBe(true);
+    expect(parses({ agent: { managers: ['@alice'] } })).toBe(false);
+    expect(parses({ agent: { managers: [''] } })).toBe(false);
+    expect(parses({ agent: { managers: ['alice', 'Alice'] } })).toBe(false);
+    expect(parses({ agent: { managers: Array.from({ length: 21 }, (_unused, index) => `u${String(index)}`) } })).toBe(
       false,
     );
   });
 
-  it('pipeline 段没有 enabled、没有任何流程阈值（Q2：收为系统常量）', () => {
-    expect(parses({ pipeline: { managers: ['alice'], enabled: true } })).toBe(false);
-    expect(parses({ pipeline: { managers: ['alice'], close_after_hours: 48 } })).toBe(false);
-    expect(parses({ pipeline: { managers: ['alice'], max_runs_per_stage: 3 } })).toBe(false);
-    expect(parses({ pipeline: { managers: ['alice'], format_prompt_version: -1 } })).toBe(false);
-    expect(parses({ pipeline: { managers: ['alice'], agent_prompt_version: 7 } })).toBe(true);
-    expect(pipelineConfigSchema.parse({}).managers).toEqual([]);
+  it('agent 段没有 enabled、没有任何流程阈值（收为系统常量）', () => {
+    expect(parses({ agent: { managers: ['alice'], enabled: true } })).toBe(false);
+    expect(parses({ agent: { managers: ['alice'], close_after_hours: 48 } })).toBe(false);
+    expect(parses({ agent: { managers: ['alice'], format_prompt_version: 1 } })).toBe(false);
+    expect(parses({ agent: { managers: ['alice'], agent_prompt_version: 7 } })).toBe(false);
+  });
+
+  it('agent.on_opened / on_edited 可为 null（= 不投递），project_prompt ≤ 4000', () => {
+    const settings = parseRepoSettings({ ...OK, agent: { managers: ['alice'], on_opened: null, on_edited: null } });
+    expect(settings.agent.on_opened).toBeNull();
+    expect(settings.agent.on_edited).toBeNull();
+    expect(parses({ agent: { managers: ['alice'], on_opened: '' } })).toBe(false);
+    expect(parses({ agent: { managers: ['alice'], project_prompt: 'a'.repeat(4000) } })).toBe(true);
+    expect(parses({ agent: { managers: ['alice'], project_prompt: 'a'.repeat(4001) } })).toBe(false);
+    expect(parses({ agent: { managers: ['alice'], auto_label_after_format_pass: 'yes' } })).toBe(false);
   });
 
   it('标签 role 必填，且只接受 requirement / defect / other（Q4 不做回填）', () => {
@@ -127,15 +130,15 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', bogus: 1 }] } })).toBe(false);
   });
 
-  it('缺 requirement 角色 → 失败（§4.5 的 superRefine 无条件生效）', () => {
+  it('缺 requirement 角色 → 失败（superRefine 无条件生效）', () => {
     const result = repoSettingsSchema.safeParse({
-      pipeline: { managers: ['alice'] },
+      agent: { managers: ['alice'] },
       labels: { vocabulary: [{ name: '缺陷', role: 'defect' }] },
     });
     expect(result.success).toBe(false);
     if (!result.success) {
       const issue = result.error.issues.find((entry) => entry.path.join('.') === 'labels.vocabulary');
-      expect(issue?.message).toContain('分类需要至少一个需求标签与一个缺陷标签');
+      expect(issue?.message).toContain('打标需要至少一个需求标签与一个缺陷标签');
       expect(issue?.message).toContain('requirement');
       expect(issue?.message).not.toContain('defect');
     }
@@ -143,20 +146,20 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
 
   it('缺 defect 角色 → 失败', () => {
     const result = repoSettingsSchema.safeParse({
-      pipeline: { managers: ['alice'] },
+      agent: { managers: ['alice'] },
       labels: { vocabulary: [{ name: '需求', role: 'requirement' }] },
     });
     expect(result.success).toBe(false);
     if (!result.success) {
       const issue = result.error.issues.find((entry) => entry.path.join('.') === 'labels.vocabulary');
-      expect(issue?.message).toContain('分类需要至少一个需求标签与一个缺陷标签');
+      expect(issue?.message).toContain('打标需要至少一个需求标签与一个缺陷标签');
       expect(issue?.message).toContain('defect');
     }
   });
 
   it('只有 other 两条 → 失败（`other` 可缺省，但不能顶替 requirement / defect）', () => {
     const result = repoSettingsSchema.safeParse({
-      pipeline: { managers: ['alice'] },
+      agent: { managers: ['alice'] },
       labels: {
         vocabulary: [
           { name: '咨询', role: 'other' },
@@ -171,7 +174,7 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
   });
 
   it('requirement + defect 各一、没有 other → 通过（other 可缺省 = 其他类型不打标）', () => {
-    const settings = parseRepoSettings({ pipeline: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } });
+    const settings = parseRepoSettings({ agent: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } });
     expect(settings.labels.vocabulary.map((entry) => entry.role)).toEqual(['requirement', 'defect']);
     expect(pipelineLabelCoverage(settings)).toEqual({ missingRoles: [] });
   });
@@ -217,17 +220,24 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
       labels: { vocabulary: [{ name: '需求', role: 'requirement' }] },
     });
     expect(pipelineLabelCoverage(shapeOnlyRequirement)).toEqual({ missingRoles: ['defect'] });
-    const full = parseRepoSettings({ pipeline: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } });
+    const full = parseRepoSettings({ agent: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } });
     expect(pipelineLabelCoverage(full)).toEqual({ missingRoles: [] });
   });
 
-  it('完整配置可以解析（标签词表 / 1:N 映射 / 提示词 / 并发 / 流水线）', () => {
+  it('完整配置可以解析（标签词表 / 1:N 映射 / agent / 并发）', () => {
     const settings = parseRepoSettings({
       version: 1,
       enabled: true,
       dry_run: false,
       model: 'anthropic/claude-sonnet-4',
-      pipeline: { managers: ['alice'], format_prompt_version: 2, classify_prompt_version: 3, agent_prompt_version: 4 },
+      triggers: { aliases: ['TriageBot'] },
+      agent: {
+        managers: ['alice', 'bob'],
+        on_opened: 'format-check',
+        on_edited: null,
+        auto_label_after_format_pass: true,
+        project_prompt: '本仓库用 pnpm。',
+      },
       labels: {
         vocabulary: [
           { name: 'enhancement', role: 'requirement', meaning: '新功能需求', color: 'a2eeef' },
@@ -239,9 +249,7 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
         missing: 'create',
         max_per_issue: 3,
       },
-      create_issue: { enabled: true, daily_quota: 3, scenarios: ['pr-review', 'dependency'] },
-      commands: { enabled: true, allowed: ['/review-pr'], allow_users: ['alice'], rate_limit_per_hour: 5 },
-      skills: { repo_skills: false },
+      skills: { project_skills: false },
       limits: {
         max_comments_per_hour: 4,
         max_actions_per_run: 6,
@@ -249,7 +257,6 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
         concurrency_per_repo: 3,
         queue_wait_minutes: 5,
       },
-      prompt: { enabled: false, current_version: 7 },
     });
     // 1:1 与 1:N 两种写法都能解析（1:N 的展开在应用层）
     expect(settings.labels.map['bug']).toBe('bug');
@@ -257,21 +264,31 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     expect(settings.labels.vocabulary.find((entry) => entry.name === 'bug')?.role).toBe('defect');
     expect(settings.labels.missing).toBe('create');
     expect(settings.labels.max_per_issue).toBe(3);
-    expect(settings.pipeline.agent_prompt_version).toBe(4);
-    expect(settings.prompt).toEqual({ enabled: false, current_version: 7 });
+    expect(settings.agent.on_edited).toBeNull();
+    expect(settings.agent.auto_label_after_format_pass).toBe(true);
+    expect(settings.agent.project_prompt).toBe('本仓库用 pnpm。');
     expect(settings.limits.concurrency_per_repo).toBe(3);
-    expect(settings.create_issue.daily_quota).toBe(3);
-    expect(settings.commands.rate_limit_per_hour).toBe(5);
+    expect(settings.skills.project_skills).toBe(false);
+    expect(settings.triggers.aliases).toEqual(['TriageBot']);
   });
 
-  it('未知键被拒（配置写错不能静默忽略）：compliance / triggers.faces / pipeline.enabled', () => {
+  it('未知键被拒（配置写错不能静默忽略）：compliance / triggers.enabled / agent.enabled / 已删段', () => {
     expect(repoSettingsSchema.safeParse({ dryrun: true }).success).toBe(false);
     expect(repoSettingsSchema.safeParse({ limits: { max_comment: 3 } }).success).toBe(false);
-    // `compliance` 不再是合法段（规则改由提示词/技能承载，见 impl-multi-repo §0.3）
+    // `compliance` 不再是合法段（规则改由提示词/技能承载）
     expect(repoSettingsSchema.safeParse({ compliance: { enabled: false } }).success).toBe(false);
-    // `triggers.faces` 已删（P7）：老配置整份被拒，不静默吞掉
+    // `triggers.faces` / `triggers.enabled` / `triggers.users` 已删：老配置整份被拒，不静默吞掉
     expect(parses({ triggers: { faces: { issue_comment: 'mention' } } })).toBe(false);
-    expect(parses({ pipeline: { managers: ['alice'], enabled: false } })).toBe(false);
+    expect(parses({ triggers: { enabled: false } })).toBe(false);
+    expect(parses({ triggers: { users: 'all' } })).toBe(false);
+    expect(parses({ triggers: { merge_defaults: false } })).toBe(false);
+    expect(parses({ triggers: { remove: ['ibot'] } })).toBe(false);
+    // v1.5 的四段整体退役
+    expect(parses({ pipeline: { managers: ['alice'] } })).toBe(false);
+    expect(parses({ prompt: { enabled: true } })).toBe(false);
+    expect(parses({ commands: { enabled: true } })).toBe(false);
+    expect(parses({ create_issue: { enabled: true } })).toBe(false);
+    expect(parses({ skills: { repo_skills: false } })).toBe(false);
   });
 
   it('版本号只接受 1（缺省按 1）', () => {
@@ -280,9 +297,7 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     expect(parseRepoSettings(OK).version).toBe(1);
   });
 
-  it('配额与限额有边界', () => {
-    expect(parses({ create_issue: { daily_quota: 0 } })).toBe(false);
-    expect(parses({ create_issue: { daily_quota: 101 } })).toBe(false);
+  it('限额有边界', () => {
     expect(parses({ limits: { max_actions_per_run: 9 } })).toBe(false);
     expect(parses({ limits: { max_task_minutes: 31 } })).toBe(false);
     expect(parses({ limits: { concurrency_per_repo: 0 } })).toBe(false);
@@ -295,14 +310,12 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     expect(parses({ model: 'anthropic/claude-sonnet-4' })).toBe(true);
   });
 
-  it('标签：missing 只接受三态、颜色是 6 位十六进制、命令白名单必须带 /', () => {
+  it('标签：missing 只接受三态、颜色是 6 位十六进制', () => {
     expect(parses({ labels: { missing: 'boom' } })).toBe(false);
     expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', color: '#d73a4a' }] } })).toBe(false);
     expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', color: 'd73a4a' }, ...REQUIRED_ROLES] } })).toBe(
       true,
     );
-    expect(parses({ commands: { allowed: ['review-pr'] } })).toBe(false);
-    expect(parses({ commands: { author_associations: ['NONE'] } })).toBe(false);
   });
 
   it('旧名是同一个 schema 的 deprecated alias（不复制第二份默认值）', () => {

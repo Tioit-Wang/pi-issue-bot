@@ -18,8 +18,8 @@ import { requireCsrf, scenarioResponse } from './shared.ts';
  * 写操作（PUT settings）只改内存，刷新页面即回到样本；`?mock=error|empty|slow|unauthorized`
  * 沿用 `scenarioResponse` 的统一机制（读的是页面 URL，不是请求 URL）。
  *
- * **提示词（四条版本线）不在这里**：`?kind=` 让「一条路径四份 fixture」变成常态，
- * 所以它单独一个文件（`prompt.ts`）。两个文件的写接口共用 `shared.ts` 的 `requireCsrf`。
+ * 提示词子系统（`?kind=` 四条版本线）随固定流水线一起退役：`prompt.ts` 已删除，
+ * 仓库设置只剩这一组写接口（`PUT settings` 走 `shared.ts` 的 `requireCsrf`）。
  */
 
 /**
@@ -33,12 +33,7 @@ const DEFAULT_SETTINGS = {
   version: 1,
   enabled: true,
   dry_run: true,
-  triggers: {
-    enabled: true,
-    merge_defaults: true,
-    remove: [],
-    users: 'all',
-  },
+  triggers: { aliases: ['issuebot'] },
   labels: {
     vocabulary: [
       { name: '需求', role: 'requirement', meaning: '用户希望新增或改变的行为', color: '0E8A16' },
@@ -49,15 +44,7 @@ const DEFAULT_SETTINGS = {
     missing: 'warn',
     max_per_issue: 6,
   },
-  create_issue: { enabled: false, daily_quota: 10, scenarios: ['pr-review'] },
-  commands: {
-    enabled: true,
-    allowed: ['/review-pr', '/issue-triage', '/issue-repro'],
-    author_associations: ['OWNER', 'MEMBER', 'COLLABORATOR'],
-    allow_users: [],
-    rate_limit_per_hour: 20,
-  },
-  skills: { repo_skills: true },
+  skills: { project_skills: true },
   limits: {
     max_comments_per_hour: 10,
     max_actions_per_run: 8,
@@ -65,11 +52,13 @@ const DEFAULT_SETTINGS = {
     concurrency_per_repo: 2,
     queue_wait_minutes: 10,
   },
-  prompt: { enabled: true, current_version: 2 },
-  // 固定流水线段（`settings.pipeline`）：managers 非空才算合法配置（Q4）
-  // 固定流水线段（`settings.pipeline`）：managers 非空才算合法配置（Q4）。
-  // 三个阶段指针给非零值：面板要能同时展示「vN · 项目版本」与 `0 → 系统默认` 两种形态。
-  pipeline: { managers: ['alice', 'bob'], format_prompt_version: 3, classify_prompt_version: 2, agent_prompt_version: 0 },
+  agent: {
+    managers: ['alice', 'bob'],
+    on_opened: 'format-check',
+    on_edited: 'format-check',
+    auto_label_after_format_pass: false,
+    project_prompt: '本仓库用 pnpm，跑 `pnpm -r test` 前先 `pnpm build`。',
+  },
 } satisfies NonNullable<RepoSettingsResponse['settings']>;
 
 type RepoState = {
@@ -93,7 +82,7 @@ function initialStates(): RepoState[] {
         archivedAt: null,
         updatedAt: '2026-06-01T11:00:00.000Z',
       },
-      settings: { ...DEFAULT_SETTINGS, dry_run: false, prompt: { enabled: true, current_version: 2 } },
+      settings: { ...DEFAULT_SETTINGS, dry_run: false },
     },
     {
       summary: {

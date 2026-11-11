@@ -22,7 +22,6 @@ export {
   ISSUE_ACTIONS,
   WEBHOOK_HEADERS,
   WEBHOOK_SQL,
-  checkCommandGate,
   createGithubWebhookAck,
   createOctokitVerifier,
   createQueueEnqueuer,
@@ -37,7 +36,6 @@ export {
   replayDelivery,
 } from './webhook.ts';
 export type {
-  CommandGateResult,
   InstallationOutcome,
   ProjectRef,
   ReactionContent,

@@ -1,5 +1,5 @@
 /**
- * 数据模型唯一事实源 —— docs/tech-plan.md §7.2 的 16 张表 + 多仓库改造新增的 4 张表（§2）。
+ * 数据模型唯一事实源 —— docs/tech-plan.md §7.2 的 16 张表 + 多仓库改造新增的 4 张表 + v0.3 issue agent 的 3 张表。
  *
  * 约定（本文件是后续 `queries/`、`worker/`、`http/` 的共同底座，改列名等于改契约）：
  *  - 列名 snake_case，TS 字段 camelCase；时间列一律 `timestamptz`（§7.2「时间列一律带时区」）。
@@ -52,6 +52,8 @@ export const TASK_SOURCE = {
   webhook: 'webhook',
   command: 'command',
   cron: 'cron',
+  /** v0.3 的 issue agent（事件 opened/edited 与 `@别名` 提及） */
+  agent: 'agent',
 } as const;
 
 /** `tasks.target_kind`：任务指向的对象类型。 */
@@ -615,121 +617,89 @@ export const quotaCounters = pgTable(
   (t) => [uniqueIndex('quota_counters_repo_kind_window_uidx').on(t.repo, t.kind, t.windowStart)],
 );
 
-/**
- * 提示词版本（不可变）：正文进库，保存即新建版本，回滚 = 改 settings 里的版本指针。
- *
- * `kind` 把版本线拆成 **4 条互不干扰的线**（`docs/plan-fixed-pipeline.md` §4.4 / E3）：
- * `project`（P1 项目人格层，指针在 `settings.prompt.current_version`）、
- * `format_check` / `classify` / `agent`（三个阶段的系统提示词，指针在 `settings.pipeline.*_prompt_version`）。
- * 为什么必须有这一列：四条线各自「保存 / 回滚 / 版本号」独立，共用一条 `(repo, version)` 唯一键
- * 会让阶段 0 存一版就把 P1 的 v3 顶掉。默认值 `'project'` 让 0003 时代的存量行原地归位。
- * `version=0` 一律表示「用内置默认」（项目版本不存 v0，指针回 0 即恢复默认，历史版本不删）。
- */
-export const promptVersions = pgTable(
-  'prompt_versions',
-  {
-    repo: text('repo').notNull(),
-    /** 版本线：project / format_check / classify / agent */
-    kind: text('kind').notNull().default('project'),
-    /** 版本号，从 1 起；由 settings 里的对应指针指向它 */
-    version: integer('version').notNull(),
-    /** 提示词正文 */
-    body: text('body').notNull(),
-    /** 保存时的备注（面板展示 / 回滚时看「为什么改成这样」） */
-    note: text('note'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  // 唯一键必须带 kind：否则同版本号无法在四条版本线上并存（旧 (repo, version) 索引已由 0005 DROP）
-  (t) => [uniqueIndex('prompt_versions_repo_kind_version_uq').on(t.repo, t.kind, t.version)],
-);
-
-/* ── 固定流水线改造新增的一张表（`docs/plan-fixed-pipeline.md` §4.3）──────────────── */
+/* ── issue agent（v0.3，`docs/dev-plan-issue-agent.md` §4）────────────────────────── */
 
 /**
- * issue 在固定流水线里的**唯一状态行**。
+ * 一个 issue 一个**持久会话**的游标（v1.5 里它住在 `issue_pipeline`，那张表已随流水线退役删除）。
  *
- * 为什么不复用 `issue_states`：那张表是「缺失项集合哈希 + 催办」那套判定的载体，与三阶段流水线
- * （stage / state / 重检计数 / 会话游标）不同构；E1 全量切换后旧表只剩死代码（S5 统一清）。
+ * 为什么单独一张表：会话连续性是 agent 的**唯一有状态资产**——流水线删掉、阶段状态删掉，
+ * 但「同一个 issue 的第二句话还能接着上一轮」必须保留（v1 计划就踩过这个坑）。
  *
- * 为什么主键是 `(repo, issue_number)`：一条 issue 只有一行，读写都是
- * `WHERE repo=$1 AND issue_number=$2` 的点查 + UPSERT，复合主键本身就是幂等键。
- *
- * `awaiting_info` 有**两种语义**（§2 注，11:00 / Q6 修订后）：
- *  - `format/awaiting_info` 等**用户**补充：`info_requested_at` 非空，进 48h 关闭扫描；
- *  - `classify/awaiting_info` 等**管理员**：`info_requested_at` 恒为 NULL，**不进**关闭扫描，
- *    否则躺着等管理员的 issue 会被 48h 作业误关。
+ * 主键 `(repo, issue_number)`：一个 issue 一行，读写都是点查 + UPSERT。
+ * `session_id` 为 NULL = 还没开过会话（第一次投递会新建）。
  */
-export const issuePipeline = pgTable(
-  'issue_pipeline',
+export const agentSessions = pgTable(
+  'agent_sessions',
   {
     /** `owner/name`，与 `tasks.repo` 同口径 */
     repo: text('repo').notNull(),
-    /** issue 号 */
     issueNumber: integer('issue_number').notNull(),
-    /**
-     * 当前阶段：`format` / `classify` / `agent` / `closed`。
-     * 字符串与常量放在契约层（`PIPELINE_STAGE`），数据层不引契约包（见文件头约定）。
-     */
-    stage: text('stage').notNull().default('format'),
-    /** 当前状态：`pending` / `running` / `awaiting_info` / `ready` / `blocked` / `closed` */
-    state: text('state').notNull().default('pending'),
-    /** 分类结论：`requirement` / `defect` / `not-found` / `other`；未分类为 NULL */
-    category: text('category'),
-    /**
-     * 阶段执行次数（含通过）：面板显示「格式检查跑了 3 次」。
-     * 与 `format_fail_count` 分开是因为 Q5 之后**重跑不限次、只计失败**——
-     * 两个数混用就没法表达「跑了 5 次、其中 4 次不通过」。
-     */
-    formatAttempts: integer('format_attempts').notNull().default(0),
-    /** 格式**不通过**累计次数；`>= PIPELINE_FORMAT_MAX_FAILS`（5）→ 自动关 issue，不发 blocked */
-    formatFailCount: integer('format_fail_count').notNull().default(0),
-    /** 分类阶段执行次数（含重分类） */
-    classifyAttempts: integer('classify_attempts').notNull().default(0),
-    /**
-     * 触发本阶段的那次 issue 版本锚（`updated_at` 派生或 comment id 派生）。
-     * 幂等键 `pipeline:<stage>:<issueVersion>` 靠它，同版本重投不再产生第二个任务。
-     */
-    issueVersion: text('issue_version'),
-    /** 发出「请补充信息」的时刻；NULL = 不在等用户 → **不进 48h 关闭扫描**（双保险） */
-    infoRequestedAt: timestamp('info_requested_at', { withTimezone: true }),
-    /** 最近一次重跑时刻；`PIPELINE_RECHECK_COOLDOWN_SECONDS`（120s）冷却据此计算 */
-    lastRecheckAt: timestamp('last_recheck_at', { withTimezone: true }),
-    /**
-     * `@` 管理人员的时刻。单槽 = **整个 issue 只 @ 一次**（D4）：重分类不补 @，
-     * 非空即表示「已经 @ 过」，不需要再按类别去重。
-     */
-    mentionSentAt: timestamp('mention_sent_at', { withTimezone: true }),
-    /** `@` 时的类别（`requirement` / `defect` / `not-found`），面板审计用 */
-    mentionCategory: text('mention_category'),
-    /** 门禁回执最近一次发出的时刻：每 issue 每小时 1 条（§8 限速） */
-    gateNoticeAt: timestamp('gate_notice_at', { withTimezone: true }),
-    /**
-     * 阶段 2 复用的 RACP 会话 id（阶段 0/1 一次性会话结束即 archive，不回写）。
-     * 只有 `ready` 之后同一 issue 的多轮 `@` 才复用它（D1「阶段间独立、阶段内粘性」）。
-     */
+    /** RACP 会话 id（`session/create` 的返回值）；NULL = 还没开过会话 */
     sessionId: text('session_id'),
     /** `events/subscribe` 的 `after` 游标：防重放旧事件污染本轮信封 */
-    sessionCursor: integer('session_cursor').notNull().default(0),
-    /** 该会话已用轮数；`>= PIPELINE_SESSION_MAX_TURNS`（30）→ 轮换新会话 */
-    sessionTurns: integer('session_turns').notNull().default(0),
-    /** 会话创建时刻；超过 `PIPELINE_SESSION_MAX_AGE_DAYS`（7 天）→ 轮换 */
-    sessionStartedAt: timestamp('session_started_at', { withTimezone: true }),
-    /** `ready` 之后 issue 又被改动（D7 不回退），只记这里供面板显示「已过期」 */
-    staleAt: timestamp('stale_at', { withTimezone: true }),
-    /** 卡住原因：运行失败/信封不合法连续 2 次、`session-reset` 等 */
-    blockedReason: text('blocked_reason'),
-    /** 进入 `agent/ready` 的时刻（面板算「待处理时长」） */
-    readyAt: timestamp('ready_at', { withTimezone: true }),
-    /** 关闭时刻；非空 = 本行不再接任何事件 */
-    closedAt: timestamp('closed_at', { withTimezone: true }),
+    cursor: integer('cursor').notNull().default(0),
+    /** 该会话已用轮数（达到上限会轮换新会话） */
+    turns: integer('turns').notNull().default(0),
+    /** 会话创建时刻（超过上限天数 → 轮换） */
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.repo, t.issueNumber] })],
+);
+
+/**
+ * agent 消息 + **永久幂等**的落点（需求 §1.2 / §5 规则 2）。
+ *
+ * `fingerprint` 的口径由应用层决定（人消息 = 正文 + 作者的稳定摘要；事件消息 = 模板 id +
+ * `issue.updated_at`，见 `docs/dev-plan-issue-agent.md` §2.1），数据层只保证
+ * 「同一 `(repo, issue, fingerprint)` 只有一行」。
+ *
+ * 这张表**同时是队列**（S1 的 dispatcher 按 issue 取最老一条），所以 `status` 与
+ * `(repo, issue_number, status, created_at)` 索引都在这里定好。
+ */
+export const agentMessages = pgTable(
+  'agent_messages',
+  {
+    repo: text('repo').notNull(),
+    issueNumber: integer('issue_number').notNull(),
+    /** 幂等键（`sha256(...)` 的前 64 位十六进制） */
+    fingerprint: text('fingerprint').notNull(),
+    /** `mention` = 人消息（永久幂等）| `event` = 模板消息（key 含 `updated_at`） */
+    kind: text('kind').notNull().default('mention'),
+    /** `queued` | `running` | `done` | `failed` */
+    status: text('status').notNull().default('queued'),
+    /** 发出这条消息的评论 id（事件消息为 NULL） */
+    commentId: bigint('comment_id', { mode: 'number' }),
+    /** 消息原文（人消息是原话，事件消息是模板渲染结果） */
+    commentBody: text('comment_body'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    primaryKey({ columns: [t.repo, t.issueNumber] }),
-    // 48h 自动关闭作业（每 10 分钟）扫 `state='awaiting_info' AND info_requested_at IS NOT NULL`
-    index('issue_pipeline_close_scan_idx').on(t.state, t.infoRequestedAt),
+    primaryKey({ columns: [t.repo, t.issueNumber, t.fingerprint] }),
+    // 队列取件（dispatcher 按 issue 取最老一条）+ 面板按状态筛
+    index('agent_messages_queue_idx').on(t.repo, t.issueNumber, t.status, t.createdAt),
   ],
+);
+
+/**
+ * 权限拒绝的**独立记账**（需求 §1.2：`status='denied'` 不得参与幂等命中）。
+ *
+ * 为什么单独一张表而不是塞进 `agent_messages.status`：拒绝是一次「对某个人的回复」，
+ * 按 `(repo, issue, actor)` 只回一次；若混进消息幂等，该用户日后被提成管理员，
+ * 同一句话会被永久静默且查不到原因。
+ */
+export const agentDenials = pgTable(
+  'agent_denials',
+  {
+    repo: text('repo').notNull(),
+    issueNumber: integer('issue_number').notNull(),
+    /** 被拒的 login */
+    actorLogin: text('actor_login').notNull(),
+    /** 已经回过一次拒绝的时刻 */
+    repliedAt: timestamp('replied_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.repo, t.issueNumber, t.actorLogin] })],
 );
 
 /** schema 里的全部表（启动自检、迁移覆盖度检查、queries 生成都用得上）。 */
@@ -753,11 +723,12 @@ export const ALL_TABLES = {
   issueFeedback,
   labelDecisions,
   quotaCounters,
-  promptVersions,
-  issuePipeline,
+  agentSessions,
+  agentMessages,
+  agentDenials,
 } as const;
 
-/** 表名清单（单测断言「§7.2 的 16 张 + 多仓库 4 张 + 固定流水线 1 张，共 21 张都在」用它）。 */
+/** 表名清单（单测断言「`db/schema.ts` 里的每一张表都在库里」用它）。 */
 export const ALL_TABLE_NAMES: readonly string[] = Object.freeze(
   Object.values(ALL_TABLES).map((table) => getTableName(table)),
 );

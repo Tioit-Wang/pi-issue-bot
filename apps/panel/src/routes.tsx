@@ -15,7 +15,6 @@ import { NotFoundPage } from './routes/not-found.tsx';
 import { OverviewPage } from './routes/overview.tsx';
 import { QualityPage } from './routes/quality.tsx';
 import { RepoIssuesPage } from './routes/repo-issues.tsx';
-import { RepoPipelinePage } from './routes/repo-pipeline.tsx';
 import { RepoRunsPage } from './routes/repo-runs.tsx';
 import { RepoSettingsPage } from './routes/repo-settings.tsx';
 import { RepoWorkspacePage } from './routes/repo-workspace.tsx';
@@ -70,7 +69,6 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     group: 'repo',
     element: <IssueDetailPage />,
   },
-  { path: '/repos/:repo/pipeline', label: '流水线', nav: true, group: 'repo', element: <RepoPipelinePage /> },
   { path: '/repos/:repo/runs', label: '运行', nav: true, group: 'repo', element: <RepoRunsPage /> },
   { path: '/repos/:repo/runs/:id', label: '运行详情', nav: false, group: 'repo', element: <TaskDetailPage /> },
   { path: '/repos/:repo/settings', label: '设置', nav: true, group: 'repo', element: <RepoSettingsPage /> },

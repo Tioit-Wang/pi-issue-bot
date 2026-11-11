@@ -4,7 +4,7 @@
  *
  * 缺陷形状：`REPO_SQL.upsert` 把 `settings_valid` 写死 `true`。于是「部署没配
  * `PI_BOT_DEFAULT_SETTINGS`」时建出来的行是**形状默认值**（`DEFAULT_REPO_SETTINGS`，
- * `pipeline.managers: []`）却声明 valid —— webhook 会拿一份没人配过的配置开工，
+ * `agent.managers: []`）却声明 valid —— webhook 会拿一份没人配过的配置开工，
  * 面板也会显示「配置正常」。
  *
  * 修法：`upsertRepo()` 用严格校验的结果给 `settings_valid` / `settings_error`；
@@ -52,7 +52,7 @@ describe('部署默认 settings 的 valid 判定（P2-6）', () => {
   it('PI_BOT_DEFAULT_SETTINGS 未设置 → 形状默认值，**不能**声明 valid', () => {
     const status = defaultRepoSettingsStatus();
     expect(status.ok).toBe(false);
-    expect(status.error ?? '').toContain('pipeline.managers');
+    expect(status.error ?? '').toContain('agent.managers');
     resetDefaultRepoSettingsCache();
   });
 
@@ -76,14 +76,14 @@ describe('upsertRepo 的 settings_valid（真 PG，P2-6）', () => {
       [REPO],
     );
     expect(rows[0]?.['settings_valid']).toBe(false);
-    expect(String(rows[0]?.['settings_error'])).toContain('pipeline.managers');
+    expect(String(rows[0]?.['settings_error'])).toContain('agent.managers');
 
     // 读侧据此判为不可用（webhook 忽略该仓库的投递）
     const policy = await readRepoPolicy(db.pool, REPO);
     expect(policy.known).toBe(true);
     expect(policy.settingsValid).toBe(false);
     expect(policy.settings).toBeNull();
-    expect(String(policy.settingsError)).toContain('pipeline.managers');
+    expect(String(policy.settingsError)).toContain('agent.managers');
   });
 
   it('部署默认合法 → settings_valid=true', async () => {
@@ -109,7 +109,7 @@ describe('upsertRepo 的 settings_valid（真 PG，P2-6）', () => {
     expect(rows[0]?.['settings_valid']).toBe(true);
 
     await db.sql('truncate table repos cascade');
-    const bad = await upsertRepo(db.pool, { repo: REPO, settings: { pipeline: { managers: [] } } });
+    const bad = await upsertRepo(db.pool, { repo: REPO, settings: { agent: { managers: [] } } });
     expect(bad.ok).toBe(false);
     rows = await db.sql('select count(*)::int as n from repos');
     expect(rows[0]?.['n']).toBe(0);

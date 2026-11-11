@@ -10,11 +10,12 @@
 #   1. `labels.map` 的**值必须是仓库里已经存在的标签**（tech-plan R4：沿用现有标签，不发明新的）；
 #      某个判定键没映射，就降级为「只判定不打标」并记 warn。
 #   2. `dry_run: true` 是默认值，也是首周强制的（plan §11 M1）。改 false 之前先看一遍面板。
-#   3. `compliance` 段已删除：issue 缺信息时只打 `needs-info` + `confused` reaction，
-#      判定依据写进 `prompt`（P1 项目人格层）或技能里。
-#   4. 固定流水线（`docs/plan-fixed-pipeline.md` §4.5 / Q4）之后两处**必填**：
-#      `pipeline.managers` 必须非空，`labels.vocabulary[].role` 每条都要写
-#      （`requirement` / `defect` / `other`）。缺一个，整份配置解析失败（`settings_valid=false`）。
+#   3. v0.3（issue agent）之后只有 5 类可配项：`labels` / `skills` / `limits` / `agent` / 三个开关
+#      （`version` / `enabled` / `dry_run`）+ 可选 `model`。`compliance` / `pipeline` / `prompt` /
+#      `commands` / `create_issue` 五段**已整体删除**（`.strict()` 会直接拒收）。
+#   4. 两处**必填**（`repoSettingsSchema` 的 superRefine）：`agent.managers` 必须非空且不重复，
+#      `labels.vocabulary[]` 的 `role` 每条都要写，且 `requirement` / `defect` 各至少一个。
+#      缺一条，整份配置解析失败（`settings_valid=false`）。
 version: 1
 enabled: true
 dry_run: true
@@ -59,38 +60,27 @@ labels:
   # 一个 issue 上最多打几个（互斥组裁剪之后的硬上限）
   max_per_issue: 6
 
-# P1 项目人格层：正文不在这里，只记「启用哪个版本」
-# （正文在 `prompt_versions` 表，面板 `/api/repos/:owner/:name/prompt` 编辑与回滚）。
-prompt:
-  enabled: true
-  current_version: 0
-
-# 固定流水线（`docs/plan-fixed-pipeline.md` §4.5）：**刻意没有 `enabled`，也没有任何阈值**
-# （`close_after_hours` / `max_runs_per_stage` 已收为系统常量，改常量走发布）。
-# `managers` 是 `/pipeline next|prev` 的权限来源，也是「分类判断不了时等谁回话」的名单 —— 必须非空。
-# 三条 `*_prompt_version` 是三条互不干扰的版本线，`0` = 用内置默认模板。
-pipeline:
+# issue agent（v0.3 唯一的项目级配置段，`docs/dev-plan-issue-agent.md` §2.6）。
+# 刻意没有 `enabled`，也没有任何阈值 —— 事件面由 agent 固定接管，阈值是系统常量。
+agent:
+  # 管理员 login：`@别名` 提及的**唯一**权限来源，也是「确认类回复等谁」的名单。
+  # 必须非空、且不能重复（superRefine 无条件校验）；空 = 整份配置不可用。
   managers: [alice]
-  format_prompt_version: 0
-  classify_prompt_version: 0
-  agent_prompt_version: 0
-
-create_issue:
-  enabled: false
-  daily_quota: 10
-  scenarios: [pr-review]
-
-commands:
-  enabled: true
-  allowed: [/review-pr, /issue-triage, /issue-repro]
-  author_associations: [OWNER, MEMBER, COLLABORATOR]
-  allow_users: []
-  rate_limit_per_hour: 20
+  # `issues.opened` / `issues.edited` 要加载的技能 id；写 `null` = 该事件不投递（0 任务）。
+  on_opened: format-check
+  on_edited: format-check
+  # 格式检查通过后是否自动打标签（默认关：v0.3「默认只产出评论」）。
+  auto_label_after_format_pass: false
+  # 项目级补充提示词（取代 v1.5 的 `prompt_versions` 版本表），上限 4000 字符。
+  project_prompt: ''
 
 skills:
-  repo_skills: true
+  # 项目技能目录开关：`true` = 扫描 `<repo>/.github/pi-bot/skills/`；内置技能恒在。
+  project_skills: true
 
 limits:
   max_comments_per_hour: 10
   max_actions_per_run: 8
   max_task_minutes: 20
+  concurrency_per_repo: 2
+  queue_wait_minutes: 10

@@ -1,12 +1,12 @@
 /**
- * `triggers` 分区：别名 / 触发人 / **命中预览**。
+ * `triggers` 分区：别名 / **命中预览**。
  *
- * 事件面（`triggers.faces`）已按 P7 删除：三段流水线里「哪些事件会开工」由代码固定，不再是项目配置项，
- * 所以这里只留「别名 / 触发人」两段可写配置 + 一个不写配置的预览。
+ * v0.3 的触发体系只剩 `aliases`（`enabled` / `users` / `merge_defaults` / `remove` 全删，
+ * 「谁能 @」改由 `settings.agent.managers` 判）。事件面（`issues.opened` / `edited`）由代码固定，
+ * 不再是项目配置项，所以这里只留「别名」一段可写配置 + 一个不写配置的预览。
  *
  * 命中预览是这个分区存在的理由：线上「@ 了但没触发」的排查成本极高（要看 webhook 投递、
- * 别名合并、代码区蒙版三层），所以这里把三层摊开，并用 tone 表达结论而不是一段纯文本：
- * 会 / 不会触发 → 徽章；命中的别名 → 品牌色；被蒙版挡住的片段 → 告警面。
+ * 别名合并、代码区蒙版三层），所以这里把三层摊开，并用 tone 表达结论而不是一段纯文本。
  *
  * 判定不另写：别名合并与正文解析都用 `packages/contract/src/trigger.ts`（webhook 同一份）。
  */
@@ -16,11 +16,11 @@ import { Alert, AlertDescription } from '../ui/alert.tsx';
 import { Badge } from '../ui/badge.tsx';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
-import { ChipEditor, Segmented, SwitchField, TextAreaField } from './form.tsx';
+import { ChipEditor, TextAreaField } from './form.tsx';
 import { SaveBar } from './save-bar.tsx';
 import { countChangedPaths } from './settings-chrome.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
-import { acceptAlias, acceptLogin, previewTrigger, resolveAliasesFor } from './trigger-preview.ts';
+import { acceptAlias, previewTrigger, resolveAliasesFor } from './trigger-preview.ts';
 
 const PREVIEW_SAMPLE = '@issuebot /issue-triage 17 --deep';
 
@@ -31,10 +31,8 @@ export function TriggersSection({ state }: SettingsSectionProps) {
   const [previewBody, setPreviewBody] = useState(PREVIEW_SAMPLE);
   const changed = countChangedPaths(state.base, draft).length;
 
-  const usersIsEmpty = triggers.users !== 'all' && triggers.users.length === 0;
-  const blockedReason = usersIsEmpty
-    ? '触发人名单不能为空：要么选「所有人」，要么至少填一个 login（服务端会拒绝空数组）'
-    : null;
+  // v0.3：`triggers` 只剩 `aliases`，没有「触发人名单」这一条可阻塞的校验。
+  const blockedReason = null;
 
   const patchTriggers = (patch: (current: typeof triggers) => typeof triggers): void => {
     state.update((current) => ({ ...current, triggers: patch(current.triggers) }));
@@ -48,18 +46,6 @@ export function TriggersSection({ state }: SettingsSectionProps) {
         description="大小写不敏感，@ 可写可不写；保存时统一小写并去重"
       >
         <div className="flex flex-col gap-3">
-          <SwitchField
-            id="triggers-enabled"
-            label="触发总开关（triggers.enabled）"
-            description="关掉后本仓库任何触发都不生效 —— 包括 issue 新建这类自动面。比逐面关更粗暴，用于临时止血。"
-            checked={triggers.enabled}
-            onChange={(next) => {
-              patchTriggers((current) => ({ ...current, enabled: next }));
-            }}
-            disabled={readOnly}
-            disabledReason="仓库已归档：只读"
-          />
-
           <ChipEditor
             id="triggers-aliases"
             label="额外别名（aliases，1–8 个）"
@@ -76,32 +62,6 @@ export function TriggersSection({ state }: SettingsSectionProps) {
             emptyText="（没有额外别名，只用部署默认）"
           />
 
-          <SwitchField
-            id="triggers-merge-defaults"
-            label="与部署默认别名并集（merge_defaults）"
-            description="开：生效别名 = 部署默认 ∪ 上面的额外别名。关：只用上面那些（一个都没填时回落部署默认）。"
-            checked={triggers.merge_defaults}
-            onChange={(next) => {
-              patchTriggers((current) => ({ ...current, merge_defaults: next }));
-            }}
-            disabled={readOnly}
-            disabledReason="仓库已归档：只读"
-          />
-
-          <ChipEditor
-            id="triggers-remove"
-            label="从并集里摘掉（remove，≤ 8 个）"
-            values={triggers.remove}
-            onChange={(next) => {
-              patchTriggers((current) => ({ ...current, remove: next }));
-            }}
-            accept={(raw) => acceptAlias(raw, triggers.remove)}
-            placeholder="@ibot"
-            hint="部署默认名撞上真人用户名时用：摘掉后 @ibot 不再触发，但 @issuebot 仍然生效。"
-            disabled={readOnly}
-            disabledReason="仓库已归档：只读"
-            emptyText="（不摘掉任何别名）"
-          />
 
           <div className="rounded-md bg-muted px-2.5 py-2">
             <p className="text-2xs text-faint">生效别名</p>
@@ -120,44 +80,6 @@ export function TriggersSection({ state }: SettingsSectionProps) {
               部署默认：{DEFAULT_TRIGGER_ALIASES.map((alias) => `@${alias}`).join(' / ')}
             </p>
           </div>
-        </div>
-      </Section>
-
-      <Section title="触发人" description="只约束提及类触发（@ 别名），不约束自动面">
-        <div className="flex flex-col gap-2">
-          <Segmented
-            name="triggers-users-mode"
-            ariaLabel="触发人范围"
-            value={triggers.users === 'all' ? 'all' : 'list'}
-            options={[
-              { value: 'all', label: '所有人', title: 'all：任何人的 @ 都处理（仍受 author_association 与命令门禁约束）' },
-              { value: 'list', label: '仅名单', title: '只处理这些 login 的 @（大小写不敏感）' },
-            ]}
-            onChange={(next) => {
-              patchTriggers((current) =>
-                next === 'all' ? { ...current, users: 'all' } : { ...current, users: current.users === 'all' ? [] : current.users },
-              );
-            }}
-            disabled={readOnly}
-            disabledReason="仓库已归档：只读"
-          />
-
-          {triggers.users === 'all' ? null : (
-            <ChipEditor
-              id="triggers-users"
-              label="login 名单（1–50 个）"
-              values={triggers.users}
-              onChange={(next) => {
-                patchTriggers((current) => ({ ...current, users: next }));
-              }}
-              accept={(raw) => acceptLogin(raw, triggers.users === 'all' ? [] : triggers.users)}
-              placeholder="octocat"
-              hint="精确匹配 sender.login（大小写不敏感）。空名单是非法配置，保存会被服务端拒绝。"
-              disabled={readOnly}
-              disabledReason="仓库已归档：只读"
-              emptyText="（空名单 —— 保存会被拒绝，请至少加一个 login）"
-            />
-          )}
         </div>
       </Section>
 
@@ -201,8 +123,7 @@ export function TriggersSection({ state }: SettingsSectionProps) {
 }
 
 const KIND_LABEL: Record<string, string> = {
-  command: '命令',
-  question: '提问',
+  mention: '命中别名（会交给 agent）',
   none: '只 @ 了一下（不建任务）',
 };
 
@@ -236,21 +157,6 @@ function PreviewResult({ body, triggers }: { body: string; triggers: SettingsSec
           {parse.alias === null ? null : <span className="font-mono text-2xs text-muted-foreground">{`@${parse.alias}`}</span>}
         </dd>
 
-        <dt className="text-2xs text-faint">命令 / 参数</dt>
-        <dd className="min-w-0 font-mono break-all text-foreground">
-          <span data-testid="trigger-preview-command">{parse.command ?? '—'}</span>
-          {parse.args === null ? null : (
-            <>
-              <span className="ml-1 text-muted-foreground">参数：</span>
-              <span data-testid="trigger-preview-args">{parse.args}</span>
-            </>
-          )}
-        </dd>
-
-        <dt className="text-2xs text-faint">提问正文</dt>
-        <dd className="min-w-0 break-words text-foreground" data-testid="trigger-preview-question">
-          {parse.question ?? '—'}
-        </dd>
       </dl>
 
       {preview.codeRegions.length === 0 ? (

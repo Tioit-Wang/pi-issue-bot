@@ -54,7 +54,7 @@ function renderAt(path: string): void {
 }
 
 describe('路由表', () => {
-  it('冻结的路由表：全局 6 条 + 当前仓库 8 条 + 旧路径 4 条', () => {
+  it('冻结的路由表：全局 6 条 + 当前仓库 7 条 + 旧路径 4 条', () => {
     expect(PANEL_ROUTES.map((route) => route.path)).toEqual([
       '/',
       '/costs',
@@ -65,7 +65,6 @@ describe('路由表', () => {
       '/repos/:repo',
       '/repos/:repo/issues',
       '/repos/:repo/issues/:kind/:number',
-      '/repos/:repo/pipeline',
       '/repos/:repo/runs',
       '/repos/:repo/runs/:id',
       '/repos/:repo/settings',
@@ -77,9 +76,10 @@ describe('路由表', () => {
     ]);
   });
 
-  it('导航只有两组：全局 6 条（NAV_ITEMS）+ 当前仓库 5 条；详情页与旧路径不进导航', () => {
+  it('导航只有两组：全局 6 条（NAV_ITEMS）+ 当前仓库 4 条；详情页与旧路径不进导航', () => {
     expect(NAV_ITEMS.map((item) => item.path)).toEqual(['/', '/costs', '/quality', '/audit', '/skills', '/system']);
-    expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'pipeline', 'runs', 'settings']);
+    // v0.3：「流水线」导航项随流水线页一起退役，仓库组只剩这 4 条
+    expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'runs', 'settings']);
     expect(PANEL_ROUTES.filter((route) => route.nav).map((route) => route.path)).toEqual([
       '/',
       '/costs',
@@ -89,7 +89,6 @@ describe('路由表', () => {
       '/system',
       '/repos/:repo',
       '/repos/:repo/issues',
-      '/repos/:repo/pipeline',
       '/repos/:repo/runs',
       '/repos/:repo/settings',
     ]);
@@ -110,13 +109,11 @@ describe('路由表', () => {
     // 当前仓库
     { path: '/repos/acme__widgets', heading: 'acme/widgets' },
     { path: '/repos/acme__widgets/issues', heading: 'Issue 中心' },
-    { path: '/repos/acme__widgets/pipeline', heading: '流水线' },
     { path: '/repos/acme__widgets/issues/issue/17', heading: /^issue#17/u },
     { path: '/repos/acme__widgets/runs', heading: '运行' },
     // 运行详情：h1 = 命令 + 任务 id
     { path: '/repos/acme__widgets/runs/t-mock-1', heading: /t-mock-1/u },
     { path: '/repos/acme__widgets/settings/general', heading: '设置 · 通用' },
-    { path: '/repos/acme__widgets/settings/prompt', heading: '设置 · 提示词' },
   ];
 
   for (const testCase of cases) {
@@ -131,6 +128,16 @@ describe('路由表', () => {
     renderAt('/nope');
     expect(await screen.findByRole('heading', { level: 1, name: '页面不存在' })).toBeTruthy();
   });
+  it('退役的「流水线」页 → 404（v0.3 删除，不再有页面）', async () => {
+    renderAt('/repos/acme__widgets/pipeline');
+    expect(await screen.findByRole('heading', { level: 1, name: '页面不存在' })).toBeTruthy();
+  });
+
+  it('退役的「提示词」设置分区 → 404（设置只剩 general/triggers/labels/limits）', async () => {
+    renderAt('/repos/acme__widgets/settings/prompt');
+    expect(await screen.findByRole('heading', { level: 1, name: '页面不存在' })).toBeTruthy();
+  });
+
 
   it('非法的 `:repo` 段（没有 `__`）→ 404，而不是拼出一个假仓库', async () => {
     renderAt('/repos/acme');

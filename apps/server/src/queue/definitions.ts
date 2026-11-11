@@ -13,12 +13,6 @@
  * 本仓库内部统一用 `expireInSeconds`，注释里保留 §4.7 的「20min / 30min」口径。
  */
 
-import {
-  JOB_PIPELINE_CLOSE_SCHEDULE,
-  PIPELINE_COMMAND_EXPIRE_SECONDS,
-} from '../config/pipeline-constants.ts';
-import type { PipelineCommandStage } from '../config/pipeline-constants.ts';
-
 /** 队列名常量。字符串写死在这里，别的模块只准引用常量。 */
 export const QUEUE = {
   /** 主执行队列：一个任务一个 job，`singletonKey = taskId` */
@@ -34,10 +28,11 @@ export const QUEUE = {
   /** 保留期清理：webhook 原文与 run_events 明细各 90 天 */
   retentionCleanup: 'retention-cleanup',
   /**
-   * 自动关闭（D5 / §9，每 10 分钟）：`awaiting_info` 满 48h 且**等的是用户**的 issue → 关掉。
-   * `classify/awaiting_info`（等管理员，`info_requested_at` 为 NULL）永远扫不到（V12 反例）。
+   * issue agent 的串行调度（v0.3）：扫 `agent_messages` 里每个 issue 最老的一条 `queued`，
+   * 置 `running` 并投 `run-task`。**不能**用 `run-task` 的 `singletonKey` 排队
+   * （同 key 已在队列就丢弃，见 `boss.ts` 的注释）。
    */
-  pipelineClose: 'pipeline-close',
+  agentDispatch: 'agent-dispatch',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
@@ -52,44 +47,15 @@ export const EXPIRE_IN_SECONDS_DEFAULT = 20 * 60;
 export const EXPIRE_IN_SECONDS_REVIEW_PR = 30 * 60;
 
 /**
- * 流水线任务的命令前缀（`docs/plan-fixed-pipeline.md` §4.6）：
- * `pipeline:format` / `pipeline:classify` / `pipeline:notice`。
- *
- * 前缀单独成常量而不是到处 `startsWith('pipeline:')`：`tasks.command` 的这一族还要在
- * 写回闸门（`worker/writeback.ts`）与 webhook 分支里被识别，写错一个字符就是「任务静默不评论」。
- */
-export const PIPELINE_COMMAND_PREFIX = 'pipeline:';
-
-/**
- * `pipeline:<stage>` → 阶段名；不是流水线命令、或子命令不认识时返回 `null`。
- *
- * 「认不出的 `pipeline:xxx` 返回 null」是有意的：它走默认执行期（20min）并在面板上以未知命令示人，
- * 而不是被当成某个已知阶段拿到 30min 的闸——拼错的命令不该因为前缀对就享受更长的生命周期。
- */
-export function pipelineStageOfCommand(command: string): PipelineCommandStage | null {
-  if (!command.startsWith(PIPELINE_COMMAND_PREFIX)) {
-    return null;
-  }
-  const stage = command.slice(PIPELINE_COMMAND_PREFIX.length);
-  return Object.hasOwn(PIPELINE_COMMAND_EXPIRE_SECONDS, stage)
-    ? (stage as PipelineCommandStage)
-    : null;
-}
-
-/**
  * 按命令取执行期硬上限。webhook handler 入队时用它填 `expireInSeconds`（§5.3 第 7 步）。
  * 未知命令一律走默认值：宁可早杀，也不让一个卡住的容器占 30 分钟。
  *
- * 三档（§4.6 / §10.6，值在 `config/pipeline-constants.ts`，这里不重复字面量）：
- * format 600s（只读正文判定）、classify 1800s（要起容器装依赖）、notice 300s（一条回执）。
+ * v0.3 删掉了 `pipeline:format|classify|notice` 三档（三段流水线退役），只剩「默认」与
+ * 「`/review-pr` 30min」两档。
  */
 export function expireInSecondsForCommand(command: string): number {
   if (command === REVIEW_PR_COMMAND) {
     return EXPIRE_IN_SECONDS_REVIEW_PR;
-  }
-  const pipelineStage = pipelineStageOfCommand(command);
-  if (pipelineStage !== null) {
-    return PIPELINE_COMMAND_EXPIRE_SECONDS[pipelineStage];
   }
   return EXPIRE_IN_SECONDS_DEFAULT;
 }
@@ -178,14 +144,18 @@ export const QUEUES: readonly QueueSpec[] = [
     summary: '保留期清理：webhook 原文与 run_events 明细各 90 天',
   },
   {
-    name: QUEUE.pipelineClose,
+    /**
+     * agent 串行调度：并发 **1**。不是性能取舍，是语义 —— 一个 issue 同时只能有一条消息在跑，
+     * 而「领一条」是「查最老 + 置 running」，两个并发 dispatcher 会各领到一条（见
+     * `agent/dispatcher.ts` 文件头的已知窗口）。
+     */
+    name: QUEUE.agentDispatch,
     concurrency: 1,
-    // 一条 issue 一次 `closeIssue`：批量的规模是「几分钟内几十条」，600s 足够
-    expireInSeconds: 600,
+    expireInSeconds: 120,
     retryLimit: 1,
-    retryDelaySeconds: 60,
+    retryDelaySeconds: 30,
     retryBackoff: false,
-    summary: '自动关闭：format/awaiting_info 满 48h 未补充 → 关 issue 并落 closed（D5）',
+    summary: 'issue agent 串行调度：每轮为每个 issue 投最老的一条 agent_messages',
   },
 ];
 
@@ -254,13 +224,19 @@ export const SCHEDULES: readonly ScheduleSpec[] = [
     summary: '保留期清理（每天 00:40 UTC）：webhook 原文 / run_events 90 天',
   },
   {
-    queue: QUEUE.pipelineClose,
-    // 每 10 分钟（§9）。cron 的来源是 `config/pipeline-constants.ts::JOB_PIPELINE_CLOSE_SCHEDULE`：
-    // 「多久扫一次」与噪声量是产品口径，作业定义从这里取而不是再写一个字面量。
-    cron: JOB_PIPELINE_CLOSE_SCHEDULE,
+    /**
+     * agent 调度：pg-boss 的 cron 最小粒度是 1 分钟，所以这里是**兜底**，不是主路径。
+     *
+     * 「10 秒」的语义由两处兑现（`AGENT_DISPATCH_INTERVAL_MS` = 10000）：
+     *  - webhook 落库后**立刻**为这个 issue 领一条（`dispatchNextForIssue`）；
+     *  - 任务结束后**立刻**领这个 issue 的下一条（`finishMessageAndContinue`）。
+     * 这条 cron 只负责「上一轮投递失败 / 进程重启 / 消息在别处落库」的捞底。
+     */
+    queue: QUEUE.agentDispatch,
+    cron: '* * * * *',
     timezone: 'UTC',
-    expireInSeconds: 600,
-    summary: '自动关闭（每 10 分钟）：awaiting_info 满 48h → 关 issue',
+    expireInSeconds: 120,
+    summary: 'agent 串行调度（每分钟兜底）：每个 issue 投最老的一条 agent_messages',
   },
 ];
 

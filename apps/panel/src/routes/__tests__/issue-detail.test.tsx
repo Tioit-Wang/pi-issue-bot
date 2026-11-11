@@ -91,7 +91,6 @@ function session(options: { published?: boolean; botText?: string | null } = {})
         commentId: published ? '410002' : null,
       },
       pendingFeedback: [],
-      pipeline: null,
     },
     turns: [
       makeTurn({ id: 'task:1', role: 'human', at: AT, text: '这个 EACCES 是什么原因？', channel: 'mention', taskId: 't-17-1' }),

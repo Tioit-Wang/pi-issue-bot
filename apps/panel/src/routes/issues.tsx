@@ -62,9 +62,6 @@ const FILTER_KEYS = [
   'label',
   'window',
   'q',
-  'stage',
-  'pstate',
-  'category',
 ] as const;
 /** 选中键（`?selected=acme/widgets#issue17`）——单独一条，清除筛选时保留。 */
 const SELECTED_KEY = 'selected';
@@ -119,9 +116,6 @@ function readFilters(params: URLSearchParams): Filters {
     label: value('label'),
     window: value('window'),
     q: value('q'),
-    stage: value('stage'),
-    pstate: value('pstate'),
-    category: value('category'),
   };
 }
 
@@ -146,51 +140,6 @@ function matchesLabel(item: IssueListItem, label: string): boolean {
   return item.labels.includes(label);
 }
 
-/** 流水线维度：`stage` 取 `PipelineStage` + 「未入流水线」（`pipeline === null`）。 */
-const STAGE_OPTIONS = [
-  { value: 'format', label: '阶段 0 · 格式检查' },
-  { value: 'classify', label: '阶段 1 · 标签分类' },
-  { value: 'agent', label: '阶段 2 · Agent' },
-  { value: 'closed', label: '已结束' },
-  { value: 'unassigned', label: '未入流水线' },
-] as const;
-
-const PSTATE_OPTIONS = [
-  { value: 'pending', label: '待跑' },
-  { value: 'running', label: '执行中' },
-  { value: 'awaiting_info', label: '待人补充' },
-  { value: 'ready', label: '已就绪' },
-  { value: 'blocked', label: '阻塞' },
-  { value: 'closed', label: '已关闭' },
-] as const;
-
-const CATEGORY_OPTIONS = [
-  { value: 'requirement', label: '需求' },
-  { value: 'defect', label: '缺陷' },
-  { value: 'not-found', label: '查不到' },
-  { value: 'other', label: '其他' },
-] as const;
-
-/**
- * 流水线三个筛选都是**客户端过滤**（服务端 `issuesQuerySchema` 没有这些参数，`stage` 传上去会 400）。
- *
- * 「未入流水线」是一等筛选项，不是一个空值：`pipeline === null` 与「阶段 0 待跑」是两件事。
- */
-function matchesStage(item: IssueListItem, stage: string): boolean {
-  if (stage === '') return true;
-  if (stage === 'unassigned') return item.pipeline === null;
-  return item.pipeline !== null && item.pipeline.stage === stage;
-}
-
-function matchesPipelineState(item: IssueListItem, state: string): boolean {
-  if (state === '') return true;
-  return item.pipeline !== null && item.pipeline.state === state;
-}
-
-function matchesCategory(item: IssueListItem, category: string): boolean {
-  if (category === '') return true;
-  return item.pipeline !== null && item.pipeline.category === category;
-}
 /** 焦点在输入类控件里时不接管 j/k/`/`。 */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -266,11 +215,9 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
           matchesSearch(item, filters.q) &&
           matchesWindow(item, filters.window, now) &&
           matchesLabel(item, filters.label) &&
-          matchesStage(item, filters.stage) &&
-          matchesPipelineState(item, filters.pstate) &&
-          matchesCategory(item, filters.category),
+          matchesLabel(item, filters.label),
       ),
-    [loaded, filters.q, filters.window, filters.label, filters.stage, filters.pstate, filters.category, now],
+    [loaded, filters.q, filters.window, filters.label, now],
   );
 
   const selectedValue = searchParams.get(SELECTED_KEY);
@@ -283,11 +230,7 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
   const clientFilter =
     filters.q !== '' ||
     filters.window !== '' ||
-    filters.label !== '' ||
-    filters.stage !== '' ||
-    filters.pstate !== '' ||
-    filters.category !== '';
-
+    filters.label !== '';
   const summary = useMemo(() => {
     let running = 0;
     let failed = 0;
@@ -521,33 +464,6 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
             value={filters.status}
             onChange={(event) => {
               setFilter('status', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="阶段筛选"
-            options={STAGE_OPTIONS}
-            placeholder="全部阶段"
-            value={filters.stage}
-            onChange={(event) => {
-              setFilter('stage', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="流水线状态筛选"
-            options={PSTATE_OPTIONS}
-            placeholder="全部流水线状态"
-            value={filters.pstate}
-            onChange={(event) => {
-              setFilter('pstate', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="类别筛选"
-            options={CATEGORY_OPTIONS}
-            placeholder="全部类别"
-            value={filters.category}
-            onChange={(event) => {
-              setFilter('category', event.target.value);
             }}
           />
           <Select

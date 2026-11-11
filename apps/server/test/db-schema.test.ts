@@ -21,7 +21,7 @@ import {
   issueFeedback,
   issueStates,
   labelDecisions,
-  promptVersions,
+  agentSessions,
   quotaCounters,
   repos,
   runtimeFlags,
@@ -53,12 +53,12 @@ const INIT_TABLES = [
 ] as const;
 
 /** 多仓库改造新增的四张表（`docs/impl-multi-repo.md` §2）。 */
-const MULTI_REPO_TABLES = ['issue_feedback', 'label_decisions', 'quota_counters', 'prompt_versions'] as const;
+const MULTI_REPO_TABLES = ['issue_feedback', 'label_decisions', 'quota_counters'] as const;
 
-/** 固定流水线改造新增的一张表（`docs/plan-fixed-pipeline.md` §4.3，0005_pipeline.sql）。 */
-const PIPELINE_TABLES = ['issue_pipeline'] as const;
+/** v0.3 issue agent 新增的三张表（`migrations/0006_agent.sql`）。 */
+const AGENT_TABLES = ['agent_sessions', 'agent_messages', 'agent_denials'] as const;
 
-const EXPECTED_TABLES = [...INIT_TABLES, ...MULTI_REPO_TABLES, ...PIPELINE_TABLES] as const;
+const EXPECTED_TABLES = [...INIT_TABLES, ...MULTI_REPO_TABLES, ...AGENT_TABLES] as const;
 
 /** `0003_multi_repo.sql`：纯新增的列与表（`ALTER TABLE ADD COLUMN` / `CREATE TABLE`）。 */
 const MIGRATION_0003 = path.join(REPO_ROOT, 'migrations', '0003_multi_repo.sql');
@@ -67,9 +67,9 @@ async function readMigration(): Promise<string> {
   return readFile(MIGRATION_FILE, 'utf8');
 }
 
-describe('db/schema：21 张表', () => {
-  it('表名清单 = tech-plan §7.2 的 16 张 + 多仓库 4 张 + 固定流水线 1 张（无多无少）', () => {
-    expect(ALL_TABLE_NAMES.length).toBe(21);
+describe('db/schema：22 张表', () => {
+  it('表名清单 = tech-plan §7.2 的 16 张 + 多仓库 3 张 + issue agent 3 张（无多无少）', () => {
+    expect(ALL_TABLE_NAMES.length).toBe(22);
     expect([...ALL_TABLE_NAMES].sort()).toEqual([...EXPECTED_TABLES].sort());
   });
 
@@ -237,8 +237,8 @@ describe('多仓库改造的增量列（db/schema ↔ 0003_multi_repo.sql）', (
     expect(Object.keys(getTableColumns(quotaCounters))).toEqual(
       expect.arrayContaining(['repo', 'kind', 'windowStart', 'count']),
     );
-    expect(Object.keys(getTableColumns(promptVersions))).toEqual(
-      expect.arrayContaining(['repo', 'version', 'body', 'note', 'createdAt']),
+    expect(Object.keys(getTableColumns(agentSessions))).toEqual(
+      expect.arrayContaining(['repo', 'issueNumber', 'sessionId', 'cursor', 'turns', 'startedAt', 'updatedAt']),
     );
   });
 

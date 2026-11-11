@@ -71,7 +71,6 @@ function issueRow(overrides: Partial<IssueListItem>): IssueListItem {
     reactionState: null,
     labelDecisions: null,
     feedback: [],
-    pipeline: null,
     ...overrides,
   };
 }

@@ -48,7 +48,6 @@ import type { Queries } from './queries.ts';
 import type { SkillStore } from '../../skills/store.ts';
 import { registerSkillRoutes } from './skills.ts';
 import type { SkillWriteMode } from './skills.ts';
-import { registerPromptRoutes } from './prompt.ts';
 import { httpError } from '../errors.ts';
 import type { ZodFastify } from '../types.ts';
 
@@ -200,9 +199,8 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
   );
 
   // ── 9. GET /api/issues（按 issue 聚合的列表，`lastActivityAt` 倒序 + keyset 游标）─────
-  // 响应里带 `pipeline`（固定流水线状态投影）：形状由契约 `issueListItemSchema.pipeline` 决定，
-  // 所以 OpenAPI 的 `IssueListItem.pipeline → IssuePipeline → PipelineStage/PipelineState` 一条链
-  // 已经覆盖它，路由侧不需要额外的 schema（`docs/plan-fixed-pipeline.md` §10.4）。
+  // 响应里带 `reactionState` / `labelDecisions` / `feedback`：形状由契约 `issueListItemSchema` 决定，
+  // OpenAPI 一条链已经覆盖它，路由侧不需要额外的 schema。
   app.get(
     '/api/issues',
     {
@@ -213,8 +211,6 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
   );
 
   // ── 10. GET /api/issues/:owner/:name/:kind/:number（一个 issue 的会话）───────────
-  // 详情同理：`pipeline` 挂在 `IssueSummary` 上（`issueSessionResponseSchema.issue.pipeline`），
-  // 没有状态行时是 `null`（§1.3：无行 = 放行，不用空对象冒充）。──
   // 路径是四段而不是 `:repo`：`repo` 含 `/`，`:repo` 会吞掉后面的段（spec §3.2 末段）。
   app.get(
     '/api/issues/:owner/:name/:kind/:number',
@@ -250,17 +246,6 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
     });
   }
 
-  // ── 13. /api/repos/:owner/:name/prompt（W3-G：P1 项目人格层：读 / 保存新版本 / 回滚）──────
-  // 需要 `repos` 的 db（读 settings + 写 current_version），所以挂在 `deps.repos` 这一支下面；
-  // 写面策略与 `/api/skills` 共用同一个 `writeMode`（不注入则默认 loopback）。
-  if (deps.repos !== undefined) {
-    registerPromptRoutes(app, {
-      db: deps.repos.db,
-      requireAuth: deps.requireAuth,
-      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
-      ...(deps.skills?.writeMode === undefined ? {} : { writeMode: deps.skills.writeMode }),
-    });
-  }
 }
 
 /* ── 仓库配置路由（`/api/repos/*`）────────────────────────────────────────────── */

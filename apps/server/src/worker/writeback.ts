@@ -23,7 +23,6 @@ import type { FailureSignal } from '../queue/index.ts';
 import { summarizeBlockedReason } from '../workflows/label-decisions.ts';
 import type { LabelDecisionRecorder } from '../workflows/label-decisions.ts';
 import { normalizeDesired } from '../workflows/normalize.ts';
-import { isPipelineCommand } from '../workflows/pipeline.ts';
 import type { BlockedLabel } from '../workflows/normalize.ts';
 import type { LabelCatalogPort, ReactionPort } from '../workflows/ports.ts';
 import type { EnvelopeAction } from './deps.ts';
@@ -53,11 +52,11 @@ export interface ExecuteActionsInput {
   readonly targetNumber: number;
   readonly actions: readonly EnvelopeAction[];
   readonly dryRun: boolean;
-  /** `tasks.source`：`command`（人工通道）与 `pipeline`（固定流水线）允许写回评论（§4.6）。 */
+  /** `tasks.source`：`command`（人工通道）与 `agent`（v0.3 issue agent）允许写回评论。 */
   readonly source: WritebackTaskSource;
   /**
-   * `tasks.command`：判断「这是不是一个流水线阶段任务」。
-   * 缺省（老调用点 / 单测）时 `source='pipeline'` **一律不放行评论**（宁可不发，也不乱发）。
+  /**
+   * `tasks.command`（保留字段：判定的形状稳定，缺省时由 `taskSourceOf()` 反推来源）。
    */
   readonly command?: string | undefined;
   readonly api: GithubWriteApi;
@@ -91,8 +90,8 @@ export function actionTargetOf(repo: string, suffix: string | number): string {
 /**
  * 缺必填信息时的判定键 / 字面标签名。
  *
- * 与 `workflows/pipeline-labels.ts::NEEDS_INFO_KEY` 同值（`workflows/index.ts` 也转出那一份）：
- * 那一份是「流水线」用的，这一份是「写回路径」用的。两处都说 `needs-info` 是刻意的
+ * 与 `workflows/labels.ts::NEEDS_INFO_KEY` 同值（`workflows/index.ts` 也转出那一份）：
+ * 那一份是「agent / 打标」用的，这一份是「写回路径」用的。两处都说 `needs-info` 是刻意的
  * （同一个平台级行为），但不互相 import —— `worker/` 不该为了一个字面量依赖整个 workflows 层。
  */
 export const NEEDS_INFO_KEY = 'needs-info';
@@ -441,12 +440,10 @@ export function toWriteActions(
 /**
  * 这一轮是人工通道还是自动通道。
  *
- * 为什么不直接读 `input.source` 了事：装配层（`app/compose.ts`）现在会把
- * `tasks.source` 传进 `TaskRunInput`，但那是**新接线**；老任务行 / 单测 /
- * 内存调用都没有它。缺省时按命令名推（`db/schema.ts` 的约定）：
- *  - `pipeline:*` → `pipeline`（固定流水线的阶段任务；只有它能写回阶段评论，§4.6）；
- *  - 其它以 `auto:` 开头的判定类命令 → `webhook`（自动通道，零评论）；
- *  - 其余（`/issue-triage`、`@answer` 这类）→ `command`（人工通道）。
+ * 为什么不直接读 `input.source` 了事：装配层（`app/compose.ts`）会把 `tasks.source` 传进
+ * `TaskRunInput`，但老任务行 / 单测 / 内存调用都没有它。缺省时按命令名推（`db/schema.ts` 的约定）：
+ *  - 以 `auto:` 开头的判定类命令 → `webhook`（自动通道，零评论）；
+ *  - 其余（`/review-pr`、`@answer` 这类）→ `command`（人工通道）。
  * 这样「不传也安全」：自动通道默认不写评论，而人工命令的回答不会被误吞。
  */
 export function taskSourceOf(input: {
@@ -457,47 +454,31 @@ export function taskSourceOf(input: {
     return input.source;
   }
   const command = input.command.trim().toLowerCase();
-  // `pipeline:format|classify|notice` = 固定流水线的阶段任务（§4.6）
-  if (command.startsWith('pipeline:')) {
-    return 'pipeline';
-  }
   return command.startsWith('auto:') ? 'webhook' : 'command';
 }
 
 /**
- * 这个动作允不允许写回（plan §5 的两条通道 + §4.6 的流水线例外）。
+ * 这个动作允不允许写回（plan §5 的两条通道）。
  *
  * **只有 `comment` 受 `source` 约束**：自动通道（判定 / 闸门）只有 reaction + 标签、零评论；
  * `label` / `create_issue` / `push_branch` / `reaction.*` 在两条通道里都一样执行。
  *
- * 三条通道的口径：
+ * 两条通道的口径：
  *  - `command`（人工 `/…`、`@answer`）→ 允许评论；
- *  - `pipeline`（`pipeline:format|classify|notice`）→ **函数层面允许**，但**worker 实际一条都不发**：
- *    `run-task.ts` 调 `executeActions()` 时**故意不传 `command`**，于是这里恒判 false、评论被 skipped；
- *    阶段评论（含门禁回执）统一由**控制面**发（`app/compose.ts` 的 `executeFormatPlan()` /
- *    `executeClassifyPlan()` / `postGateNotice()`）。那三处才有长度 / 限速 / `@` 三道闸，
- *    worker 侧没有，所以两条路径不能同时开；
+ *  - `agent`（v0.3 的 issue agent，事件与 `@别名` 提及）→ 允许评论
+ *    （`docs/req-issue-agent.md` §5「默认只产出评论」）；
  *  - `webhook` / `cron`（自动通道）→ 零评论（§0.4 的不变量）。
- *
- * 放行范围**只限三个阶段命令**：别改成「所有 `source='pipeline'` 都放行」——那等于把
- * 「自动通道零评论」整段拆掉，只要有人往 `tasks.command` 里塞一个别的名字就能让自动通道开口说话。
  */
 export function isWriteBackAllowed(input: {
   readonly intent: string;
   readonly source: WritebackTaskSource;
-  /** `tasks.command`；非流水线来源可以不传。 */
+  /** `tasks.command`；保留字段是为了调用方形状稳定（判定不再读它）。 */
   readonly command?: string | undefined;
 }): boolean {
   if (input.intent !== 'comment') {
     return true;
   }
-  if (input.source === 'command') {
-    return true;
-  }
-  if (input.source === 'pipeline') {
-    return isPipelineCommand(input.command ?? '');
-  }
-  return false;
+  return input.source === 'command' || input.source === 'agent';
 }
 
 export async function executeActions(input: ExecuteActionsInput): Promise<ExecuteActionsResult> {
@@ -541,21 +522,7 @@ export async function executeActions(input: ExecuteActionsInput): Promise<Execut
       });
       continue;
     }
-    // 阶段任务只允许 `comment`（§4.1 P3 的第二道保险）：`prepareEnvelope({ allowedIntents: ['comment'] })`
-    // 是第一道闸，但老任务行 / 绕过路径仍可能带进来 push_branch / create_issue / label。
-    // 这里一律不执行：标签由控制面按 `stage.result` + `labels.vocabulary[].role` 打，模型不该改仓库。
-    if (input.source === 'pipeline' && action.intent !== 'comment') {
-      outcomes.push({
-        intent: action.intent,
-        status: 'skipped',
-        target,
-        externalRef: null,
-        reason: `流水线阶段任务只允许 comment（收到 ${action.intent}）：标签由控制面按分类结论打`,
-      });
-      continue;
-    }
-
-    // 写回闸门（§4.6）：`command`（人工）与 `pipeline`（固定流水线，只限三个阶段命令）能写回评论；
+    // 写回闸门：`command`（人工）与 `agent`（v0.3 事件 / 提及通道）能写回评论；
     // 其余自动通道（webhook / cron）仍然零评论（§0.4 的不变量没变）。
     // 这里**不**记 `actions` 行：什么都没发生（与 dry-run 同一取向），但要在报告里留一行，
     // 面板才能解释「为什么这一轮没有评论」。
