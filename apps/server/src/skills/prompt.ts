@@ -212,7 +212,10 @@ export function renderLabelVocabulary(vocabulary: readonly LabelVocabularyEntry[
     ].join('\n');
   }
   const lines = [
-    '## 项目标签（`verdict.labels` 只能从这里选，写标签名本身而不是判定键）',
+    '## 项目标签（本仓库当前可用的全部标签；打标只能从这里选）',
+    '',
+    '标签的生效方式是信封 `actions` 里的 label 动作：`{"intent":"label","add":["<标签名>"],"remove":[]}`。',
+    '`verdict.labels` 只是判定说明，**不会写回 GitHub**；只在 verdict 里写标签等于没打标。',
     '',
   ];
   for (const entry of entries) {
@@ -244,6 +247,40 @@ function oneLine(raw: string, maxChars: number): string {
     .trim()
     .slice(0, maxChars);
 }
+/**
+ * 工具目录 → 提示词里的 `## 可用工具` 段。
+ *
+ * 为什么放在提示词里而不是技能正文里：工具清单由运行时决定（宿主给什么、技能声明允许什么），
+ * 技能正文是**静态文本**，写死清单会在换了运行环境后变成谎话。技能只负责「本场景怎么用这几个
+ * 工具」，清单本身由这里按 `allowed-tools` 过滤生成。
+ */
+const TOOL_CATALOG: Readonly<Record<string, string>> = Object.freeze({
+  Read: '- `Read(file_path="<路径>")` —— 读一个已知路径的文件。看实现、配置、issue 模板、文档时用。',
+  Glob: '- `Glob(pattern="**/*.test.ts")` —— 按通配符列文件。不确定路径在哪时先用它定位，再用 Read。',
+  Grep: '- `Grep(pattern="<正则>", path="<目录>")` —— 按内容搜。从报错文案 / 界面文案 / 接口路径反查代码位置时用。',
+  Bash: '- `Bash(command="<命令>")` —— 在仓库根执行命令（`git`、包管理器脚本）。看 diff、看历史、跑相关测试时用。',
+  Write: '- `Write(file_path="<路径>", content="<文本>")` —— 新建文件。仅当 `outputs` 含 `pr` 时才允许改代码。',
+  Edit: '- `Edit(file_path="<路径>")` —— 改一处已存在的文件。仅当 `outputs` 含 `pr` 时才允许改代码。',
+});
+
+export function renderToolCatalog(tools: readonly string[]): string {
+  const lines = ['## 可用工具（本技能声明的上限；矩阵外一律 deny）', ''];
+  for (const tool of tools) {
+    const line = TOOL_CATALOG[tool];
+    if (line !== undefined) {
+      lines.push(line);
+    }
+  }
+  lines.push(
+    '',
+    '用法约定：',
+    '- 先用 Glob/Grep 定位，再用 Read 读**相关的那几行**；不要一上来通读整仓。',
+    '- 结论里的每个事实都要能指到来源：`文件:行`、命令输出、或 `## 任务上下文` / `## 项目标签` 的某一段。',
+    '- 工具失败（路径不存在、命令不可用、无网络）就写明失败原因，不要用「应该」补齐。',
+  );
+  return lines.join('\n');
+}
+
 /** 技能声明允许产出的 intent 列表（`outputs` → intent，契约 §2 的映射表）。 */
 export function allowedIntentsOf(outputs: readonly SkillOutput[]): readonly string[] {
   const intents: string[] = [];
@@ -369,6 +406,8 @@ export function renderSkillPrompt(input: RenderSkillPromptInput): RenderSkillPro
     `允许的工具（上限，不构成授权；矩阵外一律 deny）：${(skill.frontmatter['allowed-tools'] ?? skill.effective.allowedTools).join(', ')}`,
     `允许产出的动作：${skill.effective.outputs.join(', ')}`,
     `单任务时限：${Math.round(skill.effective.timeoutMs / 60_000)} 分钟`,
+    '',
+    renderToolCatalog(skill.effective.allowedTools),
     '',
     '## 指令',
     '',

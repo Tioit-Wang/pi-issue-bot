@@ -23,10 +23,29 @@ import type { SkillPromptContext } from '../src/skills/prompt.ts';
 
 const registry = createSkillRegistry();
 
+/**
+ * 渲染期契约测试需要一个**带占位符**的技能。
+ *
+ * 内置技能已按「正文不留占位符、事实由提示词渲染」重写，所以这里用合成 fixture：
+ * 借内置正文会让这些用例随内置文案改动而误报（改文案不该等于改渲染契约）。
+ */
+const TEMPLATED_SKILL_TEXT = [
+  '---',
+  'name: /templated-demo',
+  'description: 合成技能：仅用于渲染期契约测试（占位符替换、围栏转义与哨兵）。',
+  'allowed-tools: [Read]',
+  'outputs: [comment, labels]',
+  '---',
+  '',
+  '仓库：`{{repo}}`，目标：`{{target}}`，当前标签：`{{labels}}`。',
+].join('\n');
+
 function triage() {
-  const skill = registry.resolve('/issue-triage');
+  const skill = createSkillRegistry({
+    repoSkills: [{ path: 'skills/repo/templated-demo/SKILL.md', text: TEMPLATED_SKILL_TEXT }],
+  }).resolve('/templated-demo');
   if (skill === undefined) {
-    throw new Error('内置 /issue-triage 没加载出来');
+    throw new Error('合成技能 /templated-demo 没加载出来');
   }
   return skill;
 }
