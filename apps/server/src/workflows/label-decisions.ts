@@ -51,7 +51,7 @@ export type LabelDecisionRecord = {
   readonly runId: string | null;
 };
 
-/** 注入面：`triage.ts` 只认这个端口，单测可以给一个只记内存的实现。 */
+/** 注入面：打标写回只认这个端口，单测可以给一个只记内存的实现。 */
 export type LabelDecisionRecorder = {
   record(input: LabelDecisionRecord): Promise<void> | void;
 };

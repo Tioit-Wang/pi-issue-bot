@@ -150,7 +150,7 @@ export function createPgBotLabelLedger(
  *
  * 为什么需要工厂而不是直接给 `BotLabelLedger`：归因（`run_id` / `judgement_hash` / `source_key`）
  * 是**每一轮才算得出来**的东西，而 `BotLabelLedger` 是建一次就固定的对象。
- * 让调用方传工厂，`runTriage` 就能在拿到 runId 之后再造记账器，两个约束都满足。
+ * 让调用方传工厂，打标路径就能在拿到 runId 之后再造记账器，两个约束都满足。
  */
 export function createAttributedBotLabelLedger(
   db: SqlRunner,

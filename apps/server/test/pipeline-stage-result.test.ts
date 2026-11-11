@@ -5,15 +5,21 @@
  *  1. `stage.name` 必须等于任务阶段（否则调用方置 blocked、**零写入**）；
  *  2. `result` 必须在该阶段允许集合内；
  *  3. `defect` 必须有 `path:line` 证据，否则**强制降级 not-found**（正确性校验，不是排版要求）。
+ *
+ * 外加一组「缺必填信息」的判据（`missingEvidenceOf` / `describeMissing` / `REASON_QUOTE_LIMIT`）：
+ * 它们随 S5 删死代码从已删除的 `workflows/triage.ts` 搬到这里，**行为逐条断言**（过滤口径 /
+ * 空引用 / 截断长度 / 人读文案），保证搬家没有悄悄改语义。
  */
 import { describe, expect, it } from 'vitest';
 import {
+  REASON_QUOTE_LIMIT,
   classifyEvidenceScope,
   codeEvidenceOf,
   commentBodyOf,
+  describeMissing,
+  missingEvidenceOf,
   readStageResult,
 } from '../src/workflows/stage-result.ts';
-
 /** 一个最小的阶段信封（`stage` 由各用例给）。 */
 function envelope(stage: unknown, actions: unknown[] = [], evidence: unknown[] = []) {
   return {
@@ -135,5 +141,65 @@ describe('证据与评论的投影', () => {
       }),
     ).toBe('请补充复现步骤');
     expect(commentBodyOf({ actions: [] })).toBeNull();
+  });
+});
+
+describe('缺必填信息的判据（S5 从 triage.ts 搬来，行为不变）', () => {
+  it('只有 `passed === true` 算通过：没给 passed / passed=false 都算缺', () => {
+    const missing = missingEvidenceOf({
+      kind: 'issue',
+      labels: ['bug'],
+      evidence: [
+        { rule: 'repro-steps', quote: '', passed: false },
+        { rule: 'version', quote: '0.1.0', passed: false },
+        { rule: 'no-flag', quote: '没有 passed 字段' },
+        { rule: 'ok', quote: '已给出', passed: true },
+      ],
+    });
+    expect(missing.map((item) => item.rule)).toEqual(['repro-steps', 'version', 'no-flag']);
+  });
+
+  it('没有 verdict（或没有 evidence）→ 空数组', () => {
+    expect(missingEvidenceOf(null)).toEqual([]);
+    expect(missingEvidenceOf({ kind: 'issue', labels: [], evidence: [] })).toEqual([]);
+  });
+
+  it('引用先 trim：空引用 → null，有内容 → 原文', () => {
+    const missing = missingEvidenceOf({
+      kind: 'issue',
+      labels: [],
+      evidence: [
+        { rule: 'a', quote: '   ', passed: false },
+        { rule: 'b', quote: '  0.1.0  ', passed: false },
+      ],
+    });
+    expect(missing).toEqual([
+      { rule: 'a', quote: null },
+      { rule: 'b', quote: '0.1.0' },
+    ]);
+  });
+
+  it(`引用按 REASON_QUOTE_LIMIT（${String(REASON_QUOTE_LIMIT)}）截断`, () => {
+    const long = 'x'.repeat(REASON_QUOTE_LIMIT + 20);
+    const [first] = missingEvidenceOf({
+      kind: 'issue',
+      labels: [],
+      evidence: [{ rule: 'a', quote: long, passed: false }],
+    });
+    expect(first?.quote).toHaveLength(REASON_QUOTE_LIMIT);
+    expect(first?.quote).toBe('x'.repeat(REASON_QUOTE_LIMIT));
+  });
+
+  it('describeMissing：没缺项 → null；有缺项 → 「缺 N 项必填信息」+ 引用/无引用两种措辞', () => {
+    expect(describeMissing([])).toBeNull();
+    expect(
+      describeMissing([
+        { rule: 'repro-steps', quote: null },
+        { rule: 'version', quote: '0.1.0' },
+      ]),
+    ).toBe('缺 2 项必填信息：repro-steps（当前正文里找不到依据）；version（引用：「0.1.0」）');
+    expect(describeMissing([{ rule: 'repro-steps', quote: null }])).toBe(
+      '缺 1 项必填信息：repro-steps（当前正文里找不到依据）',
+    );
   });
 });

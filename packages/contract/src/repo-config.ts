@@ -22,7 +22,7 @@ import { triggersConfigSchema } from './trigger.ts';
 
 /**
  * 一条映射的目标：`'bug'`（1:1）或 `['bug', 'needs-info']`（1:N）。
- * 1:N 由应用层展开（`workflows/triage.ts` 的 `normalizeDesired()`），schema 只负责形状。
+ * 1:N 由应用层展开（`workflows/normalize.ts` 的 `normalizeDesired()`），schema 只负责形状。
  */
 export const labelTargetSchema = z.union([
   z.string().min(1).max(50),
@@ -229,13 +229,12 @@ function firstDuplicate(values: readonly string[]): string | null {
  * **不是**「用默认值继续跑」：配置写坏了却照常放评论，等于把错误配置的后果推给仓库维护者。
  *
  * 跨字段约束**无条件生效**，读写同一套（Q4：不为存量配置让步，缺 `role` / `managers` 为空 /
- * 含已删键（`triggers.faces`、`pipeline.enabled`）一律解析失败、保存 400）：
+ * 词表缺 `requirement` 或 `defect` / 含已删键（`triggers.faces`、`pipeline.enabled`）一律解析失败、保存 400）：
  * 1. `pipeline.managers` 非空（否则没人能推进被卡住的流程）；
  * 2. `pipeline.managers` 内无重复 login；
- * 3. `labels.vocabulary` 内无重复 `name`（重复会让「同 role 打哪个标签」变成不确定）。
- *
- * 注意**没有**校验「vocabulary 必须含 requirement/defect」：这条相对 §4.5 字面要求**有意放宽**，
- * 理由见 `pipelineLabelCoverage()`。
+ * 3. `labels.vocabulary` 内无重复 `name`（重复会让「同 role 打哪个标签」变成不确定）；
+ * 4. `labels.vocabulary` 里 `role='requirement'` 与 `role='defect'` **各至少 1 个**（`other` 可缺省）——
+ *    与 `docs/plan-fixed-pipeline.md` §4.5 / V17 字面一致（见 §4.5「`superRefine` 无条件生效」）。
  */
 export const repoSettingsSchema = repoSettingsShapeSchema
   .superRefine((settings, ctx) => {
@@ -262,8 +261,23 @@ export const repoSettingsSchema = repoSettingsShapeSchema
         message: `labels.vocabulary 里重复的 name：${duplicateLabel}`,
       });
     }
+    /**
+     * §4.5：`requirement` / `defect` 是流程分叉的唯一依据，缺哪一类就等于该结论没有标签可打。
+     * 所以这一条**硬校验**，不再降级成面板提示（`pipelineLabelCoverage()` 只做防御性展示）。
+     */
+    const missingRoles = (['requirement', 'defect'] as const).filter(
+      (role) => !settings.labels.vocabulary.some((entry) => entry.role === role),
+    );
+    if (missingRoles.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['labels', 'vocabulary'],
+        message: `分类需要至少一个需求标签与一个缺陷标签：labels.vocabulary 里缺 role='${missingRoles.join("' / role='")}' 的词表项（role='other' 可缺省）`,
+      });
+    }
   })
   .meta({ id: 'RepoSettings' });
+
 
 export type RepoSettings = z.infer<typeof repoSettingsSchema>;
 
@@ -287,20 +301,19 @@ export const parseRepoConfig = parseRepoSettings;
 /**
  * 全默认值 —— **形状默认值，不是合法运行配置**。
  *
- * 从 `repoSettingsShapeSchema` 生成（不是 `parseRepoSettings({})`：那现在会因为 `managers` 为空而抛错）。
+ * 从 `repoSettingsShapeSchema` 生成（不是 `parseRepoSettings({})`：那现在会因为 `managers` 为空、
+ * 且 `labels.vocabulary` 缺 `requirement`/`defect` 而抛错）。
  * 用途只有「部署默认 / 迁移播种 / 面板恢复默认」：它的 `pipeline.managers` 是 `[]`，
- * 直接喂给 `repoSettingsSchema` 会被拒（`settings_valid=false` 属预期，§10.2 / V17）。
  */
 export const DEFAULT_REPO_SETTINGS: RepoSettings = repoSettingsShapeSchema.parse({});
 
 /**
- * 标签角色的覆盖情况 —— 面板用它显示「未配置标签角色」的**提示**（`missingRoles` 为空 = 齐了）。
+ * 标签角色的覆盖情况 —— 面板用它显示「未配置标签角色」的**防御性**提示（`missingRoles` 为空 = 齐了）。
  *
- * **只提示不报错**：这是对 §4.5「vocabulary 必须含 requirement/defect」的**有意放宽**。
- * 理由：role 是流程分叉依据，但存量仓库不该因为没补标签角色就整仓 `settings_valid=false`
- * （那等于流程完全不跑，「上线即瘫痪」）；放宽后流程照跑，只是对应结论**不打标**（骨架里明说这一点）。
- * 严格性由另一条保证：Q4 要求 `role` 必填，所以「有词表但没写 role」依然是解析失败，
- * 这里能缺的只是「整类角色都没有词表项」。
+ * **schema 已经强制覆盖**（`repoSettingsSchema` 的 superRefine 要求 `requirement` 与 `defect` 各至少 1 个，
+ * §4.5），所以正常路径走不到 `missingRoles` 非空。本函数只为**防御性展示**保留：
+ * 存量数据、迁移后尚未在面板配置的仓库（`settings_valid=false`），面板拿到的是形状默认值（空词表），
+ * 这时靠它把「缺哪类角色」直接摆给用户，而不是让用户自己去数词表。
  */
 export function pipelineLabelCoverage(settings: Pick<RepoSettings, 'labels'>): {
   missingRoles: ('requirement' | 'defect')[];

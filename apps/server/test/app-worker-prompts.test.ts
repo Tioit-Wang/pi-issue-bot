@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { parseRepoSettings } from '../../../packages/contract/src/index.ts';
+import { parseRepoSettings, repoSettingsShapeSchema } from '../../../packages/contract/src/index.ts';
 import { buildAnswerPrompt, buildTaskPrompt } from '../src/app/worker-deps.ts';
 import { parseEnvelopeJson } from '../src/worker/deps.ts';
 
@@ -67,9 +67,11 @@ describe('任务提示词：标签集来自 settings.labels.vocabulary', () => {
     pipeline: { managers: ['alice'] },
     labels: {
       vocabulary: [
-        // `role` 自 §4.5 / Q4 起必填。
+        // `role` 自 §4.5 / Q4 起必填；`requirement` / `defect` 两类各至少 1 条（§4.5 的硬校验），
+        // 顺序保持 `缺陷` 在前 —— 下面断言「示例信封的 labels 取词表第一项」。
         { name: '缺陷', role: 'defect', meaning: '功能不符合预期', color: 'D73A4A', group: '类型' },
         { name: '缺少信息', role: 'other', meaning: '正文不足以复现', group: '类型' },
+        { name: '需求', role: 'requirement', meaning: '新的功能或改进' },
       ],
       map: { bug: '缺陷', 'needs-info': '缺少信息' },
     },
@@ -98,7 +100,9 @@ describe('任务提示词：标签集来自 settings.labels.vocabulary', () => {
   it('没有词表 / 没有 settings：退回「只打仓库已有标签」的说明，示例 labels 为空', () => {
     for (const input of [
       baseTaskInput,
-      { ...baseTaskInput, settings: parseRepoSettings({ pipeline: { managers: ['alice'] } }) },
+      // 空词表在严格层（superRefine 要求两角色各 1 条）已经非法，但「词表为空」正是本用例的前提，
+      // 所以走**形状层**（默认值 = 空词表），模拟「仓库没配词表」的历史配置。
+      { ...baseTaskInput, settings: repoSettingsShapeSchema.parse({ pipeline: { managers: ['alice'] } }) },
       { ...baseTaskInput, settings: null },
     ]) {
       const prompt = buildTaskPrompt(input);

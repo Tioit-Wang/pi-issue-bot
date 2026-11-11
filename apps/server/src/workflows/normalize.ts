@@ -2,8 +2,8 @@
  * 打标归一化：把「模型给的判定键」变成「真的要打到 issue 上的标签名」（`docs/impl-multi-repo.md`
  * §4 W2-E 第 1 条）。
  *
- * 为什么要有这一层（而不是在 `triage.ts` 里就地做）：
- *  - 它全是纯函数，规则可以逐条钉死在单测里；`triage.ts` 只负责 I/O（跑 worker、写 GitHub）。
+ * 为什么要有这一层（而不是在打标路径里就地做）：
+ *  - 它全是纯函数，规则可以逐条钉死在单测里；打标路径（`worker/writeback.ts`）只负责 I/O。
  *  - 「哪些标签被拦了、为什么被拦」是面板要展示的东西（`label_decisions.blocked_reason`），
  *    所以拦截**必须显式产出**，不能是 `if (...) continue` 之后悄悄少一个标签。
  *

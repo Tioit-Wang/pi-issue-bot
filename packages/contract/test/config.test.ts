@@ -19,11 +19,17 @@ import {
   toSkillEffectiveConfig,
 } from '../src/index.ts';
 
+/** §4.5 的硬校验：`requirement` 与 `defect` 各至少 1 个（`other` 可缺省）。 */
+const REQUIRED_ROLES = [
+  { name: '需求', role: 'requirement' },
+  { name: '缺陷', role: 'defect' },
+] as const;
+
 /**
- * Q4 之后 `{}` **不再是**合法配置（`pipeline.managers` 必须非空）：正例一律带上这一份。
- * 负例直接喂原 schema，断言的是「这一项本身不合法」而不是「因为缺 managers 而失败」。
+ * Q4 之后 `{}` **不再是**合法配置（`pipeline.managers` 必须非空、词表必须含两类角色，§4.5）：
+ * 正例一律带上这一份。负例直接喂原 schema，断言的是「这一项本身不合法」而不是「因为缺 managers / 缺角色而失败」。
  */
-const OK = { pipeline: { managers: ['alice'] } } as const;
+const OK = { pipeline: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } } as const;
 
 function parses(patch: Record<string, unknown>): boolean {
   return repoSettingsSchema.safeParse({ ...OK, ...patch }).success;
@@ -44,7 +50,8 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     expect(settings.limits.concurrency_per_repo).toBe(2);
     expect(settings.limits.queue_wait_minutes).toBe(10);
     expect(settings.labels.map).toEqual({});
-    expect(settings.labels.vocabulary).toEqual([]);
+    // 词表本身没有默认值（形状默认空）；§4.5 的「两类角色各至少 1 个」由严格 schema 校验（见下面几条）
+    expect(repoSettingsShapeSchema.parse({}).labels.vocabulary).toEqual([]);
     expect(settings.labels.missing).toBe('warn');
     expect(settings.labels.max_per_issue).toBe(6);
     expect(settings.prompt.enabled).toBe(true);
@@ -74,10 +81,18 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     expect(repoSettingsShapeSchema.parse({})).toEqual(DEFAULT_REPO_SETTINGS);
     // 形状默认值喂给严格 schema 直接被拒（settings_valid=false 属预期）
     expect(repoSettingsSchema.safeParse(DEFAULT_REPO_SETTINGS).success).toBe(false);
+    // 只补 managers 仍不合法：词表还缺 requirement / defect（§4.5）
     expect(
       repoSettingsSchema.safeParse({
         ...DEFAULT_REPO_SETTINGS,
         pipeline: { ...DEFAULT_REPO_SETTINGS.pipeline, managers: ['alice'] },
+      }).success,
+    ).toBe(false);
+    expect(
+      repoSettingsSchema.safeParse({
+        ...DEFAULT_REPO_SETTINGS,
+        pipeline: { managers: ['alice'] },
+        labels: { vocabulary: REQUIRED_ROLES },
       }).success,
     ).toBe(true);
   });
@@ -102,7 +117,7 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
   });
 
   it('标签 role 必填，且只接受 requirement / defect / other（Q4 不做回填）', () => {
-    expect(parses({ labels: { vocabulary: [{ name: '需求', role: 'requirement' }] } })).toBe(true);
+    expect(parses({ labels: { vocabulary: [...REQUIRED_ROLES, { name: '咨询', role: 'other' }] } })).toBe(true);
     const missingRole = repoSettingsSchema.safeParse({ ...OK, labels: { vocabulary: [{ name: 'bug' }] } });
     expect(missingRole.success).toBe(false);
     if (!missingRole.success) {
@@ -110,6 +125,55 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     }
     expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'not-found' }] } })).toBe(false);
     expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', bogus: 1 }] } })).toBe(false);
+  });
+
+  it('缺 requirement 角色 → 失败（§4.5 的 superRefine 无条件生效）', () => {
+    const result = repoSettingsSchema.safeParse({
+      pipeline: { managers: ['alice'] },
+      labels: { vocabulary: [{ name: '缺陷', role: 'defect' }] },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((entry) => entry.path.join('.') === 'labels.vocabulary');
+      expect(issue?.message).toContain('分类需要至少一个需求标签与一个缺陷标签');
+      expect(issue?.message).toContain('requirement');
+      expect(issue?.message).not.toContain('defect');
+    }
+  });
+
+  it('缺 defect 角色 → 失败', () => {
+    const result = repoSettingsSchema.safeParse({
+      pipeline: { managers: ['alice'] },
+      labels: { vocabulary: [{ name: '需求', role: 'requirement' }] },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((entry) => entry.path.join('.') === 'labels.vocabulary');
+      expect(issue?.message).toContain('分类需要至少一个需求标签与一个缺陷标签');
+      expect(issue?.message).toContain('defect');
+    }
+  });
+
+  it('只有 other 两条 → 失败（`other` 可缺省，但不能顶替 requirement / defect）', () => {
+    const result = repoSettingsSchema.safeParse({
+      pipeline: { managers: ['alice'] },
+      labels: {
+        vocabulary: [
+          { name: '咨询', role: 'other' },
+          { name: '讨论', role: 'other' },
+        ],
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((entry) => entry.path.join('.') === 'labels.vocabulary')).toBe(true);
+    }
+  });
+
+  it('requirement + defect 各一、没有 other → 通过（other 可缺省 = 其他类型不打标）', () => {
+    const settings = parseRepoSettings({ pipeline: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } });
+    expect(settings.labels.vocabulary.map((entry) => entry.role)).toEqual(['requirement', 'defect']);
+    expect(pipelineLabelCoverage(settings)).toEqual({ missingRoles: [] });
   });
 
   it('词表内重复 name 被拒（大小写不敏感：同 role 打哪个标签不能变成不确定）', () => {
@@ -145,23 +209,15 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     ).toBe(true);
   });
 
-  it('pipelineLabelCoverage：缺角色只提示不报错（相对 §4.5 的有意放宽）', () => {
-    const onlyRequirement = parseRepoSettings({
-      pipeline: { managers: ['alice'] },
+  it('pipelineLabelCoverage：schema 已强制覆盖，本函数只做面板的防御性展示', () => {
+    // 存量 / 迁移后未配置的仓库：形状默认值是空词表（严格 schema 拒收，`settings_valid=false` 属预期）
+    expect(pipelineLabelCoverage(DEFAULT_REPO_SETTINGS)).toEqual({ missingRoles: ['requirement', 'defect'] });
+    // 存量数据里「只有一类角色」的旧词表（严格 schema 下不合法）也能被它说清缺什么
+    const shapeOnlyRequirement = repoSettingsShapeSchema.parse({
       labels: { vocabulary: [{ name: '需求', role: 'requirement' }] },
     });
-    // 解析成功本身就说明「缺 defect 角色」不会让整仓配置失效
-    expect(pipelineLabelCoverage(onlyRequirement)).toEqual({ missingRoles: ['defect'] });
-    expect(pipelineLabelCoverage(DEFAULT_REPO_SETTINGS)).toEqual({ missingRoles: ['requirement', 'defect'] });
-    const full = parseRepoSettings({
-      pipeline: { managers: ['alice'] },
-      labels: {
-        vocabulary: [
-          { name: '需求', role: 'requirement' },
-          { name: '缺陷', role: 'defect' },
-        ],
-      },
-    });
+    expect(pipelineLabelCoverage(shapeOnlyRequirement)).toEqual({ missingRoles: ['defect'] });
+    const full = parseRepoSettings({ pipeline: { managers: ['alice'] }, labels: { vocabulary: REQUIRED_ROLES } });
     expect(pipelineLabelCoverage(full)).toEqual({ missingRoles: [] });
   });
 
@@ -174,6 +230,7 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
       pipeline: { managers: ['alice'], format_prompt_version: 2, classify_prompt_version: 3, agent_prompt_version: 4 },
       labels: {
         vocabulary: [
+          { name: 'enhancement', role: 'requirement', meaning: '新功能需求', color: 'a2eeef' },
           { name: 'bug', role: 'defect', meaning: '确认的缺陷', color: 'd73a4a', group: 'type' },
           { name: 'needs-info', role: 'other', meaning: '缺复现步骤', color: '0e8a16' },
         ],
@@ -197,7 +254,7 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     // 1:1 与 1:N 两种写法都能解析（1:N 的展开在应用层）
     expect(settings.labels.map['bug']).toBe('bug');
     expect(settings.labels.map['needsInfo']).toEqual(['needs-info', 'question']);
-    expect(settings.labels.vocabulary[0]?.role).toBe('defect');
+    expect(settings.labels.vocabulary.find((entry) => entry.name === 'bug')?.role).toBe('defect');
     expect(settings.labels.missing).toBe('create');
     expect(settings.labels.max_per_issue).toBe(3);
     expect(settings.pipeline.agent_prompt_version).toBe(4);
@@ -241,7 +298,9 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
   it('标签：missing 只接受三态、颜色是 6 位十六进制、命令白名单必须带 /', () => {
     expect(parses({ labels: { missing: 'boom' } })).toBe(false);
     expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', color: '#d73a4a' }] } })).toBe(false);
-    expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', color: 'd73a4a' }] } })).toBe(true);
+    expect(parses({ labels: { vocabulary: [{ name: 'bug', role: 'other', color: 'd73a4a' }, ...REQUIRED_ROLES] } })).toBe(
+      true,
+    );
     expect(parses({ commands: { allowed: ['review-pr'] } })).toBe(false);
     expect(parses({ commands: { author_associations: ['NONE'] } })).toBe(false);
   });

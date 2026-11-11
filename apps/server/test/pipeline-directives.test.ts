@@ -26,7 +26,13 @@ const ALIASES = ['pi-bot'];
 
 const SETTINGS = parseRepoSettings({
   pipeline: { managers: ['Alice'] },
-  labels: { vocabulary: [{ name: '需求', role: 'requirement' }] },
+  // §4.5：`requirement` / `defect` 两类各至少 1 条，缺一类整份配置解析失败（本文件只关心指令，用最小合法词表）。
+  labels: {
+    vocabulary: [
+      { name: '需求', role: 'requirement' },
+      { name: '缺陷', role: 'defect' },
+    ],
+  },
   commands: { enabled: false },
 });
 

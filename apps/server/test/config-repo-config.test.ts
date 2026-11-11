@@ -22,7 +22,7 @@ import {
 } from '../src/config/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
-import { TEST_MANAGER, validRepoSettings } from './helpers/repo-settings.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 
@@ -37,9 +37,10 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
   });
 
   it('内联 JSON：在默认值上覆写（未写的键仍有默认值）', () => {
-    // `pipeline.managers` 非空是合法配置的前提（§4.5 / Q4），部署默认也得带着它
+    // 部署默认也是一份**合法运行配置**：`managers` 非空 + 词表两角色（§4.5 / Q4），
+    // 所以夹具直接用 `validRepoSettings()` 序列化，只显式覆写本用例关心的键。
     const settings = loadDefaultRepoSettings(
-      `{"dry_run": false, "limits": {"queue_wait_minutes": 3}, "pipeline": {"managers": ["${TEST_MANAGER}"]}}`,
+      JSON.stringify(validRepoSettings({ dry_run: false, limits: { queue_wait_minutes: 3 } })),
     );
     expect(settings.dry_run).toBe(false);
     expect(settings.limits.queue_wait_minutes).toBe(3);
@@ -50,7 +51,7 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
 
   it('文件路径：读文件后按 JSON 解析（相对路径按 cwd 解析）', () => {
     const files = new Map<string, string>([
-      ['/etc/pi-bot/default.json', `{"enabled": false, "pipeline": {"managers": ["${TEST_MANAGER}"]}}`],
+      ['/etc/pi-bot/default.json', JSON.stringify(validRepoSettings({ enabled: false }))],
     ]);
     const settings = loadDefaultRepoSettings('/etc/pi-bot/default.json', (filePath) => {
       const content = files.get(filePath);
@@ -81,7 +82,7 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
       resetDefaultRepoSettingsCache();
       expect(defaultRepoSettings()).toEqual(DEFAULT_REPO_SETTINGS);
 
-      process.env[key] = `{"dry_run": false, "pipeline": {"managers": ["${TEST_MANAGER}"]}}`;
+      process.env[key] = JSON.stringify(validRepoSettings({ dry_run: false }));
       // 缓存命中：还是上一次的值
       expect(defaultRepoSettings().dry_run).toBe(true);
       resetDefaultRepoSettingsCache();
@@ -221,12 +222,16 @@ describe('repos 存储（真 PG）', () => {
 
   it('updateRepoSettings：合法配置写库，并把 enabled / dry_run 列同步过去', async () => {
     await upsertRepo(db.pool, { repo: REPO });
-    const result = await updateRepoSettings(db.pool, REPO, {
-      ...validRepoSettings(),
-      enabled: true,
-      dry_run: false,
-      labels: { ...DEFAULT_REPO_SETTINGS.labels, map: { bug: ['bug', 'needs-info'] } },
-    });
+    const result = await updateRepoSettings(
+      db.pool,
+      REPO,
+      // 只覆写启停与映射；词表仍是 `validRepoSettings()` 的合法两角色（§4.5）
+      validRepoSettings({
+        enabled: true,
+        dry_run: false,
+        labels: { map: { bug: ['bug', 'needs-info'] } },
+      }),
+    );
     expect(result.ok).toBe(true);
 
     const rows = await db.sql('select enabled, dry_run, settings, settings_error from repos');

@@ -1376,6 +1376,10 @@ where "target" = $1 and "intent" = 'comment' and "applied_at" >= now() - interva
           // 是在建 worktree 之前拼好的 —— 所以装配只能由 worker 在建完 worktree 之后回调补一次。
           // light 运行时没有 worktree，worker 自己会跳过这个钩子（§10.5）。
           ...(promptEnricher === undefined ? {} : { promptEnricher }),
+          // §4.1 P3：阶段任务的信封**只开 `comment`** —— 在 `prepareEnvelope()` 就把 `label` /
+          // `create_issue` / `push_branch` 挡掉，模型即使声明了也进不了动作列表。
+          // 写回闸门里那道「pipeline 只允许 comment」是第二道保险（两道都要，别只留一道）。
+          ...(pipelineCommand === null ? {} : { allowedIntents: ['comment' as const] }),
           image: config.worker.image,
           // 任务级时间闸（P2-5）：`pipeline:classify` 取
           // `min(settings.limits.max_task_minutes, PIPELINE_CLASSIFY_MAX_MINUTES)` ——

@@ -275,15 +275,16 @@ head：阶段系统提示词（format_check / classify / agent，可整体覆盖
 
 ---
 
-## 7. 与规划的 8 处偏差
+## 7. 与规划的偏差
 
-每条都写清「规划怎么写 / 实现怎么改 / 为什么」。
+每条都写清「规划怎么写 / 实现怎么改 / 为什么」。§7.1 原本是一处偏差，现已撤销（改回与规划一致，保留编号不动）。
 
-### 7.1 缺标签角色只提示，不阻塞整仓
+### 7.1 标签角色覆盖：偏差已撤销，已按 §4.5 落实
 
-- **规划**：`superRefine` 无条件要求 `vocabulary` 里 `requirement` 与 `defect` 各至少 1 个（§4.5、V17）。
-- **实现**：`labelVocabularyEntrySchema.role` 仍然必填，但**不强制**词表必须含这两种 role；新增 `pipelineLabelCoverage()`（`packages/contract/src/repo-config.ts`）返回 `missingRoles`，设置页只据此给一条 warn + 跳到标签分区的链接。
-- **为什么**：存量仓库不该因为「没配标签角色」整仓失效——配置非法会让 `settings_valid=false`、整个仓库的机器人停摆。流程本身照跑，只是 `requirement`/`defect` 结论不打标（结论仍落 `issue_pipeline.category` 与评论）。
+- **规划**（`docs/plan-fixed-pipeline.md` §4.5、V17）：`superRefine` **无条件生效**——`managers` 非空；`vocabulary` 里 `requirement` 与 `defect` **各至少 1 个**（`other` 可缺省）；`role` 必填。
+- **实现（现状）**：与规划一致。`repoSettingsSchema.superRefine`（`packages/contract/src/repo-config.ts`）在缺 `requirement` 或 `defect` 时向 `['labels','vocabulary']` 报 issue：`分类需要至少一个需求标签与一个缺陷标签：labels.vocabulary 里缺 role='…' 的词表项（role='other' 可缺省）`，保存即 400、`settings_valid=false`。
+- **`pipelineLabelCoverage()` 仍在**，但只作**防御性**展示：schema 已强制覆盖，正常路径拿不到 `missingRoles` 非空；存量数据 / 迁移后尚未在面板配置的仓库拿到的是形状默认值（空词表），面板靠它把「缺哪类角色」直接摆给用户。
+- **预期副作用**：0005 迁移把存量 `settings` 重置为形状默认后，未重新配置的仓库 `settings_valid=false` 属预期（§10.2 / V17），webhook 忽略其事件，重新在面板补 `managers` + 两条标签后恢复。
 
 ### 7.2 `session_turns` 轮换后从 1 起
 

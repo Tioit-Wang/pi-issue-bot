@@ -293,7 +293,7 @@
 CREATE INDEX issue_pipeline_close_scan_idx ON issue_pipeline (state, info_requested_at);
 ```
 
-**与 `issue_states` 的关系**：`issue_states` + `workflows/close-gate.ts` 是死代码，保留不删但不再写入；关闭判定改为只读本表（`state='awaiting_info' AND info_requested_at IS NOT NULL AND info_requested_at < now() - interval '48 hours'`）。
+**与 `issue_states` 的关系**：`issue_states` 与 `workflows/close-gate.ts` 已在 S5 删除，状态与关闭判定的真源是 `issue_pipeline`（`workflows/issue-state.ts` 同批删除；关闭只读本表：`state='awaiting_info' AND info_requested_at IS NOT NULL AND info_requested_at < now() - interval '48 hours'`）。
 
 **同批变更（`0005_pipeline.sql`）**：
 

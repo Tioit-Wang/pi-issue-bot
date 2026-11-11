@@ -91,9 +91,9 @@ export function actionTargetOf(repo: string, suffix: string | number): string {
 /**
  * 缺必填信息时的判定键 / 字面标签名。
  *
- * 与 `workflows/triage.ts::NEEDS_INFO_KEY` 同值：那一份是「判定服务」用的，
- * 这一份是「写回路径」用的。两处都说 `needs-info` 是刻意的（同一个平台级行为），
- * 但不互相 import —— `worker/` 不该为了一个字面量依赖整个 triage 模块。
+ * 与 `workflows/pipeline-labels.ts::NEEDS_INFO_KEY` 同值（`workflows/index.ts` 也转出那一份）：
+ * 那一份是「流水线」用的，这一份是「写回路径」用的。两处都说 `needs-info` 是刻意的
+ * （同一个平台级行为），但不互相 import —— `worker/` 不该为了一个字面量依赖整个 workflows 层。
  */
 export const NEEDS_INFO_KEY = 'needs-info';
 
@@ -241,10 +241,11 @@ async function knownLabelsOf(
 }
 
 /**
- * `labels.missing` 的三个策略（口径与 `workflows/triage.ts::applyMissingPolicy` 一致）。
+ * `labels.missing` 的三个策略（`warn` / `create` / `ignore`）。
  *
- * 为什么这份逻辑在这里再写一遍：`triage.ts` 的那一份是私有的，而 `workflows/`
- * 不在本包的文件范围内。两边共用的是 `normalizeDesired()` 与词表，策略本身只有十来行。
+ * 为什么这份逻辑在这里：旧 `triage.ts` 里的那一份随 S5 删死代码一起删掉了（它只服务于
+ * 无调用者的判定通道），**这里是唯一实现**。两边共用的是 `normalizeDesired()` 与词表，
+ * 策略本身只有十来行。
  */
 async function applyMissingPolicy(input: {
   readonly policy: 'warn' | 'create' | 'ignore';
@@ -650,7 +651,7 @@ export async function executeActions(input: ExecuteActionsInput): Promise<Execut
  * 落一行 `label_decisions`（每轮打标一次）。
  *
  * 为什么失败只吞掉：这张表是**审计**，判定与标签都已经发生；为了让面板多一行解释
- * 而把整轮任务判成失败，方向反了（与 `workflows/triage.ts::record()` 同一取向）。
+ * 而把整轮任务判成失败，方向反了（与 `workflows/label-decisions.ts::recordLabelDecision()` 同一取向）。
  * 注释里写明「静默」是刻意的，避免下一个人以为是漏了 try/catch。
  */
 async function recordLabelDecision(

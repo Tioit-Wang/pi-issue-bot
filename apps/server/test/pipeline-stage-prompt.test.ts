@@ -31,6 +31,7 @@ import { savePrompt } from '../src/prompt/store.ts';
 import { upsertRepo } from '../src/config/repo-config.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'test/stage-prompt';
 const P1_TEXT = '本项目一律用中文回答，贴代码时给出文件路径与行号。';
@@ -176,7 +177,8 @@ describe('buildStagePrompt：阶段 0（light，无 worktree）', () => {
   it('项目版阶段提示词整体覆盖内置默认（Q1）', async () => {
     const created = await upsertRepo(db.pool, {
       repo: REPO,
-      settings: { pipeline: { managers: ['alice'] } },
+      // 合法 `repos.settings`（`managers` 非空 + 词表两角色，§4.5）：非法时 `savePrompt()` 直接报 settings-invalid
+      settings: validRepoSettings(),
     });
     expect(created.ok).toBe(true);
     const saved = await savePrompt(
@@ -253,7 +255,8 @@ describe('createPromptEnricher 的 stage 作用域（V9）', () => {
   beforeEach(async () => {
     const created = await upsertRepo(db.pool, {
       repo: REPO,
-      settings: { pipeline: { managers: ['alice'] } },
+      // 同上：`savePrompt()` 要求仓库 settings 合法（§4.5）
+      settings: validRepoSettings(),
     });
     expect(created.ok).toBe(true);
     const saved = await savePrompt(db.pool, REPO, P1_TEXT);

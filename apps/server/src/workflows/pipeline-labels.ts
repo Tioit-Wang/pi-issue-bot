@@ -19,11 +19,37 @@ import type {
   LabelRole,
   LabelVocabularyEntry,
   PipelineCategory,
+  RepoConfig,
   RepoSettings,
 } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import { normalizeDesired } from './normalize.ts';
 import type { BlockedLabel, NormalizeDesiredResult } from './normalize.ts';
+
+/* ── `needs-info` 标签名（阶段 0/1 的「缺信息」打标共用） ─────────────────────── */
+
+/** 判定键：缺必填信息（`labels.map` 里可以把它改名成仓库自己的标签）。 */
+export const NEEDS_INFO_KEY = 'needs-info';
+
+/** `labels.map` 里没有 `needs-info` 映射时用的字面量标签名。 */
+export const NEEDS_INFO_FALLBACK_LABEL = 'needs-info';
+
+/**
+ * `needs-info` 在该仓库里的实际标签名（映射的第一项；1:N 时取第一个）。
+ *
+ * 为什么这里自带兜底而不是要求每个仓库都写 `labels.map['needs-info']`：
+ * 缺信息打标是**平台级行为**（`docs/impl-multi-repo.md` §0.3），不该因为一个新仓库
+ * 没配映射就静默失效（否则上线即瘫痪）；配了映射的按映射走
+ * （`labels.map['needs-info'] = '缺少信息'` 之类），没配（或映射到空串）就用字面量。
+ */
+export function needsInfoLabelOf(config: RepoConfig): string {
+  const mapped = config.labels.map[NEEDS_INFO_KEY];
+  if (mapped === undefined) {
+    return NEEDS_INFO_FALLBACK_LABEL;
+  }
+  const first = typeof mapped === 'string' ? mapped : mapped[0];
+  return first === undefined || first === '' ? NEEDS_INFO_FALLBACK_LABEL : first;
+}
 
 /** 只要 `warn` 就够（测试注入 `createNullLogger()`，生产注入带 repo 绑定的 child）。 */
 export type PipelineLabelLogger = Pick<Logger, 'warn'>;

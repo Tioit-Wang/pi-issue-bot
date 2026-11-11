@@ -188,6 +188,8 @@ issues.opened ──► [format/pending] ──pass(首次)──► 无评论 �
 | **R5** | `workflows/triage.ts::runTriage()` 无生产调用者 | 真实判定走 `worker/writeback.ts`；`normalizeDesired` 在 `writeback.ts:185` 被调 | 阶段 1 的标签落点是 `worker/writeback.ts`，**不是** `triage.ts`（后者列为待删） |
 | **R6** | **阶段系统提示词与 P1 共享同一条 12k 预算**：`planPromptBudget` 的 `otherLayersChars = baseChars + agentsChars + skillChars`，`baseChars` 就是 `basePrompt` 长度；运行期超预算只丢中间三层（就近 AGENTS → P1 → 技能 → 根 AGENTS），`head`/`tail` 永不丢 | `prompt/budget.ts:105-110`、`skills/assemble.ts:259-287`、`:322-343` | 新增的 `agent` 系统段落在 `base` 里，会**直接扣减 P1 可保存额度**；上限必须收窄（§4.4 / §16.3） |
 
+> （2026-11 注：`workflows/triage.ts` / `close-gate.ts` / `issue-state.ts` 已在 S5 删除，见 `docs/impl-fixed-pipeline.md`；本节表格是当时的结论，不改。）
+
 > R4 是 P0：当前主干 `apps/server` 无法 typecheck（`jobs/index.ts` 缺失）。S0 第一件事就是补它。
 
 ---
@@ -313,7 +315,6 @@ CREATE UNIQUE INDEX "prompt_versions_repo_kind_version_uq" ON "prompt_versions" 
 - `version` **不升**（仍是 `z.literal(1)`）：新段 `.prefault({})`。**Q4 无兼容承诺**：存量 `settings` 由 0005 迁移直接重置为新形状，不保留「老配置解析后自动补默认」路径。
 - `superRefine` **无条件生效**：`managers` 非空；`vocabulary` 里 `requirement` 与 `defect` 各至少 1 个（`other` 可缺省 = 其他类型不打标）。`role` 亦无条件强制。读写同一套严格校验（Q4）：缺 `role`、`managers` 为空、含已删除键（如 `triggers.faces`）一律解析失败 / 保存 400，不为存量让步。
 
-> **实施偏差（已拍板）**：角色覆盖不设硬校验。`role` 仍必填、`managers` 仍必须非空，但 `vocabulary` 不强制「`requirement` 与 `defect` 各至少 1 个」——改由 `pipelineLabelCoverage()` 在面板提示、服务端 `warn`，流程照跑只是不打标。理由：存量仓库不该因缺标签角色整仓失效（V17 与本节其余条款不变；详见 `docs/impl-fixed-pipeline.md` 偏差 1）。
 
 ### 4.6 任务取值
 

@@ -26,6 +26,7 @@ import type {
   EnvelopeStageName,
   EnvelopeStageResult,
   TaskEnvelope,
+  Verdict,
   VerdictEvidence,
 } from '../../../../packages/envelope/src/index.ts';
 
@@ -79,6 +80,43 @@ export type StageResultRejectReason =
   | 'result-not-allowed';
 
 export type StageResultRead = StageResultReadOk | StageResultReadFail;
+
+/* ── 缺必填信息（`verdict.evidence` → `needs-info` 的唯一判据） ───────────────── */
+
+/** `label_decisions.reason` 里引用原文片段的上限（长引用会让面板变成噪声）。 */
+export const REASON_QUOTE_LIMIT = 80;
+
+/** 缺的一项必填信息（来自 `verdict.evidence` 的 `passed !== true`）。 */
+export type MissingEvidence = {
+  readonly rule: string;
+  /** 命中的原文片段（已截断）；`null` = 模型没给证据。 */
+  readonly quote: string | null;
+};
+
+/** 从 verdict 里看出「缺哪些必填信息」：`passed !== true` 的都算缺（「没证据」≠「通过了」）。 */
+export function missingEvidenceOf(verdict: Verdict | null): readonly MissingEvidence[] {
+  const evidence = verdict?.evidence ?? [];
+  return evidence
+    .filter((item) => item.passed !== true)
+    .map((item) => {
+      const quote = (item.quote ?? '').trim();
+      return {
+        rule: item.rule,
+        quote: quote === '' ? null : quote.slice(0, REASON_QUOTE_LIMIT),
+      };
+    });
+}
+
+/** 把缺项写成人读的一句话（`label_decisions.reason`，面板直接展示）。 */
+export function describeMissing(evidence: readonly MissingEvidence[]): string | null {
+  if (evidence.length === 0) {
+    return null;
+  }
+  const items = evidence.map((item) =>
+    item.quote === null ? `${item.rule}（当前正文里找不到依据）` : `${item.rule}（引用：「${item.quote}」）`,
+  );
+  return `缺 ${String(evidence.length)} 项必填信息：${items.join('；')}`;
+}
 
 /* ── 读取 ─────────────────────────────────────────────────────────────────── */
 

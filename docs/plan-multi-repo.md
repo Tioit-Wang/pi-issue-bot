@@ -181,7 +181,7 @@ triggers:
 ### 6.2 打标流水线
 
 1. 模型产出标签名或判定键（现状）。
-2. `normalizeDesired()` 纯函数机械裁剪：词表过滤 → `map` 1:N 展开 → 互斥组（`priority:*` 只留一个）→ `max_labels_per_issue`（≤6）→ 人工否决剔除（人撤掉的标签记 tombstone，不再自动加回）。
+2. `normalizeDesired()`（`apps/server/src/workflows/normalize.ts`，S5 删死代码时从 `triage.ts` 搬来）纯函数机械裁剪：词表过滤 → `map` 1:N 展开 → 互斥组（`priority:*` 只留一个）→ `max_labels_per_issue`（≤6）→ 人工否决剔除（人撤掉的标签记 tombstone，不再自动加回）。
 3. 落标走现有 `planLabelDelta` + `executeLabelPlan`，执行器不改。
 4. `labels.vocabulary: [{name, meaning, color, description, group}]` —— 打标白名单 + 提示词注入源（替掉 B3）。
 5. `labels.missing: warn`（默认，只告警+面板）| `create`（按词表 color/description 建）| `ignore`。

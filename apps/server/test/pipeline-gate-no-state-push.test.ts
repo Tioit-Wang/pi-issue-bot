@@ -22,11 +22,16 @@ import type { TestDb } from './helpers/queries-db.ts';
 const REPO = 'acme/widgets';
 const NOW = new Date('2026-06-01T12:00:00.000Z');
 
-/** 合法配置：`pipeline.managers` 非空 + 词表带 role（否则 `readRepoPolicy` 判 settings 非法）。 */
+/** 合法配置：`pipeline.managers` 非空 + 词表带两角色（§4.5，否则 `readRepoPolicy` 判 settings 非法）。 */
 const VALID_SETTINGS = {
   version: 1,
   pipeline: { managers: ['alice'] },
-  labels: { vocabulary: [{ name: '需求', role: 'requirement' }] },
+  labels: {
+    vocabulary: [
+      { name: '需求', role: 'requirement' },
+      { name: '缺陷', role: 'defect' },
+    ],
+  },
   commands: { enabled: true, allowed: ['/review-pr'], author_associations: ['OWNER', 'MEMBER'] },
 };
 

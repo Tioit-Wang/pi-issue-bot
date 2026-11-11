@@ -35,7 +35,7 @@ import type {
   PipelineTransition,
 } from './pipeline.ts';
 import { commentBodyOf, readStageResult } from './stage-result.ts';
-import { NEEDS_INFO_FALLBACK_LABEL, needsInfoLabelOf } from './triage.ts';
+import { NEEDS_INFO_FALLBACK_LABEL, needsInfoLabelOf } from './pipeline-labels.ts';
 
 /* ── 兜底文案（Q8 唯一例外：故障兜底，不做服务端模板渲染）────────────────────── */
 

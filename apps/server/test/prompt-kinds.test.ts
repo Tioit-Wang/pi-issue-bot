@@ -33,6 +33,7 @@ import {
 } from '../src/skills/stage-prompts.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 
@@ -57,8 +58,9 @@ describe('prompt/store · 四条版本线（kind）', () => {
 
   beforeEach(async () => {
     await db.sql('truncate table prompt_versions, runtime_flags, repos cascade');
-    // settings 必须合法（`pipeline.managers` 非空）：非法时 `savePrompt()` 一律报 settings-invalid。
-    const created = await upsertRepo(runner, { repo: REPO, settings: { pipeline: { managers: ['alice'] } } });
+    // settings 必须合法（§4.5：`pipeline.managers` 非空 **且** 词表 `requirement`/`defect` 各 1 条）：
+    // 非法时 `savePrompt()` 一律报 settings-invalid。逐字段断言见 `config-repo-config.test.ts`。
+    const created = await upsertRepo(runner, { repo: REPO, settings: validRepoSettings() });
     expect(created.ok).toBe(true);
     settings = await settingsOf();
   });

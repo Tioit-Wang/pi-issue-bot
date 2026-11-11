@@ -28,6 +28,7 @@ import type { SkillStore } from '../src/skills/store.ts';
 import type { SkillBundle } from '../src/skills/bundle.ts';
 import { FIXED_NOW, openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 /** `pg.Pool` → `SqlRunner`（`values` 的可变/只读数组形状差异，包一层最省事）。 */
 const runnerOf = (pool: Pool): SqlRunner => ({
@@ -321,12 +322,12 @@ describe('prompt/store（真库）：保存即新版本、回滚不改历史、�
 
   beforeEach(async () => {
     await db.sql('truncate table prompt_versions, runtime_flags, repos cascade');
-    // 建仓库行：settings 必须**合法**（§4.5 / Q4 之后 `pipeline.managers` 非空是硬要求），
-    // 否则 `readRepoPolicy` 判 `settings-valid=false`，`savePrompt()` 一律返回 settings-invalid。
+    // 建仓库行：settings 必须**合法**（§4.5 / Q4 之后 `pipeline.managers` 非空 + 词表 `requirement`/`defect`
+    // 各 1 条都是硬要求），否则 `readRepoPolicy` 判 `settings-valid=false`，`savePrompt()` 一律返回 settings-invalid。
     // `prompt` 段默认 `current_version: 0`，`pipeline.*_prompt_version` 默认 0。
     const created = await upsertRepo(runner, {
       repo: PROMPT_REPO,
-      settings: { pipeline: { managers: ['alice'] } },
+      settings: validRepoSettings(),
     });
     expect(created.ok).toBe(true);
   });

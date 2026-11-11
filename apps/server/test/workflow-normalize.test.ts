@@ -9,10 +9,19 @@ import { describe, expect, it } from 'vitest';
 
 import { humanVetoedFrom, normalizeDesired, toLabelTargets, vocabularyIndex } from '../src/workflows/normalize.ts';
 import type { LabelsConfig } from '../../../packages/contract/src/index.ts';
-import { parseValidSettings, vocabularyWithRoles } from './helpers/repo-settings.ts';
+import { labelsConfigSchema } from '../../../packages/contract/src/index.ts';
+import { vocabularyWithRoles } from './helpers/repo-settings.ts';
 
-/** `labels` 段夹具：走合法配置外壳 —— `pipeline.managers` 非空是解析前提（§4.5 / Q4）。 */
-const labelsOf = (input: unknown): LabelsConfig => parseValidSettings({ labels: input }).labels;
+/**
+ * `labels` 段夹具：走**形状层**（`labelsConfigSchema`）而不是 `repoSettingsSchema`。
+ *
+ * 为什么不走 `parseValidSettings()` / `parseRepoSettings()`：§4.5 之后整份配置要求
+ * `labels.vocabulary` 里 `requirement` / `defect` 各至少 1 条，而本文件有多条用例的**前提**恰好是
+ * 「词表为空」或「缺某一类角色」（词表过滤、互斥组、上限的根本不用词表）。走严格层这些前提就表达不出来，
+ * 用例会被默认词表悄悄填满，断言全变成 `desired: []`（假红）。
+ * 被测函数（`normalizeDesired`）只吃 `labels` 段，形状层就是它的真实输入契约。
+ */
+const labelsOf = (input: unknown): LabelsConfig => labelsConfigSchema.parse(input);
 
 describe('normalizeDesired：映射与词表', () => {
   it('1:N 展开保持输入顺序，并记下每个标签来自哪个判定键', () => {

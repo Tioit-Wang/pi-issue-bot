@@ -34,7 +34,7 @@ import { savePrompt } from '../src/prompt/store.ts';
 import { upsertRepo } from '../src/config/repo-config.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
-import { parseValidSettings } from './helpers/repo-settings.ts';
+import { parseValidSettings, validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'test/agent-prompt';
 const AGENTS_TEXT = '提交前必须跑 pnpm -c typecheck；不要动 migrations/。';
@@ -90,7 +90,8 @@ beforeEach(async () => {
   await db.sql('delete from repos where repo_full_name = $1', [REPO]);
   const created = await upsertRepo(db.pool, {
     repo: REPO,
-    settings: { pipeline: { managers: ['alice'] } },
+    // 合法 `repos.settings`（`managers` 非空 + 词表两角色，§4.5）：非法时 `savePrompt()` 报 settings-invalid
+    settings: validRepoSettings(),
   });
   expect(created.ok).toBe(true);
 });

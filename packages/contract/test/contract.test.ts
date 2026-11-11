@@ -321,9 +321,13 @@ describe('多仓库改造后的契约（W3-H）', () => {
       archivedAt: '2026-06-01T00:00:00Z',
     };
     expect(repoSettingsResponseSchema.safeParse(view).success).toBe(true);
-    // 请求体 = settings 本身（默认值会被补齐）
-    // 请求体 = settings 本身（默认值会被补齐；`managers` 必须非空，Q4）
-    expect(saveRepoSettingsRequestSchema.parse({ pipeline: { managers: ['alice'] } }).version).toBe(1);
+    // 请求体 = settings 本身（默认值会被补齐；`managers` 非空 + 词表含 requirement/defect，Q4 / §4.5）
+    expect(
+      saveRepoSettingsRequestSchema.parse({
+        pipeline: { managers: ['alice'] },
+        labels: { vocabulary: [{ name: '需求', role: 'requirement' }, { name: '缺陷', role: 'defect' }] },
+      }).version,
+    ).toBe(1);
     expect(saveRepoSettingsRequestSchema.safeParse({}).success).toBe(false);
   });
 
