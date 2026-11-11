@@ -3,12 +3,14 @@ import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { cn } from '../../lib/utils.ts';
 
 /**
- * 按钮（D1 原语）：四个语义变体 × 三个高度档（28 / 32 / 36px）。
+ * 按钮（原语）：四个语义变体 × 三个高度档（28 / 30 / 32px）。
  *
- * - `primary`：品牌实底，**一屏只留给最重要的那一个动作**；
+ * - `primary`：**墨色实心**（底 `--primary` + 页面底色文字）——一屏只留给最重要的那一个动作；
  * - `secondary`：面 + hairline，最常见的「次要动作」；
  * - `ghost`：无底无边，工具条/行内动作；
  * - `danger`：破坏性动作（删除、强制重跑），必须二次确认。
+ *
+ * 青色 `--brand` **不是**按钮底色：它只留给当前选区与焦点环。
  *
  * 兼容层：页面里既有的 `default` / `outline` / `destructive` 继续可用，指向新变体，
  * 免得为了改个名字去动七个页面。
@@ -20,31 +22,34 @@ const buttonVariants = cva(
   [
     'relative inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md',
     'font-medium select-none',
-    'transition-[background-color,border-color,color,opacity] duration-[120ms] ease-out-quint',
-    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+    // 只过渡具体属性 + 令牌时长（禁止全属性过渡）
+    'transition-[background-color,border-color,color,opacity] duration-[var(--dur-fast)] ease-out-quint',
+    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
     'disabled:pointer-events-none disabled:opacity-50',
     'aria-busy:cursor-progress',
   ],
   {
     variants: {
       variant: {
-        primary: 'bg-brand text-brand-foreground hover:bg-brand/90 active:bg-brand/95',
+        primary: 'bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active',
         secondary:
-          'border border-border bg-card text-foreground hover:bg-muted active:bg-muted/80',
+          'border border-border bg-card text-foreground hover:border-border-strong hover:bg-muted active:bg-muted',
         ghost: 'bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
-        danger: 'bg-danger text-white hover:bg-danger/90 active:bg-danger/95',
+        danger:
+          'bg-danger text-destructive-foreground hover:bg-danger/90 active:bg-danger/80',
         /* 兼容旧名 */
-        default: 'bg-brand text-brand-foreground hover:bg-brand/90 active:bg-brand/95',
-        outline: 'border border-border bg-card text-foreground hover:bg-muted active:bg-muted/80',
-        destructive: 'bg-danger text-white hover:bg-danger/90 active:bg-danger/95',
+        default: 'bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active',
+        outline:
+          'border border-border bg-card text-foreground hover:border-border-strong hover:bg-muted active:bg-muted',
+        destructive: 'bg-danger text-destructive-foreground hover:bg-danger/90 active:bg-danger/80',
       },
       size: {
-        sm: 'h-7 px-2 text-xs',
-        md: 'h-8 px-2.5 text-sm',
-        lg: 'h-9 px-3.5 text-sm',
+        sm: 'h-[var(--control-sm)] px-2 text-xs',
+        md: 'h-[var(--control-md)] px-2.5 text-sm',
+        lg: 'h-[var(--control-lg)] px-3 text-sm',
         /** 只放一个图标（正方形）。 */
-        icon: 'h-8 w-8 p-0',
-        'icon-sm': 'h-7 w-7 p-0',
+        icon: 'size-[var(--control-md)] p-0',
+        'icon-sm': 'size-[var(--control-sm)] p-0',
       },
     },
     defaultVariants: { variant: 'primary', size: 'md' },

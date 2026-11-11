@@ -31,6 +31,7 @@ import {
 import type { CountingGithubApi, FakeRacpHost as FakeHost } from './helpers/e2e-harness.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validSettingsJson } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 
@@ -69,9 +70,9 @@ describe('e2e 信封不合规：envelopes.valid=false · actions 0 行 · failur
     db = await openTestDb();
     await db.truncate();
     await db.sql(
-      `insert into repos (repo_full_name, enabled, dry_run, config, config_valid, config_error)
-       values ($1, true, true, '{}'::jsonb, true, null)`,
-      [REPO],
+      `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid)
+       values ($1, true, true, $2::jsonb, true)`,
+      [REPO, validSettingsJson()],
     );
 
     host = await FakeRacpHost.start({ script: { text: INVALID_ENVELOPE_TEXT } });
@@ -144,8 +145,12 @@ describe('e2e 信封不合规：envelopes.valid=false · actions 0 行 · failur
     // 4) ★ GitHub 零副作用
     expect(github.nonGetCount()).toBe(0);
 
-    // 5) 容器照样被处置（不留垃圾）
-    expect(report.disposed).toBe(true);
+    // 5) 阶段 0 走 **light 运行时**（§5 / V1）：没有容器，所以没有「处置」这回事
+    //    —— 原先这里断言 `disposed === true` 是 `auto:triage` 起容器时代的写法，
+    //    现在这条 issue 只产生 `pipeline:format`（light）。容器零创建本身就是「不留垃圾」。
+    expect(report.runtimeMode).toBe('light');
+    expect(report.containerId).toBeNull();
+    expect(report.disposed).toBe(false);
 
     // 6) dry-run 下**兜底评论也不发**：`actions` 0 行、非 GET 0 次这两条是 M0 的口径，
     //    兜底回复（`worker/fallback.ts`）只在真实写回时才生效，所以这里 `fallback` 必须是 null。

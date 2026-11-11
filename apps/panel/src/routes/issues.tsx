@@ -16,7 +16,7 @@ import { Tooltip } from '../components/ui/tooltip.tsx';
 import type { IssueListItem, IssuesQuery } from '../lib/contract.ts';
 import { EMPTY, formatCount, formatTimeCell } from '../lib/format.ts';
 import { useIssuesInfinite, useIssueSession } from '../lib/queries.ts';
-import { repoIssuePath } from '../lib/repo-route.ts';
+import { repoGitHubUrl, repoIssuePath } from '../lib/repo-route.ts';
 import { useViewportMode } from '../layout/use-viewport.ts';
 import { cn } from '../lib/utils.ts';
 import { PageShell } from './PageShell.tsx';
@@ -36,8 +36,9 @@ import { PageShell } from './PageShell.tsx';
  * | 搜索 | **客户端** | `q` | 契约 `issuesQuerySchema` 没有 `q`（标题只在 jsonb 投递里），debounce 300ms |
  * | 标签 | **客户端** | `label` | 契约没有 `label`（`.strict()` 会 400），只在已加载的行里精确匹配 |
  * | 时间窗 | **客户端** | `window` | 契约没有 `from`/`to`，按 `lastActivityAt` 过滤已加载的行 |
+ * | 阶段 / 流水线状态 / 类别 | **客户端** | `stage` / `pstate` / `category` | 契约没有流水线维度参数；`stage=unassigned` = 没有 `issue_pipeline` 行 |
  *
- * 客户端那三项必须说清口径，否则「搜不到」会被当成「真的没有」：列表 caption 与
+ * 客户端那几项必须说清口径，否则「筛不到」会被当成「真的没有」：列表 caption 与
  * 工具条右侧都写明「只作用于已加载的 N 行」。
  *
  * 键盘（列表容器 `tabIndex=0`，`aria-keyshortcuts` 说明）：
@@ -46,8 +47,25 @@ import { PageShell } from './PageShell.tsx';
  */
 const PAGE_SIZE = 10;
 
-/** 认识的 URL 键：同步时**只动这几个**，其余原样保留（`?mock=error` 这类 mock 参数）。 */
-const FILTER_KEYS = ['repo', 'kind', 'state', 'status', 'awaiting', 'label', 'window', 'q'] as const;
+/**
+ * 认识的 URL 键：同步时**只动这几个**，其余原样保留（`?mock=error` 这类 mock 参数）。
+ *
+ * `stage` / `pstate` / `category` 是**客户端**筛选（服务端 `issuesQuerySchema` 是 `.strict()`，
+ * 没有流水线维度的参数）：它们只在已加载的行里生效，口径写在工具条的 (i) 与 caption 里。
+ */
+const FILTER_KEYS = [
+  'repo',
+  'kind',
+  'state',
+  'status',
+  'awaiting',
+  'label',
+  'window',
+  'q',
+  'stage',
+  'pstate',
+  'category',
+] as const;
 /** 选中键（`?selected=acme/widgets#issue17`）——单独一条，清除筛选时保留。 */
 const SELECTED_KEY = 'selected';
 
@@ -101,6 +119,9 @@ function readFilters(params: URLSearchParams): Filters {
     label: value('label'),
     window: value('window'),
     q: value('q'),
+    stage: value('stage'),
+    pstate: value('pstate'),
+    category: value('category'),
   };
 }
 
@@ -125,6 +146,51 @@ function matchesLabel(item: IssueListItem, label: string): boolean {
   return item.labels.includes(label);
 }
 
+/** 流水线维度：`stage` 取 `PipelineStage` + 「未入流水线」（`pipeline === null`）。 */
+const STAGE_OPTIONS = [
+  { value: 'format', label: '阶段 0 · 格式检查' },
+  { value: 'classify', label: '阶段 1 · 标签分类' },
+  { value: 'agent', label: '阶段 2 · Agent' },
+  { value: 'closed', label: '已结束' },
+  { value: 'unassigned', label: '未入流水线' },
+] as const;
+
+const PSTATE_OPTIONS = [
+  { value: 'pending', label: '待跑' },
+  { value: 'running', label: '执行中' },
+  { value: 'awaiting_info', label: '待人补充' },
+  { value: 'ready', label: '已就绪' },
+  { value: 'blocked', label: '阻塞' },
+  { value: 'closed', label: '已关闭' },
+] as const;
+
+const CATEGORY_OPTIONS = [
+  { value: 'requirement', label: '需求' },
+  { value: 'defect', label: '缺陷' },
+  { value: 'not-found', label: '查不到' },
+  { value: 'other', label: '其他' },
+] as const;
+
+/**
+ * 流水线三个筛选都是**客户端过滤**（服务端 `issuesQuerySchema` 没有这些参数，`stage` 传上去会 400）。
+ *
+ * 「未入流水线」是一等筛选项，不是一个空值：`pipeline === null` 与「阶段 0 待跑」是两件事。
+ */
+function matchesStage(item: IssueListItem, stage: string): boolean {
+  if (stage === '') return true;
+  if (stage === 'unassigned') return item.pipeline === null;
+  return item.pipeline !== null && item.pipeline.stage === stage;
+}
+
+function matchesPipelineState(item: IssueListItem, state: string): boolean {
+  if (state === '') return true;
+  return item.pipeline !== null && item.pipeline.state === state;
+}
+
+function matchesCategory(item: IssueListItem, category: string): boolean {
+  if (category === '') return true;
+  return item.pipeline !== null && item.pipeline.category === category;
+}
 /** 焦点在输入类控件里时不接管 j/k/`/`。 */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -199,9 +265,12 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
         (item) =>
           matchesSearch(item, filters.q) &&
           matchesWindow(item, filters.window, now) &&
-          matchesLabel(item, filters.label),
+          matchesLabel(item, filters.label) &&
+          matchesStage(item, filters.stage) &&
+          matchesPipelineState(item, filters.pstate) &&
+          matchesCategory(item, filters.category),
       ),
-    [loaded, filters.q, filters.window, filters.label, now],
+    [loaded, filters.q, filters.window, filters.label, filters.stage, filters.pstate, filters.category, now],
   );
 
   const selectedValue = searchParams.get(SELECTED_KEY);
@@ -211,7 +280,13 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
   );
 
   const anyFilter = FILTER_KEYS.some((key) => (key === 'repo' && repoLock !== undefined ? false : filters[key] !== ''));
-  const clientFilter = filters.q !== '' || filters.window !== '' || filters.label !== '';
+  const clientFilter =
+    filters.q !== '' ||
+    filters.window !== '' ||
+    filters.label !== '' ||
+    filters.stage !== '' ||
+    filters.pstate !== '' ||
+    filters.category !== '';
 
   const summary = useMemo(() => {
     let running = 0;
@@ -346,6 +421,9 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
       ? `共 ${formatCount(rows.length)} 行 · 按最后更新倒序`
       : `显示 ${formatCount(rows.length)} / 已加载 ${formatCount(loaded.length)} 行 · 按最后更新倒序`;
 
+  /** 空态的动作：仓库锁定且没有任何筛选时，给一条「去 GitHub 建 issue」的出口。 */
+  const repoGithubIssuesUrl = repoLock === undefined ? null : repoGitHubUrl(repoLock);
+
   return (
     <PageShell
       title="Issue 中心"
@@ -446,6 +524,33 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
             }}
           />
           <Select
+            aria-label="阶段筛选"
+            options={STAGE_OPTIONS}
+            placeholder="全部阶段"
+            value={filters.stage}
+            onChange={(event) => {
+              setFilter('stage', event.target.value);
+            }}
+          />
+          <Select
+            aria-label="流水线状态筛选"
+            options={PSTATE_OPTIONS}
+            placeholder="全部流水线状态"
+            value={filters.pstate}
+            onChange={(event) => {
+              setFilter('pstate', event.target.value);
+            }}
+          />
+          <Select
+            aria-label="类别筛选"
+            options={CATEGORY_OPTIONS}
+            placeholder="全部类别"
+            value={filters.category}
+            onChange={(event) => {
+              setFilter('category', event.target.value);
+            }}
+          />
+          <Select
             aria-label="标签筛选"
             options={labelOptions}
             placeholder="全部标签"
@@ -518,8 +623,22 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
         isEmpty={rows.length === 0}
         emptyText={
           anyFilter || clientFilter
-            ? `当前筛选下没有会话${clientFilter ? `（标签/搜索/时间窗只覆盖已加载的 ${formatCount(loaded.length)} 行，可以继续加载或清除筛选）` : '。换个仓库/类型/状态，或清除筛选。'}`
-            : '还没有处理过的 Issue 会话 —— 在 issue 里 @ 机器人或发一条 /命令 就会出现在这里（去「系统」页可确认在线状态）。'
+            ? `当前筛选下没有会话${clientFilter ? `（标签/搜索/时间窗/阶段只覆盖已加载的 ${formatCount(loaded.length)} 行，可以继续加载或清除筛选）` : '。换个仓库/类型/状态，或清除筛选。'}`
+            : repoLock === undefined
+              ? '还没有处理过的 Issue 会话 —— 在 issue 里 @ 机器人 或发一条 /命令 就会出现在这里（去「系统」页可确认在线状态）。'
+              : '当前仓库没有 issue 记录'
+        }
+        emptyAction={
+          repoGithubIssuesUrl === null || anyFilter || clientFilter ? undefined : (
+            <a
+              className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'mt-1')}
+              href={repoGithubIssuesUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              打开 GitHub
+            </a>
+          )
         }
         onRetry={() => {
           void refetch();

@@ -135,6 +135,9 @@ export default tseslint.config(
       'images/**',
       'deploy/**',
       'migrations/**',
+      // `design-demo/` 是视觉参照用的静态 demo（纯 HTML/CSS/JS + 一个 build.mjs，不进任何构建产物）。
+      // 它的脚本是设计稿的一部分，不是产品代码：纳入 lint 只会把「演示脚本写得随意」变成主干红灯。
+      'design-demo/**',
     ],
   },
 

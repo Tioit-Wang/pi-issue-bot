@@ -27,6 +27,7 @@ import {
 import type { WebhookAck, WebhookDeps } from '../src/http/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 const FIXED_NOW = new Date('2026-06-01T12:00:00.000Z');
@@ -73,7 +74,8 @@ async function seedRepo(
       repo,
       options.enabled ?? true,
       options.dryRun ?? true,
-      JSON.stringify(options.settings ?? { version: 1 }),
+      // `pipeline.managers` 非空是解析前提（§4.5 / Q4）：给形状里剩下的默认值才不是「配置无效」
+      JSON.stringify(options.settings ?? validRepoSettings()),
       options.installationId ?? null,
     ],
   );
@@ -532,11 +534,14 @@ describe('webhook 纯函数', () => {
 
   it('checkCommandGate：命令任务在 association 不达标时被拒', () => {
     // 用契约的 parseRepoConfig 造配置：默认值只有一处来源，测试不手抄 schema 默认值
-    const config = parseRepoConfig({
-      version: 1,
-      dry_run: false,
-      commands: { allowed: ['/review-pr'], author_associations: ['OWNER'] },
-    });
+    // （`pipeline.managers` 非空是解析前提，§4.5 / Q4）
+    const config = parseRepoConfig(
+      validRepoSettings({
+        version: 1,
+        dry_run: false,
+        commands: { allowed: ['/review-pr'], author_associations: ['OWNER'] },
+      }),
+    );
     const plan = {
       command: '/review-pr',
       kind: 'command:/review-pr',

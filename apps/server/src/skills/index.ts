@@ -49,13 +49,45 @@ export type {
 // ── M1：提示词装配（AGENTS.md + 技能层）──────────────────────────────────────
 export { collectAgentsMd } from './agents-md.ts';
 export type { AgentsMdResult, AgentsMdSection, CollectAgentsMdInput } from './agents-md.ts';
-export { assemblePrompt, DEFAULT_ASSEMBLE_BUDGET_CHARS } from './assemble.ts';
+export { assemblePrompt, DEFAULT_ASSEMBLE_BUDGET_CHARS, stageLayers } from './assemble.ts';
 export type {
   AssemblePromptInput,
   AssemblePromptResult,
   AssemblePromptStats,
   AssembleSkillLayer,
+  AssembleStage,
+  AssembleStageLayer,
 } from './assemble.ts';
+
+// ── S2-a：四类提示词（`kind=project|format_check|classify|agent`）────────────────
+export {
+  STAGE_PROMPT_DEFAULTS,
+  STAGE_PROMPT_PLACEHOLDERS,
+  STAGE_REQUIRED_PLACEHOLDERS,
+  STAGE_PROMPT_KINDS,
+  ASSEMBLE_STAGE_OF_KIND,
+  GATE_NOTICE_PROMPT,
+  PIPELINE_PROMPT_LIMITS,
+  isStageKind,
+  pipelinePromptLimit,
+  stagePromptDefault,
+} from './stage-prompts.ts';
+export type { StagePromptKind } from './stage-prompts.ts';
+export {
+  STAGE_SUPPLEMENT_LIMITS,
+  renderGateNoticePrompt,
+  renderStageLabelList,
+  renderStagePrompt,
+  validateStagePrompt,
+} from './prompt.ts';
+export type {
+  RenderStagePromptInput,
+  RenderStagePromptResult,
+  StagePromptIssues,
+  StagePromptLimits,
+  StagePromptSupplement,
+  StagePromptVars,
+} from './prompt.ts';
 
 // ── M2：zip → 技能包 → 存储 ───────────────────────────────────────────────────
 export { readZipEntries, ZIP_LIMITS, ZipError } from './zip.ts';

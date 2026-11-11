@@ -18,7 +18,7 @@ import type { FeedbackDeps, FeedbackOutcome } from '../feedback/index.ts';
 import type { BotLabelLedger, GithubWriteApi } from '../github/index.ts';
 import type { LabelWritebackPolicy } from './writeback.ts';
 import type { FailureClass, FailureSignal, RetryDecision } from '../queue/index.ts';
-import type { TurnDriverOps } from '../runtime/turn-driver.ts';
+import type { SessionPlan, TurnDriverOps } from '../runtime/turn-driver.ts';
 import type { TurnUsageReader } from '../cost/index.ts';
 import type {
   ContainerStateSnapshot,
@@ -220,9 +220,13 @@ export const RUN_OUTCOMES = ['succeeded', 'failed', 'timed-out', 'cancelled', 'd
  * worker 不该为了三个字面量去依赖 db 层）。
  *
  * `command` = 人工通道（`@bot /命令`、`@bot 提问`）→ 允许一条最终回答；
- * `webhook` / `cron` = 自动通道 → 只留 reaction + 标签，零评论（plan §5）。
+ * `webhook` / `cron` = 自动通道 → 只留 reaction + 标签，零评论（plan §5）；
+ * `pipeline` = **固定流水线的阶段任务**（`pipeline:format|classify|notice`）→
+ * 唯一允许自动评论的来源，且只放行这三种命令（`worker/writeback.ts::isWriteBackAllowed`）。
+ * 这一项与契约层 `TASK_SOURCES` 对齐后，`writeback.ts` 里那个
+ * `WritebackTaskSource = TaskSourceKind | 'pipeline'` 的临时放宽可以删掉（S2-b 遗留说明）。
  */
-export const TASK_SOURCE_KINDS = ['webhook', 'command', 'cron'] as const;
+export const TASK_SOURCE_KINDS = ['webhook', 'command', 'cron', 'pipeline'] as const;
 
 export type TaskSourceKind = (typeof TASK_SOURCE_KINDS)[number];
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
@@ -304,6 +308,22 @@ export interface TaskRunInput {
    * 从 `command` 推（`auto:*` 判定类命令 → `webhook`），保证「不传也安全」。
    */
   readonly source?: TaskSourceKind;
+  /**
+   * 运行时模式（`docs/plan-fixed-pipeline.md` §5 / §10.5）：
+   *  - `sandboxed`（**缺省**）：worktree + 容器 + exec 代理 + 生命周期 + diff 采集（现状，老任务不变）；
+   *  - `light`：只有 `host.ready()` + 一次 turn。阶段 0（格式检查）与门禁回执（`pipeline:notice`）
+   *    只读正文判定，**不需要容器**：跳过 worktree/容器/代理/处置/diff，直接跑一轮。
+   *
+   * 缺省写 `sandboxed` 而不是 `light`：任何没显式声明的任务都必须走完整沙箱（安全侧默认）。
+   */
+  readonly runtimeMode?: 'light' | 'sandboxed';
+  /**
+   * 会话计划（缺省 `ephemeral` = 一个任务一个会话、跑完归档）。
+   *
+   * 阶段 2 的 `@` 复用传 `{mode:'persistent', sessionId, after}`（§7 / S4）；
+   * 阶段 0/1 与老任务不传，行为与接线前一致。
+   */
+  readonly session?: SessionPlan;
 };
 
 /* ── 依赖 ──────────────────────────────────────────────────────────────────── */
@@ -345,6 +365,13 @@ export interface TaskRunnerDeps {
   readonly usage?: TurnUsageReader;
   /** worker 镜像（`pi-worker:node22` 等）。 */
   readonly image: string;
+  /**
+   * `light` 运行时的「工作目录」：没有 worktree，但 `project/register` 仍要一个 path。
+   *
+   * 缺省用操作系统临时目录（`os.tmpdir()`）—— light 只做文本判定，不读仓库文件；
+   * 绝不能退化成「用 bot 自己的 cwd」：那等于把服务端仓库当工作区交给 agent。
+   */
+  readonly lightWorkdir?: string;
   readonly memoryTier?: SandboxMemoryTier;
   /** 网络模式（`pi-jobs`；高风险任务可传 `none`）。 */
   readonly networkMode?: string;
@@ -461,6 +488,17 @@ export interface TaskRunReport {
   readonly durationMs: number;
   readonly disposed: boolean;
   readonly retryable: boolean;
+  /** 本轮用的运行时（`light` = 零容器/零 worktree；面板据此解释「为什么没有容器名」）。 */
+  readonly runtimeMode: 'light' | 'sandboxed';
+  /** 会话模式（`ephemeral` 归档 / `persistent` 留着复用）。 */
+  readonly sessionMode: 'ephemeral' | 'persistent';
+  /**
+   * 本轮结束时的会话游标（`events` 最后一条的 `sequence`）。
+   * 上层写 `issue_pipeline.session_cursor`，下一轮 `persistent` 用它当 `after`（§7）。
+   */
+  readonly sessionCursor: number | null;
+  /** `true` = 本想复用会话但 `session/attach` 失败（已新建会话；上层落 `blocked_reason='session-reset'`）。 */
+  readonly sessionReset: boolean;
 }
 
 /** 运行器：一个进程一个，可并发跑多个 run（各自独立的 job 目录与容器）。 */

@@ -10,6 +10,10 @@
  *  - `issue-state.ts`     `issue_states` 的读写（唯一写入面）
  *  - `bot-labels.ts`      `bot_labels` 的记账实现（`BotLabelLedger` 的 PG 版 + 归因列）
  *  - `ports.ts`           注入面（worker 的窄接口 + SQL / reaction / 标签目录端口）
+ *  - `pipeline.ts`        `issue_pipeline` 的状态机 + 读写（`decideTransition` 纯函数，§2 转移表）
+ *  - `stage-result.ts`    阶段信封的读取与校验（stage 配对 / `path:line` 强制降级）
+ *  - `pipeline-labels.ts` 分类结论 → 词表标签（走 `normalizeDesired` 的互斥组 / 上限）
+ *  - `pipeline-directives.ts` 管理员指令解析（`/recheck`、`/pipeline next|prev`）
  *
  * **已经删除的文件**：`compliance.ts`（合规评论）。缺信息不再发评论，改为
  * `needs-info` 标签 + `confused` reaction（`docs/impl-multi-repo.md` §0.3）。
@@ -85,6 +89,57 @@ export type {
   TriageResult,
 } from './triage.ts';
 export { toSqlRunner } from './ports.ts';
+export {
+  PIPELINE_SQL,
+  applyTransition,
+  buildUpdateStatement,
+  createReadyRow,
+  decideTransition,
+  ensurePipeline,
+  gateNoticeAllowed,
+  isPipelineCommand,
+  loadPipeline,
+  pipelineAnchor,
+  recheckCooldownElapsed,
+  toPipelineRow,
+} from './pipeline.ts';
+export type {
+  PipelineEffects,
+  PipelineEvent,
+  PipelineInit,
+  PipelineKey,
+  PipelineQueryable,
+  PipelineRow,
+  PipelineTransition,
+  SupplementActor,
+} from './pipeline.ts';
+export {
+  CODE_QUOTE_RE,
+  CODE_RULE_PREFIX,
+  CHECKED_RULE_PREFIX,
+  classifyEvidenceScope,
+  codeEvidenceOf,
+  commentBodyOf,
+  evidenceOf,
+  readStageResult,
+  stageOfPipelineCommand,
+} from './stage-result.ts';
+export type {
+  StageResultRead,
+  StageResultReadFail,
+  StageResultReadOk,
+  StageResultRejectReason,
+} from './stage-result.ts';
+export { labelsOfRole, pipelineLabelPlan, pipelineLabelsFor, pipelineLabelsToApply } from './pipeline-labels.ts';
+export type { PipelineLabelLogger } from './pipeline-labels.ts';
+export {
+  appendMentions,
+  describeDirective,
+  isPipelineManager,
+  managerMentions,
+  parsePipelineDirective,
+} from './pipeline-directives.ts';
+export type { PipelineActor, PipelineDirective } from './pipeline-directives.ts';
 export type {
   EnvelopeRunner,
   LabelCatalogPort,

@@ -15,8 +15,10 @@ import {
   targetOf,
 } from '../src/workflows/command-gate.ts';
 import type { CommandGateInput } from '../src/workflows/command-gate.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
-const config = parseRepoConfig({ version: 1 }).commands;
+// `pipeline.managers` 非空是配置解析前提（§4.5 / Q4）；本文件只关心 `commands` 段。
+const config = parseRepoConfig(validRepoSettings({ version: 1 })).commands;
 
 const base = (overrides: Partial<CommandGateInput> = {}): CommandGateInput => ({
   repo: 'acme/widgets',

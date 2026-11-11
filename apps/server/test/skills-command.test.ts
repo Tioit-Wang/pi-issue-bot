@@ -9,8 +9,10 @@ import { describe, expect, it } from 'vitest';
 import { parseRepoConfig } from '../../../packages/contract/src/index.ts';
 import { createSkillRegistry, REPO_SKILLS_DIR } from '../src/skills/registry.ts';
 import { parseCommand, parseCommandMention, usageMessage } from '../src/skills/command.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
-const commands = parseRepoConfig({ version: 1 }).commands;
+// `pipeline.managers` 非空是配置解析前提（§4.5 / Q4）；本文件只关心 `commands` 段。
+const commands = parseRepoConfig(validRepoSettings({ version: 1 })).commands;
 
 describe('parseCommandMention：只做词法切分', () => {
   it('找到提及 + 命令 + key=value', () => {

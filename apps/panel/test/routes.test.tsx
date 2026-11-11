@@ -54,7 +54,7 @@ function renderAt(path: string): void {
 }
 
 describe('路由表', () => {
-  it('冻结的路由表：全局 6 条 + 当前仓库 7 条 + 旧路径 4 条', () => {
+  it('冻结的路由表：全局 6 条 + 当前仓库 8 条 + 旧路径 4 条', () => {
     expect(PANEL_ROUTES.map((route) => route.path)).toEqual([
       '/',
       '/costs',
@@ -65,6 +65,7 @@ describe('路由表', () => {
       '/repos/:repo',
       '/repos/:repo/issues',
       '/repos/:repo/issues/:kind/:number',
+      '/repos/:repo/pipeline',
       '/repos/:repo/runs',
       '/repos/:repo/runs/:id',
       '/repos/:repo/settings',
@@ -76,9 +77,9 @@ describe('路由表', () => {
     ]);
   });
 
-  it('导航只有两组：全局 6 条（NAV_ITEMS）+ 当前仓库 4 条；详情页与旧路径不进导航', () => {
+  it('导航只有两组：全局 6 条（NAV_ITEMS）+ 当前仓库 5 条；详情页与旧路径不进导航', () => {
     expect(NAV_ITEMS.map((item) => item.path)).toEqual(['/', '/costs', '/quality', '/audit', '/skills', '/system']);
-    expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'runs', 'settings']);
+    expect(REPO_NAV_KEYS).toEqual(['workspace', 'issues', 'pipeline', 'runs', 'settings']);
     expect(PANEL_ROUTES.filter((route) => route.nav).map((route) => route.path)).toEqual([
       '/',
       '/costs',
@@ -88,6 +89,7 @@ describe('路由表', () => {
       '/system',
       '/repos/:repo',
       '/repos/:repo/issues',
+      '/repos/:repo/pipeline',
       '/repos/:repo/runs',
       '/repos/:repo/settings',
     ]);
@@ -108,7 +110,7 @@ describe('路由表', () => {
     // 当前仓库
     { path: '/repos/acme__widgets', heading: 'acme/widgets' },
     { path: '/repos/acme__widgets/issues', heading: 'Issue 中心' },
-    // Issue 详情：h1 = 「issue#17」+ issue 标题
+    { path: '/repos/acme__widgets/pipeline', heading: '流水线' },
     { path: '/repos/acme__widgets/issues/issue/17', heading: /^issue#17/u },
     { path: '/repos/acme__widgets/runs', heading: '运行' },
     // 运行详情：h1 = 命令 + 任务 id

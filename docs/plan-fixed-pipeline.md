@@ -1,6 +1,7 @@
 # 固定流水线改造 · 完整计划 · v1.5
 
 > 状态：**方案定稿（待实施）**。2026-11-11：王哥拍定 8 条决策（§1.1），其余按本文默认值落地；09:54 追加 4 条拍板（§1.4 / §16），覆盖 P10、扩展 P4；10:03 追加 3 条定案（§1.5）；10:22 追加 1 条定案（§1.6 / Q4）；10:41 追加 4 条拍板（§1.7 / Q5–Q8）；11:00 追加 2 条拍板（§1.8 / Q6 修订、Q9）。
+> **实施状态：已落地（S0–S5），见 `docs/impl-fixed-pipeline.md`；偏差 8 处**
 > 上游事实源：`docs/plan.md`、`docs/tech-plan.md`、`docs/impl-multi-repo.md`、`docs/spec/ux-issue-sessions.md`。
 > 本文替代 v0.3 需求分析稿；v0.3 的代码复核结论（R1–R5）已并入 §3，并在方案里被消费。
 >
@@ -311,6 +312,8 @@ CREATE UNIQUE INDEX "prompt_versions_repo_kind_version_uq" ON "prompt_versions" 
 - **`kind=project` 的版本指针**沿用现有 `settings.prompt.current_version`（`repo-config.ts:130-139`），不进 `pipeline` 段；4 条版本线 = `pipeline` 段 3 个指针 + 这 1 个。
 - `version` **不升**（仍是 `z.literal(1)`）：新段 `.prefault({})`。**Q4 无兼容承诺**：存量 `settings` 由 0005 迁移直接重置为新形状，不保留「老配置解析后自动补默认」路径。
 - `superRefine` **无条件生效**：`managers` 非空；`vocabulary` 里 `requirement` 与 `defect` 各至少 1 个（`other` 可缺省 = 其他类型不打标）。`role` 亦无条件强制。读写同一套严格校验（Q4）：缺 `role`、`managers` 为空、含已删除键（如 `triggers.faces`）一律解析失败 / 保存 400，不为存量让步。
+
+> **实施偏差（已拍板）**：角色覆盖不设硬校验。`role` 仍必填、`managers` 仍必须非空，但 `vocabulary` 不强制「`requirement` 与 `defect` 各至少 1 个」——改由 `pipelineLabelCoverage()` 在面板提示、服务端 `warn`，流程照跑只是不打标。理由：存量仓库不该因缺标签角色整仓失效（V17 与本节其余条款不变；详见 `docs/impl-fixed-pipeline.md` 偏差 1）。
 
 ### 4.6 任务取值
 

@@ -10,7 +10,7 @@
  * - `danger`  失败 / 超时 / 配置非法
  * - `info`    进行中 / 中性信息
  * - `neutral` 排队 / 跳过 / 停用 / 归档
- * - `brand`   品牌强调（**只用于当前选区、主操作、焦点**，不用于状态）
+ * - `brand`   青色强调（**只用于当前选区 / 焦点环 / 强调文字**；主操作是墨色 `primary`，不是它）
  */
 
 export type Tone = 'neutral' | 'success' | 'warn' | 'danger' | 'info' | 'brand';

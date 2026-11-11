@@ -11,12 +11,13 @@
  * 环境不可用（没有 daemon 或连不上库）时整组 skip —— **不假装跑过**。
  * 报告会 `console.log` 出来：`pnpm -r test` 的输出里能直接读到逐项状态（人工核对用）。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll } from 'vitest';
 
 import { closePool, createPool, ping } from '../src/db/index.ts';
 import { CHECKS, exitCodeOf, formatReport, runDoctor, worstStatusOf } from '../src/doctor/index.ts';
 import type { DoctorIo, DoctorOutcome } from '../src/doctor/index.ts';
 import { imageCheck } from '../src/doctor/checks/image.ts';
+import { bootstrapQueue, createBoss, startBoss, stopBoss } from '../src/queue/index.ts';
 import { createSandboxDocker } from '../src/sandbox/docker.ts';
 
 const DSN =
@@ -56,6 +57,22 @@ function collectIo(): { readonly io: DoctorIo; readonly out: string[] } {
 }
 
 describe.skipIf(!ready)('doctor 真跑（真 docker + 真 PG）', () => {
+  /**
+   * 「环境已就绪」必须包含**当前代码定义的队列**：`QUEUES` 增删（例如新增 `pipeline-close`）后，
+   * 一个只跑过迁移、还没启动过 `pi-bot serve` 的库会缺队列，doctor 的 postgres 项就会 warn ——
+   * 那不是产品问题，是本机环境没 bootstrap。这里用产品自己的 bootstrap 补一次（幂等），
+   * 放在 `describe` 内部：环境不可用时整组 skip，不该因为连不上库把文件跑红。
+   */
+  beforeAll(async () => {
+    const boss = createBoss({ connectionString: DSN, max: 1, applicationName: 'pi-bot-doctor-test' });
+    await startBoss(boss);
+    try {
+      await bootstrapQueue(boss);
+    } finally {
+      await stopBoss(boss);
+    }
+  }, 60_000);
+
   it('逐项跑完 12 项检查，聚合与退出码自洽', async () => {
     const { io } = collectIo();
     const outcome: DoctorOutcome = await runDoctor({

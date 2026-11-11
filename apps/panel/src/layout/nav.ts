@@ -28,7 +28,8 @@ export const GLOBAL_NAV: readonly GlobalNavItem[] = [
   { path: '/system', label: '系统' },
 ];
 
-export type RepoNavKey = 'workspace' | 'issues' | 'runs' | 'settings';
+
+export type RepoNavKey = 'workspace' | 'issues' | 'pipeline' | 'runs' | 'settings';
 
 export type RepoNavItem = {
   key: RepoNavKey;
@@ -41,11 +42,14 @@ export type RepoNavItem = {
 /**
  * 当前仓库导航。Issue 详情 / 运行详情是子页面（`nav: false`），不在这里。
  *
- * 顺序即信息优先级：工作台 → Issue 中心 → 运行 → 设置。
+ * 顺序即信息优先级：工作台 → Issue 中心 → 流水线 → 运行 → 设置。
+ * 「流水线」排在 Issue 中心后面：它回答的是同一批 issue 的**阶段**视图，
+ * 不是另一个对象类型（所以只在仓库分组里出现，不跨到全局分组）。
  */
 export const REPO_NAV: readonly RepoNavItem[] = [
   { key: 'workspace', label: '工作台', suffix: '', end: true },
   { key: 'issues', label: 'Issue 中心', suffix: '/issues', end: false },
+  { key: 'pipeline', label: '流水线', suffix: '/pipeline', end: false },
   { key: 'runs', label: '运行', suffix: '/runs', end: false },
   { key: 'settings', label: '设置', suffix: '/settings', end: false },
 ];
@@ -62,6 +66,7 @@ export const SETTINGS_SECTIONS = [
   { key: 'triggers', label: '触发' },
   { key: 'labels', label: '标签' },
   { key: 'limits', label: '限额' },
+  { key: 'pipeline', label: '流水线' },
   { key: 'prompt', label: '提示词' },
 ] as const;
 

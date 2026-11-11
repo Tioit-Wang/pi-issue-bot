@@ -44,4 +44,19 @@ export async function scenarioResponse(payload: ScenarioPayload): Promise<Respon
 
   const body = scenario === 'empty' && payload.empty !== undefined ? payload.empty : payload.data;
   return HttpResponse.json(body as Record<string, unknown>);
+
+}
+
+/**
+ * 写请求要带的 CSRF 头（与真实服务端的约定一致：缺了 403）。
+ *
+ * 放在这里是因为 `/settings`（repos.ts）与 `/prompt*`（prompt.ts）两组写接口都要它；
+ * 每个 handler 文件各抄一份的话，改约定时会漏一处。
+ */
+export function requireCsrf(request: Request): Response | null {
+  if (request.headers.get('X-Pi-Bot-CSRF') === '1') return null;
+  return HttpResponse.json(
+    { error: { code: 'forbidden', message: '缺少 X-Pi-Bot-CSRF 头（写接口需要它）' } },
+    { status: 403 },
+  );
 }

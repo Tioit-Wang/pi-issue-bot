@@ -106,6 +106,35 @@ export function resetDefaultRepoSettingsCache(): void {
   cachedDefault = null;
 }
 
+/**
+ * 部署默认 settings + **它算不算合法运行配置**（P2-6）。
+ *
+ * 为什么需要这一层：`loadDefaultRepoSettings()` 在 `PI_BOT_DEFAULT_SETTINGS` 未设置时返回的是
+ * **形状默认值**（`DEFAULT_REPO_SETTINGS`，`pipeline.managers: []`），它形状合法但**不能声明 valid**：
+ *  - `pipeline.managers` 为空 = 卡住的流程没人能推进（§4.5 / Q4 的硬要求）；
+ *  - 若把它当 valid 落库，webhook 会拿一份没人配过的配置开工，面板也会显示「配置正常」。
+ *
+ * 所以这里用**严格**的 `repoSettingsSchema` 再判一次：合法 → `ok: true`；否则 `ok: false` +
+ * 可直接展示的原因（写进 `repos.settings_error`）。
+ */
+export function defaultRepoSettingsStatus(): {
+  readonly settings: RepoConfig;
+  readonly ok: boolean;
+  readonly error: string | null;
+} {
+  const settings = defaultRepoSettings();
+  const validated = validateRepoSettings(settings);
+  if (validated.ok) {
+    return { settings: validated.settings, ok: true, error: null };
+  }
+  return {
+    settings,
+    ok: false,
+    error: `部署默认配置不是合法运行配置（${REPO_SETTINGS_ENV} 未设置或未覆盖必填项）：${validated.error}`.slice(0, 500),
+  };
+}
+
+
 /* ── 2. 校验 ───────────────────────────────────────────────────────────────── */
 
 export type SettingsValidation =
@@ -139,13 +168,19 @@ FROM "repos" WHERE "repo_full_name" = $1`,
   selectAll: `SELECT "repo_full_name", "enabled", "dry_run", "archived_at", "settings_valid", "settings_error", "source", "installation_id", "settings_updated_at", "updated_at"
 FROM "repos" ORDER BY "repo_full_name"`,
   /**
-   * 建行（或补全安装信息）。参数：$1 repo, $2 enabled, $3 dry_run, $4 settings(jsonb), $5 source, $6 installation_id。
+   * 建行（或补全安装信息）。参数：$1 repo, $2 enabled, $3 dry_run, $4 settings(jsonb),
+   * $5 source, $6 installation_id, $7 settings_valid, $8 settings_error。
+   *
+   * `settings_valid` / `settings_error` **不再硬写 true/null**（P2-6）：由调用方按
+   * `repoSettingsSchema` 严格校验的结果给。形状默认值（`DEFAULT_REPO_SETTINGS`，
+   * `pipeline.managers: []`）**不是**合法运行配置，落库时必须标成 invalid，
+   * 否则 webhook 会拿一份没人配过的配置开工、面板也会显示「配置正常」。
    *
    * 冲突时**不覆盖 settings / enabled / dry_run**：重新安装 App 不该把面板里调好的配置冲掉。
    * 只补 `source` / `installation_id`、清掉 `archived_at`（重新安装 = 复活）。
    */
   upsert: `INSERT INTO "repos" ("repo_full_name", "enabled", "dry_run", "settings", "settings_valid", "settings_error", "settings_updated_at", "source", "installation_id", "updated_at")
-VALUES ($1, $2, $3, $4::jsonb, true, null, now(), $5, $6, now())
+VALUES ($1, $2, $3, $4::jsonb, $7, $8, now(), $5, $6, now())
 ON CONFLICT ("repo_full_name") DO UPDATE
 SET "source" = EXCLUDED."source",
     "installation_id" = COALESCE(EXCLUDED."installation_id", "repos"."installation_id"),
@@ -283,8 +318,10 @@ function parseStoredSettings(
   value: unknown,
 ): { readonly ok: true; readonly settings: RepoConfig } | { readonly ok: false; readonly error: string } {
   if (value === null || value === undefined) {
-    // 列 NOT NULL，理论到不了；真到了就当「用默认值」而不是「配置坏了」
-    return { ok: true, settings: DEFAULT_REPO_SETTINGS };
+    // 列 NOT NULL，理论到不了。真到了（手改库 / 旧迁移）按**不可用**处理而不是静默用形状默认值：
+    // 形状默认值（`managers: []`）不是合法运行配置（与 `defaultRepoSettingsStatus()` 同一口径），
+    // 声称它 valid 会让 webhook 拿一份没人配过的配置开工。
+    return { ok: false, error: 'settings 列为空：按「未配置」处理（形状默认值不是合法运行配置）' };
   }
   const validated = validateRepoSettings(value);
   if (validated.ok) {
@@ -351,15 +388,32 @@ export type UpsertRepoResult =
 /**
  * 建行 / 补全安装信息。**只在建行时写 settings**（冲突时不覆盖，见 `REPO_SQL.upsert`）。
  *
- * 配置非法 → 不写库，返回错误（调用方决定的 HTTP 状态：面板 400、安装事件日志 + 跳过）。
+ * 三种情形，三种结论（P2-6）：
+ *  1. 显式给了 `settings` 且不合法 → **不写库**，返回错误（面板 400 / 安装事件日志 + 跳过）；
+ *  2. 显式给了 `settings` 且合法 → 写库，`settings_valid=true`；
+ *  3. 没给 `settings` → 用部署默认。此时**是否 valid 由严格校验决定**：部署没配
+ *     `PI_BOT_DEFAULT_SETTINGS` 时拿到的是形状默认值（`pipeline.managers: []`），
+ *     它不是合法运行配置 → 行仍然建出来，但 `settings_valid=false` + `settings_error` 写明原因。
+ *     这正是面板第一次打开时看到的那句「请先配置管理员」——比让 webhook 拿空配置开工安全得多。
  */
 export async function upsertRepo(db: SqlRunner, input: UpsertRepoInput): Promise<UpsertRepoResult> {
-  const validated =
-    input.settings === undefined ? { ok: true as const, settings: defaultRepoSettings() } : validateRepoSettings(input.settings);
-  if (!validated.ok) {
-    return { ok: false, error: validated.error, issues: validated.issues };
+  let settings: RepoConfig;
+  let settingsValid: boolean;
+  let settingsError: string | null;
+  if (input.settings === undefined) {
+    const status = defaultRepoSettingsStatus();
+    settings = status.settings;
+    settingsValid = status.ok;
+    settingsError = status.ok ? null : status.error;
+  } else {
+    const validated = validateRepoSettings(input.settings);
+    if (!validated.ok) {
+      return { ok: false, error: validated.error, issues: validated.issues };
+    }
+    settings = validated.settings;
+    settingsValid = true;
+    settingsError = null;
   }
-  const settings = validated.settings;
   const enabled = input.enabled ?? settings.enabled;
   const dryRun = input.dryRun ?? settings.dry_run;
   await db.query(REPO_SQL.upsert, [
@@ -371,6 +425,8 @@ export async function upsertRepo(db: SqlRunner, input: UpsertRepoInput): Promise
     input.installationId === null || input.installationId === undefined
       ? null
       : String(input.installationId),
+    settingsValid,
+    settingsError,
   ]);
   return { ok: true, repo: input.repo, settings };
 }

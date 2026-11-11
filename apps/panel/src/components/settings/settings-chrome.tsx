@@ -61,6 +61,15 @@ export function sectionSummary(section: SettingsSectionKey, draft: RepoSettings)
     }
     case 'limits':
       return `评论 ${formatCount(draft.limits.max_comments_per_hour)}/h · 任务 ${formatCount(draft.limits.max_task_minutes)}m`;
+    case 'pipeline': {
+      // 「项目级只剩 3 类可配项」：管理人员 + 4 条提示词版本线（project 走 settings.prompt）
+      const overridden =
+        (draft.prompt.current_version === 0 ? 0 : 1) +
+        (draft.pipeline.format_prompt_version === 0 ? 0 : 1) +
+        (draft.pipeline.classify_prompt_version === 0 ? 0 : 1) +
+        (draft.pipeline.agent_prompt_version === 0 ? 0 : 1);
+      return `管理员 ${formatCount(draft.pipeline.managers.length)} · 项目版 ${formatCount(overridden)}/4`;
+    }
     case 'prompt':
       return `v${formatCount(draft.prompt.current_version)} · ${draft.prompt.enabled ? '注入' : '关闭'}`;
   }

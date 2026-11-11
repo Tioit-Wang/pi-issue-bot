@@ -65,7 +65,7 @@ const fakeDocker: SandboxDocker = {
 };
 
 describe('jobs/index：队列 ↔ 作业映射', () => {
-  it('五个作业覆盖 queue/SCHEDULES 里对应的五个队列（排队闸门排最前）', () => {
+  it('六个作业覆盖 queue/SCHEDULES 里对应的六个队列（排队闸门排最前）', () => {
     const scheduledQueues = SCHEDULES.map((spec) => spec.queue);
     for (const entry of JOB_SCHEDULES) {
       expect(scheduledQueues).toContain(entry.queue);
@@ -76,6 +76,7 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
       QUEUE.reconcile,
       QUEUE.retentionCleanup,
       QUEUE.lifecycleCleanup,
+      QUEUE.pipelineClose,
     ]);
     expect(JOB_SCHEDULES.map((entry) => entry.job)).toEqual([
       'queue-gate',
@@ -83,10 +84,11 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
       'reconcile-reverts',
       'retention-cleanup',
       'lifecycle-sweep',
+      'pipeline-close',
     ]);
   });
 
-  it('依赖齐全时注册五个队列的 worker，并把结果写进日志', async () => {
+  it('依赖齐全时注册六个队列的 worker，并把结果写进日志', async () => {
     const { boss, queues } = createFakeBoss();
     const lines: string[] = [];
     const logger = {
@@ -105,6 +107,8 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
       pool: createFakePool(),
       logger,
       github: createFakeGithubClient(),
+      // 自动关闭要的是「写面」（closeIssue），读接口不够：两条注入分开
+      githubWrite: { closeIssue: async () => undefined },
       docker: fakeDocker,
     });
 
@@ -114,12 +118,13 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
       QUEUE.reconcile,
       QUEUE.retentionCleanup,
       QUEUE.lifecycleCleanup,
+      QUEUE.pipelineClose,
     ]);
     expect(queues).toEqual(registered);
     expect(lines).toEqual([]);
   });
 
-  it('缺 docker / github 时跳过对应队列并告警，其余照注册', async () => {
+  it('缺 docker / github / github 写面时跳过对应队列并告警，其余照注册', async () => {
     const { boss, queues } = createFakeBoss();
     const warnings: string[] = [];
 
@@ -137,9 +142,10 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
     // 排队闸门不依赖 github/docker：没有它们也照注册（闸门必须始终能取消超时任务）
     expect(registered).toEqual([QUEUE.queueGate, QUEUE.metricsRollup, QUEUE.retentionCleanup]);
     expect(queues).toEqual([QUEUE.queueGate, QUEUE.metricsRollup, QUEUE.retentionCleanup]);
-    expect(warnings).toHaveLength(2);
+    expect(warnings).toHaveLength(3);
     expect(warnings.join('\n')).toContain('未注入 github');
     expect(warnings.join('\n')).toContain('未注入 docker');
+    expect(warnings.join('\n')).toContain('未注入 github 写面');
   });
 
   it('作业抛错时把错误记录下来并向上抛（交给 pg-boss 重试）', async () => {
@@ -178,5 +184,6 @@ describe('jobs/index：队列 ↔ 作业映射', () => {
     // 缺依赖是配置错误：同步抛（不是等着 resolve 一个失败结果）
     expect(() => runners['reconcile-reverts']()).toThrow(/缺少 github/);
     expect(() => runners['lifecycle-sweep']()).toThrow(/缺少 docker/);
+    expect(() => runners['pipeline-close']()).toThrow(/缺少 github 写面/);
   });
 });

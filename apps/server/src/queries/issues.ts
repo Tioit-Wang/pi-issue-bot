@@ -10,7 +10,7 @@
  * 2. **正文源**：人类 = `webhook_deliveries.payload.comment.body`（退回 `tasks.prompt_text`）；
  *    机器人 = `envelopes.actions[intent=comment].body`；评论 id/链接来自 `actions.external_ref`
  *    （**是 comment id，不是 URL**），兜底回复的 `intent='fallback'` 也要算。
- * 3. **`humanTurns` 只数 `tasks.source='command'`**：`issues.opened|edited|reopened` 会建 `auto:triage` 任务，
+ * 3. **`humanTurns` 只数 `tasks.source='command'`**：`issues.opened|edited|reopened` 会建 `pipeline:format` 阶段任务，
  *    那是自动触发，单独记 `autoTurns`（否则列表上的「人问了几轮」被自动分诊灌水）。
  * 4. **`lastActivityAt` 取四源 max**：`tasks.queued_at`、`actions.applied_at`、`runs.ended_at`、`bot_labels.applied_at`。
  * 5. **`state` 不能只看「最新 task 的投递」**：`issues.closed` 不建任务，那样会永远显示 open。
@@ -21,11 +21,14 @@
  * 只读：本文件只有 `select`。
  */
 import type { z } from 'zod';
-import type {
-  issuesListResponseSchema,
-  issuesQuerySchema,
-  issueSessionParamsSchema,
-  issueSessionResponseSchema,
+import {
+  PIPELINE_CATEGORIES,
+  PIPELINE_STAGES,
+  PIPELINE_STATES,
+  type issuesListResponseSchema,
+  type issuesQuerySchema,
+  type issueSessionParamsSchema,
+  type issueSessionResponseSchema,
 } from '../../../../packages/contract/src/index.ts';
 import {
   Params,
@@ -121,6 +124,27 @@ type IssueRow = {
   label_reason: string | null;
   label_blocked: unknown;
   label_rows: number | string | null;
+  pipeline_stage: string | null;
+  pipeline_state: string | null;
+  pipeline_category: string | null;
+  pipeline_format_fail_count: number | string | null;
+  pipeline_info_requested_at: Date | null;
+  pipeline_blocked_reason: string | null;
+  pipeline_ready_at: Date | null;
+  pipeline_stale_at: Date | null;
+  pipeline_session_id: string | null;
+  pipeline_session_turns: number | string | null;
+  /**
+   * 停留时长（秒）。口径：`now() - coalesce(info_requested_at, updated_at)`
+   *  - `awaiting_info` 且 `info_requested_at` 非空 → 「已经等了用户多久」（48h 关闭扫描的同一个时钟）；
+   *  - 其余状态 → 「这条状态行多久没动过」（每条转移都会刷新 `updated_at`）。
+   * 面板的「已阻塞 X 分钟 / 已等 Y 小时」用这一列，不自己猜。
+   *
+   * ⚠ 契约的 `IssuePipeline` 目前没有这个字段（`packages/contract` 由另一个切片冻结），
+   * 所以这里**算好但不投影**：S5 面板切片如果决定要展示，就在 `issuePipelineSchema` 加
+   * `dwellSeconds` 并把这一列接上去，SQL 侧不用再改。
+   */
+  pipeline_dwell_seconds: number | string | null;
 };
 
 /**
@@ -206,7 +230,18 @@ agg as (
     ld.applied as label_applied,
     ld.reason as label_reason,
     ld.blocked as label_blocked,
-    ld.row_count as label_rows
+    ld.row_count as label_rows,
+    ip.stage as pipeline_stage,
+    ip.state as pipeline_state,
+    ip.category as pipeline_category,
+    ip.format_fail_count as pipeline_format_fail_count,
+    ip.info_requested_at as pipeline_info_requested_at,
+    ip.blocked_reason as pipeline_blocked_reason,
+    ip.ready_at as pipeline_ready_at,
+    ip.stale_at as pipeline_stale_at,
+    ip.session_id as pipeline_session_id,
+    ip.session_turns as pipeline_session_turns,
+    extract(epoch from now() - coalesce(ip.info_requested_at, ip.updated_at)) as pipeline_dwell_seconds
   from base b
   left join lateral (
     select
@@ -237,6 +272,8 @@ agg as (
     where s.repo = b.repo and s.issue_number = b.number
   ) st on true
   left join latest iss on iss.repo = b.repo and iss.number = b.number
+  /* 固定流水线状态行（§4.3）：一个 issue 一行，没有行 = 存量 issue（§1.3 放行） */
+  left join issue_pipeline ip on ip.repo = b.repo and ip.issue_number = b.number
   left join lateral (
     select jsonb_object_agg(s.status, s.n) as outcomes
     from (
@@ -475,6 +512,32 @@ function outcomesOf(raw: unknown): IssueListItem['outcomes'] {
   return out;
 }
 
+/**
+ * `issue_pipeline` 的一行 → 契约的 `IssuePipeline`（`IssueListItem.pipeline` / `IssueSummary.pipeline`）。
+ *
+ * 没有状态行（`pipeline_stage` 为 null）→ `null`：§1.3 的「无行 = 放行」在响应里也必须能表达，
+ * 不能用空对象冒充（「没有行」与「行在但字段为空」是两件事）。
+ */
+function pipelineOf(row: IssueRow | MetaRow): IssueListItem['pipeline'] {
+  const stage = PIPELINE_STAGES.find((value) => value === row.pipeline_stage);
+  const state = PIPELINE_STATES.find((value) => value === row.pipeline_state);
+  if (stage === undefined || state === undefined) {
+    return null;
+  }
+  return {
+    stage,
+    state,
+    category: PIPELINE_CATEGORIES.find((value) => value === row.pipeline_category) ?? null,
+    formatFailCount: intOf(row.pipeline_format_fail_count, 0),
+    infoRequestedAt: isoOrNull(row.pipeline_info_requested_at),
+    blockedReason: oneLine(row.pipeline_blocked_reason, 500),
+    readyAt: isoOrNull(row.pipeline_ready_at),
+    staleAt: isoOrNull(row.pipeline_stale_at),
+    sessionId: row.pipeline_session_id === null ? null : row.pipeline_session_id.slice(0, 128),
+    sessionTurns: intOf(row.pipeline_session_turns, 0),
+  };
+}
+
 function toListItem(row: IssueRow): IssueListItem {
   const title = oneLine(row.title, 500);
   // 反馈时间线算一次：`reactionState` 与 `feedback` 都从它派生（同源，不会自相矛盾）
@@ -501,6 +564,7 @@ function toListItem(row: IssueRow): IssueListItem {
     reactionState: reactionStateOf(feedback),
     labelDecisions: labelDecisionSummaryOf(row),
     feedback,
+    pipeline: pipelineOf(row),
   };
 }
 
@@ -643,6 +707,17 @@ type MetaRow = {
   bot_login: string | null;
   /** `issue_feedback` 时间线（升序，最多 20 条）。 */
   feedback: unknown;
+  pipeline_stage: string | null;
+  pipeline_state: string | null;
+  pipeline_category: string | null;
+  pipeline_format_fail_count: number | string | null;
+  pipeline_info_requested_at: Date | null;
+  pipeline_blocked_reason: string | null;
+  pipeline_ready_at: Date | null;
+  pipeline_stale_at: Date | null;
+  pipeline_session_id: string | null;
+  pipeline_session_turns: number | string | null;
+  pipeline_dwell_seconds: number | string | null;
 };
 
 type TaskTurnRow = {
@@ -873,7 +948,18 @@ export async function queryIssueSession(
            ) x
          ) as participants,
          (select rp.config -> 'bot' ->> 'login' from repos rp where rp.repo_full_name = $1) as bot_login,
-        fbt.events as feedback
+        fbt.events as feedback,
+       ip.stage as pipeline_stage,
+       ip.state as pipeline_state,
+       ip.category as pipeline_category,
+       ip.format_fail_count as pipeline_format_fail_count,
+       ip.info_requested_at as pipeline_info_requested_at,
+       ip.blocked_reason as pipeline_blocked_reason,
+       ip.ready_at as pipeline_ready_at,
+       ip.stale_at as pipeline_stale_at,
+       ip.session_id as pipeline_session_id,
+       ip.session_turns as pipeline_session_turns,
+       extract(epoch from now() - coalesce(ip.info_requested_at, ip.updated_at)) as pipeline_dwell_seconds
        from (select 1) z
       left join lateral (
         select
@@ -891,6 +977,8 @@ export async function queryIssueSession(
         from issue_states s
         where s.repo = $1 and s.issue_number = $3
       ) st on true
+      /* 固定流水线状态行（§10.4）：详情响应带 pipeline 字段，没有行就是 null */
+      left join issue_pipeline ip on ip.repo = $1 and ip.issue_number = $3
      /*
       * 无感反馈：时间线 + 待落地项（applied_at is null：dry-run 计划 / 排队中）。
       * 与列表同一条 SQL 形状，reactionState 由 Node 侧挑「最新终态」。
@@ -1091,6 +1179,7 @@ export async function queryIssueSession(
       participants: participants.slice(0, 100),
       reactionState: reactionStateOf(feedback),
       pendingFeedback: feedback.filter((event) => event.appliedAt === null),
+      pipeline: meta === undefined ? null : pipelineOf(meta),
     },
     turns,
   };

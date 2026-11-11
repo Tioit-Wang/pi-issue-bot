@@ -24,7 +24,9 @@
 
 ---
 
-## 1. 16 张表
+## 1. 16 张表（+ `issue_pipeline`，`0005_pipeline.sql` 起第 17 张，见 §1.17）
+
+> 流水线改造同批下的增量列已就地标注在各表小节里：`tasks.target_title/target_body/target_supplement`、`envelopes.stage_name/stage_result`、`prompt_versions.kind`（4 种）。形状与语义以 `docs/impl-fixed-pipeline.md` §2 为准。
 
 ### 1.1 `webhook_deliveries` —— 去重 + 90 天原文 + replay 数据源
 
@@ -76,6 +78,9 @@
 | `dry_run` | boolean | 否 | `true` | — | 本任务是否 dry-run（取入队时的仓库配置） |
 | `container_name` | text | 是 | NULL | — | `pi-job-<id>`，销毁后置 NULL（F1：容器名由 bot 查表，不由路径推导） |
 | `idempotency_key` | text | 否 | — | **UNIQUE** `uq_tasks_idempotency_key` | 见 §3.1 |
+| `target_title` | text | 是 | NULL | — | issue 标题**入队时的快照**（`0005`）；命令任务同样受益（不再「看不到正文」） |
+| `target_body` | text | 是 | NULL | — | issue 正文快照，入队时截断到 **8000** 字符（进提示词时再截 4000）；不依赖只留 90 天的 `webhook_deliveries.payload` |
+| `target_supplement` | jsonb | 否 | `'[]'` | — | 补充评论段：最近 **3** 条、每条 ≤**1000** 字符的**数组**；`{{body}}` 渲染时置顶拼在正文前。写侧整体替换，不追加 |
 
 **为什么 `outcome` / `failure_class` / `cost_usd` 冗余在 `tasks` 上**：`/api/tasks` 列表要按失败分类筛选、
 按成本排序，若每次 join `runs` 取最近一条，面板一次查询就变成 N 次子查询。写回时机固定在「run 结束」这一刻，
@@ -122,6 +127,8 @@
 | `valid` | boolean | 否 | `false` | `ix_envelopes_valid` | Ajv 校验是否通过；false ⇒ 该 run 记 `parse` 失败 |
 | `raw_sha256` | text | 是 | NULL | — | 原文摘要（不存原文全文；全文在 transcript，90 天） |
 | `received_at` | timestamptz | 否 | `now()` | — | — |
+| `stage_name` | text | 是 | NULL | — | 阶段结论投影：`format` / `classify`；Agent 阶段的老信封为 NULL（`0005`） |
+| `stage_result` | text | 是 | NULL | — | 阶段结论：`pass`/`fail`/`requirement`/`defect`/`not-found`/`other`；面板按阶段筛选与画时间线不解析 `verdict` jsonb |
 
 ### 1.7 `actions` —— 写操作审计 + 「被改回」关联点
 
@@ -252,6 +259,46 @@
 | `expires_at` | timestamptz | 否 | — | `ix_panel_sessions_expires_at` | 7 天（tech-plan R3） |
 | `revoked_at` | timestamptz | 是 | NULL | — | 单条吊销；非空即失效（不删行，保留审计） |
 
+
+### 1.17 `issue_pipeline` —— 三段流水线的唯一状态行（`0005_pipeline.sql`；取代 `issue_states`）
+
+| 列 | 类型 | 可空 | 默认 | 约束 / 索引 | 用途 |
+|---|---|---|---|---|---|
+| `repo` | text | 否 | — | **PK(repo, issue_number)** | `owner/name` |
+| `issue_number` | integer | 否 | — | 同上 | issue 编号（PR 不建行） |
+| `stage` | text | 否 | `'format'` | `CHECK` | `format`/`classify`/`agent`/`closed` |
+| `state` | text | 否 | `'pending'` | `CHECK`；`issue_pipeline_close_scan_idx` | `pending`/`running`/`awaiting_info`/`ready`/`blocked`/`closed` |
+| `category` | text | 是 | NULL | `CHECK` | `requirement`/`defect`/`other`/`not-found`；未分类为 NULL |
+| `format_attempts` | integer | 否 | `0` | — | 阶段 0 执行次数（含重跑） |
+| `format_fail_count` | integer | 否 | `0` | — | **格式不通过累计次数**；`>= 5` 自动关 issue，只增不减 |
+| `classify_attempts` | integer | 否 | `0` | — | 阶段 1 执行次数 |
+| `issue_version` | text | 是 | NULL | — | 内容版本（编辑/评论触发重跑时更新），阶段幂等键用它 |
+| `info_requested_at` | timestamptz | 是 | NULL | 同上 | 进入「等补充信息」的时刻；**48h 关闭扫描的唯一判据**。`classify/awaiting_info` 恒为 NULL ⇒ 不会被扫到 |
+| `last_recheck_at` | timestamptz | 是 | NULL | — | 最近一次重跑时间；`issues.edited` 的 120s 冷却用它 |
+| `mention_sent_at` | timestamptz | 是 | NULL | — | 首次 `@managers` 的时刻；非空即不再 @（整个 issue 只 @ 一次） |
+| `mention_category` | text | 是 | NULL | — | 当时 @ 所对应的分类结论 |
+| `gate_notice_at` | timestamptz | 是 | NULL | — | 门禁回执（`pipeline:notice`）最近一次发送时间；每 issue 每小时 1 条 |
+| `session_id` | text | 是 | NULL | — | 阶段 2 复用的 RACP 会话 id；阶段 0/1 一次性用完即弃 |
+| `session_cursor` | integer | 否 | `0` | — | 订阅事件流的 `after` 游标，防重放旧事件污染本轮信封 |
+| `session_turns` | integer | 否 | `0` | — | 该会话已用轮数；`>= 30` 轮换（**轮换后从 1 起**，见 `docs/impl-fixed-pipeline.md` §7） |
+| `session_started_at` | timestamptz | 是 | NULL | — | 会话创建时刻；超 7 天轮换 |
+| `stale_at` | timestamptz | 是 | NULL | — | `ready` 后 issue 被编辑的时刻（**只记不重跑**，面板用来解释「内容变了但没重跑」） |
+| `blocked_reason` | text | 是 | NULL | — | `blocked` 的一句话原因；`session-reset` 表示上下文断过一次（粘性） |
+| `ready_at` | timestamptz | 是 | NULL | — | 三段走完、进入 `agent/ready` 的时刻 |
+| `closed_at` | timestamptz | 是 | NULL | — | 我们关掉该 issue 的时刻（48h 或 5 次不通过）；非空即不再接事件 |
+| `created_at` | timestamptz | 否 | `now()` | — | — |
+| `updated_at` | timestamptz | 否 | `now()` | — | — |
+
+```sql
+CREATE INDEX issue_pipeline_close_scan_idx ON issue_pipeline (state, info_requested_at);
+```
+
+**与 `issue_states` 的关系**：`issue_states` + `workflows/close-gate.ts` 是死代码，保留不删但不再写入；关闭判定改为只读本表（`state='awaiting_info' AND info_requested_at IS NOT NULL AND info_requested_at < now() - interval '48 hours'`）。
+
+**同批变更（`0005_pipeline.sql`）**：
+
+- `prompt_versions` 增 `kind` 列（默认 `'project'`，让 0003 时代的存量行原地归位）+ 唯一键由 `(repo, version)` 改为 **`(repo, kind, version)`**，旧索引 `prompt_versions_repo_version_uidx` **必须删**——否则某阶段存一版会顶掉 P1 的同号版本。4 种 kind：`project` / `format_check` / `classify` / `agent`，`version=0` = 内置默认（`project` 的 0 = 不注入）。
+- `repos.settings` 一次性重置为新形状（Q4，无兼容承诺）：删 `triggers.faces` 等废弃键、`labels.vocabulary` 丢弃缺 `role` 的整条、`managers` 空时种仓库 owner。迁移后未重配的仓库 `settings_valid=false` 属预期。
 ---
 
 ## 2. 枚举取值（与 `packages/contract/src/enums.ts` 同源）
@@ -259,7 +306,7 @@
 | 枚举 | 取值 |
 |---|---|
 | `tasks.status` | `queued` `running` `succeeded` `failed` `cancelled` |
-| `tasks.source` | `webhook` `command` `cron` |
+| `tasks.source` | `webhook` `command` `cron` **`pipeline`**（流水线三阶段与门禁回执；放行 `comment` 动作的唯一新来源） |
 | `target_kind` | `issue` `pr` |
 | `runs.outcome` / `metrics_daily.outcome` | `success` `failed` `timed-out` `degenerate-output` `parse-failed` `interrupted` |
 | `runs.failure_class` | `timeout` `interrupt` `degenerate-output` `sandbox-oom` `sandbox-crash` `auth` `rate-limit` `model` `parse` `github-api` |
@@ -268,6 +315,11 @@
 | `actions.revert_kind` | `label-removed` `changes-requested` `pr-closed` `comment-deleted` `revert-commit` |
 | `run_events.kind` | `session` `turn` `tool-call` `approval` `command` `sandbox` `envelope` `action` `writeback` `notice` |
 | `degeneracy_hits.criterion` | `paragraph-repeat` `low-delta` `tool-loop` |
+| `PIPELINE_STAGE` | `format` `classify` `agent` `closed` |
+| `PIPELINE_STATE` | `pending` `running` `awaiting_info` `ready` `blocked` `closed` |
+| `PIPELINE_CATEGORY` | `requirement` `defect` `other` `not-found` |
+| `PROMPT_KIND` | `project` `format_check` `classify` `agent`（4 条独立版本线，`version=0` = 内置默认） |
+| 信封 `stage.name` / `stage.result` | `name ∈ {format, classify}`；`result ∈ {pass, fail, requirement, defect, not-found, other}`（按阶段取子集） |
 
 失败分类的判定优先级（tech-plan §7.3）在契约里也有机器可读版本：
 `FAILURE_CLASS_PRIORITY_GROUPS` = `[timeout, interrupt, degenerate-output]` < `[sandbox-oom]` < `[sandbox-crash]` < `[auth, rate-limit, model, parse, github-api]`。
@@ -399,6 +451,8 @@ CREATE INDEX ix_actions_reverted_at        ON actions (reverted_at) WHERE revert
 | D6 | `issue_fingerprints` 增加 `last_seen_at` | 命中去重键时要能显示「最近一次命中时间」，否则 `/api/system` 与面板无法判断指纹是否还活着 |
 | D7 | 失败分类取值统一成 kebab-case（`rate-limit` / `github-api` / `sandbox-crash`） | plan §10 与 tech-plan §7.3 本身的命名不一致（`rate_limit` vs `sandbox-oom`）。契约冻结时统一成 kebab-case，DB 与 API 同值，不需要两套映射 |
 | D8 | plan §10 的粗分类 `sandbox` 拆成 `sandbox-oom` / `sandbox-crash` | tech-plan §7.3 的优先级表已经把两者分开（OOM 不重试、崩溃重试 1 次）；保留粗分类会让重试决策无值可读 |
-| D9 | `wikis` 等未列入（原文也没有） | tech-plan §7.2 的 16 张表全部落地，未增未减 |
+| D9 | `wikis` 等未列入（原文也没有） | tech-plan §7.2 的 16 张表全部落地；多仓库改造后新增 `issue_pipeline`（第 17 张，见 §1.17），`issue_states` 退化为死代码 |
 | D10 | `tasks.container_name` 在容器销毁后置 NULL（未在 tech-plan 写明） | 容器名只是运行期映射；保留脏值会让「这个 job 还有容器吗」出现第二种判断依据（应以 exec 代理的映射表为准） |
 | D11 | `tasks` 增列 `prompt_text`（`0001_task_prompt_text.sql`） | 自由问答（评论里 `@bot 提问`）要把**问题正文**带进任务行。塞进 `tasks.command` 不行：契约里 `command` 是 `max(64)` 的命令名，长 base64 会让 `/api/tasks` 序列化 500（实测 2026-11-10）。`NULL` = 非自由问答任务 |
+| D12 | 新增第 17 张表 `issue_pipeline`（`0005_pipeline.sql`），`issue_states` + `close-gate` 标记为死代码 | 三段流水线的状态与字段跟 `issue_states` 不同构（`stage/state` 六态、`format_fail_count`、`session_*`、`mention_*`、`gate_notice_at`）；复用只会让「关闭根本表」与「不重复催办表」互相污染。状态行主键就是 `(repo, issue_number)`，关闭扫描走 `(state, info_requested_at)` 索引 |
+| D13 | `tasks` 加 `target_title` / `target_body` / `target_supplement`，`envelopes` 加 `stage_name` / `stage_result`，`prompt_versions` 加 `kind` + 唯一键改 `(repo, kind, version)` | 正文必须入队快照（`webhook_deliveries.payload` 只留 90 天）；阶段结论要能按阶段筛选/画时间线，解 jsonb 写不出索引；4 条提示词版本线（`project`/`format_check`/`classify`/`agent`）必须各自独立编号，旧唯一键 `(repo, version)` 会互相顶号，故必须删。详见 `docs/impl-fixed-pipeline.md` §2 |

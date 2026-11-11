@@ -17,7 +17,6 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { parseRepoSettings } from '../../../packages/contract/src/index.ts';
 import { createApplication } from '../src/app/index.ts';
 import type { Application } from '../src/app/index.ts';
 import type { GithubReactionApi } from '../src/github/index.ts';
@@ -36,6 +35,7 @@ import {
 import type { CountingGithubApi, FakeQueue } from './helpers/e2e-harness.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { parseValidSettings, vocabularyWithRoles } from './helpers/repo-settings.ts';
 
 /** 有词表 + 仓库级并发 1 的仓库（自动通道、打标归一化、并发闸门都用它）。 */
 const REPO_LABELLED = 'acme/wiring';
@@ -157,17 +157,18 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
 
     await seedRepo(
       REPO_LABELLED,
-      parseRepoSettings({
+      parseValidSettings({
         labels: {
-          vocabulary: [{ name: '缺陷', meaning: '功能不符合预期', group: '类型' }],
+          // `role` 自 §4.5 / Q4 起必填（`缺陷` → defect）。
+          vocabulary: vocabularyWithRoles([{ name: '缺陷', meaning: '功能不符合预期', group: '类型' }]),
           map: {},
           missing: 'warn',
         },
         limits: { concurrency_per_repo: 1 },
       }),
     );
-    await seedRepo(REPO_PLAIN, parseRepoSettings({}));
-    await seedRepo(REPO_PROMPTED, parseRepoSettings({ prompt: { enabled: true, current_version: 1 } }));
+    await seedRepo(REPO_PLAIN, parseValidSettings());
+    await seedRepo(REPO_PROMPTED, parseValidSettings({ prompt: { enabled: true, current_version: 1 } }));
     await db.sql(
       `insert into prompt_versions (repo, version, body, note) values ($1, 1, $2, 'wiring test')`,
       [REPO_PROMPTED, PROMPT_BODY],

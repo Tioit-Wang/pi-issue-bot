@@ -5,6 +5,8 @@ import {
   DROP_REASON_TEXT,
   ENVELOPE_JSON_SCHEMA,
   MAX_COMMENT_BODY,
+  STAGE_RESULTS_BY_NAME,
+  STAGE_RESULT_VALUES,
   filterActions,
   isActionIntent,
   isProtectedPath,
@@ -110,6 +112,66 @@ describe('信封 JSON Schema（draft 2020-12）', () => {
     // 拒收清单是过滤阶段的职责，schema 层不拦（否则错误信息落到 oneOf 上，读不出来）
     expect(validateEnvelope(validEnvelope({ actions: [{ intent: 'push_branch', branch: 'bot/x-1', paths: ['.github/workflows/ci.yml'] }] })).ok).toBe(true);
   });
+
+describe('顶层可选 stage（docs/plan-fixed-pipeline.md §4.1）', () => {
+  it('schema：stage 是可选属性，name/result 封闭、required 两项、additionalProperties:false', () => {
+    expect(ENVELOPE_JSON_SCHEMA.required).not.toContain('stage');
+    expect(Object.keys(ENVELOPE_JSON_SCHEMA.properties)).toContain('stage');
+    expect(ENVELOPE_JSON_SCHEMA.$defs.stage.required).toEqual(['name', 'result']);
+    expect(ENVELOPE_JSON_SCHEMA.$defs.stage.additionalProperties).toBe(false);
+    expect([...ENVELOPE_JSON_SCHEMA.$defs.stage.properties.name.enum]).toEqual(['format', 'classify']);
+    expect([...ENVELOPE_JSON_SCHEMA.$defs.stage.properties.result.enum]).toEqual([...STAGE_RESULT_VALUES]);
+    // 单阶段允许集合（schema 不表达，validate.ts 用它）
+    expect([...STAGE_RESULTS_BY_NAME.format]).toEqual(['pass', 'fail']);
+    expect([...STAGE_RESULTS_BY_NAME.classify]).toEqual(['requirement', 'defect', 'not-found', 'other']);
+  });
+
+  it('正例 1：**没有** stage 的老信封仍然合法（Agent 阶段一字不改）', () => {
+    expect(validateEnvelope(validEnvelope()).ok).toBe(true);
+    expect(parseEnvelopeJson(JSON.stringify(validEnvelope())).ok).toBe(true);
+  });
+
+  it('正例 2：format → pass/fail；classify → 四个分类结论', () => {
+    const stages = [
+      { name: 'format', result: 'pass' },
+      { name: 'format', result: 'fail' },
+      { name: 'classify', result: 'requirement' },
+      { name: 'classify', result: 'defect' },
+      { name: 'classify', result: 'not-found' },
+      { name: 'classify', result: 'other' },
+    ] as const;
+    for (const stage of stages) {
+      const result = validateEnvelope(validEnvelope({ stage }));
+      expect(result.ok, JSON.stringify(stage)).toBe(true);
+    }
+  });
+
+  it('反例 1：result 不在该阶段允许集合内（format 不吃分类结论，classify 不吃 pass）', () => {
+    const bad = validateEnvelope(validEnvelope({ stage: { name: 'format', result: 'defect' } as never }));
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) {
+      expect(bad.issues[0]).toMatchObject({ path: '/stage/result', keyword: 'stage-result' });
+    }
+    expect(validateEnvelope(validEnvelope({ stage: { name: 'classify', result: 'fail' } as never })).ok).toBe(false);
+    expect(validateEnvelope(validEnvelope({ stage: { name: 'classify', result: 'pass' } as never })).ok).toBe(false);
+  });
+
+  it('反例 2：name 只允许 format / classify（agent 阶段不带 stage）', () => {
+    for (const name of ['agent', 'closed', 'triage']) {
+      expect(validateEnvelope(validEnvelope({ stage: { name, result: 'pass' } as never })).ok, name).toBe(false);
+    }
+  });
+
+  it('反例 3：stage 字段集封闭，name 与 result 都必须给', () => {
+    expect(validateEnvelope(validEnvelope({ stage: { name: 'format', result: 'pass', extra: 1 } as never })).ok).toBe(
+      false,
+    );
+    expect(validateEnvelope(validEnvelope({ stage: { name: 'format' } as never })).ok).toBe(false);
+    expect(validateEnvelope(validEnvelope({ stage: { result: 'pass' } as never })).ok).toBe(false);
+    expect(validateEnvelope(validEnvelope({ stage: 'pass' as never })).ok).toBe(false);
+    expect(validateEnvelope(validEnvelope({ stage: null as never })).ok).toBe(false);
+  });
+});
 });
 
 describe('JSON 解析与错误摘要', () => {

@@ -9,7 +9,7 @@
  */
 import { z } from 'zod';
 import { isoDateTimeSchema, isoDateSchema, usdAmountSchema, ratioSchema, countSchema, durationMsSchema, gitShaSchema, repoFullNameSchema, shortIdSchema, labelNameSchema, loginSchema, eventCursorSchema, pageInfoShape, pageLimitSchema, pageCursorSchema, timeRangeShape, timestamped, DEFAULT_PAGE_LIMIT } from './common.ts';
-import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
+import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, pipelineCategorySchema, pipelineStageSchema, pipelineStateSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
 // 仓库配置的形状（`repos.settings`）：`PUT /api/repos/*/settings` 的请求体就是它，所以两边必须同源。
 import { repoSettingsSchema } from './repo-config.ts';
 
@@ -985,6 +985,39 @@ export type IssueTurn = z.infer<typeof issueTurnSchema>;
 /** 结果分布：键是任务状态，值是任务数（没有出现的状态不占位，故用 partialRecord）。 */
 export const issueOutcomeCountsSchema = z.partialRecord(taskStatusSchema, countSchema);
 
+/**
+ * 固定流水线状态（`issue_pipeline` 一行，camelCase 投影，`docs/plan-fixed-pipeline.md` §4.3）。
+ *
+ * 列表与详情共用同一个形状：面板不再解 jsonb、也不自己拼「现在走到哪一步」。
+ * **库里没有状态行时整个字段为 `null`**（存量 issue 一律放行的 §1.3 口径）——不用「空对象」冒充：
+ * 「没有行」与「行在但字段为空」是两件事。
+ */
+export const issuePipelineSchema = z
+  .object({
+    /** 走到哪一段（`format` / `classify` / `agent` / `closed`）。 */
+    stage: pipelineStageSchema,
+    state: pipelineStateSchema,
+    /** 分类结论；还没跑分类（或结论非法被 blocked）为 `null`。 */
+    category: pipelineCategorySchema.nullable(),
+    /** 格式**不通过**的累计次数（`>= 5` 自动关 issue，Q5）；只增不减。 */
+    formatFailCount: countSchema,
+    /** 进入「等补充信息」的时刻；不在等为 `null`。 */
+    infoRequestedAt: isoDateTimeSchema.nullable(),
+    /** `blocked` 的一句话原因（面板直接展示）；不阻塞为 `null`。 */
+    blockedReason: z.string().max(500).nullable(),
+    /** 三段走完（`ready`）的时刻；没到为 `null`。 */
+    readyAt: isoDateTimeSchema.nullable(),
+    /** 内容判旧的时刻（重跑冷却 / 关闭扫描用它）；没判过为 `null`。 */
+    staleAt: isoDateTimeSchema.nullable(),
+    /** 阶段 2 的 RACP 会话 id；还没开会话为 `null`。 */
+    sessionId: z.string().max(128).nullable(),
+    /** 该会话已用轮数（达到上限会轮换新会话）。 */
+    sessionTurns: countSchema,
+  })
+  .strict()
+  .meta({ id: 'IssuePipeline' });
+export type IssuePipeline = z.infer<typeof issuePipelineSchema>;
+
 /** 列表的一行 = 一个 `(repo, kind, number)`（只出现被处理过的）。 */
 export const issueListItemSchema = z
   .object({
@@ -1037,6 +1070,8 @@ export const issueListItemSchema = z
     labelDecisions: issueLabelDecisionSummarySchema.nullable(),
     /** 反馈时间线（升序，最多 20 条；含 `received` 与各终态）。 */
     feedback: z.array(issueFeedbackEventSchema).max(20),
+    /** 固定流水线状态（`issue_pipeline`）；没有状态行时为 `null`（§1.3：存量 issue 默认放行）。 */
+    pipeline: issuePipelineSchema.nullable(),
   })
   .strict()
   .meta({ id: 'IssueListItem' });
@@ -1105,6 +1140,8 @@ export const issueSummarySchema = z
     reactionState: issueFeedbackEventSchema.nullable(),
     /** 已记台账但**还没落地**的反馈（`applied_at is null`：dry-run 计划 / 排队中），升序最多 20 条。 */
     pendingFeedback: z.array(issueFeedbackEventSchema).max(20),
+    /** 同 `IssueListItem.pipeline`：这个 issue 的流水线状态；没有状态行时为 `null`。 */
+    pipeline: issuePipelineSchema.nullable(),
   })
   .strict()
   .meta({ id: 'IssueSummary' });

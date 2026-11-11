@@ -12,6 +12,9 @@
 #   2. `dry_run: true` 是默认值，也是首周强制的（plan §11 M1）。改 false 之前先看一遍面板。
 #   3. `compliance` 段已删除：issue 缺信息时只打 `needs-info` + `confused` reaction，
 #      判定依据写进 `prompt`（P1 项目人格层）或技能里。
+#   4. 固定流水线（`docs/plan-fixed-pipeline.md` §4.5 / Q4）之后两处**必填**：
+#      `pipeline.managers` 必须非空，`labels.vocabulary[].role` 每条都要写
+#      （`requirement` / `defect` / `other`）。缺一个，整份配置解析失败（`settings_valid=false`）。
 version: 1
 enabled: true
 dry_run: true
@@ -24,19 +27,24 @@ labels:
       meaning: 明确的缺陷（有复现路径或错误堆栈）
       color: d73a4a
       group: kind
+      role: defect
     - name: enhancement
       meaning: 新功能或体验改进
       color: a2eeef
       group: kind
+      role: requirement
     - name: question
       meaning: 使用提问，不是缺陷
       color: d876e3
       group: kind
+      role: other
     - name: needs-info
       meaning: 缺复现步骤/版本/日志，需要作者补充
       color: fbca04
+      role: other
     - name: area/db
       meaning: 涉及数据库层
+      role: other
   map:
     bug: bug
     feature: enhancement
@@ -56,6 +64,16 @@ labels:
 prompt:
   enabled: true
   current_version: 0
+
+# 固定流水线（`docs/plan-fixed-pipeline.md` §4.5）：**刻意没有 `enabled`，也没有任何阈值**
+# （`close_after_hours` / `max_runs_per_stage` 已收为系统常量，改常量走发布）。
+# `managers` 是 `/pipeline next|prev` 的权限来源，也是「分类判断不了时等谁回话」的名单 —— 必须非空。
+# 三条 `*_prompt_version` 是三条互不干扰的版本线，`0` = 用内置默认模板。
+pipeline:
+  managers: [alice]
+  format_prompt_version: 0
+  classify_prompt_version: 0
+  agent_prompt_version: 0
 
 create_issue:
   enabled: false

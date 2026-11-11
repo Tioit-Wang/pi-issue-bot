@@ -11,7 +11,7 @@
  *  - 服务端是唯一事实源（不做乐观更新，失败一个字都不改草稿）。
  */
 import { useEffect, useState, type MouseEvent } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router';
+import { Navigate, useLocation, useNavigate, useParams } from 'react-router';
 import { Alert, AlertTitle } from '../components/ui/alert.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Breadcrumb } from '../components/Breadcrumb.tsx';
@@ -22,6 +22,7 @@ import { GeneralSection } from '../components/settings/general-section.tsx';
 import { LabelsSection } from '../components/settings/labels-section.tsx';
 import { LimitsSection } from '../components/settings/limits-section.tsx';
 import { PromptSection } from '../components/settings/prompt-section.tsx';
+import { PipelineSection } from '../components/settings/pipeline-section.tsx';
 import { TriggersSection } from '../components/settings/triggers-section.tsx';
 import type { SettingsSectionProps } from '../components/settings/section-props.ts';
 import { IssueList } from '../components/settings/save-bar.tsx';
@@ -39,11 +40,24 @@ const SECTION_COMPONENTS: Record<SettingsSectionKey, (props: SettingsSectionProp
   triggers: TriggersSection,
   labels: LabelsSection,
   limits: LimitsSection,
+  pipeline: PipelineSection,
   prompt: PromptSection,
 };
 
 function sectionLabel(section: SettingsSectionKey): string {
   return SETTINGS_SECTIONS.find((item) => item.key === section)?.label ?? section;
+}
+
+/**
+ * hash → 分区（`#pipeline`、`#prompt/classify`）。
+ *
+ * 路径段已经决定了分区，hash 是**深链接**：从别处（流水线分区的提示词入口、文档）
+ * 指到某个分区/某个 tab 时，URL 里带得下，刷新也不丢。hash 与路径不一致时按 hash 走。
+ */
+function sectionFromHash(hash: string): SettingsSectionKey | null {
+  const text = hash.startsWith('#') ? hash.slice(1) : hash;
+  const head = text.split('/')[0] ?? '';
+  return isSettingsSectionKey(head) ? head : null;
 }
 
 export function RepoSettingsPage() {
@@ -61,6 +75,7 @@ export function RepoSettingsPage() {
 
 function SettingsBody({ repo, section }: { repo: string; section: SettingsSectionKey }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const result = useSettingsDraft(repo);
   const status = useRepoStatus(repo);
   const restore = useRestoreDefaults(repo);
@@ -97,6 +112,19 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
     event.preventDefault();
     setPendingSection(key);
   };
+
+  /** 分区**内部**的跨区链接（流水线 → 提示词 tab、角色提示 → 标签）：同一套拦截，返回是否已拦下。 */
+  const guardSectionLink = (event: MouseEvent<HTMLAnchorElement>, key: SettingsSectionKey): boolean => {
+    if (!dirty) return false;
+    guardNavigate(event, key);
+    return true;
+  };
+
+  // hash 深链接（`#pipeline` / `#prompt/classify`）与路径段不一致时，按 hash 走一次（replace，不堆历史）
+  const hashSection = sectionFromHash(location.hash);
+  if (hashSection !== null && hashSection !== section) {
+    return <Navigate replace to={`${repoSettingsPath(repo, hashSection)}${location.hash}`} />;
+  }
 
   const Section = SECTION_COMPONENTS[section];
 
@@ -221,7 +249,7 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
               />
             ) : result.kind === 'ready' ? (
               <div data-testid="repo-settings-section">
-                <Section state={result.state} onDirtyChange={setSectionDirty} />
+                <Section state={result.state} onDirtyChange={setSectionDirty} onNavigate={guardSectionLink} />
               </div>
             ) : null}
           </AsyncSection>

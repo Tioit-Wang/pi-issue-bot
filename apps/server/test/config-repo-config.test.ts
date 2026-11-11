@@ -22,6 +22,7 @@ import {
 } from '../src/config/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { TEST_MANAGER, validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 
@@ -36,7 +37,10 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
   });
 
   it('内联 JSON：在默认值上覆写（未写的键仍有默认值）', () => {
-    const settings = loadDefaultRepoSettings('{"dry_run": false, "limits": {"queue_wait_minutes": 3}}');
+    // `pipeline.managers` 非空是合法配置的前提（§4.5 / Q4），部署默认也得带着它
+    const settings = loadDefaultRepoSettings(
+      `{"dry_run": false, "limits": {"queue_wait_minutes": 3}, "pipeline": {"managers": ["${TEST_MANAGER}"]}}`,
+    );
     expect(settings.dry_run).toBe(false);
     expect(settings.limits.queue_wait_minutes).toBe(3);
     // 没写的段仍取默认值
@@ -45,7 +49,9 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
   });
 
   it('文件路径：读文件后按 JSON 解析（相对路径按 cwd 解析）', () => {
-    const files = new Map<string, string>([['/etc/pi-bot/default.json', '{"enabled": false}']]);
+    const files = new Map<string, string>([
+      ['/etc/pi-bot/default.json', `{"enabled": false, "pipeline": {"managers": ["${TEST_MANAGER}"]}}`],
+    ]);
     const settings = loadDefaultRepoSettings('/etc/pi-bot/default.json', (filePath) => {
       const content = files.get(filePath);
       if (content === undefined) {
@@ -75,7 +81,7 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
       resetDefaultRepoSettingsCache();
       expect(defaultRepoSettings()).toEqual(DEFAULT_REPO_SETTINGS);
 
-      process.env[key] = '{"dry_run": false}';
+      process.env[key] = `{"dry_run": false, "pipeline": {"managers": ["${TEST_MANAGER}"]}}`;
       // 缓存命中：还是上一次的值
       expect(defaultRepoSettings().dry_run).toBe(true);
       resetDefaultRepoSettingsCache();
@@ -93,7 +99,13 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
 
 describe('validateRepoSettings', () => {
   it('合法 → ok；非法 → issues 带字段路径', () => {
-    expect(validateRepoSettings({}).ok).toBe(true);
+    // `{}` 不再是合法运行配置（`pipeline.managers` 非空是 §4.5 / Q4 的硬要求），合法配置要带着它
+    expect(validateRepoSettings(validRepoSettings()).ok).toBe(true);
+    const emptyManagers = validateRepoSettings({});
+    expect(emptyManagers.ok).toBe(false);
+    if (!emptyManagers.ok) {
+      expect(emptyManagers.issues.join(' ')).toContain('pipeline.managers');
+    }
 
     const invalid = validateRepoSettings({ limits: { max_task_minutes: 999 } });
     expect(invalid.ok).toBe(false);
@@ -114,12 +126,26 @@ describe('validateRepoSettings', () => {
 
 describe('repos 存储（真 PG）', () => {
   let db: TestDb;
+  /** 进入本 describe 前的 `PI_BOT_DEFAULT_SETTINGS`（afterAll 恢复，别污染同进程的其它文件）。 */
+  let previousDefaultEnv: string | undefined;
 
   beforeAll(async () => {
     db = await openTestDb();
+    // 「部署默认」现在也必须是**合法运行配置**：`managers` 为空 = 整份配置解析失败，
+    // `upsertRepo()` 会 seed 出一行 `settings_valid=false`。所以夹具用 env 给一份合法的默认值
+    // （不是改产品默认值 —— `DEFAULT_REPO_SETTINGS` 是形状默认值，见 `packages/contract/src/repo-config.ts`）。
+    previousDefaultEnv = process.env[REPO_SETTINGS_ENV];
+    process.env[REPO_SETTINGS_ENV] = JSON.stringify(validRepoSettings());
+    resetDefaultRepoSettingsCache();
   });
 
   afterAll(async () => {
+    if (previousDefaultEnv === undefined) {
+      delete process.env[REPO_SETTINGS_ENV];
+    } else {
+      process.env[REPO_SETTINGS_ENV] = previousDefaultEnv;
+    }
+    resetDefaultRepoSettingsCache();
     await db.close();
   });
 
@@ -160,7 +186,7 @@ describe('repos 存储（真 PG）', () => {
   it('upsertRepo：重复调用幂等，且不覆盖面板改过的 settings', async () => {
     await upsertRepo(db.pool, { repo: REPO });
     const updated = await updateRepoSettings(db.pool, REPO, {
-      ...DEFAULT_REPO_SETTINGS,
+      ...validRepoSettings(),
       dry_run: false,
       limits: { ...DEFAULT_REPO_SETTINGS.limits, concurrency_per_repo: 5 },
     });
@@ -196,7 +222,7 @@ describe('repos 存储（真 PG）', () => {
   it('updateRepoSettings：合法配置写库，并把 enabled / dry_run 列同步过去', async () => {
     await upsertRepo(db.pool, { repo: REPO });
     const result = await updateRepoSettings(db.pool, REPO, {
-      ...DEFAULT_REPO_SETTINGS,
+      ...validRepoSettings(),
       enabled: true,
       dry_run: false,
       labels: { ...DEFAULT_REPO_SETTINGS.labels, map: { bug: ['bug', 'needs-info'] } },
@@ -218,13 +244,13 @@ describe('repos 存储（真 PG）', () => {
   it('updateRepoSettings：非法配置不写库（库里保持 last-known-good）', async () => {
     await upsertRepo(db.pool, { repo: REPO });
     const good = await updateRepoSettings(db.pool, REPO, {
-      ...DEFAULT_REPO_SETTINGS,
+      ...validRepoSettings(),
       limits: { ...DEFAULT_REPO_SETTINGS.limits, max_task_minutes: 25 },
     });
     expect(good.ok).toBe(true);
 
     const bad = await updateRepoSettings(db.pool, REPO, {
-      ...DEFAULT_REPO_SETTINGS,
+      ...validRepoSettings(),
       limits: { ...DEFAULT_REPO_SETTINGS.limits, max_task_minutes: 999 },
     });
     expect(bad.ok).toBe(false);
@@ -292,7 +318,8 @@ describe('repos 存储（真 PG）', () => {
   });
 
   it('updateRepoSettings：仓库不存在 → notFound（HTTP 层据此回 404）', async () => {
-    const result = await updateRepoSettings(db.pool, 'nobody/nothing', DEFAULT_REPO_SETTINGS);
+    // 「仓库不存在」要用**合法**配置才走得 database 分支（非法配置会先在校验层被挡回）
+    const result = await updateRepoSettings(db.pool, 'nobody/nothing', validRepoSettings());
     expect(result.ok).toBe(false);
     if (result.ok) {
       return;

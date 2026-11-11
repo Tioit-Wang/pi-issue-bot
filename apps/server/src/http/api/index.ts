@@ -200,6 +200,9 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
   );
 
   // ── 9. GET /api/issues（按 issue 聚合的列表，`lastActivityAt` 倒序 + keyset 游标）─────
+  // 响应里带 `pipeline`（固定流水线状态投影）：形状由契约 `issueListItemSchema.pipeline` 决定，
+  // 所以 OpenAPI 的 `IssueListItem.pipeline → IssuePipeline → PipelineStage/PipelineState` 一条链
+  // 已经覆盖它，路由侧不需要额外的 schema（`docs/plan-fixed-pipeline.md` §10.4）。
   app.get(
     '/api/issues',
     {
@@ -209,7 +212,9 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
     async (request) => deps.queries.issues(request.query),
   );
 
-  // ── 10. GET /api/issues/:owner/:name/:kind/:number（一个 issue 的会话）─────────────
+  // ── 10. GET /api/issues/:owner/:name/:kind/:number（一个 issue 的会话）───────────
+  // 详情同理：`pipeline` 挂在 `IssueSummary` 上（`issueSessionResponseSchema.issue.pipeline`），
+  // 没有状态行时是 `null`（§1.3：无行 = 放行，不用空对象冒充）。──
   // 路径是四段而不是 `:repo`：`repo` 含 `/`，`:repo` 会吞掉后面的段（spec §3.2 末段）。
   app.get(
     '/api/issues/:owner/:name/:kind/:number',

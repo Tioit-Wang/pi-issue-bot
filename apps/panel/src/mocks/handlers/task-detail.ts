@@ -52,6 +52,125 @@ function buildTask(id: string, now: number): TaskListItem {
   };
 }
 
+/**
+ * 分类任务（`command = pipeline:classify`）的样本：issue 详情页的**证据两栏**从这里取。
+ *
+ * 响应形状与通用样本一致，只把 command/source/target 与信封里的 `verdict.evidence` 换成
+ * 分类真实的形态（§6）：`rule=code:<path>:<line>` 是「命中的代码位置」，
+ * `rule=checked:<范围>` 是「已查范围」。没有这两类，一句「查不到」在面板上无法复核。
+ */
+export function buildClassifyTaskFixture(id: string, now: number = Date.now()): TaskDetailResponse {
+  const queuedAt = now - 18 * MINUTE_MS;
+  const at = (offsetMinutes: number): string => new Date(queuedAt + offsetMinutes * MINUTE_MS).toISOString();
+  const runId = 'r-classify-1';
+
+  return {
+    task: {
+      id,
+      repo: 'acme/widgets',
+      source: 'pipeline',
+      command: 'pipeline:classify',
+      targetKind: 'issue',
+      targetNumber: 88,
+      headSha: HEAD_SHA,
+      status: 'succeeded',
+      failureClass: null,
+      outcome: 'success',
+      actorLogin: null,
+      queuedAt: at(0),
+      startedAt: at(1),
+      endedAt: at(16),
+      durationMs: 15 * MINUTE_MS,
+      costUsd: 0.0128,
+      dryRun: false,
+    },
+    runs: [
+      {
+        id: runId,
+        attempt: 0,
+        sessionId: 'sess-classify-88',
+        turnId: 'turn-classify-88',
+        startedAt: at(1),
+        endedAt: at(16),
+        outcome: 'success',
+        failureClass: null,
+        failureDetail: null,
+      },
+    ],
+    events: [
+      { runId, cursor: 1, kind: 'session', at: at(1), payload: { phase: 'create', sessionId: 'sess-classify-88' } },
+      { runId, cursor: 2, kind: 'command', at: at(2), payload: { command: 'pipeline:classify', target: 'issue#88' } },
+      { runId, cursor: 3, kind: 'envelope', at: at(15), payload: { valid: true, actions: 2 } },
+      { runId, cursor: 4, kind: 'action', at: at(16), payload: { intent: 'comment', status: 'applied' } },
+    ],
+    envelopes: [
+      {
+        runId,
+        valid: true,
+        verdict: {
+          kind: 'issue',
+          labels: [],
+          evidence: [
+            {
+              rule: 'code:apps/server/src/search/ranking.ts:118',
+              quote: 'export function scoreOf(doc: SearchDoc): number { return doc.boost * DEFAULT_BOOST; }',
+              passed: null,
+            },
+            {
+              rule: 'code:apps/server/src/search/ranking.ts:42',
+              quote: '// 权重只有 boost 一个可调项，没有任何「降权 / 惩罚」分支',
+              passed: true,
+            },
+            {
+              rule: 'checked:apps/server/src/search/**',
+              quote: '翻了 ranking / index / query 三个文件，没有按作者或关键词做惩罚的逻辑',
+              passed: null,
+            },
+            { rule: 'checked:apps/panel/src/**', quote: '面板只渲染结果，不参与排序', passed: null },
+          ],
+        },
+        actionCount: 2,
+        usage: { inputTokens: 21_400, outputTokens: 1_320, costUsd: 0.0128 },
+      },
+    ],
+    actions: [
+      {
+        id: '1',
+        runId,
+        intent: 'comment',
+        status: 'applied',
+        target: {
+          kind: 'comment',
+          number: 88,
+          ref: null,
+          url: 'https://github.com/acme/widgets/issues/88#issuecomment-880002',
+        },
+        externalRef: '880002',
+        appliedAt: at(16),
+        revertedAt: null,
+        revertKind: null,
+        audit: null,
+        dryRun: false,
+      },
+      {
+        id: '2',
+        runId,
+        intent: 'label',
+        status: 'skipped',
+        target: { kind: 'issue', number: 88, ref: null, url: null },
+        externalRef: null,
+        appliedAt: null,
+        revertedAt: null,
+        revertKind: null,
+        // not-found 不打缺陷标签（§6）：被跳过的动作也要能看见原因
+        audit: null,
+        dryRun: false,
+      },
+    ],
+    diff: { available: false, text: '', truncated: false, baseSha: null, headSha: HEAD_SHA },
+  };
+}
+
 /** 详情页的完整样本（单一事实源，handler 与测试都从这里取）。 */
 export function buildTaskDetailFixture(id: string = TASK_ID, now: number = Date.now()): TaskDetailResponse {
   const task = buildTask(id, now);
@@ -237,6 +356,8 @@ export const taskDetailHandlers: HttpHandler[] = [
     if (id === 'missing') {
       return HttpResponse.json({ error: { code: 'not-found', message: '任务不存在' } }, { status: 404 });
     }
-    return scenarioResponse({ data: buildTaskDetailFixture(id), slowMs: 600 });
+    // 分类任务用专门样本（带 `verdict.evidence`）；其余 id 走通用样本
+    const data = id.startsWith('t-classify') ? buildClassifyTaskFixture(id) : buildTaskDetailFixture(id);
+    return scenarioResponse({ data, slowMs: 600 });
   }),
 ];

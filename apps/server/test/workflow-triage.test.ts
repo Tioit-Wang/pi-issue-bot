@@ -18,7 +18,6 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { parseRepoSettings } from '../../../packages/contract/src/index.ts';
 import type { Verdict } from '../../../packages/envelope/src/index.ts';
 import { createSkillRegistry } from '../src/skills/registry.ts';
 import { createPgLabelDecisionRecorder, listLabelDecisions } from '../src/workflows/label-decisions.ts';
@@ -30,6 +29,7 @@ import { createFakeWriteApi } from './helpers/fake-github.ts';
 import type { RecordedWriteCall } from './helpers/fake-github.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { parseValidSettings, vocabularyWithRoles } from './helpers/repo-settings.ts';
 
 /**
  * 这些用例都持有 pi_issue_bot_test 的 advisory lock（openTestDb 的设计）——
@@ -41,7 +41,7 @@ const REPO = 'acme/widgets';
 const ISSUE = 7;
 const ISSUE_HASH = '0123456789abcdef';
 
-const config = parseRepoSettings({
+const config = parseValidSettings({
   labels: {
     map: { bug: 'bug', feature: 'enhancement', question: 'question', 'needs-info': 'needs-info' },
     allow: ['bug', 'enhancement', 'question', 'needs-info'],
@@ -206,7 +206,7 @@ describe('runTriage（真库 + 假 worker）', () => {
 
   it('每轮写一行 label_decisions（desired / applied / blocked_reason / reason / judgement_hash）', async () => {
     const api = createFakeWriteApi();
-    const restricted = parseRepoSettings({
+    const restricted = parseValidSettings({
       labels: { map: { bug: 'bug' }, max_per_issue: 1 },
     });
     const result = await runTriage(
@@ -312,7 +312,7 @@ describe('runTriage（真库 + 假 worker）', () => {
 
   it('判定键全都没映射 → 不打标、**不发评论**，blocked 里有 unmapped（等价旧的 comment-only 降级）', async () => {
     const api = createFakeWriteApi();
-    const noFeature = parseRepoSettings({ labels: { map: { bug: 'bug' } } });
+    const noFeature = parseValidSettings({ labels: { map: { bug: 'bug' } } });
     const result = await runTriage(
       { runner: runnerOf({ kind: 'issue', labels: ['feature'], evidence: [] }), github: api },
       {
@@ -511,9 +511,10 @@ describe('缺必填信息：只打 needs-info + confused reaction（不发评论
 });
 
 describe('labels.missing 的三个策略', () => {
-  const onlyVocabBug = parseRepoSettings({
+  const onlyVocabBug = parseValidSettings({
     labels: {
-      vocabulary: [{ name: 'bug', meaning: '崩溃', color: 'FF0000', description: '崩溃/报错' }],
+      // `role` 自 §4.5 / Q4 起必填（`bug` → defect）。
+      vocabulary: vocabularyWithRoles([{ name: 'bug', meaning: '崩溃', color: 'FF0000', description: '崩溃/报错' }]),
       map: { bug: 'bug', 'needs-info': 'needs-info' },
       missing: 'warn',
     },
@@ -546,7 +547,7 @@ describe('labels.missing 的三个策略', () => {
   it('create：按词表的 color/description 建标签（只建词表内的）', async () => {
     const api = createFakeWriteApi();
     const catalog = fakeCatalog([]);
-    const createConfig = parseRepoSettings({
+    const createConfig = parseValidSettings({
       labels: { ...onlyVocabBug.labels, missing: 'create' },
     });
 
@@ -575,7 +576,7 @@ describe('labels.missing 的三个策略', () => {
   it('create 但标签不在词表 → 不建、记 not-creatable', async () => {
     const api = createFakeWriteApi();
     const catalog = fakeCatalog([]);
-    const createConfig = parseRepoSettings({
+    const createConfig = parseValidSettings({
       labels: { map: { bug: 'bug' }, missing: 'create' },
     });
 
@@ -601,7 +602,7 @@ describe('labels.missing 的三个策略', () => {
 
   it('ignore：静默跳过（不记 warn，但仍进 blocked_reason）', async () => {
     const api = createFakeWriteApi();
-    const ignoreConfig = parseRepoSettings({ labels: { map: { bug: 'bug' }, missing: 'ignore' } });
+    const ignoreConfig = parseValidSettings({ labels: { map: { bug: 'bug' }, missing: 'ignore' } });
     const result = await runTriage(
       { runner: runnerOf({ kind: 'issue', labels: ['bug'], evidence: [] }), github: api, decisions: createPgLabelDecisionRecorder(sql) },
       {
@@ -666,8 +667,10 @@ describe('失败不翻 run 与 dry-run', () => {
 
 describe('needsInfoLabelOf', () => {
   it('配了映射就用映射，没配就用字面量 needs-info', () => {
-    expect(needsInfoLabelOf(parseRepoSettings({ labels: { map: { 'needs-info': '缺少信息' } } }))).toBe('缺少信息');
-    expect(needsInfoLabelOf(parseRepoSettings({}))).toBe('needs-info');
-    expect(needsInfoLabelOf(parseRepoSettings({ labels: { map: { 'needs-info': ['缺信息', 'triage'] } } }))).toBe('缺信息');
+    expect(needsInfoLabelOf(parseValidSettings({ labels: { map: { 'needs-info': '缺少信息' } } }))).toBe('缺少信息');
+    expect(needsInfoLabelOf(parseValidSettings({}))).toBe('needs-info');
+    expect(needsInfoLabelOf(parseValidSettings({ labels: { map: { 'needs-info': ['缺信息', 'triage'] } } }))).toBe(
+      '缺信息',
+    );
   });
 });

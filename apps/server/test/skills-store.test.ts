@@ -321,8 +321,13 @@ describe('prompt/store（真库）：保存即新版本、回滚不改历史、�
 
   beforeEach(async () => {
     await db.sql('truncate table prompt_versions, runtime_flags, repos cascade');
-    // 建仓库行：settings 走部署默认（`repoSettingsSchema.parse({})`），`prompt` 段默认 `current_version: 0`
-    const created = await upsertRepo(runner, { repo: PROMPT_REPO });
+    // 建仓库行：settings 必须**合法**（§4.5 / Q4 之后 `pipeline.managers` 非空是硬要求），
+    // 否则 `readRepoPolicy` 判 `settings-valid=false`，`savePrompt()` 一律返回 settings-invalid。
+    // `prompt` 段默认 `current_version: 0`，`pipeline.*_prompt_version` 默认 0。
+    const created = await upsertRepo(runner, {
+      repo: PROMPT_REPO,
+      settings: { pipeline: { managers: ['alice'] } },
+    });
     expect(created.ok).toBe(true);
   });
 
@@ -336,6 +341,7 @@ describe('prompt/store（真库）：保存即新版本、回滚不改历史、�
   it('保存即新建版本：v1 → v2，settings.prompt.current_version 跟着走', async () => {
     // 还没有版本时：getPrompt 返回 0 / 空正文，而不是抛错
     expect(await getPrompt(runner, PROMPT_REPO)).toEqual({
+      kind: 'project',
       version: 0,
       body: '',
       enabled: true,
@@ -355,6 +361,7 @@ describe('prompt/store（真库）：保存即新版本、回滚不改历史、�
     expect(second.version).toBe(2);
 
     expect(await getPrompt(runner, PROMPT_REPO)).toEqual({
+      kind: 'project',
       version: 2,
       body: '项目背景 v2',
       enabled: true,

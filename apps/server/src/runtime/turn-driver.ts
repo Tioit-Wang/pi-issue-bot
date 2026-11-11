@@ -35,6 +35,46 @@ import type { EventEnvelope, Logger, PermissionMode, RequestOptions, SessionMode
 export const DEFAULT_TURN_TIMEOUT_MS = 20 * 60 * 1_000;
 /** `/review-pr` 的时间闸（§4.7）：30 分钟。 */
 export const REVIEW_PR_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
+/**
+ * 会话复用计划（`docs/plan-fixed-pipeline.md` §7 / §10.5）。
+ *
+ *  - `ephemeral`（**缺省**）：一个任务一个会话，跑完 `session/archive` —— 阶段 0/1 与所有老任务；
+ *  - `persistent`：阶段 2 的 `@` 轮次复用同一个会话。给了 `sessionId` 就 `session/attach` 接管，
+ *    `after` 是上一轮结束时的 `session_cursor`（订阅从它之后开始，**防重放旧事件污染本轮信封**）；
+ *    跑完**不 archive**（归档了下一轮就没得 attach）。
+ *
+ * 「阶段间独立、阶段内粘性」（D1 + E2）：阶段 0/1 各自 create → run → archive，
+ * `session_id` 两两不同；只有 `ready` 之后同一 issue 的多轮 `@` 才复用。
+ */
+export type SessionPlan =
+  | { readonly mode: 'ephemeral' }
+  | { readonly mode: 'persistent'; readonly sessionId?: string; readonly after?: number };
+
+/**
+ * `session/attach` 返回值里我们只关心游标。
+ *
+ * `RacpOps.sessionAttach()` 交的是 `SessionSnapshot`（`cursor: { epoch, sequence }`），
+ * 而 `issue_pipeline.session_cursor` 是一列整数 —— 所以这里两种形态都容忍，
+ * 由 `sessionCursorOf()` 统一取数字（取不到就 `null`，由调用方的 `after` 兜底）。
+ */
+export type SessionAttachResult = {
+  readonly cursor?: number | { readonly sequence?: number | null } | null;
+};
+
+/** 从 `session/attach` 的返回值里取数字游标（取不到给 `null`）。 */
+export function sessionCursorOf(result: SessionAttachResult | null | undefined): number | null {
+  const cursor = result?.cursor;
+  if (typeof cursor === 'number' && Number.isFinite(cursor)) {
+    return Math.max(0, Math.trunc(cursor));
+  }
+  if (typeof cursor === 'object' && cursor !== null) {
+    const sequence = cursor.sequence;
+    if (typeof sequence === 'number' && Number.isFinite(sequence)) {
+      return Math.max(0, Math.trunc(sequence));
+    }
+  }
+  return null;
+}
 
 /** turn 的四个终态事件（§5.3 的事件种类里的 `turn.*`）。 */
 export const TERMINAL_TURN_EVENT_KINDS = [
@@ -98,6 +138,16 @@ export interface TurnDriverOps {
     options?: RequestOptions,
   ): Promise<{ readonly diff: string; readonly truncated?: boolean }>;
   sessionArchive(params: { readonly sessionId: string }, options?: RequestOptions): Promise<unknown>;
+  /**
+   * `session/attach`：接管一个已有会话（阶段 2 的 `@` 复用，§7）。
+   *
+   * **可选**：`RacpOps` 提供它；不提供（或抛错）一律按「attach 失败」处理 ——
+   * 新建会话 + warn + `session-reset`，**不阻塞**本轮（§7「attach 失败不阻塞」）。
+   */
+  sessionAttach?(
+    params: { readonly sessionId: string },
+    options?: RequestOptions,
+  ): Promise<SessionAttachResult>;
 }
 
 /** 事件里 `approval.requested` 的载荷（只取我们判断需要的字段，缺就用不到的那几条兜）。 */
@@ -131,6 +181,15 @@ export interface TurnDriveResult {
   /** 落库失败被吞掉的事件条数（不阻断任务，但要能被发现）。 */
   readonly eventSinkErrors: number;
   readonly archived: boolean;
+  /** 会话模式（`ephemeral` 归档 / `persistent` 留着给下一轮 attach）。 */
+  readonly sessionMode: 'ephemeral' | 'persistent';
+  /**
+   * 本轮结束时的最新游标（事件流最后一条的 `sequence`，没有事件时退回订阅起点）。
+   * 上层据此写 `issue_pipeline.session_cursor`；`ephemeral` 也会给（无害，便于观测）。
+   */
+  readonly cursor: number | null;
+  /** `true` = 这一轮本该复用会话但 `session/attach` 失败，已新建会话（不阻塞）。 */
+  readonly sessionReset: boolean;
 }
 
 export interface TurnDriverParams {
@@ -139,12 +198,26 @@ export interface TurnDriverParams {
   readonly worktreeRoot: string;
   /** 拼好的提示词（技能模板 + 仓库配置 + 任务上下文，由上层负责拼）。 */
   readonly prompt: string;
+  /**
+   * 会话计划（缺省 `ephemeral` = 现有行为：create → run → archive）。
+   *
+   * 阶段 2 传 `{ mode:'persistent', sessionId, after }` 复用同一个会话（§7）；
+   * 阶段 0/1 与所有老任务不传，行为与接线前**逐字节一致**。
+   */
+  readonly session?: SessionPlan;
   /** `turn/start` 的 `input.messageId`（与 run 绑定的稳定 id）。 */
   readonly messageId: string;
   /** 任务级 deadline；默认 20min，`/review-pr` 传 30min。 */
   readonly timeoutMs?: number;
   /** 上层取消（SIGTERM / 人工取消）。 */
   readonly parent?: AbortSignal;
+  /**
+   * 是否采 `workspace/diff`（缺省 `true` = 现有行为）。
+   *
+   * `light` 运行时没有容器也没有 worktree，diff 必然是空的 —— 采集它只是多一次无用的
+   * operation 调用（§10.5「light 跳过 diff 采集」）。缺省 `true` 保证老任务行为不变。
+   */
+  readonly collectDiff?: boolean;
   /** 事件源：上层用 `client.onEvent()` 装配；测试注入假事件流。 */
   readonly events: (context: { readonly sessionId: string; readonly turnId: string }) => AsyncIterable<EventEnvelope>;
   /** 每条事件都过一遍（落 `run_events`）；抛错会被记下但不中断任务。 */
@@ -232,9 +305,16 @@ export function extractInputRequest(payload: unknown): InputRequestPayload | und
 export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResult> {
   const logger = params.logger ?? createNullLogger();
   const timeoutMs = params.timeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  const plan: SessionPlan = params.session ?? { mode: 'ephemeral' };
+  const persistent = plan.mode === 'persistent';
+  /** `persistent` 用上一轮的游标当订阅起点（防重放旧事件污染本轮信封）；`ephemeral` 恒为 0。 */
+  const requestedAfter = persistent ? Math.max(0, Math.trunc(plan.after ?? 0)) : 0;
 
   let sessionId: string | undefined;
   let turnId: string | undefined;
+  let after = requestedAfter;
+  let sessionReset = false;
+  let cursor: number | null = null;
 
   try {
     return await runWithDeadline(
@@ -250,20 +330,43 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
         const project = await params.ops.projectRegister({ path: params.worktreeRoot }, requestOptions);
         const projectId = project.projectId;
 
-        // 2. session/create（`ask` + 自动应答：每次 allow/deny 都是审计条目，§4.6）
-        const session = await params.ops.sessionCreate(
-          {
-            projectId,
-            permissionMode: 'ask',
-            mode: 'agent',
-            ...(params.title === undefined ? {} : { title: params.title }),
-          },
-          requestOptions,
-        );
-        sessionId = session.id;
+        // 2. 会话：`persistent` 且有 `session_id` → `session/attach` 复用；否则（或 attach 失败）新建。
+        //
+        // 「attach 失败不阻塞」（§7）：老 Host 可能没有这条 operation，会话也可能已被每日清理删掉。
+        // 这时新建一个会话继续跑，并把 `sessionReset` 交给上层落 `blocked_reason='session-reset'`
+        // —— 面板要能解释「为什么这一轮的上下文断了一次」。
+        if (persistent && plan.sessionId !== undefined && plan.sessionId !== '') {
+          const attached = await attachSession(params.ops, plan.sessionId, logger);
+          if (attached !== null) {
+            sessionId = plan.sessionId;
+            // 没显式给 `after` 时用快照游标兜底：至少不会从 0 重放整段历史
+            if (plan.after === undefined) {
+              const attachedCursor = sessionCursorOf(attached);
+              if (attachedCursor !== null) {
+                after = attachedCursor;
+              }
+            }
+          } else {
+            sessionReset = true;
+            logger.warn({ sessionId: plan.sessionId }, 'session/attach 失败：新建会话继续（不阻塞本轮）');
+          }
+        }
+        if (sessionId === undefined) {
+          // session/create（`ask` + 自动应答：每次 allow/deny 都是审计条目，§4.6）
+          const session = await params.ops.sessionCreate(
+            {
+              projectId,
+              permissionMode: 'ask',
+              mode: 'agent',
+              ...(params.title === undefined ? {} : { title: params.title }),
+            },
+            requestOptions,
+          );
+          sessionId = session.id;
+        }
 
-        // 3. events/subscribe（游标从 0 开始）
-        await params.ops.eventsSubscribe({ sessionId, after: 0 }, requestOptions);
+        // 3. events/subscribe（`after` = 上一轮游标；`ephemeral` 恒从 0 开始）
+        await params.ops.eventsSubscribe({ sessionId, after }, requestOptions);
 
         // 4. turn/start
         const turn = await params.ops.turnStart(
@@ -282,23 +385,35 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
           ...(params.onEvent === undefined ? {} : { onEvent: params.onEvent }),
           ...(params.onAudit === undefined ? {} : { onAudit: params.onAudit }),
         });
+        // 最新游标：上层写 `issue_pipeline.session_cursor`（`persistent` 的下一轮靠它防重放）
+        cursor = loop.lastSequence ?? after;
 
         // 6. workspace/diff（与信封一起入库供面板展示）
-        const diff = await params.ops.workspaceDiff({ sessionId }, requestOptions);
+        //    light 运行时没有容器也没有 worktree：`collectDiff:false` 直接跳过（§10.5）
+        const diff =
+          params.collectDiff === false
+            ? { diff: '', truncated: false }
+            : await params.ops.workspaceDiff({ sessionId }, requestOptions);
 
         // 7. session/archive（任务结束立即归档；删除交给每日清理）
+        //
+        // **只有 `ephemeral` 归档**：`persistent` 归档了下一轮就没得 attach（§7）。
         //
         // **归档失败不算任务失败**：v0.22.0 的 Host 把 `session/archive` 注册成
         // 「不可用」（`unavailable("session archival")`），能力表里没有它就是没有。
         // 归档只是清理动作，把它变成 run 的终态会把「agent 干得对不对」和
         // 「宿主版本有没有这个能力」混为一谈——所以这里只记 warn。
-        try {
-          await params.ops.sessionArchive({ sessionId }, requestOptions);
-        } catch (error) {
-          logger.warn(
-            { code: isAppError(error) ? error.code : 'UNKNOWN' },
-            'session/archive 失败（Host 可能不提供该 operation；不影响本次结果）',
-          );
+        let archived = false;
+        if (!persistent) {
+          try {
+            await params.ops.sessionArchive({ sessionId }, requestOptions);
+          } catch (error) {
+            logger.warn(
+              { code: isAppError(error) ? error.code : 'UNKNOWN' },
+              'session/archive 失败（Host 可能不提供该 operation；不影响本次结果）',
+            );
+          }
+          archived = true;
         }
 
         return {
@@ -312,7 +427,10 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
           denies: loop.denies,
           inputs: loop.inputs,
           eventSinkErrors: loop.eventSinkErrors,
-          archived: true,
+          archived,
+          sessionMode: plan.mode,
+          cursor,
+          sessionReset,
         } satisfies TurnDriveResult;
       },
     );
@@ -321,9 +439,34 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
     // 超时与取消都要「先 interrupt 再抛」：否则 agent 会在容器里继续写同一个 worktree（§4.7）。
     const needsInterrupt = appError.failureClass === 'timeout' || appError.failureClass === 'interrupt';
     if (needsInterrupt && sessionId !== undefined && turnId !== undefined) {
-      await interruptAndArchive(params.ops, { sessionId, turnId }, logger);
+      // `persistent` 失败时也**不归档**：会话留给下一轮 attach（归档是清理，不是语义）
+      await interruptAndArchive(params.ops, { sessionId, turnId }, logger, { archive: !persistent });
     }
     throw appError;
+  }
+}
+
+/**
+ * `session/attach` 的一次尝试：**不抛错**，失败一律 `null`（由调用方新建会话）。
+ * 三种失败等价：Host 没这条 operation、会话不存在、断线。
+ */
+async function attachSession(
+  ops: TurnDriverOps,
+  sessionId: string,
+  logger: Logger,
+): Promise<SessionAttachResult | null> {
+  if (ops.sessionAttach === undefined) {
+    logger.warn({ sessionId }, 'Host 不提供 session/attach：改为新建会话（不阻塞）');
+    return null;
+  }
+  try {
+    return await ops.sessionAttach({ sessionId });
+  } catch (error) {
+    logger.warn(
+      { sessionId, code: isAppError(error) ? error.code : 'UNKNOWN' },
+      'session/attach 失败：改为新建会话（不阻塞）',
+    );
+    return null;
   }
 }
 
@@ -332,6 +475,7 @@ async function interruptAndArchive(
   ops: TurnDriverOps,
   ref: { readonly sessionId: string; readonly turnId: string },
   logger: Logger,
+  options: { readonly archive: boolean },
 ): Promise<void> {
   try {
     await ops.turnInterrupt({ sessionId: ref.sessionId, turnId: ref.turnId });
@@ -340,6 +484,10 @@ async function interruptAndArchive(
       { code: isAppError(error) ? error.code : 'UNKNOWN' },
       '超时后 turn/interrupt 失败（幂等，继续归档）',
     );
+  }
+  if (!options.archive) {
+    // `persistent` 会话留给下一轮 attach（§7）；清理交给每日清理任务
+    return;
   }
   try {
     await ops.sessionArchive({ sessionId: ref.sessionId });
@@ -368,6 +516,8 @@ interface EventLoopResult {
   readonly denies: number;
   readonly inputs: number;
   readonly eventSinkErrors: number;
+  /** 最后一条事件的 `sequence`（会话游标）；一条都没有时 `null`（由订阅起点兜底）。 */
+  readonly lastSequence: number | null;
 }
 
 /** 事件循环：审批/反问应答 + 终态退出。 */
@@ -377,9 +527,14 @@ async function runEventLoop(params: EventLoopParams): Promise<EventLoopResult> {
   let denies = 0;
   let inputs = 0;
   let eventSinkErrors = 0;
+  let lastSequence: number | null = null;
 
   for await (const event of params.events) {
     events += 1;
+    // 会话游标跟着事件走：`persistent` 的下一轮用它当 `events/subscribe` 的 `after`（§7）
+    if (typeof event.sequence === 'number' && Number.isFinite(event.sequence)) {
+      lastSequence = lastSequence === null ? event.sequence : Math.max(lastSequence, event.sequence);
+    }
 
     if (params.onEvent !== undefined) {
       try {
@@ -431,11 +586,11 @@ async function runEventLoop(params: EventLoopParams): Promise<EventLoopResult> {
     }
 
     if (isTerminalTurnEvent(event.kind)) {
-      return { terminal: event.kind, events, approvals, denies, inputs, eventSinkErrors };
+      return { terminal: event.kind, events, approvals, denies, inputs, eventSinkErrors, lastSequence };
     }
   }
 
-  return { terminal: 'stream-ended', events, approvals, denies, inputs, eventSinkErrors };
+  return { terminal: 'stream-ended', events, approvals, denies, inputs, eventSinkErrors, lastSequence };
 }
 
 /** 上层最常问的一句：这个错误是不是「任务超时」（决定任务标 `timed-out` 且不自动重试）。 */

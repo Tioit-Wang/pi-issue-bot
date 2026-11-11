@@ -44,6 +44,11 @@ export const queryKeys = {
   audit: (query: AuditQuery) => ['audit', query] as const,
   issues: (query: IssuesQuery) => ['issues', query] as const,
   issueSession: (params: IssueSessionParams) => ['issueSession', params] as const,
+  /**
+   * 仓库配置（只读消费）：流水线页要读 `settings.pipeline.*_prompt_version` 的四个指针。
+   * 与设置页自己的草稿 key（`settings-draft`）分开：那个是可编辑草稿，这里是只读快照。
+   */
+  repoSettings: (repo: string) => ['repoSettings', repo] as const,
   system: () => ['system'] as const,
   /*
    * 技能页的三个 key 都以 `'skills'` 开头：写操作后一句
@@ -167,6 +172,44 @@ export function useIssueSession(params: IssueSessionParams) {
       }
     },
     refetchInterval: REFETCH_INTERVAL.detail,
+  });
+}
+/**
+ * 任务详情的**按需**版本：`id === null` 时不发请求（`enabled: false`），404 仍规约成 `null`。
+ *
+ * 用在「只有拿到最近一轮任务才知道能不能展示证据」的地方（issue 详情的分类结论）：
+ * 无条件 `useTaskDetail('')` 会朝 `/api/tasks/` 打一个必然 404 的请求，不如不发。
+ */
+export function useTaskDetailIf(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.taskDetail(id ?? ''),
+    queryFn: async () => {
+      if (id === null) return null;
+      try {
+        return await api.taskDetail(id);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled: id !== null,
+    refetchInterval: REFETCH_INTERVAL.detail,
+  });
+}
+
+
+/**
+ * 仓库配置的**只读**快照（流水线页用）。
+ *
+ * 为什么不复用 `useSettingsDraft`（`components/settings/use-settings-draft.ts`）：那是表单草稿层
+ * （本地编辑 + 脏标记 + 保存），流水线页只需要「四个提示词指针现在指向哪一版」，不应该把
+ * 一个可写草稿挂到一个纯读页面上。轮询间隔沿用列表档（15s）。
+ */
+export function useRepoSettings(repo: string) {
+  return useQuery({
+    queryKey: queryKeys.repoSettings(repo),
+    queryFn: () => api.repoSettings(repo),
+    refetchInterval: REFETCH_INTERVAL.list,
   });
 }
 

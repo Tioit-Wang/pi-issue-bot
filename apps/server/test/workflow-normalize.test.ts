@@ -7,11 +7,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { parseRepoSettings } from '../../../packages/contract/src/index.ts';
 import { humanVetoedFrom, normalizeDesired, toLabelTargets, vocabularyIndex } from '../src/workflows/normalize.ts';
 import type { LabelsConfig } from '../../../packages/contract/src/index.ts';
+import { parseValidSettings, vocabularyWithRoles } from './helpers/repo-settings.ts';
 
-const labelsOf = (input: unknown): LabelsConfig => parseRepoSettings({ labels: input }).labels;
+/** `labels` 段夹具：走合法配置外壳 —— `pipeline.managers` 非空是解析前提（§4.5 / Q4）。 */
+const labelsOf = (input: unknown): LabelsConfig => parseValidSettings({ labels: input }).labels;
 
 describe('normalizeDesired：映射与词表', () => {
   it('1:N 展开保持输入顺序，并记下每个标签来自哪个判定键', () => {
@@ -43,7 +44,8 @@ describe('normalizeDesired：映射与词表', () => {
 
   it('词表非空时只允许词表内的名字；词表为空时不限制', () => {
     const withVocab = labelsOf({
-      vocabulary: [{ name: 'bug', meaning: '崩溃' }],
+      // `role` 自 §4.5 / Q4 起必填：`bug` 按语义归到 `defect`。
+      vocabulary: vocabularyWithRoles([{ name: 'bug', meaning: '崩溃' }]),
       map: { bug: 'bug', feature: 'enhancement' },
     });
     const filtered = normalizeDesired({ keys: ['bug', 'feature'], labels: withVocab });
@@ -66,11 +68,11 @@ describe('normalizeDesired：映射与词表', () => {
 describe('normalizeDesired：互斥组与上限', () => {
   it('同 group 只留输入顺序第一个，其余记 group-conflict', () => {
     const labels = labelsOf({
-      vocabulary: [
+      vocabulary: vocabularyWithRoles([
         { name: 'bug', group: 'type' },
         { name: 'feature', group: 'type' },
         { name: 'question', group: 'type' },
-      ],
+      ]),
       map: { bug: 'bug', feature: 'feature', question: 'question' },
     });
     const result = normalizeDesired({ keys: ['bug', 'feature', 'question'], labels });
@@ -135,8 +137,8 @@ describe('辅助函数', () => {
 
   it('vocabularyIndex：先出现的名字赢（词表里重复声明时不静默覆盖）', () => {
     const index = vocabularyIndex([
-      { name: 'bug', meaning: '第一个' },
-      { name: 'bug', meaning: '第二个' },
+      { name: 'bug', role: 'defect', meaning: '第一个' },
+      { name: 'bug', role: 'defect', meaning: '第二个' },
     ]);
     expect(index['bug']?.meaning).toBe('第一个');
   });

@@ -2,7 +2,9 @@
  * `@pi-issue-bot/contract` —— 契约叶子包（只依赖 zod）。
  *
  * 内容：
- * - `enums.ts`   状态 / 结果 / 失败分类 / 动作 intent / 改回方式 / 事件 kind / 错误码
+ * - `enums.ts`   状态 / 结果 / 失败分类 / 动作 intent / 改回方式 / 事件 kind / 错误码 /
+ *                固定流水线（`PIPELINE_STAGES` / `PIPELINE_STATES` / `PIPELINE_CATEGORIES` /
+ *                `STAGE_RESULTS` / `PROMPT_KINDS` / `PIPELINE_COMMANDS`）/ `source='pipeline'`
  * - `common.ts`  全局标量约定（时间、金额、比例、耗时、分页、错误体）
  * - `api.ts`     9 个接口的响应与查询 schema
  * - `repo-config.ts`  `.github/pi-bot.yml`

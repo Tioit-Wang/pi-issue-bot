@@ -32,3 +32,10 @@ export {
 export type { PromptState, PromptVersion, SavePromptResult } from './store.ts';
 export { previewBasePrompt, previewPrompt } from './preview.ts';
 export type { PreviewPromptInput, PreviewPromptResult } from './preview.ts';
+/**
+ * 四类提示词的 kind 级小工具（S2-a 追加）。
+ *
+ * `activePromptBody` / `getPrompt` / `listPromptVersions` / `savePrompt` / `rollbackPrompt`
+ * 已在上面那条 `store.ts` 导出里（它们现在都带 `kind` 参数，缺省 `project`）。
+ */
+export { PROMPT_KIND_DEFAULT, PROMPT_KIND_POINTERS, isSystemDefault, promptLimitOf, resetPromptToDefault } from './store.ts';

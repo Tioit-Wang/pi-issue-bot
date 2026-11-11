@@ -1,5 +1,8 @@
 /**
- * `triggers` 分区：别名 / 触发人 / 9 个事件面 / **命中预览**。
+ * `triggers` 分区：别名 / 触发人 / **命中预览**。
+ *
+ * 事件面（`triggers.faces`）已按 P7 删除：三段流水线里「哪些事件会开工」由代码固定，不再是项目配置项，
+ * 所以这里只留「别名 / 触发人」两段可写配置 + 一个不写配置的预览。
  *
  * 命中预览是这个分区存在的理由：线上「@ 了但没触发」的排查成本极高（要看 webhook 投递、
  * 别名合并、代码区蒙版三层），所以这里把三层摊开，并用 tone 表达结论而不是一段纯文本：
@@ -8,7 +11,7 @@
  * 判定不另写：别名合并与正文解析都用 `packages/contract/src/trigger.ts`（webhook 同一份）。
  */
 import { useState } from 'react';
-import { DEFAULT_TRIGGER_ALIASES, type TriggerFaceMode, type TriggerFaces } from '../../../../../packages/contract/src/index.ts';
+import { DEFAULT_TRIGGER_ALIASES } from '../../../../../packages/contract/src/index.ts';
 import { Alert, AlertDescription } from '../ui/alert.tsx';
 import { Badge } from '../ui/badge.tsx';
 import { Section } from '../Section.tsx';
@@ -18,24 +21,6 @@ import { SaveBar } from './save-bar.tsx';
 import { countChangedPaths } from './settings-chrome.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
 import { acceptAlias, acceptLogin, previewTrigger, resolveAliasesFor } from './trigger-preview.ts';
-
-const FACE_META: ReadonlyArray<{ key: keyof TriggerFaces; label: string; meaning?: string }> = [
-  { key: 'issue_opened', label: 'issue 新建', meaning: '自动 triage，零评论' },
-  { key: 'issue_edited', label: 'issue 编辑' },
-  { key: 'issue_reopened', label: 'issue 重新打开' },
-  { key: 'issue_comment', label: 'issue / PR 评论', meaning: '唯一会产生最终回答的面' },
-  { key: 'issue_comment_edited', label: '评论被编辑', meaning: '改错别字重跑 = 重复扣费，默认关' },
-  { key: 'pr_review_comment', label: 'PR 行内 review 评论' },
-  { key: 'pr_review_submitted', label: 'PR review 总评' },
-  { key: 'pr_opened', label: 'PR 打开', meaning: 'PR opened（synchronize 同面）' },
-  { key: 'body_mention', label: '正文里的 @', meaning: '正文里 @ 机器人（assign 场景）' },
-];
-
-const FACE_MODES: ReadonlyArray<{ value: TriggerFaceMode; label: string; title: string }> = [
-  { value: 'off', label: '关', title: 'off：这个面完全不处理（连自动判定都不做）' },
-  { value: 'mention', label: '必须 @', title: 'mention：正文里必须 @ 别名才处理' },
-  { value: 'auto', label: '自动', title: 'auto：不看 @，事件一到就开工（自动通道 = 打标/判定，不评论）' },
-];
 
 const PREVIEW_SAMPLE = '@issuebot /issue-triage 17 --deep';
 
@@ -173,36 +158,6 @@ export function TriggersSection({ state }: SettingsSectionProps) {
               emptyText="（空名单 —— 保存会被拒绝，请至少加一个 login）"
             />
           )}
-        </div>
-      </Section>
-
-      <Section title="事件面（9 个）">
-        <div className="flex flex-col divide-y divide-border">
-          {FACE_META.map((face) => (
-            <div
-              key={face.key}
-              className="grid grid-cols-1 items-start gap-x-3 gap-y-1 py-1.5 md:grid-cols-[minmax(0,1fr)_auto]"
-              data-testid={`triggers-face-${face.key}`}
-            >
-              <div className="min-w-0">
-                <p className="text-sm text-foreground">{face.label}</p>
-                {face.meaning === undefined ? null : (
-                  <p className="text-xs leading-relaxed text-muted-foreground">{face.meaning}</p>
-                )}
-              </div>
-              <Segmented
-                name={`triggers-face-${face.key}`}
-                ariaLabel={`${face.label} 的触发方式`}
-                value={triggers.faces[face.key]}
-                options={FACE_MODES}
-                onChange={(next) => {
-                  patchTriggers((current) => ({ ...current, faces: { ...current.faces, [face.key]: next } }));
-                }}
-                disabled={readOnly}
-                disabledReason="仓库已归档：只读"
-              />
-            </div>
-          ))}
         </div>
       </Section>
 

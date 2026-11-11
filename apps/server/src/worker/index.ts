@@ -131,3 +131,9 @@ export type {
   WorktreePort,
   WriteTargetContext,
 } from './types.ts';
+
+/**
+ * 会话计划（`ephemeral` / `persistent`）由 `runtime/turn-driver.ts` 定义，
+ * 这里再导出一遍：装配层只认识 `worker/` 也能拿到它（`app/compose.ts` 的两个 import 面）。
+ */
+export type { SessionPlan } from '../runtime/turn-driver.ts';

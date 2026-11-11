@@ -30,7 +30,10 @@ export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ['succeeded', 'failed', 'cancelled'];
 
 // ── 任务来源（tasks.source）───────────────────────────────────────────────────────────────
-export const TASK_SOURCES = ['webhook', 'command', 'cron'] as const;
+//
+// `pipeline`（固定流水线，`docs/plan-fixed-pipeline.md` §4.6）：唯一允许「自动通道也写评论」的来源，
+// 只在 `command ∈ PIPELINE_COMMANDS` 时放行。**追加在末尾**：既有取值的顺序被测试与面板图例依赖。
+export const TASK_SOURCES = ['webhook', 'command', 'cron', 'pipeline'] as const;
 export const taskSourceSchema = z.enum(TASK_SOURCES);
 export type TaskSource = z.infer<typeof taskSourceSchema>;
 
@@ -38,6 +41,54 @@ export type TaskSource = z.infer<typeof taskSourceSchema>;
 export const TARGET_KINDS = ['issue', 'pr'] as const;
 export const targetKindSchema = z.enum(TARGET_KINDS);
 export type TargetKind = z.infer<typeof targetKindSchema>;
+
+// ── 固定流水线（docs/plan-fixed-pipeline.md §4.3 / §4.4 / §4.6）─────────────────────────────
+//
+// 三段流水线（格式检查 → 分类 → Agent）的全部状态词都在这里：DB 列（`issue_pipeline.stage/state/
+// category`、`prompt_versions.kind`、`tasks.command`）、API 响应、面板类型、信封 `stage` 共用一份。
+export const PIPELINE_STAGES = ['format', 'classify', 'agent', 'closed'] as const;
+export const pipelineStageSchema = z.enum(PIPELINE_STAGES);
+/** `issue_pipeline.stage`：issue 现在走到哪一段（`closed` = 流程已结束）。 */
+export type PipelineStage = z.infer<typeof pipelineStageSchema>;
+
+export const PIPELINE_STATES = [
+  'pending', // 入队待跑
+  'running', // 该阶段正在跑
+  'awaiting_info', // 等补充信息（格式不通过 / 等管理员回分类）
+  'ready', // 三段走完，等 @
+  'blocked', // 结论不合法或管理员判定卡住，不自动前进
+  'closed', // 已关闭
+] as const;
+export const pipelineStateSchema = z.enum(PIPELINE_STATES);
+export type PipelineState = z.infer<typeof pipelineStateSchema>;
+
+/** 分类阶段的结论（`issue_pipeline.category`）。`not-found` = 声称缺陷但代码里定位不到。 */
+export const PIPELINE_CATEGORIES = ['requirement', 'defect', 'not-found', 'other'] as const;
+export const pipelineCategorySchema = z.enum(PIPELINE_CATEGORIES);
+export type PipelineCategory = z.infer<typeof pipelineCategorySchema>;
+
+/** 阶段 0 的 `stage.result` 允许集合。 */
+export const FORMAT_STAGE_RESULTS = ['pass', 'fail'] as const;
+export const formatStageResultSchema = z.enum(FORMAT_STAGE_RESULTS);
+export type FormatStageResult = z.infer<typeof formatStageResultSchema>;
+
+/**
+ * 信封 `stage.result` 的**全集**（两个阶段取并集）；单阶段的允许集合见
+ * `packages/envelope/src/validate.ts`（`format` → pass/fail，`classify` → 四个分类结论）。
+ */
+export const STAGE_RESULTS = ['pass', 'fail', 'requirement', 'defect', 'not-found', 'other'] as const;
+export const stageResultSchema = z.enum(STAGE_RESULTS);
+export type StageResult = z.infer<typeof stageResultSchema>;
+
+/** `prompt_versions.kind`：4 条互不干扰的版本线（§4.4）。 */
+export const PROMPT_KINDS = ['project', 'format_check', 'classify', 'agent'] as const;
+export const promptKindSchema = z.enum(PROMPT_KINDS);
+export type PromptKind = z.infer<typeof promptKindSchema>;
+
+/** 阶段任务的 `tasks.command`：只有这三个值能带 `source='pipeline'`（§4.6）。 */
+export const PIPELINE_COMMANDS = ['pipeline:format', 'pipeline:classify', 'pipeline:notice'] as const;
+export const pipelineCommandSchema = z.enum(PIPELINE_COMMANDS);
+export type PipelineCommand = z.infer<typeof pipelineCommandSchema>;
 
 // ── 一次 run 的结果（runs.outcome / metrics_daily.outcome）────────────────────────────────
 //

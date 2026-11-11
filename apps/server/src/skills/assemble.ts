@@ -54,6 +54,14 @@ export interface AssembleSkillLayer {
   readonly promptText: string;
 }
 
+/**
+ * 装配的三个阶段（`docs/plan-fixed-pipeline.md` §16.3 的作用域矩阵）。
+ *
+ * 名称与 `prompt_versions.kind` 不完全一样（`format_check` → `format`）：
+ * kind 是**版本线**的名字，stage 是**装配位置**的名字，两者由 `ASSEMBLE_STAGE_OF_KIND` 映射。
+ */
+export type AssembleStage = 'format' | 'classify' | 'agent';
+
 export interface AssemblePromptInput {
   /** 上游拼好的提示词（系统约束 + 任务上下文 + 输出契约）。 */
   readonly basePrompt: string;
@@ -67,10 +75,43 @@ export interface AssemblePromptInput {
   readonly projectPrompt?: string | null;
   /** `collectAgentsMd()` 的结果；缺省/null 表示没有 AGENTS.md 层。 */
   readonly agentsMd?: AgentsMdResult | null;
-  /** 命中命令的技能；缺省/null 表示没有技能层。 */
+  /** 命中命令的技能；缺省/null 表示没有技能层（`stage='format'|'classify'` 时按矩阵忽略）。 */
   readonly skill?: AssembleSkillLayer | null;
   /** 覆盖总预算（单测用）。 */
   readonly budgetChars?: number;
+  /**
+   * 阶段维度（`docs/plan-fixed-pipeline.md` §16.3 作用域矩阵）。
+   *
+   * 缺省 = **现有行为，逐字节一致**（`basePrompt` 走 `splitBasePrompt()`，P1/技能层照常参与）。
+   * 给了值就换一套作用域：
+   *  - `format` / `classify`：`head` = `stagePrompt`，`tail` = `outputContract ?? basePrompt`（**整段**
+   *    都是代码追加的输出契约），层里只有 AGENTS.md —— 没有 P1、没有技能层（Q9 要求 AGENTS.md 全阶段生效）。
+   *  - `agent`：`head` = `stagePrompt`（项目版或内置默认）→ P1 → AGENTS.md → 技能层 → 输出契约。
+   */
+  readonly stage?: AssembleStage | null;
+  /**
+   * 阶段系统提示词（**已渲染**：项目版本整体覆盖内置默认，见 `skills/stage-prompts.ts` 与 `renderStagePrompt()`）。
+   *
+   * 只在给了 `stage` 时有效；空串 = 没有这一段（`agent` 阶段退回 `splitBasePrompt()` 的头部）。
+   */
+  readonly stagePrompt?: string | null;
+  /**
+   * 输出契约（信封形状 + 字段白名单）。**由代码给出、不可配、永远是最后一段**（§4.4 / V16）。
+   *
+   * 缺省时：`format`/`classify` 用整个 `basePrompt`，`agent` 用 `basePrompt` 的尾部。
+   */
+  readonly outputContract?: string | null;
+}
+/** 层序预览的一层（面板「最终 prompt 预览」与测试断言共用同一份口径）。 */
+export interface AssembleStageLayer {
+  /** `head` / `project` / `agents:root` / `agents:nearby:<path>` / `skill:<name>` / `tail`。 */
+  readonly name: string;
+  /** 这一层现在的字符数（已被丢弃时为 0，丢弃标记不算进层字符数）。 */
+  readonly chars: number;
+  /** 能否因超预算被整段丢弃。`head` / `tail` 永远 `false`（§4.4 / V18）。 */
+  readonly droppable: boolean;
+  /** 这一层是否已被预算整段丢弃。 */
+  readonly dropped: boolean;
 }
 
 export interface AssemblePromptStats {
@@ -217,22 +258,99 @@ export function splitBasePrompt(basePrompt: string): { readonly head: string; re
 
 /* ── 入口 ─────────────────────────────────────────────────────────────────── */
 
+/** 阶段维度解析出来的「框架」：不可丢的头尾 + 允许哪些可丢层。 */
+type AssembleFrame = {
+  readonly head: string;
+  readonly tail: string;
+  readonly allowProject: boolean;
+  readonly allowSkill: boolean;
+  /** `true` = 缺省行为（调用方没给 `stage`），走 `splitBasePrompt()`。 */
+  readonly legacy: boolean;
+};
+
 /**
- * 装配提示词。
+ * `stage` → head/tail + 层作用域（`docs/plan-fixed-pipeline.md` §16.3）。
  *
- * `projectPrompt` / `agentsMd` / `skill` 都缺省时返回的 `prompt` 与 `basePrompt` **逐字节相同**
- * （这是硬约束：装配层的存在不能改变任何既有部署的提示词，包括「P1 表刚建好但还没人写」的状态）。
+ * 缺省（没给 `stage`）时的输出与 P1 时代的装配**逐字节一致**：head/tail 仍是
+ * `splitBasePrompt()` 的两半，P1 与技能层照常参与。
  */
-export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult {
+function resolveFrame(input: AssemblePromptInput): AssembleFrame {
+  const stage = input.stage ?? null;
+  if (stage === null) {
+    const { head, tail } = splitBasePrompt(input.basePrompt);
+    return { head, tail, allowProject: true, allowSkill: true, legacy: true };
+  }
+
+  const stagePrompt = (input.stagePrompt ?? '').trim();
+  if (stage === 'format' || stage === 'classify') {
+    // 阶段 0/1：`basePrompt` **整段**都当输出契约（代码追加、永远最后），
+    // 阶段系统提示词占据 P0 位置；P1 与技能层不出现，AGENTS.md 照常注入（Q9）。
+    return {
+      head: stagePrompt,
+      tail: input.outputContract ?? input.basePrompt,
+      allowProject: false,
+      allowSkill: false,
+      legacy: false,
+    };
+  }
+
+  // 阶段 2：`agent` 阶段系统提示词顶掉原来的 head，其余层序不变（P1 → AGENTS.md → 技能 → 契约）。
+  const split = splitBasePrompt(input.basePrompt);
+  return {
+    head: stagePrompt === '' ? split.head : stagePrompt,
+    tail: input.outputContract ?? split.tail,
+    allowProject: true,
+    allowSkill: true,
+    legacy: false,
+  };
+}
+
+type AssembleCore = {
+  readonly prompt: string;
+  readonly stats: AssemblePromptStats;
+  readonly layers: readonly AssembleStageLayer[];
+};
+
+/**
+ * 装配的唯一实现（`assemblePrompt()` 与 `stageLayers()` 都走它）。
+ *
+ * 两处「有意的差别」：
+ *  1. 阶段模式下 `stats.baseChars` = 阶段系统提示词 + 输出契约，而不是 `basePrompt` 的长度
+ *     —— `agent` 提示词写多长就直接扣掉 P1 多少额度（R6 / V18）。
+ *  2. 丢层顺序与依据完全不变：就近 AGENTS → P1 → 技能 → 根 AGENTS，`head` / `tail` 永不丢。
+ */
+function assembleCore(input: AssemblePromptInput): AssembleCore {
   const base = input.basePrompt;
   const budgetChars = input.budgetChars ?? DEFAULT_ASSEMBLE_BUDGET_CHARS;
+  const frame = resolveFrame(input);
 
   const rootSection = input.agentsMd?.root ?? null;
   const nearbySections = input.agentsMd?.nearby ?? [];
-  const skillLayer = input.skill ?? null;
-  const projectBody = (input.projectPrompt ?? '').trim();
+  const skillLayer = frame.allowSkill ? (input.skill ?? null) : null;
+  const projectBody = frame.allowProject ? (input.projectPrompt ?? '').trim() : '';
 
-  if (rootSection === null && nearbySections.length === 0 && skillLayer === null && projectBody === '') {
+  /** 不可丢的部分（缺省模式下就是整段 `basePrompt`）。 */
+  const fixedChars = frame.legacy ? base.length : frame.head.length + frame.tail.length;
+  const headLayer: AssembleStageLayer = {
+    name: 'head',
+    chars: frame.head.length,
+    droppable: false,
+    dropped: false,
+  };
+  const tailLayer: AssembleStageLayer = {
+    name: 'tail',
+    chars: frame.tail.length,
+    droppable: false,
+    dropped: false,
+  };
+
+  if (
+    frame.legacy &&
+    rootSection === null &&
+    nearbySections.length === 0 &&
+    skillLayer === null &&
+    projectBody === ''
+  ) {
     return {
       prompt: base,
       stats: {
@@ -243,6 +361,7 @@ export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult
         totalChars: base.length,
         truncated: [],
       },
+      layers: [headLayer, tailLayer],
     };
   }
 
@@ -253,10 +372,18 @@ export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult
   for (const section of nearbySections) {
     agentsEntries.push({ kind: 'nearby', section });
   }
+  // 层名在丢弃**之前**定好：丢弃后槽里只剩标题与字符数，路径就查不回来了。
+  const agentsNames = agentsEntries.map((entry) =>
+    entry.kind === 'root'
+      ? 'agents:root'
+      : entry.kind === 'nearby'
+        ? `agents:nearby:${entry.section.path}`
+        : 'agents',
+  );
   let skillSlot: SkillSlot = skillLayer === null ? null : { kind: 'skill', layer: skillLayer };
   let projectSlot: ProjectSlot = projectBody === '' ? null : { kind: 'body', body: projectBody };
 
-  const { head, tail } = splitBasePrompt(base);
+  const { head, tail } = frame;
 
   const compose = (): string => {
     // 中间这几块的顺序就是契约：P1 → AGENTS.md → 技能。
@@ -321,6 +448,7 @@ export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult
 
   // 从后往前丢的顺序：最远的就近段 → … → 最近的 → P1 → 技能 → 根。
   // P1 排在技能之前：P1 是背景/语气，技能正文是命令语义（丢了命令就错了）。
+  // `head` / `tail`（阶段系统提示词与输出契约）**不在**这个列表里 —— 它们永不被丢弃（V18）。
   const removals: { readonly run: () => string | null }[] = [];
   for (let index = agentsEntries.length - 1; index >= 0; index -= 1) {
     if (agentsEntries[index]?.kind !== 'nearby') {
@@ -361,15 +489,70 @@ export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult
   const agentsText = renderAgents(agentsEntries);
   const skillText = renderSkill(skillSlot);
 
+  // 收尾时用「取值函数」而不是直接读 `let` 槽：槽在丢弃回调里被改过，
+  // TS 会把它们按初始赋值收窄，于是 `kind === 'dropped'` 那几行会被判成永假。
+  const finalProject = (): ProjectSlot => projectSlot;
+  const finalSkill = (): SkillSlot => skillSlot;
+
+  const layers: AssembleStageLayer[] = [headLayer];
+  if (projectSlot !== null) {
+    layers.push({
+      name: 'project',
+      chars: finalProject()?.kind === 'body' ? projectText.length : 0,
+      droppable: true,
+      dropped: finalProject()?.kind === 'dropped',
+    });
+  }
+  agentsEntries.forEach((entry, index) => {
+    layers.push({
+      name: agentsNames[index] ?? 'agents',
+      chars: entry.kind === 'dropped' ? 0 : entry.section.text.length,
+      droppable: true,
+      dropped: entry.kind === 'dropped',
+    });
+  });
+  const skillFinal = finalSkill();
+  if (skillFinal !== null) {
+    layers.push({
+      name: skillFinal.kind === 'skill' ? `skill:${skillFinal.layer.name}` : `skill:${skillFinal.name}`,
+      chars: skillFinal.kind === 'skill' ? skillFinal.layer.promptText.length : 0,
+      droppable: true,
+      dropped: skillFinal.kind === 'dropped',
+    });
+  }
+  layers.push(tailLayer);
+
   return {
     prompt,
     stats: {
-      baseChars: base.length,
+      baseChars: fixedChars,
       promptChars: projectText.length,
       agentsChars: agentsText.length,
       skillChars: skillText.length,
       totalChars: prompt.length,
       truncated,
     },
+    layers,
   };
+}
+
+/**
+ * 装配提示词。
+ *
+ * `projectPrompt` / `agentsMd` / `skill` / `stage` 都缺省时返回的 `prompt` 与 `basePrompt`
+ * **逐字节相同**（硬约束：装配层的存在不能改变任何既有部署的提示词）。
+ */
+export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult {
+  const { prompt, stats } = assembleCore(input);
+  return { prompt, stats };
+}
+
+/**
+ * 层序预览：各层字符数 + 是否可丢弃 + 是否已被丢（面板的「最终 prompt 预览」与测试共用）。
+ *
+ * 跑的是**同一个** `assembleCore()`，所以预览里的层序、字符数、丢弃项与最终文本永远一致
+ * （各写一份拼接逻辑正是这类偏差的来源）。`head` / `tail` 恒为 `droppable: false`（V18）。
+ */
+export function stageLayers(input: AssemblePromptInput): readonly AssembleStageLayer[] {
+  return assembleCore(input).layers;
 }

@@ -1,12 +1,7 @@
 import { http, HttpResponse, type HttpHandler } from 'msw';
-import type {
-  PromptResponse,
-  RepoSettingsResponse,
-  ReposResponse,
-  SaveRepoSettingsRequest,
-} from '../../lib/contract.ts';
+import type { RepoSettingsResponse, ReposResponse, SaveRepoSettingsRequest } from '../../lib/contract.ts';
 import { MOCK_NOW } from '../fixtures.ts';
-import { scenarioResponse } from './shared.ts';
+import { requireCsrf, scenarioResponse } from './shared.ts';
 
 /**
  * 仓库写面（`/api/repos/*`）的拦截器 —— W3-H 新增，供仓库切换器 / 系统页 / 设置页（W3-I）用。
@@ -22,9 +17,18 @@ import { scenarioResponse } from './shared.ts';
  *
  * 写操作（PUT settings）只改内存，刷新页面即回到样本；`?mock=error|empty|slow|unauthorized`
  * 沿用 `scenarioResponse` 的统一机制（读的是页面 URL，不是请求 URL）。
+ *
+ * **提示词（四条版本线）不在这里**：`?kind=` 让「一条路径四份 fixture」变成常态，
+ * 所以它单独一个文件（`prompt.ts`）。两个文件的写接口共用 `shared.ts` 的 `requireCsrf`。
  */
 
-/** `repoSettingsSchema.parse({})` 的默认值（面板只做展示/回写，不在这里发明默认值）。 */
+/**
+ * 仓库配置的样本（面板只做展示/回写，不在这里发明默认值）。
+ *
+ * `labels.vocabulary` 给三条**带 role** 的词条（需求 / 缺陷 / 其他 各一）：
+ * 角色是分类阶段的流程分叉依据（§4.5 / Q4），空词表会让设置页的角色下拉与覆盖提示
+ * 都没有行可渲染 —— mock 模式就看不到这条真实分支。三条名字互不重复（契约校验）。
+ */
 const DEFAULT_SETTINGS = {
   version: 1,
   enabled: true,
@@ -34,19 +38,17 @@ const DEFAULT_SETTINGS = {
     merge_defaults: true,
     remove: [],
     users: 'all',
-    faces: {
-      issue_opened: 'auto',
-      issue_edited: 'auto',
-      issue_reopened: 'auto',
-      issue_comment: 'mention',
-      issue_comment_edited: 'off',
-      pr_review_comment: 'mention',
-      pr_review_submitted: 'off',
-      pr_opened: 'off',
-      body_mention: 'off',
-    },
   },
-  labels: { vocabulary: [], map: {}, missing: 'warn', max_per_issue: 6 },
+  labels: {
+    vocabulary: [
+      { name: '需求', role: 'requirement', meaning: '用户希望新增或改变的行为', color: '0E8A16' },
+      { name: '缺陷', role: 'defect', meaning: '与既有行为不符的实现问题', color: 'D73A4A' },
+      { name: '文档', role: 'other', meaning: '不需要进入开发流程的改动', color: '5319E7' },
+    ],
+    map: {},
+    missing: 'warn',
+    max_per_issue: 6,
+  },
   create_issue: { enabled: false, daily_quota: 10, scenarios: ['pr-review'] },
   commands: {
     enabled: true,
@@ -64,6 +66,10 @@ const DEFAULT_SETTINGS = {
     queue_wait_minutes: 10,
   },
   prompt: { enabled: true, current_version: 2 },
+  // 固定流水线段（`settings.pipeline`）：managers 非空才算合法配置（Q4）
+  // 固定流水线段（`settings.pipeline`）：managers 非空才算合法配置（Q4）。
+  // 三个阶段指针给非零值：面板要能同时展示「vN · 项目版本」与 `0 → 系统默认` 两种形态。
+  pipeline: { managers: ['alice', 'bob'], format_prompt_version: 3, classify_prompt_version: 2, agent_prompt_version: 0 },
 } satisfies NonNullable<RepoSettingsResponse['settings']>;
 
 type RepoState = {
@@ -166,106 +172,7 @@ function settingsEmpty(): RepoSettingsResponse {
   };
 }
 
-/** 提示词（P1）的假数据：两版 + 预算预演 + 装配预览（形状见 `lib/contract.ts` 的 `PromptResponse`）。 */
-function promptPayload(repo: string): PromptResponse {
-  const body = [
-    '## 项目约定',
-    '',
-    '- 提交信息用中文，类型前缀沿用 Conventional Commits。',
-    '- 改到 `apps/server/src/queries/**` 必须同时改 `test/queries-*.test.ts`。',
-    '- 别在评论里贴内部链接（内网地址一律不许出现在 GitHub 上）。',
-  ].join('\n');
-  const stats = {
-    baseChars: 3_100,
-    promptChars: 0,
-    agentsChars: 2_400,
-    skillChars: 1_200,
-    totalChars: 6_700 + body.length,
-    truncated: [] as string[],
-  };
-  return {
-    repo,
-    enabled: true,
-    version: 2,
-    present: true,
-    body,
-    versions: [
-      { version: 2, note: '补一条「别贴内部链接」', createdAt: '2026-05-31T10:00:00.000Z', chars: body.length, current: true },
-      { version: 1, note: '初版：提交信息与测试约定', createdAt: '2026-05-20T08:30:00.000Z', chars: 120, current: false },
-    ],
-    budget: {
-      budgetChars: 12_000,
-      p1Cap: 4_000,
-      otherLayersChars: 6_700,
-      available: 4_000,
-      requested: body.length,
-      ok: true,
-      source: 'last-assembly',
-      layers: { p0: 1_200, p1: 4_000, p2Root: 4_000, p2Nearby: 6_000, p3: 4_000, p4: 4_400 },
-    },
-    preview: {
-      text: `# pi-issue-bot\n\n（固定基座省略）\n\n${body}\n`,
-      stats,
-      omitted: ['AGENTS.md（来自 worktree）', '任务技能（来自 registry）'],
-      ref: null,
-      sha: null,
-    },
-    lastAssembly: {
-      baseChars: 3_100,
-      promptChars: body.length,
-      agentsChars: 2_400,
-      skillChars: 1_200,
-      totalChars: 6_700 + body.length,
-      truncated: [],
-    },
-  };
-}
-
-/** 写操作要带的 CSRF 头（与真实服务端的约定一致：缺了 403）。 */
-function requireCsrf(request: Request): Response | null {
-  if (request.headers.get('X-Pi-Bot-CSRF') === '1') return null;
-  return HttpResponse.json(
-    { error: { code: 'forbidden', message: '缺少 X-Pi-Bot-CSRF 头（写接口需要它）' } },
-    { status: 403 },
-  );
-}
-
 export const reposHandlers: HttpHandler[] = [
-  /** 提示词（三段以上的路径先注册，避免被 `/settings` 前缀规则抢先匹配）。 */
-  http.get('/api/repos/:owner/:name/prompt', ({ params }) =>
-    scenarioResponse({ data: promptPayload(repoOf(params)), slowMs: 500 }),
-  ),
-
-  http.put('/api/repos/:owner/:name/prompt', async ({ request, params }) => {
-    const csrf = requireCsrf(request);
-    if (csrf !== null) return csrf;
-    const payload = (await request.json()) as { body?: string; note?: string };
-    const data = promptPayload(repoOf(params));
-    const nextBody = typeof payload.body === 'string' && payload.body !== '' ? payload.body : data.body;
-    return HttpResponse.json({
-      ...data,
-      body: nextBody,
-      versions: [
-        { version: 3, note: payload.note ?? null, createdAt: MOCK_NOW, chars: nextBody.length, current: true },
-        ...data.versions.map((version) => ({ ...version, current: false })),
-      ],
-      version: 3,
-    } satisfies PromptResponse);
-  }),
-
-  http.post('/api/repos/:owner/:name/prompt/rollback', async ({ request, params }) => {
-    const csrf = requireCsrf(request);
-    if (csrf !== null) return csrf;
-    const payload = (await request.json()) as { version?: number };
-    const data = promptPayload(repoOf(params));
-    const target = data.versions.find((version) => version.version === payload.version);
-    return HttpResponse.json({
-      ...data,
-      body: target === undefined ? data.body : data.body,
-      version: data.version,
-    } satisfies PromptResponse);
-  }),
-
   /** 单个仓库的 settings（读 / 写同一个形状）。 */
   http.get('/api/repos/:owner/:name/settings', ({ params }) => {
     const repo = repoOf(params);

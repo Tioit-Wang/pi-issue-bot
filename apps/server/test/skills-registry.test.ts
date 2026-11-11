@@ -13,11 +13,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { parseRepoSettings, skillFrontmatterSchema, skillSummarySchema } from '../../../packages/contract/src/index.ts';
-import type { RepoSettings } from '../../../packages/contract/src/index.ts';
 import { parseYamlSubset } from '../src/config/yaml.ts';
 import { parseSkillFile, splitFrontmatter } from '../src/skills/frontmatter.ts';
 import { createSkillRegistry, REPO_SKILLS_DIR, UNNAMED_SKILL } from '../src/skills/index.ts';
 import type { SkillRepoConfig } from '../src/skills/registry.ts';
+import { parseValidSettings, vocabularyWithRoles } from './helpers/repo-settings.ts';
 
 const EXAMPLES_DIR = fileURLToPath(new URL('../../../examples/', import.meta.url));
 
@@ -29,11 +29,11 @@ function readExample(path: string): string {
  * 造一份仓库配置：**一律过契约 schema**（`repoSettingsSchema`），不手写字面量。
  *
  * 理由：手写的字面量会随契约漂移（`compliance` 段删掉后，本文件原来的两处字面量就编译不过了）。
- * 走 `parseRepoSettings()` 之后，测试只声明「我关心哪些字段」，其余用契约默认值。
+ * 走 `parseValidSettings()`（= `parseRepoSettings` + 合法 `pipeline.managers`）之后，测试只声明
+ * 「我关心哪些字段」，其余用契约默认值；`pipeline.managers` 非空是解析前提（§4.5 / Q4）。
  */
 function skillConfig(patch: Record<string, unknown> = {}): SkillRepoConfig {
-  const settings: RepoSettings = parseRepoSettings(patch);
-  return settings;
+  return parseValidSettings(patch);
 }
 
 /** 一份最小合法技能（各用例在此基础上改一处）。 */
@@ -224,7 +224,7 @@ describe('注册表：覆盖、冲突与禁用可见性', () => {
     // 有词表（`labels.vocabulary`）也算「仓库配置齐了」：`compliance.rules` 删除后它是判定输入
     const withVocabulary = createSkillRegistry({
       repoSkills: [{ path: `${REPO_SKILLS_DIR}/nc.md`, text }],
-      config: skillConfig({ labels: { vocabulary: [{ name: 'bug', meaning: '缺陷' }] } }),
+      config: skillConfig({ labels: { vocabulary: vocabularyWithRoles([{ name: 'bug', meaning: '缺陷' }]) } }),
     });
     expect(withVocabulary.resolve('/needs-config')).toBeDefined();
 

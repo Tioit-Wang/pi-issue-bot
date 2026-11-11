@@ -152,14 +152,11 @@ describe('isTriggerUserAllowed', () => {
 });
 
 describe('triggersConfigSchema', () => {
-  it('空格默认值：面开关与默认别名', () => {
+  it('缺省值：总开关、与部署默认并集、触发人 all', () => {
     const parsed = triggersConfigSchema.parse({});
     expect(parsed.enabled).toBe(true);
     expect(parsed.merge_defaults).toBe(true);
     expect(parsed.users).toBe('all');
-    expect(parsed.faces.issue_opened).toBe('auto');
-    expect(parsed.faces.issue_comment).toBe('mention');
-    expect(parsed.faces.issue_comment_edited).toBe('off');
   });
 
   it('空触发人名单是配置非法（不是 all）', () => {
@@ -179,7 +176,8 @@ describe('triggersConfigSchema', () => {
     ]);
   });
 
-  it('非法面值被拒', () => {
-    expect(triggersConfigSchema.safeParse({ faces: { issue_opened: 'yes' } }).success).toBe(false);
+  it('`faces` 已删除（P7）：写成已知键也不再接受，整份配置拒收', () => {
+    expect(triggersConfigSchema.safeParse({ faces: { issue_opened: 'auto' } }).success).toBe(false);
+    expect(triggersConfigSchema.safeParse({ faces: {} }).success).toBe(false);
   });
 });

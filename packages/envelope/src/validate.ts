@@ -12,7 +12,13 @@ import { Ajv2020 } from 'ajv/dist/2020.js';
 // nodenext 下 CJS 命名空间的推断不可靠，这里显式标一次类型，运行期取 `default`。
 import * as ajvFormatsModule from 'ajv-formats';
 import type { FormatsPlugin } from 'ajv-formats';
-import { ENVELOPE_JSON_SCHEMA, type TaskEnvelope } from './schema.ts';
+import {
+  ENVELOPE_JSON_SCHEMA,
+  STAGE_NAMES,
+  STAGE_RESULTS_BY_NAME,
+  type EnvelopeStageName,
+  type TaskEnvelope,
+} from './schema.ts';
 
 const addFormats = ajvFormatsModule.default as unknown as FormatsPlugin;
 
@@ -45,11 +51,50 @@ function toPath(instancePath: string): string {
   return instancePath === '' ? '/' : instancePath;
 }
 
+/**
+ * 顶层 `stage` 的**运行期**校验：`result` 必须在该阶段允许的集合内（§4.1 控制面校验第 2 条）。
+ *
+ * 分工：`ENVELOPE_JSON_SCHEMA` 管形状与「result ∈ 全集」，这里管「result 与 name 的配对」。
+ * 不塞进 schema 的理由：合法域依赖 `name`，只能 `if/then` 或 `oneOf` 表达，
+ * 那会把错误压到 `oneOf` 上（面板读不出是哪个字段错了）。这里返回与 Ajv 同形状的错误。
+ */
+function stageIssues(envelope: TaskEnvelope): EnvelopeIssue[] {
+  const stage: unknown = envelope.stage;
+  // 没有 stage = Agent 阶段的老信封：合法，不做任何收窄。
+  if (stage === undefined) return [];
+  if (typeof stage !== 'object' || stage === null) {
+    return [{ path: '/stage', keyword: 'stage-shape', message: 'stage 必须是对象' }];
+  }
+  const { name, result } = stage as { name?: unknown; result?: unknown };
+  if (typeof name !== 'string' || !(STAGE_NAMES as readonly string[]).includes(name)) {
+    return [
+      { path: '/stage/name', keyword: 'stage-name', message: `stage.name 只能是 ${STAGE_NAMES.join(' / ')}` },
+    ];
+  }
+  const allowed = STAGE_RESULTS_BY_NAME[name as EnvelopeStageName];
+  if (typeof result !== 'string' || !(allowed as readonly string[]).includes(result)) {
+    return [
+      {
+        path: '/stage/result',
+        keyword: 'stage-result',
+        message: `${name} 阶段的 stage.result 只能是 ${allowed.join(' / ')}（收到 ${JSON.stringify(result)}）`,
+      },
+    ];
+  }
+  return [];
+}
+
 /** 校验一个已解析的值。成功时返回原对象（类型收窄为 `TaskEnvelope`）。 */
 export function validateEnvelope(value: unknown): EnvelopeValidationResult {
   const valid = compiledEnvelope(value);
   if (valid) {
-    return { ok: true, envelope: value as TaskEnvelope };
+    const envelope = value as TaskEnvelope;
+    // Ajv 只保证形状：`stage.name` / `stage.result` 的配对在这里收窄。
+    const issues = stageIssues(envelope);
+    if (issues.length > 0) {
+      return { ok: false, issues };
+    }
+    return { ok: true, envelope };
   }
   const issues = (compiledEnvelope.errors ?? []).map((error) => ({
     path: toPath(error.instancePath),

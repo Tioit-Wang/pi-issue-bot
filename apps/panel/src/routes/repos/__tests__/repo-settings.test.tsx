@@ -178,7 +178,7 @@ describe('设置页 · 骨架', () => {
 });
 
 describe('设置页 · triggers', () => {
-  it('保存 payload：别名小写化 + 去重、merge_defaults、remove、faces 全在（整份 settings）', async () => {
+  it('保存 payload：别名小写化 + 去重、merge_defaults、remove 全在（整份 settings）', async () => {
     const user = userEvent.setup();
     const calls = recordSettingsPut();
     renderAt('/repos/acme__widgets/settings/triggers');
@@ -202,9 +202,6 @@ describe('设置页 · triggers', () => {
     await user.keyboard('{Enter}');
     expect(screen.getByTestId('triggers-remove-chips').textContent).toContain('ibot');
 
-    const commentFace = screen.getByRole('radiogroup', { name: 'issue / PR 评论 的触发方式' });
-    await user.click(within(commentFace).getByLabelText('自动'));
-
     await user.click(screen.getByTestId('settings-triggers-save'));
     await waitFor(() => {
       expect(calls).toHaveLength(1);
@@ -214,7 +211,6 @@ describe('设置页 · triggers', () => {
     expect(saved?.triggers.aliases).toEqual(['issuebotx']);
     expect(saved?.triggers.merge_defaults).toBe(false);
     expect(saved?.triggers.remove).toEqual(['ibot']);
-    expect(saved?.triggers.faces.issue_comment).toBe('auto');
     expect(saved?.triggers.users).toBe('all');
     expect(saved?.triggers.enabled).toBe(true);
     expect(saved?.version).toBe(1);

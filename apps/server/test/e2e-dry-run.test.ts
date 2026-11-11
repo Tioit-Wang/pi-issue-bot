@@ -35,6 +35,7 @@ import {
 import type { CountingGithubApi, FakeQueue, FakeRacpHost as FakeHost } from './helpers/e2e-harness.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validSettingsJson } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 const ISSUE_NUMBER = 7;
@@ -80,9 +81,9 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
     db = await openTestDb();
     await db.truncate();
     await db.sql(
-      `insert into repos (repo_full_name, enabled, dry_run, config, config_valid, config_error)
-       values ($1, true, true, '{}'::jsonb, true, null)`,
-      [REPO],
+      `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid)
+       values ($1, true, true, $2::jsonb, true)`,
+      [REPO, validSettingsJson()],
     );
 
     host = await FakeRacpHost.start({ script: { text: ENVELOPE_TEXT } });
@@ -147,7 +148,9 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
     const tasks = await db.sql('select * from tasks');
     expect(tasks).toHaveLength(1);
     expect(tasks[0]?.['id']).toBe(accepted.taskId);
-    expect(tasks[0]?.['command']).toBe('auto:triage');
+    // E1 全量切换后 issue 事件一律进三段流水线（老的判定任务已删除，§16.1 第 2 条）
+    expect(tasks[0]?.['command']).toBe('pipeline:format');
+    expect(tasks[0]?.['source']).toBe('pipeline');
     expect(tasks[0]?.['actor_login']).toBe('alice');
     expect(tasks[0]?.['status']).toBe('queued');
 

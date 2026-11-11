@@ -42,36 +42,6 @@ export const triggerUsersSchema = z.union([
     .max(50),
 ]);
 
-/** 一个触发面的三态：`auto` = 不看 @（自动面）；`mention` = 必须 @；`off` = 关。 */
-export const TRIGGER_FACE_MODES = ['off', 'mention', 'auto'] as const;
-export const triggerFaceModeSchema = z.enum(TRIGGER_FACE_MODES);
-export type TriggerFaceMode = (typeof TRIGGER_FACE_MODES)[number];
-
-export const triggerFacesSchema = z
-  .object({
-    /** issue 新建：auto = 一律 triage */
-    issue_opened: triggerFaceModeSchema.default('auto'),
-    /** issue 编辑：auto = 每次编辑重判 */
-    issue_edited: triggerFaceModeSchema.default('auto'),
-    issue_reopened: triggerFaceModeSchema.default('auto'),
-    /** 评论（issue 与 PR 共用） */
-    issue_comment: triggerFaceModeSchema.default('mention'),
-    /** 评论被编辑：默认 off —— 改错别字重跑等于重复扣费 */
-    issue_comment_edited: triggerFaceModeSchema.default('off'),
-    /** PR 行内 review comment */
-    pr_review_comment: triggerFaceModeSchema.default('mention'),
-    /** PR review 正文（submitted） */
-    pr_review_submitted: triggerFaceModeSchema.default('off'),
-    /** PR opened / synchronize */
-    pr_opened: triggerFaceModeSchema.default('off'),
-    /** issue/PR 正文里 @（assign 场景） */
-    body_mention: triggerFaceModeSchema.default('off'),
-  })
-  .strict()
-  .prefault({});
-
-export type TriggerFaces = z.infer<typeof triggerFacesSchema>;
-
 export const triggersConfigSchema = z
   .object({
     /** 总开关：false = 该仓库任何触发都不算（自动面也关） */
@@ -84,7 +54,6 @@ export const triggersConfigSchema = z
     remove: z.array(triggerAliasSchema).max(8).default([]),
     /** 触发人：`all` 或 login 名单。只约束提及类触发，不约束自动面 */
     users: triggerUsersSchema.default('all'),
-    faces: triggerFacesSchema.prefault({}),
   })
   .strict();
 
@@ -95,17 +64,7 @@ export type TriggerRules = {
   readonly enabled: boolean;
   readonly aliases: readonly string[];
   readonly users: 'all' | readonly string[];
-  readonly faces: TriggerFaces;
 };
-
-export const DEFAULT_TRIGGER_FACES: TriggerFaces = triggerFacesSchema.parse({});
-
-export const DEFAULT_TRIGGER_RULES: TriggerRules = Object.freeze({
-  enabled: true,
-  aliases: DEFAULT_TRIGGER_ALIASES,
-  users: 'all' as const,
-  faces: DEFAULT_TRIGGER_FACES,
-});
 
 /** `@IssueBot` / `IssueBot` / ` @issuebot ` → `issuebot`。 */
 export function normalizeTriggerAlias(raw: string): string {
@@ -264,40 +223,4 @@ export function isTriggerUserAllowed(users: 'all' | readonly string[], login: st
     return true;
   }
   return users.some((allowed) => allowed.toLowerCase() === login.toLowerCase());
-}
-
-/**
- * 事件面 → 该面要求的模式（没有对应面时返回 `off`）。
- *
- * 面名是「事件 + action」的归一化，故意与 webhook 的原始事件名分开：加面时只改这张表。
- */
-export function faceOf(event: string, action: string | null): keyof TriggerFaces | null {
-  if (event === 'issues') {
-    if (action === 'opened') return 'issue_opened';
-    if (action === 'edited') return 'issue_edited';
-    if (action === 'reopened') return 'issue_reopened';
-    return null;
-  }
-  if (event === 'issue_comment') {
-    if (action === 'created') return 'issue_comment';
-    if (action === 'edited') return 'issue_comment_edited';
-    return null;
-  }
-  if (event === 'pull_request_review_comment' && action === 'created') return 'pr_review_comment';
-  if (event === 'pull_request_review' && action === 'submitted') return 'pr_review_submitted';
-  if (event === 'pull_request') {
-    if (action === 'opened') return 'pr_opened';
-    return null;
-  }
-  return null;
-}
-
-/** 该面是否允许「不看 @」直接开工（自动面）。 */
-export function isAutoFace(faces: TriggerFaces, face: keyof TriggerFaces): boolean {
-  return faces[face] === 'auto';
-}
-
-/** 该面是否开启（`mention` 或 `auto`）。 */
-export function isFaceEnabled(faces: TriggerFaces, face: keyof TriggerFaces): boolean {
-  return faces[face] !== 'off';
 }

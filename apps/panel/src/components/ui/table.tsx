@@ -4,8 +4,13 @@ import { cn } from '../../lib/utils.ts';
 /**
  * 表格骨架（`DataTable` 与页面直接使用时都走这里）。
  *
- * 密度：表头/单元格高度锁 32px（`h-8`），单元格左右内边距 8px —— 一屏能看到更多行，
- * 行高不随内容跳动（`align-middle` + `whitespace-nowrap` 只在必要列上加）。
+ * 密度（令牌驱动，见 `index.css`）：
+ * - 表头 28px（`h-7`）+ 10px 微标 + hairline 下边线，**不填底色**；
+ * - 单元格 33px（`--row-height`），左右内边距 10px —— 一屏能看到更多行，行高不随内容跳动
+ *   （`align-middle`；`whitespace-nowrap` 只在必要列上加）。
+ *
+ * 层级只用 hairline：表头与行分隔是同一条 `--border`，没有阴影、没有斑马纹整行染色。
+ * 选中行 = 青色低饱和底（`--brand-soft`），hover = 二级面（`--muted`），只过渡具体属性。
  *
  * 窄屏：外层永久 `overflow-x-auto`；需要「首列吸顶」时给 `Table` 传 `stickyFirst`
  * （首列 `position: sticky` + 与面同色底，横向滚动时行标识不会跑掉）。
@@ -43,7 +48,10 @@ export function TableRow({ className, ...props }: HTMLAttributes<HTMLTableRowEle
   return (
     <tr
       className={cn(
-        'border-b border-border transition-colors duration-[120ms] hover:bg-muted/60',
+        'border-b border-border',
+        // 只过渡背景色/边框色/文字色，120ms 弹簧曲线（禁止全属性过渡）
+        'transition-[background-color,border-color,color] duration-[var(--dur-fast)] ease-out-quint',
+        'hover:bg-muted',
         'data-[state=selected]:bg-brand-soft',
         className,
       )}
@@ -56,7 +64,7 @@ export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCel
   return (
     <th
       className={cn(
-        'h-8 px-2 text-left align-middle text-xs font-medium whitespace-nowrap text-muted-foreground',
+        'h-7 px-2.5 text-left align-middle text-2xs font-medium tracking-[0.05em] whitespace-nowrap text-faint uppercase',
         className,
       )}
       {...props}
@@ -65,9 +73,9 @@ export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCel
 }
 
 export function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={cn('h-8 px-2 align-middle', className)} {...props} />;
+  return <td className={cn('h-[var(--row-height)] px-2.5 align-middle', className)} {...props} />;
 }
 
 export function TableCaption({ className, ...props }: HTMLAttributes<HTMLTableCaptionElement>) {
-  return <caption className={cn('mt-1.5 text-xs text-muted-foreground', className)} {...props} />;
+  return <caption className={cn('mt-1.5 text-2xs text-faint', className)} {...props} />;
 }

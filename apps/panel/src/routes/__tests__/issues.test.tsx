@@ -96,6 +96,7 @@ function makeRow(input: RowInput): IssueListItem {
     reactionState: input.reactionState ?? null,
     labelDecisions: input.labelDecisions ?? null,
     feedback: [],
+    pipeline: null,
   };
 }
 
@@ -186,13 +187,25 @@ function headerTexts(): string[] {
 }
 
 describe('Issue 中心：表格', () => {
-  it('全局视图：列＝项目/编号/标题/标签/状态/reaction/耗时/最后活动，带 caption 与 scope', async () => {
+  it('全局视图：列＝项目/编号/标题/阶段/类别/标签/状态/reaction/停留/尝试/最后活动，带 caption 与 scope', async () => {
     serveIssues(ROWS);
     renderCenter();
 
     const content = await screen.findByTestId('issues-content');
     expect(content).toBeTruthy();
-    expect(headerTexts()).toEqual(['项目', '编号', '标题', '标签', '状态', 'reaction', '耗时', '最后活动']);
+    expect(headerTexts()).toEqual([
+      '项目',
+      '编号',
+      '标题',
+      '阶段',
+      '类别',
+      '标签',
+      '状态',
+      'reaction',
+      '停留',
+      '尝试',
+      '最后活动',
+    ]);
 
     // a11y：表头是 `<th scope="col">`，caption 只留排序与行数口径
     const table = screen.getByTestId('issue-table');
@@ -202,7 +215,8 @@ describe('Issue 中心：表格', () => {
     const caption = table.querySelector('caption');
     expect(caption?.textContent ?? '').toContain('按最后更新倒序');
     // 列头 title 说明「—」的含义（口径不写进 caption）
-    expect(within(table).getByRole('columnheader', { name: '耗时' }).getAttribute('title') ?? '').toContain('—');
+    // 列头 title 说明口径（「近似锚点」不写进 caption）
+    expect(within(table).getByRole('columnheader', { name: '停留' }).getAttribute('title') ?? '').toContain('coalesce');
 
     // 行内容：编号 / 标题 / 标签 / reaction / 待人回答
     const row = within(content).getByTestId('issue-row-acme/widgets#issue17');
@@ -220,18 +234,23 @@ describe('Issue 中心：表格', () => {
     expect(listUrl).not.toContain('cursor=');
   });
 
-  it('耗时列：接口没给字段时显示 —，列头 title 说明（不是 0）', async () => {
+  it('流水线四列：没有 issue_pipeline 行时是中性描边「未入流水线」+ —（不是 0）', async () => {
     serveIssues(ROWS);
     renderCenter();
 
     const content = await screen.findByTestId('issues-content');
     const row = within(content).getByTestId('issue-row-acme/widgets#issue17');
     const cells = within(row).getAllByRole('cell');
-    // 全局视图：项目/编号/标题/标签/状态/reaction/耗时/最后活动 ⇒ 耗时 = index 6
-    expect(cells[6]?.textContent).toBe('—');
-    // 「— 不是 0」的口径挂在列头 title 上（不再占 caption 一行）
-    const head = within(screen.getByTestId('issue-table')).getByRole('columnheader', { name: '耗时' });
-    expect(head.getAttribute('title') ?? '').toContain('还没有 durationMs / costUsd');
+    // 全局视图：项目0 / 编号1 / 标题2 / 阶段3 / 类别4 / 标签5 / 状态6 / reaction7 / 停留8 / 尝试9 / 最后活动10
+    expect(cells[3]?.textContent).toBe('未入流水线');
+    expect(cells[4]?.textContent).toBe('—');
+    expect(cells[8]?.textContent).toBe('—');
+    expect(cells[9]?.textContent).toBe('—');
+
+    // 口径挂在列头 title 上（不占正文行）
+    const table = screen.getByTestId('issue-table');
+    expect(within(table).getByRole('columnheader', { name: '尝试' }).getAttribute('title') ?? '').toContain('自动关闭');
+    expect(within(table).getByRole('columnheader', { name: '类别' }).getAttribute('title') ?? '').toContain('category');
   });
 
   it('仓库上下文：没有「项目」列、请求带 repo、行链接是新路径', async () => {
@@ -240,7 +259,18 @@ describe('Issue 中心：表格', () => {
 
     const content = await screen.findByTestId('issues-content');
     expect(screen.getByRole('heading', { level: 1, name: 'Issue 中心' })).toBeTruthy();
-    expect(headerTexts()).toEqual(['编号', '标题', '标签', '状态', 'reaction', '耗时', '最后活动']);
+    expect(headerTexts()).toEqual([
+      '编号',
+      '标题',
+      '阶段',
+      '类别',
+      '标签',
+      '状态',
+      'reaction',
+      '停留',
+      '尝试',
+      '最后活动',
+    ]);
     // 仓库已锁 ⇒ 没有仓库下拉
     expect(screen.queryByLabelText('仓库筛选')).toBeNull();
 

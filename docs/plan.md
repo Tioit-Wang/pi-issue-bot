@@ -117,11 +117,15 @@ agent 拿不到 GitHub 凭证，只能交出结构化结果，由控制面校验
 
 **信封里故意没有 `confidence`。** 自评分不可核查、没有消费方，而且最容易被顺手改回阈值。可核查的是 `evidence`——每条判定附命中的规则与原文片段。
 
+**评论边界（2026-11 落地）**：自动通道里只有**流水线的三个阶段**（`tasks.source='pipeline'`）可以发评论——阶段 0 的不通过说明与复查确认、阶段 1 的分类结论、门禁回执；其余自动判定类任务仍然零评论，结论只落 `envelopes.actions` / `bot_labels` / 面板。`@` 命令通道不受影响。详见 `docs/impl-fixed-pipeline.md` §3。
+
 ---
 
 ## 6. 能力清单
 
 ### 6.1 分类打标
+
+> **2026-11 已落地为串行三阶段**：`issues.opened/edited/reopened` 不再触发「一次调用同时判合规 + 打标」的任务；现在是 `format`（格式检查）→ `classify`（标签分类）→ `agent` 三段**串行**，单行状态落 `issue_pipeline`，老路径 `auto:triage` 已删除、无开关。下面 6.1 / 6.2 描述的是**判定内容**，触发方式、阶段推进与关闭条件以 `docs/impl-fixed-pipeline.md` 为准。
 
 - 触发：`issues.opened` / `edited` / `reopened`
 - 标签来自仓库 `.github/pi-bot.yml`，不发明新标签；默认集 `bug / feature / question / docs / needs-info / area/*`
@@ -133,7 +137,7 @@ agent 拿不到 GitHub 凭证，只能交出结构化结果，由控制面校验
 - 规则来源：issue 模板必填项 + 配置里的显式检查（复现步骤、版本号、日志）
 - 判定结构化：每条规则 pass/fail 附 issue 原文证据
 - 不合规 → 一条评论列出缺什么、附模板片段，打 `needs-info`
-- **只在缺失项集合变化时再回复**；同一句话不催第二次
+- **只在缺失项集合变化时再回复**；同一句话不催第二次（现状：阶段 0 的幂等键是 `pipeline:format:<issueVersion>`，同一版本不重复评论；见 `docs/impl-fixed-pipeline.md` §3）
 
 ### 6.3 主动建 issue
 
@@ -174,7 +178,7 @@ agent 拿不到 GitHub 凭证，只能交出结构化结果，由控制面校验
 | 发评论 | 自动 | 结构化校验 + 隐藏任务标记 + 频率限制 |
 | 创建 issue | 自动 | 去重键命中则追加评论；日配额 10/仓库 |
 | 推 commit / 开 PR | 自动 | 只到 `bot/*` 分支；永不强推，永不改写贡献者分支 |
-| 关闭 issue | 有条件 | `needs-info` 标签 + 缺失项 48h 未变 + 无人回复（确定性条件） |
+| 关闭 issue | 有条件 | `awaiting_info` 满 **48 小时**（系统常量 `PIPELINE_CLOSE_AFTER_HOURS`，不可配）无补充 → 关；**格式累计 5 次不通过**（`PIPELINE_FORMAT_MAX_FAILS`）也直接关。两条都是确定性条件，判定源是 `issue_pipeline` 单表，见 `docs/impl-fixed-pipeline.md` §3 / §5 |
 | 合并 | **不存在** | 代码层不实现 merge；分支保护强制人工 review 兜底 |
 
 ### 7.1 「没有合并权限」落在哪里

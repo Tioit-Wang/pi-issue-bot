@@ -4,7 +4,8 @@
  * 这里一行判定逻辑都不新写：别名合并、代码区蒙版、命令/问答解析全部来自
  * `packages/contract/src/trigger.ts`（webhook 用的就是这一份）。面板只做两件契约之外的事：
  *  1. 把 `parse.masked` 与原文对比，回列出「被代码块蒙版挡住」的片段（解释为什么没触发）；
- *  2. 把「命中什么」翻译成「这次评论会不会开工」（`triggers.enabled` + `faces.issue_comment` 三态）。
+ *  2. 把「命中什么」翻译成「这次评论会不会开工」（`triggers.enabled`；事件面已由固定流水线接管，
+ *     `triggers.faces` 按 P7 删除，面板不再提供逐面开关）。
  *
  * 注意：预览**不校验触发人**（`triggers.users` 的名单只在 webhook 里按 `sender.login` 比对，
  * 预览框里没有「谁在说话」这个输入）。这一点必须写在界面上，否则「预览说能触发、线上没反应」。
@@ -77,13 +78,12 @@ export function codeRegionsOf(body: string, masked: string): readonly string[] {
   return regions;
 }
 
-/** 命中 → 是否会开工。`face` 固定看评论面（预览框里贴的就是一条评论正文）。 */
+/** 命中 → 是否会开工（事件面由固定流水线接管，只剩 `triggers.enabled` 这一个开关）。 */
 export function previewTrigger(input: { body: string; triggers: TriggersConfig }): TriggerPreview {
   const aliases = resolveAliasesFor(input.triggers);
   const parse = parseTriggerBody(input.body, aliases);
   const hits = [...new Set(findAliasHits(parse.masked, aliases).map((hit) => hit.alias))];
   const codeRegions = codeRegionsOf(input.body, parse.masked);
-  const face = input.triggers.faces.issue_comment;
 
   if (!input.triggers.enabled) {
     return {
@@ -91,23 +91,12 @@ export function previewTrigger(input: { body: string; triggers: TriggersConfig }
       hits,
       parse,
       willTrigger: false,
-      reason: '触发总开关关着（triggers.enabled = false）：该仓库任何触发都不生效，自动面也关。',
+      reason: '触发总开关关着（triggers.enabled = false）：该仓库任何触发都不生效。',
       codeRegions,
     };
   }
 
   if (parse.alias === null) {
-    if (face === 'auto') {
-      return {
-        aliases,
-        hits,
-        parse,
-        willTrigger: true,
-        reason:
-          '没命中别名，但「issue / PR 评论」面是「自动」：不看 @ 也会开工（自动通道只打标/判定，不评论）。',
-        codeRegions,
-      };
-    }
     return {
       aliases,
       hits,
@@ -115,19 +104,8 @@ export function previewTrigger(input: { body: string; triggers: TriggersConfig }
       willTrigger: false,
       reason:
         codeRegions.length === 0
-          ? '没命中任何别名；评论面是「必须 @」→ 不处理。'
+          ? '没命中任何别名 → 不处理。'
           : '没命中任何别名：正文里的 @ 都在代码区（围栏块 / 行内代码），被蒙版挡住了，不算叫人。',
-      codeRegions,
-    };
-  }
-
-  if (face === 'off') {
-    return {
-      aliases,
-      hits,
-      parse,
-      willTrigger: false,
-      reason: `命中了 @${parse.alias}，但「issue / PR 评论」面是 off → 不处理。`,
       codeRegions,
     };
   }

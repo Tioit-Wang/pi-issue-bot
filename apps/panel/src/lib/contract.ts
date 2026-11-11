@@ -19,11 +19,16 @@ import type {
   IssueFeedbackEvent,
   IssueLabelDecisionSummary,
   IssueListItem,
+  IssuePipeline,
   IssueSessionResponse,
   IssuesListResponse,
   IssueToolCall,
   IssueTurn,
   OverviewResponse,
+  PipelineCategory,
+  PipelineStage,
+  PipelineState,
+  PromptKind,
   RepoSummary as RepoSummaryContract,
   RepoSettingsResponse,
   ReposResponse,
@@ -45,11 +50,16 @@ export type {
   IssueFeedbackEvent,
   IssueLabelDecisionSummary,
   IssueListItem,
+  IssuePipeline,
   IssueSessionResponse,
   IssuesListResponse,
   IssueToolCall,
   IssueTurn,
   OverviewResponse,
+  PipelineCategory,
+  PipelineStage,
+  PipelineState,
+  PromptKind,
   RepoSettingsResponse,
   ReposResponse,
   RevertsResponse,
@@ -189,20 +199,57 @@ export type PromptAssemblyStats = {
   /** 被整段丢弃的层（运行期兜底），面板据此显示「哪一层没进上下文」。 */
   truncated: string[];
 };
+/**
+ * 装配层序的一层（服务端 `skills/assemble.ts` 的 `AssembleStageLayer`）。
+ *
+ * 名字是 `head` / `project` / `agents:root` / `agents:nearby:<path>` / `skill:<name>` / `tail`；
+ * `head` 与 `tail` 恒为 `droppable: false`（运行期超预算也不丢，§4.4 / V18）。
+ */
+export type PromptLayerView = {
+  name: string;
+  chars: number;
+  /** 能否因超预算被整段丢弃。 */
+  droppable: boolean;
+  /** 这一层是否已被预算整段丢弃。 */
+  dropped: boolean;
+};
 
-/** `GET/PUT /api/repos/:owner/:name/prompt` 与 rollback 的响应体（三者同形状）。 */
+/**
+ * `GET/PUT /api/repos/:owner/:name/prompt?kind=…`（以及 rollback / restore）的响应体。
+ *
+ * 四条版本线各有各的视图，形状**同一份**（服务端 `viewOf()`），所以面板不用分四套解析。
+ * 老字段（`version` / `present` / `budget` / `preview` / `lastAssembly`）来自 P1 时代；
+ * `kind` 那一组是四条版本线上线时追加的，一律**可选**：旧服务端与旧 mock 只给老形状，
+ * 面板按本地常量兜底（`components/settings/prompt-kinds.tsx`），不会因为少一个字段白屏。
+ */
 export type PromptResponse = {
   repo: string;
-  /** `settings.prompt.enabled`。 */
+  /** 这条视图属于哪个 kind（`project` / `format_check` / `classify` / `agent`）。 */
+  kind?: PromptKind;
+  /** 四个 tab 的取值来源（面板不自己写死一份）。 */
+  kinds?: readonly PromptKind[];
+  /** `settings.prompt.enabled`（只有 `project` 有开关，阶段 kind 恒为 `true`）。 */
   enabled: boolean;
-  /** 当前版本号；`0` = 还没有任何版本。 */
+  /** @deprecated 用 `activeVersion`（名字对齐「版本指针」）。 */
   version: number;
+  /** 该 kind 的版本指针；`0` = 没有项目版本（阶段 kind 用内置默认）。 */
+  activeVersion?: number;
   /** `false` = settings 指着一版、库里没有那一行（手删过库）。 */
   present: boolean;
-  /** 当前版本正文。 */
+  /** 当前版本正文（`project` 空 = 不注入；阶段 kind 空 = 用内置默认）。 */
   body: string;
+  /** 内置默认正文（只读展示；`project` 恒为空串 —— 它没有默认正文）。 */
+  systemDefault?: string;
+  /** 当前是否在用内置默认（阶段 kind 的指针为 0 或行不在）。 */
+  isSystemDefault?: boolean;
+  /** 该 kind 的保存期上限（`PIPELINE_PROMPT_LIMITS`）。 */
+  limit?: number;
+  /** 还能存多少字符（阶段 kind 用 `limit`，`project` 用预算）。 */
+  availableChars?: number;
   versions: PromptVersionSummary[];
   budget: PromptBudget;
+  /** 逐层实测的装配层序（缺省时面板退回 `preview.stats` 聚合）。 */
+  layers?: readonly PromptLayerView[];
   preview: {
     /** 最终装配文本（与运行期同一函数产出）。 */
     text: string;
@@ -215,6 +262,21 @@ export type PromptResponse = {
   };
   /** 最近一次真实装配统计；从没跑过为 `null`。 */
   lastAssembly: PromptAssemblyStats | null;
+};
+
+/**
+ * `GET /api/repos/:owner/:name/prompt/versions?kind=…` 的响应体。
+ *
+ * 历史抽屉专用：不跑装配预览，所以比 `PromptResponse` 轻得多（没有 `budget` / `preview` / `layers`）。
+ */
+export type PromptVersionsResponse = {
+  repo?: string;
+  kind: PromptKind;
+  kinds?: readonly PromptKind[];
+  activeVersion: number;
+  isSystemDefault?: boolean;
+  limit?: number;
+  versions: PromptVersionSummary[];
 };
 
 /** 错误体（契约 §0.1）：所有 4xx/5xx 只有这一种形状。 */

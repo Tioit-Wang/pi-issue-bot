@@ -195,7 +195,7 @@ triggers:
 
 | 层 | 内容 | 来源 | 覆盖/追加 | 上限 |
 |---|---|---|---|---|
-| P0 | 产品不变量（身份、dry-run 语义、无 merge、reaction 回执、动作白名单、信封契约） | 代码常量 | ❌ | ~1200 |
+| P0 | **每阶段一份系统提示词**（`format_check` / `classify` / `agent`）：身份、能力边界、输出格式、以及「哪些话不该说」；流程结构、状态转移、动作白名单仍由代码固定 | `prompt_versions` 按 `kind` 的 4 条版本线 + 内置默认常量 | ✅ **整体覆盖**（项目版本替换默认，不追加） | `agent` **4000**（阶段 2，计入 P1 预算）/ `format_check`·`classify` **8000**（阶段 0/1，不注入 P1） |
 | **P1** | **项目人格层**（项目背景、领域知识、语气、术语） | `prompt_versions`（库）+ 部署默认 | ✅ 整体替换 | 4000 |
 | P2 | 仓库约定（`AGENTS.md` 语义，属代码约定不是 bot 配置） | worktree 文件 | ⚠️ 只能改文件 | 根 4000 / 就近 6000 |
 | P3 | 任务技能 | registry（面板 > 仓库文件 > 内置） | ✅ 整体替换 | 4000 |
@@ -206,8 +206,12 @@ triggers:
 - 保存即新建一个 `prompt_versions` 行（可回滚），`repos.settings.prompt.current_version` 指过去。
 - 变量：`{{repo}}`、`{{default_branch}}`、`{{labels}}`、`{{triggers}}`；未定义变量 → 保存期报错。
 - **预算统一**：12k 为目标预算，各层上限改软上限；**保存期预演**（用最近一次装配统计估算 P0/P2/P3 长度），存不下直接拒绝；运行期只做整段丢弃兜底并记事件。
+- **`agent` 层与 P1 的预算口径（2026-11 落地）**：`agent` 落在 `basePrompt` 里、计入 `baseChars`，故
+  `available = min(4000, 12000 − (baseChars + agentsChars + skillChars))`，**`agent` 写多长就直接扣掉 P1 多少可存额度**；
+  据此 `agent` 上限收窄到 **4000**（与 P1 同档，不是 8000）。运行期超预算的丢弃顺序是「P1 → 就近 AGENTS → 技能层 → 根 AGENTS」，
+  `head` / `tail`（含 `agent` 段与输出契约）**永不丢弃**；面板层序预览显示各层字符数、`available` 与预计丢弃项。
 - 面板"预览最终 system prompt 全文"必须调用与运行时同一个装配函数，并回显 `ref@sha`。
-- 无 P1 时装配结果与今天逐字节相同（兼容）。
+- 无 P1 时装配结果与今天逐字节相同（兼容）。**2026-11 补充**：阶段 2 的 `head` 已换成可覆盖的 `agent` 段（内置默认正文 = 原 `buildTaskPrompt` 系统段），阶段 0/1 另有 `format_check` / `classify` 两份默认；命令类任务（`/review-pr` 等）的 head 逐字节不变——见 `docs/impl-fixed-pipeline.md` §4 / §7.7。
 
 ---
 

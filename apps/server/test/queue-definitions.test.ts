@@ -27,6 +27,7 @@ import type {
   ScheduleAdminBoss,
 } from '../src/queue/definitions.ts';
 import { queueJobOptions } from '../src/queue/boss.ts';
+import { JOB_PIPELINE_CLOSE_SCHEDULE } from '../src/config/pipeline-constants.ts';
 
 type CreateCall = { readonly name: string; readonly options: CreateQueueOptions };
 type ScheduleCall = {
@@ -73,7 +74,7 @@ describe('queueJobOptions：singletonKey 与 expireInSeconds', () => {
 });
 
 describe('QUEUES 定义', () => {
-  it('6 个队列齐全，命名与常量一致', () => {
+  it('7 个队列齐全（含 pipeline-close），命名与常量一致', () => {
     expect(QUEUES.map((spec) => spec.name).sort()).toEqual(
       [
         QUEUE.runTask,
@@ -82,6 +83,7 @@ describe('QUEUES 定义', () => {
         QUEUE.metricsRollup,
         QUEUE.reconcile,
         QUEUE.retentionCleanup,
+        QUEUE.pipelineClose,
       ].sort(),
     );
   });
@@ -115,14 +117,16 @@ describe('QUEUES 定义', () => {
 });
 
 describe('SCHEDULES 定时任务', () => {
-  it('五条定时任务：排队闸门每分钟、metrics 每天 00:10、reconcile 每小时、保留期每天', () => {
+  it('六条定时任务：排队闸门每分钟、metrics 每天 00:10、reconcile 每小时、保留期每天、自动关闭每 10 分钟', () => {
     const byQueue = new Map(SCHEDULES.map((spec) => [spec.queue, spec]));
-    expect(SCHEDULES).toHaveLength(5);
+    expect(SCHEDULES).toHaveLength(6);
     expect(byQueue.get(QUEUE.queueGate)?.cron).toBe('* * * * *');
     expect(byQueue.get(QUEUE.lifecycleCleanup)?.cron).toBe('* * * * *');
     expect(byQueue.get(QUEUE.metricsRollup)?.cron).toBe('10 0 * * *');
     expect(byQueue.get(QUEUE.reconcile)?.cron).toBe('0 * * * *');
     expect(byQueue.get(QUEUE.retentionCleanup)?.cron).toBe('40 0 * * *');
+    // 自动关闭（D5 / §9）：cron 取自 `config/pipeline-constants.ts::JOB_PIPELINE_CLOSE_SCHEDULE`
+    expect(byQueue.get(QUEUE.pipelineClose)?.cron).toBe(JOB_PIPELINE_CLOSE_SCHEDULE);
   });
 
   it('全部按 UTC 解释（不依赖服务器本地时区）', () => {
@@ -133,11 +137,11 @@ describe('SCHEDULES 定时任务', () => {
 });
 
 describe('ensureQueues：启动自检（队列不存在则 create）', () => {
-  it('首次启动建全部 6 个队列，并把 §4.7 的选项传下去', async () => {
+  it('首次启动建全部 7 个队列，并把 §4.7 的选项传下去', async () => {
     const boss = fakeAdminBoss();
     const result = await ensureQueues(boss);
 
-    expect(result.created).toHaveLength(6);
+    expect(result.created).toHaveLength(7);
     expect(result.existing).toEqual([]);
     const runTaskCall = boss.createCalls.find((call) => call.name === QUEUE.runTask);
     expect(runTaskCall?.options).toEqual({
@@ -154,8 +158,8 @@ describe('ensureQueues：启动自检（队列不存在则 create）', () => {
     const second = await ensureQueues(boss);
 
     expect(second.created).toEqual([]);
-    expect(second.existing).toHaveLength(6);
-    expect(boss.createCalls).toHaveLength(6);
+    expect(second.existing).toHaveLength(7);
+    expect(boss.createCalls).toHaveLength(7);
   });
 
   it('只补缺失的那一个', async () => {
@@ -165,12 +169,12 @@ describe('ensureQueues：启动自检（队列不存在则 create）', () => {
 
     const result = await ensureQueues(boss);
     expect(result.created).toEqual([QUEUE.reconcile]);
-    expect(result.existing).toHaveLength(5);
+    expect(result.existing).toHaveLength(6);
   });
 });
 
 describe('registerSchedules：注册 cron', () => {
-  it('五条定时任务都注册到对应队列，带 tz 与 expireInSeconds', async () => {
+  it('六条定时任务都注册到对应队列，带 tz 与 expireInSeconds', async () => {
     const calls: ScheduleCall[] = [];
     const boss: ScheduleAdminBoss = {
       schedule: async (name, cron, data, options) => {
@@ -180,7 +184,7 @@ describe('registerSchedules：注册 cron', () => {
 
     const registered = await registerSchedules(boss);
 
-    expect(registered).toHaveLength(5);
+    expect(registered).toHaveLength(6);
     expect(calls.map((call) => call.name as QueueName)).toContain(QUEUE.metricsRollup);
     const metrics = calls.find((call) => call.name === QUEUE.metricsRollup);
     expect(metrics?.cron).toBe('10 0 * * *');

@@ -8,7 +8,7 @@
 1. 「项目」= 仓库，**不引入** `projects` 表 / `project_id` / `repo_id` / 别名表；一律沿用 `repo`（`owner/name` 文本）。
 2. `.github/pi-bot.yml` **整体退役**：配置只存在于 `repos.settings jsonb`（面板写入），新建仓库时由部署默认（`PI_BOT_DEFAULT_SETTINGS`）seed 一份。**不再读、不再同步仓库内配置**。
 3. **合规缺失项由提示词控制**：删除 `compliance.rules` 配置与 `buildComplianceComment()`；issue 缺信息时只打 `needs-info` 标签 + `confused` reaction，明细只在面板。判定依据写进技能/提示词里。
-4. **无感反馈**：自动通道（triage/compliance/闸门）零评论；只有 `@bot /命令`、`@bot 提问` 允许一条最终回答（信息型产出，不是模板回执）。
+4. **无感反馈**：**平台判定类**自动通道零评论——但固定流水线的三个阶段例外（`tasks.source='pipeline'`：格式检查不通过/复查通过的确认、分类结论、未 ready 时的 `@` 门禁回执都会发评论，由 AI 撰写）；只有 `@bot /命令`、`@bot 提问` 允许一条最终回答（信息型产出，不是模板回执）。例外口径见 `docs/impl-fixed-pipeline.md` §3。
 5. 非多租户、无用户系统、内网不设防；开发态，数据可重建。
 6. 现有唯一约束/主键不推翻：`repo` 文本 + 既有唯一索引即可支撑多仓库（已核实不会撞键）。
 7. 每个包收尾必须让 `pnpm -r typecheck` 通过；测试只能新增/调整**本包相关**断言，不得为了变绿删掉别人的测试语义。

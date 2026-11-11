@@ -434,6 +434,7 @@ interface IssueListItem {
   labels: string[];                           // bot_labels 里未移除的，≤50
   outcomes: Partial<Record<'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled', number>>;
   lastPreview: string | null;                 // 最后一条机器人正文前 120 字；没有则最后一条人类提问
+  pipeline: IssuePipeline | null;             // 三段流水线的当前位置；无行 = null（见 §10 口径）
 }
 ```
 
@@ -452,6 +453,10 @@ interface IssueListItem {
 - **`title` / `url`** 与 `state` 来自同一条投递，只按 `title/html_url/state/number` 这几个键取值，
   不把整份 payload 拉到 Node 侧。
 - **分组**：只出现被处理过的 `(repo, kind, number)`；`kind=pr` 是独立一组，不和 issue 混（spec §1.3 坑 3）。
+- **`pipeline`（2026-11，固定流水线）**：每行带 `pipeline: IssuePipeline | null`——有状态行时是
+  `{stage, state, category, formatFailCount, infoRequestedAt, blockedReason, readyAt, staleAt, sessionId, sessionTurns}`
+  （camelCase，`.strict()`）；**无行时整个字段为 `null`**，不用空对象冒充（「没有行」= 存量 issue 一律放行）。
+  数据源是 `issue_pipeline` 单表 left join，面板不解析 jsonb；形状与状态机见 `docs/impl-fixed-pipeline.md` §2.5 / §3。
 
 错误：`400 bad-request`（`limit` / `cursor` 不合法）、`401 unauthorized`、`403 forbidden`、`503 unavailable`。
 
@@ -473,6 +478,7 @@ interface IssueSessionResponse {
     labels: string[];
     participants: string[];                  // 人类触发者 + 能解析到的机器人自身
   };
+  pipeline: IssuePipeline | null;       // 与列表行同一个形状；库里无流水线行时为 null（2026-11）
   turns: IssueTurn[];                        // ≤500，at 升序；同一时刻人类在前
 }
 

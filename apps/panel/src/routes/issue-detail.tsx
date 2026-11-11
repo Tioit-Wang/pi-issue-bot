@@ -11,12 +11,33 @@ import { ReactionChip, reactionHint } from '../components/issues/reaction-chip.t
 import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE } from '../components/issues/status.ts';
 import { PageHeader } from '../components/PageHeader.tsx';
 import { Section } from '../components/Section.tsx';
+import { ClassifyEvidence } from '../components/pipeline/classify-evidence.tsx';
+import { CategoryBadge, StageStateBadge } from '../components/pipeline/pipeline-badge.tsx';
+import { StageTimeline } from '../components/pipeline/stage-timeline.tsx';
+import {
+  CATEGORY_LABEL,
+  SESSION_MAX_AGE_DAYS,
+  SESSION_MAX_TURNS,
+  STATE_LABEL,
+  attemptsText,
+  dwellOf,
+  stageStateTitle,
+  stageTitle,
+} from '../components/pipeline/pipeline-status.ts';
 import { Badge, StatusDot } from '../components/ui/badge.tsx';
 import { Button, buttonVariants } from '../components/ui/button.tsx';
 import { useToast } from '../components/ui/toast.tsx';
 import type { IssueKind, IssueSessionResponse, IssueTurn } from '../lib/contract.ts';
-import { EMPTY, formatCount, formatDuration, formatRelativeTime, formatTimeCell, formatUsd } from '../lib/format.ts';
-import { useIssueSession } from '../lib/queries.ts';
+import {
+  EMPTY,
+  formatAbsoluteTime,
+  formatCount,
+  formatDuration,
+  formatRelativeTime,
+  formatTimeCell,
+  formatUsd,
+} from '../lib/format.ts';
+import { useIssueSession, useTaskDetailIf } from '../lib/queries.ts';
 import { decodeRepo, repoIssuePath, repoIssuesPath, repoRunPath, useRepoRoute } from '../lib/repo-route.ts';
 import { cn } from '../lib/utils.ts';
 import { NotFoundPage } from './not-found.tsx';
@@ -228,6 +249,38 @@ function SessionBody({ data, onCopy }: { data: IssueSessionResponse; onCopy: (te
   const feedback = readFeedbackTimeline(data);
   const decision = readLabelDecision(data);
   const runnableTaskId = [...turns].reverse().find((turn) => turn.taskId !== null)?.taskId ?? null;
+  const now = Date.now();
+  const pipeline = issue.pipeline;
+  const lastTurnAt = turns.length === 0 ? '' : (turns[turns.length - 1]?.at ?? '');
+  const dwell = pipeline === null ? null : dwellOf(pipeline, lastTurnAt, now);
+
+  /*
+   * 分类证据：只认**最近一轮任务**的信封（`GET /api/tasks/:id`）。
+   * 它不是分类任务（例如刚跑完一轮 @）时，面板不猜「上一轮分类的信封在哪」：
+   * 显示 `—` + 一句缺什么（证据不编造，见 DESIGN §8）。
+   */
+  const evidenceTask = useTaskDetailIf(runnableTaskId);
+  const evidenceTaskState = evidenceTask.data ?? null;
+  const isClassifyTask = evidenceTaskState?.task.command === 'pipeline:classify';
+  const evidence =
+    isClassifyTask && evidenceTaskState !== null
+      ? evidenceTaskState.envelopes
+          .map((envelope) => envelope.verdict)
+          .filter((verdict) => verdict !== null)
+          .flatMap((verdict) => verdict.evidence)
+      : [];
+  const evidenceNote =
+    evidenceTaskState !== null
+      ? isClassifyTask
+        ? null
+        : `最近一轮任务 ${runnableTaskId ?? ''} 不是 pipeline:classify（command=${evidenceTaskState.task.command}），信封里没有分类证据`
+      : evidenceTask.isLoading
+        ? '读取分类任务的信封…'
+        : runnableTaskId === null
+          ? '这个 issue 还没有任务，没有信封可读'
+          : evidenceTask.error === null || evidenceTask.error === undefined
+            ? '分类任务不存在（GET /api/tasks/:id 返回 404）'
+            : '读不到分类任务（GET /api/tasks/:id 失败）';
 
   // 成本汇总：只累加**有值**的轮次，并把「有几轮没数据」说出来（不把缺失当 0）
   const costs = turns.map((turn) => readRunCost(turn));
@@ -242,6 +295,26 @@ function SessionBody({ data, onCopy }: { data: IssueSessionResponse; onCopy: (te
       <div className="flex min-w-0 flex-col gap-5">
         <Section
           first
+          title="阶段"
+          actions={<StageStateBadge pipeline={pipeline} />}
+          footnote="阶段推进由代码判定（webhook + 定时作业），不由模型决定；一个 issue 同一时刻只停在一段"
+        >
+          <StageTimeline pipeline={pipeline} now={now} lastActivityAt={lastTurnAt} />
+        </Section>
+
+        <Section
+          title="分类结论"
+          actions={pipeline === null ? null : <CategoryBadge category={pipeline.category} />}
+          footnote={
+            evidenceNote === null
+              ? '证据来自分类任务的信封：GET /api/tasks/:id 的 envelopes[].verdict.evidence'
+              : evidenceNote
+          }
+        >
+          <ClassifyEvidence evidence={evidence} />
+        </Section>
+
+        <Section
           title="结论正文"
           actions={
             conclusion === null ? null : (
@@ -397,7 +470,57 @@ function SessionBody({ data, onCopy }: { data: IssueSessionResponse; onCopy: (te
 
       {/* ── 右侧栏 ─────────────────────────────────────────────────────────── */}
       <aside className="flex min-w-0 flex-col gap-4 xl:border-l xl:border-border xl:pl-4">
-        <Section first title="元信息">
+        <Section
+          first
+          title="流水线"
+          actions={<StageStateBadge pipeline={pipeline} />}
+        >
+          <dl className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-1.5 text-xs" data-testid="issue-detail-pipeline">
+            <Field label="阶段" value={pipeline === null ? EMPTY : stageTitle(pipeline.stage)} />
+            <Field label="状态" value={pipeline === null ? EMPTY : STATE_LABEL[pipeline.state]} title={pipeline === null ? undefined : stageStateTitle(pipeline)} />
+            <Field label="类别" value={pipeline?.category == null ? EMPTY : CATEGORY_LABEL[pipeline.category]} />
+            <Field
+              label="停留"
+              value={dwell === null ? EMPTY : dwell.text}
+              title={dwell?.title ?? '没有 issue_pipeline 行：没有停留口径'}
+              danger={dwell?.overdue === true}
+            />
+            <Field label="会话" value={pipeline?.sessionId ?? EMPTY} mono title={pipeline?.sessionId ?? '还没开会话（阶段 2 第一次 @ 时 create）'} />
+            <Field
+              label="会话轮次"
+              value={pipeline === null ? EMPTY : `${String(pipeline.sessionTurns)}/${String(SESSION_MAX_TURNS)}`}
+              title={`到 ${String(SESSION_MAX_TURNS)} 轮或满 ${String(SESSION_MAX_AGE_DAYS)} 天轮换`}
+            />
+            <Field label="格式不通过" value={pipeline === null ? EMPTY : `${attemptsText(pipeline.formatFailCount)} 次`} />
+            <Field
+              label="就绪后有编辑"
+              value={pipeline?.staleAt == null ? EMPTY : formatTimeCell(pipeline.staleAt).text}
+              title={
+                pipeline?.staleAt == null
+                  ? 'ready 之后没有被编辑过（只记 stale_at，不重跑、不通知）'
+                  : `stale_at = ${formatAbsoluteTime(pipeline.staleAt)}：ready 后的编辑只记录，不重跑`
+              }
+            />
+          </dl>
+
+          {pipeline?.blockedReason == null ? null : (
+            <p className="mt-2 min-w-0 break-words text-xs text-danger-fg" data-testid="issue-detail-blocked-reason">
+              {pipeline.blockedReason}
+            </p>
+          )}
+
+          {pipeline === null || pipeline.state !== 'blocked' ? null : (
+            <div className="mt-2 flex min-w-0 flex-col gap-1" data-testid="issue-detail-blocked-hint">
+              <p className="text-2xs text-faint">维护者可以把流程推回去（本页只展示命令，写接口未实现）</p>
+              <p className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs text-foreground">
+                <span className="rounded-sm bg-muted px-1.5 py-0.5">/recheck --force</span>
+                <span className="rounded-sm bg-muted px-1.5 py-0.5">/pipeline next</span>
+              </p>
+            </div>
+          )}
+        </Section>
+
+        <Section title="元信息">
           <dl className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-1.5 text-xs" data-testid="issue-detail-meta">
             <Field label="编号" value={`${issue.kind}#${formatCount(issue.number)}`} mono />
             <Field label="状态" value={ISSUE_STATE_LABEL[issue.state]} />
@@ -491,11 +614,32 @@ function SessionBody({ data, onCopy }: { data: IssueSessionResponse; onCopy: (te
   );
 }
 
-function Field({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function Field({
+  label,
+  value,
+  mono = false,
+  title,
+  danger = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  /** 悬停口径（默认用值本身，例如「没有这个字段」的原因）。 */
+  title?: string;
+  /** 超期/失败用 danger 色文字（不是整行染色）。 */
+  danger?: boolean;
+}) {
   return (
     <div className="flex min-w-0 flex-col">
       <dt className="text-2xs text-faint">{label}</dt>
-      <dd className={cn('min-w-0 truncate tabular text-muted-foreground', mono && 'font-mono')} title={value}>
+      <dd
+        className={cn(
+          'min-w-0 truncate tabular',
+          danger ? 'font-medium text-danger-fg' : 'text-muted-foreground',
+          mono && 'font-mono',
+        )}
+        title={title ?? value}
+      >
         {value}
       </dd>
     </div>

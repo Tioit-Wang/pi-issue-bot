@@ -8,16 +8,28 @@
  *  - `vocabulary` 为空不是错，但模型就没有标签语义可依，所以给一行提示。
  */
 import { useState } from 'react';
-import type { LabelVocabularyEntry, RepoSettings } from '../../../../../packages/contract/src/index.ts';
+import type { LabelRole, LabelVocabularyEntry, RepoSettings } from '../../../../../packages/contract/src/index.ts';
+import { pipelineLabelCoverage } from '../../../../../packages/contract/src/index.ts';
 import { Badge } from '../ui/badge.tsx';
+import { Select } from '../ui/select.tsx';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
 import { ChipEditor, NumberField, TextField } from './form.tsx';
 import { SaveBar } from './save-bar.tsx';
 import { countChangedPaths } from './settings-chrome.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
-
 const COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/u;
+
+/** 词表行的列宽（表头与行共用一份，避免 drift）：name / 角色 / meaning / color / description / group / 操作。 */
+const VOCAB_GRID =
+  'md:grid-cols-[minmax(0,1.1fr)_6rem_minmax(0,1.4fr)_5.5rem_minmax(0,1.2fr)_5.5rem_auto]';
+
+/** 角色下拉：`role` 是流程分叉依据（契约必填），面板给中文标签，值仍是契约枚举。 */
+const ROLE_OPTIONS: readonly { value: LabelRole; label: string }[] = [
+  { value: 'requirement', label: '需求' },
+  { value: 'defect', label: '缺陷' },
+  { value: 'other', label: '其他' },
+];
 
 /** `string | string[]` → 输入框里的逗号分隔文本。 */
 function targetText(target: string | string[]): string {
@@ -71,6 +83,16 @@ export function LabelsSection({ state }: SettingsSectionProps) {
     const text = Array.isArray(value) ? value.join('') : value;
     return text.trim() === '';
   })?.[0];
+  /**
+   * 标签角色覆盖：`requirement` / `defect` 各至少一个词表项。
+   *
+   * **只提示不阻塞服务端**（`pipelineLabelCoverage()` 的注释说明了为什么放宽），但面板把保存按钮
+   * 先禁用：没有这两类角色，分类结论就没有标签可打，流程会「跑得动但看不出结论」。
+   */
+  const missingRoles = pipelineLabelCoverage({ labels }).missingRoles;
+  const coverageReason = missingRoles.length > 0 ? '分类需要至少一个需求标签与一个缺陷标签' : null;
+
+
   const blockedReason =
     blankNameIndex >= 0
       ? `词表第 ${String(blankNameIndex + 1)} 条的 name 是空的（服务端会拒绝：name 至少 1 个字符）`
@@ -78,7 +100,7 @@ export function LabelsSection({ state }: SettingsSectionProps) {
         ? `词表第 ${String(badColorIndex + 1)} 条的 color 必须是 6 位十六进制（不带 #）`
         : emptyTargetKey !== undefined
           ? `映射「${emptyTargetKey}」还没填标签（标签名至少要 1 个字符；要删这行请点「移除」）`
-          : null;
+          : coverageReason;
 
   const updateVocabulary = (index: number, patch: Partial<LabelVocabularyEntry>): void => {
     patchLabels((current) => ({
@@ -114,14 +136,25 @@ export function LabelsSection({ state }: SettingsSectionProps) {
         }
       >
         <div className="flex flex-col gap-2">
+          {coverageReason === null ? null : (
+            <p
+              className="text-xs text-warn-fg"
+              data-testid="labels-role-coverage"
+              title="服务端不会因此拒收（这是面板提示）；但没有对应角色的标签，分类结论就没有标签可打"
+            >
+              {coverageReason}
+              {missingRoles.length === 0 ? '' : `（缺：${missingRoles.map((role) => (role === 'requirement' ? '需求' : '缺陷')).join('、')}）`}
+            </p>
+          )}
           {labels.vocabulary.length === 0 ? (
             <p className="rounded-md border border-dashed border-border px-2.5 py-3 text-xs text-muted-foreground">
               还没有词表：模型拿不到标签语义，打标质量会下降
             </p>
           ) : (
             <div className="flex flex-col gap-2">
-              <div aria-hidden className="hidden gap-2 px-1 text-2xs text-faint md:grid md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)_5.5rem_minmax(0,1.2fr)_5.5rem_auto]">
+              <div aria-hidden className={cn('hidden gap-2 px-1 text-2xs text-faint md:grid', VOCAB_GRID)}>
                 <span>name</span>
+                <span>角色</span>
                 <span>meaning（注入提示词）</span>
                 <span>color</span>
                 <span>description</span>
@@ -131,7 +164,10 @@ export function LabelsSection({ state }: SettingsSectionProps) {
               {labels.vocabulary.map((entry, index) => (
                 <div
                   key={`vocab-${String(index)}`}
-                  className="grid min-w-0 grid-cols-2 gap-2 rounded-md border border-border p-2 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)_5.5rem_minmax(0,1.2fr)_5.5rem_auto] md:border-0 md:p-0"
+                  className={cn(
+                    'grid min-w-0 grid-cols-2 gap-2 rounded-md border border-border p-2 md:border-0 md:p-0',
+                    VOCAB_GRID,
+                  )}
                   data-testid={`labels-vocab-row-${String(index)}`}
                 >
                   <TextField
@@ -146,6 +182,30 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                     disabled={readOnly}
                     disabledReason="仓库已归档：只读"
                   />
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <label
+                      htmlFor={`labels-vocab-role-${String(index)}`}
+                      className="text-xs font-medium text-muted-foreground"
+                    >
+                      角色
+                    </label>
+                    <Select
+                      id={`labels-vocab-role-${String(index)}`}
+                      options={ROLE_OPTIONS}
+                      placeholder={null}
+                      value={entry.role}
+                      disabled={readOnly}
+                      title={readOnly ? '仓库已归档：只读' : '分类结论靠它找标签；需求 / 缺陷各至少一个'}
+                      aria-label={`词表第 ${String(index + 1)} 条的角色`}
+                      onChange={(event) => {
+                        const next = ROLE_OPTIONS.find((option) => option.value === event.target.value);
+                        if (next === undefined) return;
+                        updateVocabulary(index, { role: next.value });
+                      }}
+                      className="h-[var(--control-sm)]"
+                      data-testid={`labels-vocab-role-${String(index)}`}
+                    />
+                  </div>
                   <TextField
                     id={`labels-vocab-meaning-${String(index)}`}
                     label="meaning"
@@ -227,7 +287,11 @@ export function LabelsSection({ state }: SettingsSectionProps) {
             <button
               type="button"
               onClick={() => {
-                patchLabels((current) => ({ ...current, vocabulary: [...current.vocabulary, { name: '' }] }));
+                // `role` 在契约里必填（Q4）：空白行先落成 `other`，面板的 role 选择器可以改
+                patchLabels((current) => ({
+                  ...current,
+                  vocabulary: [...current.vocabulary, { name: '', role: 'other' }],
+                }));
               }}
               disabled={readOnly || labels.vocabulary.length >= 200}
               title={readOnly ? '仓库已归档：只读' : '加一条空白词表项'}

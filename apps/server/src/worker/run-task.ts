@@ -19,6 +19,8 @@
  *  - **超时不自动重试**：`decideRetry()` 只读最高优先级分类，`timeout` 恒为 `retry:false`。
  *  - **OOM 必须在销毁前采**（§6.3）：处置只调 `lifecycle.dispose()`，它内部先 inspect 再销毁。
  */
+import os from 'node:os';
+
 import { createDegeneracyMonitor } from '../degeneracy/index.ts';
 import type { DegeneracyHit } from '../degeneracy/index.ts';
 import { decideRetry, pickHighestPrioritySignal } from '../queue/index.ts';
@@ -158,6 +160,9 @@ function recordingOps(
   ops: TurnDriverOps,
   sink: { sessionId?: string; turnId?: string },
 ): TurnDriverOps {
+  // `session/attach` 是可选 operation（`RacpOps` 提供、老 Host 不提供）：先取出来再条件透传，
+  // 否则每轮 `driveTurn` 都会认为「Host 不支持 attach」，阶段 2 的会话复用形同虚设（§7）。
+  const attach = ops.sessionAttach;
   return {
     projectRegister: (params, options) => ops.projectRegister(params, options),
     sessionCreate: async (params, options) => {
@@ -176,6 +181,7 @@ function recordingOps(
     inputRespond: (params, options) => ops.inputRespond(params, options),
     workspaceDiff: (params, options) => ops.workspaceDiff(params, options),
     sessionArchive: (params, options) => ops.sessionArchive(params, options),
+    ...(attach === undefined ? {} : { sessionAttach: (params, options) => attach(params, options) }),
   };
 }
 
@@ -228,6 +234,10 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   let turnId: string | undefined;
   /** 由 `recordingOps()` 填的 id：失败路径（超时/取消）也要能写进 `runs.session_id` / `turn_id`。 */
   const recordedIds: { sessionId?: string; turnId?: string } = {};
+  /** 会话游标与「attach 失败改新建」的标记（上层写 `issue_pipeline.session_cursor` / `blocked_reason`）。 */
+  let sessionCursor: number | null = null;
+  let sessionReset = false;
+  let sessionMode: 'ephemeral' | 'persistent' = 'ephemeral';
   let terminal: string | null = null;
   let turnResult: TurnDriveResult | undefined;
   let eventCount = 0;
@@ -282,7 +292,19 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     }
   };
 
-  // ── 1–4：worktree → container → proxy → host（同一段预算） ──────────────────
+  // ── 运行时模式：light 只有 host；sandboxed 走 worktree → container → proxy → host（同一段预算）
+  //
+  // `light`（阶段 0 格式检查 / 门禁回执）只读正文判定：**没有 worktree、没有容器、没有 exec 代理**
+  // （§5 / §10.5）。老任务不传 `runtimeMode`，走 `sandboxed` 分支，调用序列与接线前逐条相同。
+  const runtimeMode = input.runtimeMode ?? 'sandboxed';
+  const light = runtimeMode === 'light';
+  /**
+   * light 的 `project/register` 路径：没有 worktree，但 Host 仍要一个 path。
+   * 缺省给操作系统临时目录 —— 绝不能退化成 bot 自己的 cwd（那等于把服务端仓库交给 agent 读）。
+   */
+  const lightRoot = deps.lightWorkdir ?? os.tmpdir();
+  let hostReady = false;
+
   try {
     await runWithDeadline(
       {
@@ -291,46 +313,56 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         ...(input.parent === undefined ? {} : { parent: input.parent }),
       },
       async () => {
-        recordStep('worktree');
-        const handle = await deps.worktree.create({
-          taskId: input.taskId,
-          repo: input.repo,
-          ...(input.headSha === undefined ? {} : { headSha: input.headSha }),
-        });
-        jobDir = handle.jobDir;
+        if (!light) {
+          recordStep('worktree');
+          const handle = await deps.worktree.create({
+            taskId: input.taskId,
+            repo: input.repo,
+            ...(input.headSha === undefined ? {} : { headSha: input.headSha }),
+          });
+          jobDir = handle.jobDir;
 
-        recordStep('container');
-        const spec = buildContainerCreateOptions({
-          jobId: input.taskId,
-          jobDir: handle.jobDir,
-          image: deps.image,
-          ...(deps.memoryTier === undefined ? {} : { memoryTier: deps.memoryTier }),
-          ...(deps.networkMode === undefined ? {} : { networkMode: deps.networkMode }),
-        });
-        containerId = await deps.docker.createContainer(spec);
+          recordStep('container');
+          const spec = buildContainerCreateOptions({
+            jobId: input.taskId,
+            jobDir: handle.jobDir,
+            image: deps.image,
+            ...(deps.memoryTier === undefined ? {} : { memoryTier: deps.memoryTier }),
+            ...(deps.networkMode === undefined ? {} : { networkMode: deps.networkMode }),
+          });
+          containerId = await deps.docker.createContainer(spec);
 
-        recordStep('proxy');
-        const endpoint = await deps.proxy.listen({
-          jobId: input.taskId,
-          jobDir: handle.jobDir,
-          containerId,
-        });
-        // tech-plan §4.5 的那张表：socket 路径 → 该进哪个容器
-        endpoints.set(endpoint.socketPath ?? endpoint.address, { jobId: input.taskId, containerId });
+          recordStep('proxy');
+          const endpoint = await deps.proxy.listen({
+            jobId: input.taskId,
+            jobDir: handle.jobDir,
+            containerId,
+          });
+          // tech-plan §4.5 的那张表：socket 路径 → 该进哪个容器
+          endpoints.set(endpoint.socketPath ?? endpoint.address, { jobId: input.taskId, containerId });
+        }
 
         recordStep('host');
         const host = await deps.host.ready();
         logger.debug({ hostId: host.hostId, port: host.port, version: host.version }, 'pi-host 就绪');
+        hostReady = true;
       },
     );
   } catch (error) {
     signals.push(signalFromError(error));
-    logger.error({ err: String(error) }, '任务准备阶段失败，跳过 turn');
+    logger.error(
+      { err: String(error), runtimeMode },
+      light ? 'light 运行时就绪失败（host），跳过 turn' : '任务准备阶段失败，跳过 turn',
+    );
   }
 
-  const setupFailed = signals.length > 0 || containerId === undefined || jobDir === undefined;
+  // light 只需要 host；sandboxed 还必须有容器与 job 目录（缺一不可，否则没有写入目标）
+  const setupFailed =
+    signals.length > 0 ||
+    !hostReady ||
+    (!light && (containerId === undefined || jobDir === undefined));
   // 显式收窄：`setupFailed` 是布尔量，TS 不会据此收窄 `jobDir`，所以取一个局部量。
-  const worktreeRoot = setupFailed ? undefined : jobDir;
+  const worktreeRoot = setupFailed ? undefined : light ? lightRoot : jobDir;
 
   // ── 5–8：turn → diff → 信封 → 写执行器 ──────────────────────────────────────
   if (worktreeRoot !== undefined) {
@@ -343,7 +375,12 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     // 两条边界：(a) 没注入 = 行为完全不变（`prompt` 就是 `input.prompt`）；
     // (b) 装配失败不能让任务失败 —— 抛错/返回空串都回退到 `basePrompt` 并记 warn。
     let prompt = input.prompt;
-    if (deps.promptEnricher !== undefined) {
+    if (light) {
+      // light 没有 worktree：阶段提示词 + AGENTS.md 已经在装配层（`buildStagePrompt`）拼好，
+      // 这里**不再回调** enricher（§10.5「light 不调 P1/AGENTS 注入器」）。
+      logger.debug({ promptChars: prompt.length }, 'light 运行时：提示词已由装配层拼好，跳过 enricher');
+    }
+    if (!light && deps.promptEnricher !== undefined) {
       try {
         const enriched = await deps.promptEnricher({
           worktreeDir: worktreeRoot,
@@ -386,12 +423,19 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
           appendEvent('approval.audit', audit);
         },
         title: `${input.command} ${input.repo}#${String(input.targetNumber)}`,
+        // 会话计划：缺省 `ephemeral`（= 现有行为）；阶段 2 传 `persistent` 复用（§7）
+        ...(input.session === undefined ? {} : { session: input.session }),
+        // light 没有容器/worktree：不采 diff（§10.5）
+        ...(light ? { collectDiff: false } : {}),
         logger,
       });
       terminal = turnResult.terminal;
       eventCount = turnResult.events;
       sessionId = turnResult.sessionId;
       turnId = turnResult.turnId;
+      sessionCursor = turnResult.cursor;
+      sessionReset = turnResult.sessionReset;
+      sessionMode = turnResult.sessionMode;
     } catch (error) {
       const signal = signalFromError(error);
       signals.push(signal);
@@ -405,10 +449,13 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     }
   }
 
-  recordStep('diff', { events: eventCount, terminal });
-  if (turnResult !== undefined) {
-    // `workspace/diff` 已由 turn-driver 在归档前取过（第 6 步），这里只把它记进报告。
-    logger.debug({ diffBytes: turnResult.diff.diff.length }, 'workspace/diff 已采集');
+  // light 不采 diff（§10.5）：步骤序列里也不该出现 `diff`
+  if (!light) {
+    recordStep('diff', { events: eventCount, terminal });
+    if (turnResult !== undefined) {
+      // `workspace/diff` 已由 turn-driver 在归档前取过（第 6 步），这里只把它记进报告。
+      logger.debug({ diffBytes: turnResult.diff.diff.length }, 'workspace/diff 已采集');
+    }
   }
 
   if (degeneracyHit !== null) {
@@ -515,6 +562,12 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   recordStep('execute');
   // 熔断命中时**只校验入库、不执行写动作**：plan §9.3 的处置是「已产出的结构化结果照样校验入库」，
   // 没说「照样发布」。一份在退化状态下产出的评论/标签，发布出去比丢掉代价大得多。
+  // ★ `command` **有意不传**（`executeActions()` 的 `command` 缺省 = `undefined`）：
+  // `isWriteBackAllowed({intent:'comment', source:'pipeline', command:undefined})` 恒为 false，
+  // 于是**流水线的阶段评论一条都不会由 worker 发出** —— 阶段评论（含门禁回执）统一由控制面发
+  // （`app/compose.ts` 的 `executeFormatPlan()` / `executeClassifyPlan()` / `postGateNotice()`）。
+  // 别为了「让回执能发出去」把 `command` 补上：那会让同一条评论有两条发送路径，
+  // 而 worker 侧没有长度 / 限速 / `@` 那三道控制面才有的闸。
   if (prepared !== null && prepared.valid && prepared.accepted.length > 0 && degeneracyHit === null) {
     const target =
       deps.targets === undefined
@@ -559,28 +612,32 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   const preOutcome = decideOutcome(signals, terminal, degeneracyHit !== null);
   const endedAtMs = clock();
 
-  recordStep('dispose', { outcome: preOutcome });
-  if (containerId !== undefined && jobDir !== undefined) {
-    try {
-      const disposeResult = await deps.lifecycle.dispose({
-        jobId: input.taskId,
-        containerId,
-        jobDir,
-        outcome: toTaskOutcome(preOutcome),
-      });
-      disposed = true;
-      containerState = disposeResult.state;
-      // 采到 OOM 却与 lifecycle 的判定不一致时以采到的状态为准（§7.3 的判定源是 OOMKilled）
-      const patched = classifyDestroyedState(disposeResult.state);
-      if (patched !== undefined && preOutcome !== 'succeeded') {
-        logger.debug({ patched }, '销毁前采集出的容器状态');
+  // light 没有容器与端点：步骤序列里不记 `dispose`、也不碰 exec 代理 ——
+  // 这样「零容器 / 零 worktree / 零代理」在调用序列上也是可断言的（V1）。
+  if (!light) {
+    recordStep('dispose', { outcome: preOutcome });
+    if (containerId !== undefined && jobDir !== undefined) {
+      try {
+        const disposeResult = await deps.lifecycle.dispose({
+          jobId: input.taskId,
+          containerId,
+          jobDir,
+          outcome: toTaskOutcome(preOutcome),
+        });
+        disposed = true;
+        containerState = disposeResult.state;
+        // 采到 OOM 却与 lifecycle 的判定不一致时以采到的状态为准（§7.3 的判定源是 OOMKilled）
+        const patched = classifyDestroyedState(disposeResult.state);
+        if (patched !== undefined && preOutcome !== 'succeeded') {
+          logger.debug({ patched }, '销毁前采集出的容器状态');
+        }
+      } catch (error) {
+        signals.push(signalFromError(error, `容器处置失败：${String(error)}`));
       }
-    } catch (error) {
-      signals.push(signalFromError(error, `容器处置失败：${String(error)}`));
+    } else {
+      // 没起容器也要清端点（worktree 失败时不会有端点，destroy 是幂等的）
+      await deps.proxy.destroy({ jobId: input.taskId }).catch(() => undefined);
     }
-  } else {
-    // 没起容器也要清端点（worktree 失败时不会有端点，destroy 是幂等的）
-    await deps.proxy.destroy({ jobId: input.taskId }).catch(() => undefined);
   }
   endpoints.clear();
 
@@ -788,5 +845,9 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
     durationMs: endedAtMs - startedAtMs,
     disposed,
     retryable: retry.retry,
+    runtimeMode,
+    sessionMode,
+    sessionCursor,
+    sessionReset,
   };
 }

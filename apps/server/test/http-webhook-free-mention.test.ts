@@ -16,6 +16,7 @@ import {
   encodeFreeQuestion,
   extractFreeQuestion,
 } from '../src/http/index.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 const HANDLE = 'pi-issue-bot-tioit';
 
@@ -94,22 +95,31 @@ describe('decideWebhookTask：纯 @ 提问', () => {
     expect(other.action === 'task' && other.plan.kind).not.toBe(decision.plan.kind);
   });
 
-  it('freeMention 关闭 → 忽略（保持只有 `/命令` 才触发的旧行为）', () => {
+  it('freeMention 关闭 → 不建 `@answer` 任务，交回 `pipeline-supplement` 候选（由 handleWebhook 查状态行决定）', () => {
     const decision = decideWebhookTask({
       event: 'issue_comment',
       action: 'created',
       payload: commentPayload(`@${HANDLE} 这条报错怎么排查？`),
       mention: HANDLE,
     });
-    expect(decision.action).toBe('ignore');
+    // E4（§16.2 第 1 条）：普通 issue 评论不再一律 ignored —— 纯函数这里只能给出
+    // 「补充信息候选」，真正要不要用由 `handleWebhook` 按 `issue_pipeline.stage/state` 决定。
+    expect(decision.action).toBe('pipeline-supplement');
+    expect(decision.action).not.toBe('task');
+    if (decision.action !== 'pipeline-supplement') return;
+    // `body` 是评论原文（截断 / 去 @ 留给拼 `target_supplement` 时做）
+    expect(decision.body).toBe(`@${HANDLE} 这条报错怎么排查？`);
   });
 });
 
 describe('checkCommandGate：自由问答只受 association 约束', () => {
-  const config = parseRepoConfig({
-    version: 1,
-    commands: { allowed: ['/issue-triage'], author_associations: ['OWNER'] },
-  });
+  // `pipeline.managers` 非空是解析前提（§4.5 / Q4），其余沿用契约默认值
+  const config = parseRepoConfig(
+    validRepoSettings({
+      version: 1,
+      commands: { allowed: ['/issue-triage'], author_associations: ['OWNER'] },
+    }),
+  );
 
   it('`@answer:` 不在白名单也放行（OWNER）', () => {
     const decision = decideWebhookTask({

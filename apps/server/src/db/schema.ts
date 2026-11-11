@@ -183,7 +183,22 @@ export const tasks = pgTable(
     targetNumber: integer('target_number').notNull(),
     /** 目标提交；判定类任务可为空（issue 判定用 missing_set_hash 锚定） */
     headSha: text('head_sha'),
-    /** 命令名：`/review-pr` 等；判定类记 `auto:triage` / `auto:compliance`（§7.2） */
+    /**
+     * issue/PR 标题与正文的**入队时快照**（`docs/plan-fixed-pipeline.md` §4.2）。
+     *
+     * 为什么不读 `webhook_deliveries.payload`：那批原文只留 90 天（§7.6），而阶段任务可能在
+     * `awaiting_info` 里等用户补充好几天；快照随任务走，不受保留期影响，也不产生额外 API 调用。
+     * `target_body` 入队时截到 8000 字符（`PIPELINE_TARGET_BODY_MAX_CHARS`），进提示词时再截 4000。
+     */
+    targetTitle: text('target_title'),
+    targetBody: text('target_body'),
+    /**
+     * 补充评论段（E4「评论优先」）：`[{author, body, commentId, createdAt}]` 形状的 **jsonb 数组**。
+     * 不混进 `target_body`：正文与补充要分开渲染（补充置顶），且补充只留最近 3 条 × 每条 1000 字符。
+     * 默认 `[]` 而不是 NULL：读侧不必分支判断，`jsonb_array_elements` 也只在数组上成立。
+     */
+    targetSupplement: jsonb('target_supplement').notNull().default([]),
+    /** 命令名：`/review-pr` 等；固定流水线的阶段任务记 `pipeline:format|classify|notice`（§4.6） */
     command: text('command').notNull(),
     /** 触发者 GitHub login；`/retry` 与 webhook 重投靠它区分（§7.2） */
     actorLogin: text('actor_login').notNull(),
@@ -281,6 +296,16 @@ export const envelopes = pgTable(
     actions: jsonb('actions'),
     /** usage 原文（token / cost） */
     usage: jsonb('usage'),
+    /**
+     * 阶段结论的**投影列**（`docs/plan-fixed-pipeline.md` §4.3）：`stage_name` = format/classify，
+     * `stage_result` = pass/fail/requirement/defect/not-found/other。
+     *
+     * 为什么从 `verdict`/`actions` 的 jsonb 里另存两列：面板要按「这个 issue 各阶段结论」筛选与
+     * 画时间线，解 jsonb 既写不出索引也读不动；阶段结论还会被回放与对账反复查。
+     * 可空：Agent 阶段的老信封没有 `stage`，此时保持 NULL 而不是补默认值（NULL 才表示「不是阶段任务」）。
+     */
+    stageName: text('stage_name'),
+    stageResult: text('stage_result'),
     /** Ajv 校验是否通过 */
     valid: boolean('valid').notNull().default(false),
     /** 校验错误明细（字段路径 + message） */
@@ -591,14 +616,22 @@ export const quotaCounters = pgTable(
 );
 
 /**
- * 项目提示词（P1 层）的不可变版本（W3-G）：正文进库，保存即新建版本，
- * 回滚 = 改 `settings.prompt.current_version`。
+ * 提示词版本（不可变）：正文进库，保存即新建版本，回滚 = 改 settings 里的版本指针。
+ *
+ * `kind` 把版本线拆成 **4 条互不干扰的线**（`docs/plan-fixed-pipeline.md` §4.4 / E3）：
+ * `project`（P1 项目人格层，指针在 `settings.prompt.current_version`）、
+ * `format_check` / `classify` / `agent`（三个阶段的系统提示词，指针在 `settings.pipeline.*_prompt_version`）。
+ * 为什么必须有这一列：四条线各自「保存 / 回滚 / 版本号」独立，共用一条 `(repo, version)` 唯一键
+ * 会让阶段 0 存一版就把 P1 的 v3 顶掉。默认值 `'project'` 让 0003 时代的存量行原地归位。
+ * `version=0` 一律表示「用内置默认」（项目版本不存 v0，指针回 0 即恢复默认，历史版本不删）。
  */
 export const promptVersions = pgTable(
   'prompt_versions',
   {
     repo: text('repo').notNull(),
-    /** 版本号，从 1 起；`settings.prompt.current_version` 指向它 */
+    /** 版本线：project / format_check / classify / agent */
+    kind: text('kind').notNull().default('project'),
+    /** 版本号，从 1 起；由 settings 里的对应指针指向它 */
     version: integer('version').notNull(),
     /** 提示词正文 */
     body: text('body').notNull(),
@@ -606,7 +639,97 @@ export const promptVersions = pgTable(
     note: text('note'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('prompt_versions_repo_version_uidx').on(t.repo, t.version)],
+  // 唯一键必须带 kind：否则同版本号无法在四条版本线上并存（旧 (repo, version) 索引已由 0005 DROP）
+  (t) => [uniqueIndex('prompt_versions_repo_kind_version_uq').on(t.repo, t.kind, t.version)],
+);
+
+/* ── 固定流水线改造新增的一张表（`docs/plan-fixed-pipeline.md` §4.3）──────────────── */
+
+/**
+ * issue 在固定流水线里的**唯一状态行**。
+ *
+ * 为什么不复用 `issue_states`：那张表是「缺失项集合哈希 + 催办」那套判定的载体，与三阶段流水线
+ * （stage / state / 重检计数 / 会话游标）不同构；E1 全量切换后旧表只剩死代码（S5 统一清）。
+ *
+ * 为什么主键是 `(repo, issue_number)`：一条 issue 只有一行，读写都是
+ * `WHERE repo=$1 AND issue_number=$2` 的点查 + UPSERT，复合主键本身就是幂等键。
+ *
+ * `awaiting_info` 有**两种语义**（§2 注，11:00 / Q6 修订后）：
+ *  - `format/awaiting_info` 等**用户**补充：`info_requested_at` 非空，进 48h 关闭扫描；
+ *  - `classify/awaiting_info` 等**管理员**：`info_requested_at` 恒为 NULL，**不进**关闭扫描，
+ *    否则躺着等管理员的 issue 会被 48h 作业误关。
+ */
+export const issuePipeline = pgTable(
+  'issue_pipeline',
+  {
+    /** `owner/name`，与 `tasks.repo` 同口径 */
+    repo: text('repo').notNull(),
+    /** issue 号 */
+    issueNumber: integer('issue_number').notNull(),
+    /**
+     * 当前阶段：`format` / `classify` / `agent` / `closed`。
+     * 字符串与常量放在契约层（`PIPELINE_STAGE`），数据层不引契约包（见文件头约定）。
+     */
+    stage: text('stage').notNull().default('format'),
+    /** 当前状态：`pending` / `running` / `awaiting_info` / `ready` / `blocked` / `closed` */
+    state: text('state').notNull().default('pending'),
+    /** 分类结论：`requirement` / `defect` / `not-found` / `other`；未分类为 NULL */
+    category: text('category'),
+    /**
+     * 阶段执行次数（含通过）：面板显示「格式检查跑了 3 次」。
+     * 与 `format_fail_count` 分开是因为 Q5 之后**重跑不限次、只计失败**——
+     * 两个数混用就没法表达「跑了 5 次、其中 4 次不通过」。
+     */
+    formatAttempts: integer('format_attempts').notNull().default(0),
+    /** 格式**不通过**累计次数；`>= PIPELINE_FORMAT_MAX_FAILS`（5）→ 自动关 issue，不发 blocked */
+    formatFailCount: integer('format_fail_count').notNull().default(0),
+    /** 分类阶段执行次数（含重分类） */
+    classifyAttempts: integer('classify_attempts').notNull().default(0),
+    /**
+     * 触发本阶段的那次 issue 版本锚（`updated_at` 派生或 comment id 派生）。
+     * 幂等键 `pipeline:<stage>:<issueVersion>` 靠它，同版本重投不再产生第二个任务。
+     */
+    issueVersion: text('issue_version'),
+    /** 发出「请补充信息」的时刻；NULL = 不在等用户 → **不进 48h 关闭扫描**（双保险） */
+    infoRequestedAt: timestamp('info_requested_at', { withTimezone: true }),
+    /** 最近一次重跑时刻；`PIPELINE_RECHECK_COOLDOWN_SECONDS`（120s）冷却据此计算 */
+    lastRecheckAt: timestamp('last_recheck_at', { withTimezone: true }),
+    /**
+     * `@` 管理人员的时刻。单槽 = **整个 issue 只 @ 一次**（D4）：重分类不补 @，
+     * 非空即表示「已经 @ 过」，不需要再按类别去重。
+     */
+    mentionSentAt: timestamp('mention_sent_at', { withTimezone: true }),
+    /** `@` 时的类别（`requirement` / `defect` / `not-found`），面板审计用 */
+    mentionCategory: text('mention_category'),
+    /** 门禁回执最近一次发出的时刻：每 issue 每小时 1 条（§8 限速） */
+    gateNoticeAt: timestamp('gate_notice_at', { withTimezone: true }),
+    /**
+     * 阶段 2 复用的 RACP 会话 id（阶段 0/1 一次性会话结束即 archive，不回写）。
+     * 只有 `ready` 之后同一 issue 的多轮 `@` 才复用它（D1「阶段间独立、阶段内粘性」）。
+     */
+    sessionId: text('session_id'),
+    /** `events/subscribe` 的 `after` 游标：防重放旧事件污染本轮信封 */
+    sessionCursor: integer('session_cursor').notNull().default(0),
+    /** 该会话已用轮数；`>= PIPELINE_SESSION_MAX_TURNS`（30）→ 轮换新会话 */
+    sessionTurns: integer('session_turns').notNull().default(0),
+    /** 会话创建时刻；超过 `PIPELINE_SESSION_MAX_AGE_DAYS`（7 天）→ 轮换 */
+    sessionStartedAt: timestamp('session_started_at', { withTimezone: true }),
+    /** `ready` 之后 issue 又被改动（D7 不回退），只记这里供面板显示「已过期」 */
+    staleAt: timestamp('stale_at', { withTimezone: true }),
+    /** 卡住原因：运行失败/信封不合法连续 2 次、`session-reset` 等 */
+    blockedReason: text('blocked_reason'),
+    /** 进入 `agent/ready` 的时刻（面板算「待处理时长」） */
+    readyAt: timestamp('ready_at', { withTimezone: true }),
+    /** 关闭时刻；非空 = 本行不再接任何事件 */
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.repo, t.issueNumber] }),
+    // 48h 自动关闭作业（每 10 分钟）扫 `state='awaiting_info' AND info_requested_at IS NOT NULL`
+    index('issue_pipeline_close_scan_idx').on(t.state, t.infoRequestedAt),
+  ],
 );
 
 /** schema 里的全部表（启动自检、迁移覆盖度检查、queries 生成都用得上）。 */
@@ -631,9 +754,10 @@ export const ALL_TABLES = {
   labelDecisions,
   quotaCounters,
   promptVersions,
+  issuePipeline,
 } as const;
 
-/** 表名清单（单测断言「§7.2 的 16 张 + 多仓库 4 张都在」用它）。 */
+/** 表名清单（单测断言「§7.2 的 16 张 + 多仓库 4 张 + 固定流水线 1 张，共 21 张都在」用它）。 */
 export const ALL_TABLE_NAMES: readonly string[] = Object.freeze(
   Object.values(ALL_TABLES).map((table) => getTableName(table)),
 );

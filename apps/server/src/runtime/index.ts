@@ -131,10 +131,13 @@ export {
   extractApprovalRequest,
   extractInputRequest,
   isTurnTimeout,
+  sessionCursorOf,
 } from './turn-driver.ts';
 export type {
   ApprovalRequestPayload,
   InputRequestPayload,
+  SessionAttachResult,
+  SessionPlan,
   TerminalTurnEventKind,
   TurnDriveResult,
   TurnDriverOps,

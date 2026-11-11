@@ -63,10 +63,13 @@ describe('任务提示词：信封示例必须能通过 Ajv', () => {
 
 describe('任务提示词：标签集来自 settings.labels.vocabulary', () => {
   const settings = parseRepoSettings({
+    // `pipeline.managers` 非空同样是 §4.5 / Q4 的硬要求（否则整份配置解析失败）。
+    pipeline: { managers: ['alice'] },
     labels: {
       vocabulary: [
-        { name: '缺陷', meaning: '功能不符合预期', color: 'D73A4A', group: '类型' },
-        { name: '缺少信息', meaning: '正文不足以复现', group: '类型' },
+        // `role` 自 §4.5 / Q4 起必填。
+        { name: '缺陷', role: 'defect', meaning: '功能不符合预期', color: 'D73A4A', group: '类型' },
+        { name: '缺少信息', role: 'other', meaning: '正文不足以复现', group: '类型' },
       ],
       map: { bug: '缺陷', 'needs-info': '缺少信息' },
     },
@@ -93,7 +96,11 @@ describe('任务提示词：标签集来自 settings.labels.vocabulary', () => {
   });
 
   it('没有词表 / 没有 settings：退回「只打仓库已有标签」的说明，示例 labels 为空', () => {
-    for (const input of [baseTaskInput, { ...baseTaskInput, settings: parseRepoSettings({}) }, { ...baseTaskInput, settings: null }]) {
+    for (const input of [
+      baseTaskInput,
+      { ...baseTaskInput, settings: parseRepoSettings({ pipeline: { managers: ['alice'] } }) },
+      { ...baseTaskInput, settings: null },
+    ]) {
       const prompt = buildTaskPrompt(input);
       expect(prompt).toContain('本仓库没有配置标签词表');
       expect(prompt).toContain('只能用该 issue 上已经存在的标签名');

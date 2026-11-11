@@ -9,6 +9,7 @@ import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { auditQuerySchema, overviewResponseSchema, tasksResponseSchema } from '../../../packages/contract/src/index.ts';
 import { createNullLogger } from '../../../packages/shared/src/index.ts';
+import { REPO_SETTINGS_ENV, resetDefaultRepoSettingsCache } from '../src/config/index.ts';
 import {
   HttpError,
   buildServer,
@@ -18,6 +19,7 @@ import {
 import type { WebhookAck, ZodFastify } from '../src/http/index.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validRepoSettings } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 const SECRET = 'test-webhook-secret';
@@ -27,6 +29,8 @@ let db: TestDb;
 let app: ZodFastify;
 let deniedApp: ZodFastify;
 let forbiddenApp: ZodFastify;
+/** 进入本文件前的 `PI_BOT_DEFAULT_SETTINGS`（afterAll 恢复，别污染同进程的其它文件）。 */
+let previousDefaultEnv: string | undefined;
 
 /** 签名：与 GitHub 相同的 `sha256=<hex>` 形态。 */
 function sign(secret: string, body: string): string {
@@ -58,6 +62,11 @@ function makeServer(requireAuth: ReturnType<typeof createAllowAllAuth> | (() => 
 
 beforeAll(async () => {
   db = await openTestDb(FIXED_NOW);
+  // `/api/repos` 的「手动添加」走**部署默认** settings：默认必须合法（`pipeline.managers` 非空，
+  // §4.5 / Q4），否则新建的行一落地就是 `settings_valid=false`、面板读不到 settings。
+  previousDefaultEnv = process.env[REPO_SETTINGS_ENV];
+  process.env[REPO_SETTINGS_ENV] = JSON.stringify(validRepoSettings());
+  resetDefaultRepoSettingsCache();
   app = makeServer(createAllowAllAuth('tester'));
   deniedApp = buildServer({
     logger: createNullLogger(),
@@ -95,6 +104,12 @@ afterAll(async () => {
   await app.close();
   await deniedApp.close();
   await forbiddenApp.close();
+  if (previousDefaultEnv === undefined) {
+    delete process.env[REPO_SETTINGS_ENV];
+  } else {
+    process.env[REPO_SETTINGS_ENV] = previousDefaultEnv;
+  }
+  resetDefaultRepoSettingsCache();
   await db.close();
 });
 
@@ -332,8 +347,9 @@ describe('POST /webhook', () => {
   async function seedRepo(dryRun: boolean): Promise<void> {
     await db.pool.query(
       `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid)
-       values ($1, true, $2, '{"version":1}'::jsonb, true)`,
-      [REPO, dryRun],
+       values ($1, true, $2, $3::jsonb, true)`,
+      // 合法 settings（`pipeline.managers` 非空）：否则 webhook 第 5 步会把投递判成 ignored。
+      [REPO, dryRun, JSON.stringify(validRepoSettings())],
     );
   }
 

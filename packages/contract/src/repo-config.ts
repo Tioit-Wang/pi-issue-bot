@@ -34,12 +34,23 @@ export type LabelTarget = z.infer<typeof labelTargetSchema>;
 export const labelMapSchema = z.record(z.string().min(1).max(40), labelTargetSchema);
 
 /**
+ * 标签的**角色**（`docs/plan-fixed-pipeline.md` §4.5 / Q4）：必填，缺 role 一律拒收，**不做回填**。
+ *
+ * 这是流程分叉的唯一依据，不是展示字段：分类阶段只给结论（`requirement` / `defect` / `other`），
+ * 打哪个标签由控制面按「同 role 的词表项」决定。所以词表里没有 `defect` 角色的项 —— 缺陷结论就没有标签可打。
+ */
+export const labelRoleSchema = z.enum(['requirement', 'defect', 'other']);
+export type LabelRole = z.infer<typeof labelRoleSchema>;
+
+/**
  * 标签词表的一项：面板的候选来源 + 注入提示词（替掉 `worker-deps.ts` / `builtin.ts` 里的硬编码标签集）。
  * `name` 是仓库里的真实标签名。
  */
 export const labelVocabularyEntrySchema = z
   .object({
     name: z.string().min(1).max(50),
+    /** 归到哪一类结论；**必填**（Q4：还是老配置、缺这个键的，一律解析失败，由面板重新配置）。 */
+    role: labelRoleSchema,
     /** 这个标签意味着什么（提示词里原样给出，模型据此判断）。 */
     meaning: z.string().min(1).max(200).optional(),
     /** `RRGGBB`，不带 `#`（与 GitHub 标签颜色口径一致）。 */
@@ -138,15 +149,46 @@ export const promptConfigSchema = z
   .strict();
 export type PromptConfig = z.infer<typeof promptConfigSchema>;
 
+/* ── 固定流水线（`docs/plan-fixed-pipeline.md` §4.5）──────────────────────────── */
+
+/** login 字符集：与 `commands.allow_users` / `triggers.users` 同一套（GitHub login 规则）。 */
+export const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/u;
+
+/**
+ * `settings.pipeline` —— v1.2 之后「项目级可配项只剩 3 类」里的第 2 类（`labels.vocabulary[].role`
+ * 与 4 条提示词版本线是另外两类，`kind=project` 的指针沿用 `prompt.current_version`）。
+ *
+ * 刻意**没有** `enabled`：不存在「关闭流程」的项目配置（E1 全量切换，§16.1）；
+ * `repos.enabled=false` 只表示「该仓库未接入」，不是流程开关。
+ * 刻意**没有任何阈值**：`close_after_hours` / `max_runs_per_stage` 已收为系统常量（Q2，§1.5），
+ * 改常量走发布，面板只读展示。
+ */
+export const pipelineConfigSchema = z
+  .object({
+    /**
+     * 管理员 login：`/pipeline next|prev` 的权限来源，也是「分类无法判断时等谁回话」的名单。
+     * schema 层只保证形状；**非空**与**不重复**由 `repoSettingsSchema` 的 superRefine 无条件校验。
+     */
+    managers: z.array(z.string().regex(LOGIN_RE)).max(20).default([]),
+    /** 阶段 0 的提示词版本号；`0` = 用内置默认模板（§15）。三条版本线互不干扰（§4.4）。 */
+    format_prompt_version: z.number().int().min(0).max(1_000_000).default(0),
+    classify_prompt_version: z.number().int().min(0).max(1_000_000).default(0),
+    agent_prompt_version: z.number().int().min(0).max(1_000_000).default(0),
+  })
+  .strict();
+export type PipelineConfig = z.infer<typeof pipelineConfigSchema>;
+
 /* ── 完整形状 ──────────────────────────────────────────────────────────────── */
 
 /**
- * 一个仓库的完整配置（`repos.settings` 的 jsonb 形状）。
+ * 配置的**形状**（不含跨字段约束）：`repos.settings` 的 jsonb 形状 + 默认值。
  *
- * 校验失败 = 该仓库的配置不可用（`settings_valid=false`），webhook 忽略其事件，
- * **不是**「用默认值继续跑」：配置写坏了却照常放评论，等于把错误配置的后果推给仓库维护者。
+ * 单列一份的理由（`docs/plan-fixed-pipeline.md` §4.5）：`managers` 非空是**运行**前提，
+ * 而「部署默认 / 迁移播种」需要一个**形状合法**的初始值（`managers: []` 是形状上的合法空值）。
+ * 所以拆成「形状」+「严格」两层，其它调用点（迁移、面板的「恢复默认」）用形状层，
+ * 校验一律用 `repoSettingsSchema`。
  */
-export const repoSettingsSchema = z
+export const repoSettingsShapeSchema = z
   .object({
     /** 配置格式版本。改结构时升版本号，旧版本被拒（不猜语义）；缺省 1 便于「部署默认 = `parse({})`」。 */
     version: z.literal(1).default(1),
@@ -156,7 +198,7 @@ export const repoSettingsSchema = z
     dry_run: z.boolean().default(true),
     /** 该仓库默认模型（`provider/model`）；技能可以覆盖，只影响成本归集。 */
     model: z.string().regex(MODEL_NAME_RE).optional(),
-    /** 触发体系：别名 / 触发人 / 事件面。 */
+    /** 触发体系：别名 / 触发人（`faces` 已按 P7 删除，事件面由流水线固定）。 */
     triggers: triggersConfigSchema.prefault({}),
     labels: labelsConfigSchema.prefault({}),
     create_issue: createIssueConfigSchema.prefault({}),
@@ -164,8 +206,63 @@ export const repoSettingsSchema = z
     skills: skillsConfigSchema.prefault({}),
     limits: limitsConfigSchema.prefault({}),
     prompt: promptConfigSchema.prefault({}),
+    /** 固定流水线段（E1 之后**没有** `enabled`，见 `pipelineConfigSchema`）。 */
+    pipeline: pipelineConfigSchema.prefault({}),
   })
-  .strict()
+  .strict();
+
+/** 同一份 JSON 里的 login / 标签名按「大小写不敏感」判重（GitHub 侧也是这个口径）。 */
+function firstDuplicate(values: readonly string[]): string | null {
+  const seen = new Set<string>();
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return value;
+    seen.add(key);
+  }
+  return null;
+}
+
+/**
+ * 一个仓库的**合法**完整配置（`repos.settings` 的 jsonb 形状 + 跨字段约束）。
+ *
+ * 校验失败 = 该仓库的配置不可用（`settings_valid=false`），webhook 忽略其事件，
+ * **不是**「用默认值继续跑」：配置写坏了却照常放评论，等于把错误配置的后果推给仓库维护者。
+ *
+ * 跨字段约束**无条件生效**，读写同一套（Q4：不为存量配置让步，缺 `role` / `managers` 为空 /
+ * 含已删键（`triggers.faces`、`pipeline.enabled`）一律解析失败、保存 400）：
+ * 1. `pipeline.managers` 非空（否则没人能推进被卡住的流程）；
+ * 2. `pipeline.managers` 内无重复 login；
+ * 3. `labels.vocabulary` 内无重复 `name`（重复会让「同 role 打哪个标签」变成不确定）。
+ *
+ * 注意**没有**校验「vocabulary 必须含 requirement/defect」：这条相对 §4.5 字面要求**有意放宽**，
+ * 理由见 `pipelineLabelCoverage()`。
+ */
+export const repoSettingsSchema = repoSettingsShapeSchema
+  .superRefine((settings, ctx) => {
+    if (settings.pipeline.managers.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['pipeline', 'managers'],
+        message: 'pipeline.managers 不能为空：至少一个管理员 login（否则卡住的流程没人能推进）',
+      });
+    }
+    const duplicateManager = firstDuplicate(settings.pipeline.managers);
+    if (duplicateManager !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['pipeline', 'managers'],
+        message: `pipeline.managers 里重复：${duplicateManager}`,
+      });
+    }
+    const duplicateLabel = firstDuplicate(settings.labels.vocabulary.map((entry) => entry.name));
+    if (duplicateLabel !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['labels', 'vocabulary'],
+        message: `labels.vocabulary 里重复的 name：${duplicateLabel}`,
+      });
+    }
+  })
   .meta({ id: 'RepoSettings' });
 
 export type RepoSettings = z.infer<typeof repoSettingsSchema>;
@@ -187,5 +284,28 @@ export function parseRepoSettings(input: unknown): RepoSettings {
 /** @deprecated 用 `parseRepoSettings()`。 */
 export const parseRepoConfig = parseRepoSettings;
 
-/** 全默认值（缺省 `version: 1` 也在这里生效）。 */
-export const DEFAULT_REPO_SETTINGS: RepoSettings = parseRepoSettings({});
+/**
+ * 全默认值 —— **形状默认值，不是合法运行配置**。
+ *
+ * 从 `repoSettingsShapeSchema` 生成（不是 `parseRepoSettings({})`：那现在会因为 `managers` 为空而抛错）。
+ * 用途只有「部署默认 / 迁移播种 / 面板恢复默认」：它的 `pipeline.managers` 是 `[]`，
+ * 直接喂给 `repoSettingsSchema` 会被拒（`settings_valid=false` 属预期，§10.2 / V17）。
+ */
+export const DEFAULT_REPO_SETTINGS: RepoSettings = repoSettingsShapeSchema.parse({});
+
+/**
+ * 标签角色的覆盖情况 —— 面板用它显示「未配置标签角色」的**提示**（`missingRoles` 为空 = 齐了）。
+ *
+ * **只提示不报错**：这是对 §4.5「vocabulary 必须含 requirement/defect」的**有意放宽**。
+ * 理由：role 是流程分叉依据，但存量仓库不该因为没补标签角色就整仓 `settings_valid=false`
+ * （那等于流程完全不跑，「上线即瘫痪」）；放宽后流程照跑，只是对应结论**不打标**（骨架里明说这一点）。
+ * 严格性由另一条保证：Q4 要求 `role` 必填，所以「有词表但没写 role」依然是解析失败，
+ * 这里能缺的只是「整类角色都没有词表项」。
+ */
+export function pipelineLabelCoverage(settings: Pick<RepoSettings, 'labels'>): {
+  missingRoles: ('requirement' | 'defect')[];
+} {
+  const present = new Set(settings.labels.vocabulary.map((entry) => entry.role));
+  const missingRoles = (['requirement', 'defect'] as const).filter((role) => !present.has(role));
+  return { missingRoles: [...missingRoles] };
+}

@@ -10,21 +10,21 @@ import { TONE_BADGE, TONE_DOT, statusTone, type Tone } from './status.ts';
  * 全部保留：页面里已经用了上百处，改名收益为零，语义映射到新的 tone 即可。
  */
 const badgeVariants = cva(
-  'inline-flex items-center gap-1 rounded-sm px-1.5 py-px text-xs font-medium whitespace-nowrap',
+  'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
   {
     variants: {
       variant: {
-        /* 语义变体（新代码用这些） */
+        /* 语义变体（新代码用这些）：一律「低饱和底 + 同色系文字」，小面积，不整行染色 */
         neutral: TONE_BADGE.neutral,
         success: TONE_BADGE.success,
         warn: TONE_BADGE.warn,
         danger: TONE_BADGE.danger,
         info: TONE_BADGE.info,
         brand: TONE_BADGE.brand,
-        /* 兼容旧名 */
+        /* 兼容旧名（`default` 不再是实心品牌色，改为青色低饱和底） */
         warning: TONE_BADGE.warn,
         muted: TONE_BADGE.neutral,
-        default: 'bg-brand text-brand-foreground',
+        default: TONE_BADGE.brand,
         secondary: 'bg-muted text-muted-foreground',
         outline: 'border border-border text-muted-foreground',
       },

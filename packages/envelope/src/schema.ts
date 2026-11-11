@@ -66,7 +66,40 @@ export interface EnvelopeUsage {
   costUsd: number;
 }
 
+/* ── 阶段（`docs/plan-fixed-pipeline.md` §4.1：唯一的契约扩展）─────────────── */
+
+/**
+ * 阶段任务的两个自动阶段。`agent` 阶段**不带** `stage`（老信封原样合法），
+ * 所以这里只列 `format` / `classify`。
+ */
+export const STAGE_NAMES = ['format', 'classify'] as const;
+export type EnvelopeStageName = (typeof STAGE_NAMES)[number];
+
+/** `stage.result` 的全集（两个阶段取并集；单阶段的允许集合见 `STAGE_RESULTS_BY_NAME`）。 */
+export const STAGE_RESULT_VALUES = ['pass', 'fail', 'requirement', 'defect', 'not-found', 'other'] as const;
+export type EnvelopeStageResult = (typeof STAGE_RESULT_VALUES)[number];
+
+/**
+ * 每个阶段允许的 `result`（§4.1 控制面校验第 2 条）。
+ *
+ * 为什么不在 JSON Schema 里表达：`result` 的合法域依赖 `name`，schema 只能写全集再用
+ * `if/then` 或 `oneOf` —— 那会让错误信息落到 `oneOf` 上（面板读不出「哪个字段错了」）。
+ * 所以 schema 只做「result ∈ 全集」，单阶段收窄放在 `validate.ts`，两处引用同一个常量。
+ */
+export const STAGE_RESULTS_BY_NAME: Readonly<Record<EnvelopeStageName, readonly EnvelopeStageResult[]>> = {
+  format: ['pass', 'fail'],
+  classify: ['requirement', 'defect', 'not-found', 'other'],
+};
+
+/** 顶层可选 `stage`：阶段任务用它给结论；没有它就是 Agent 阶段的老信封。 */
+export interface EnvelopeStage {
+  name: EnvelopeStageName;
+  result: EnvelopeStageResult;
+}
+
 export interface TaskEnvelope {
+  /** 可选：阶段任务带它，Agent 阶段不带（老信封一字不改也合法）。 */
+  stage?: EnvelopeStage;
   verdict: Verdict;
   actions: EnvelopeAction[];
   usage: EnvelopeUsage;
@@ -101,11 +134,25 @@ export const ENVELOPE_JSON_SCHEMA = {
   additionalProperties: false,
   required: ['verdict', 'actions', 'usage'],
   properties: {
+    /**
+     * 可选顶层 `stage`（§4.1）。**不放进 `required`**：没有它的是 Agent 阶段的老信封，必须继续合法。
+     * 名字与 result 都是封闭枚举；「result 必须在该阶段允许集合内」在 `validate.ts` 里校验。
+     */
+    stage: { $ref: '#/$defs/stage' },
     verdict: { $ref: '#/$defs/verdict' },
     actions: { type: 'array', maxItems: MAX_ACTIONS, items: { $ref: '#/$defs/action' } },
     usage: { $ref: '#/$defs/usage' },
   },
   $defs: {
+    stage: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'result'],
+      properties: {
+        name: { enum: STAGE_NAMES },
+        result: { enum: STAGE_RESULT_VALUES },
+      },
+    },
     verdict: {
       type: 'object',
       additionalProperties: false,

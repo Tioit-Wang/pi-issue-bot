@@ -27,6 +27,7 @@ import {
 import type { FakeQueue, FakeRacpHost as FakeHost } from './helpers/e2e-harness.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
+import { validSettingsJson } from './helpers/repo-settings.ts';
 
 const REPO = 'acme/widgets';
 const ATTEMPTS = 20;
@@ -50,9 +51,9 @@ describe('e2e 幂等：同一投递 20 次 + 换投递同任务', () => {
     db = await openTestDb();
     await db.truncate();
     await db.sql(
-      `insert into repos (repo_full_name, enabled, dry_run, config, config_valid, config_error)
-       values ($1, true, true, '{}'::jsonb, true, null)`,
-      [REPO],
+      `insert into repos (repo_full_name, enabled, dry_run, settings, settings_valid)
+       values ($1, true, true, $2::jsonb, true)`,
+      [REPO, validSettingsJson()],
     );
 
     host = await FakeRacpHost.start();
