@@ -22,6 +22,7 @@
  * 既破坏既有调用点，也让退出码语义模糊。
  */
 import { pathToFileURL } from 'node:url';
+import { readFile as readFileBytes } from 'node:fs/promises';
 import { createLogger } from '../../../packages/shared/src/index.ts';
 import type { Logger } from '../../../packages/shared/src/index.ts';
 import { createApplication, createUnavailableWebhookAck, readAppConfig } from './app/index.ts';
@@ -399,7 +400,22 @@ async function runBootstrapHost(runtime: CommandRuntime, argv: readonly string[]
     specifier: new URL('./runtime/bootstrap.ts', import.meta.url).href,
     exportName: 'bootstrapHost',
     // 约定：`bootstrapHost(options)`；缺失的环境项由 runtime 侧报错（它比 CLI 更懂要什么）
-    args: { bundleDir, databaseUrl, repair, env: runtime.env, logger: createLogger({ service: 'pi-bot-bootstrap' }) },
+    args: {
+      bundleDir,
+      databaseUrl,
+      repair,
+      env: runtime.env,
+      // `bootstrapHost` 的 `readFile` 是注入点（PIN 校验要读 bundle 里的文件）：
+      // CLI 这条路径之前漏传，导致 `options.readFile is not a function`（真实缺陷，2026-11-11 修）。
+      readFile: async (absolutePath: string) => {
+        try {
+          return await readFileBytes(absolutePath);
+        } catch {
+          return undefined;
+        }
+      },
+      logger: createLogger({ service: 'pi-bot-bootstrap' }),
+    },
     loader,
   });
 }

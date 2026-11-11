@@ -9,7 +9,7 @@
  */
 import { z } from 'zod';
 import { isoDateTimeSchema, isoDateSchema, usdAmountSchema, ratioSchema, countSchema, durationMsSchema, gitShaSchema, repoFullNameSchema, shortIdSchema, labelNameSchema, loginSchema, eventCursorSchema, pageInfoShape, pageLimitSchema, pageCursorSchema, timeRangeShape, timestamped, DEFAULT_PAGE_LIMIT } from './common.ts';
-import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
+import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, recordedActionIntentSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
 // 仓库配置的形状（`repos.settings`）：`PUT /api/repos/*/settings` 的请求体就是它，所以两边必须同源。
 import { repoSettingsSchema } from './repo-config.ts';
 
@@ -310,7 +310,7 @@ export const actionRecordSchema = z
   .object({
     id: shortIdSchema,
     runId: shortIdSchema,
-    intent: executorActionIntentSchema,
+    intent: recordedActionIntentSchema,
     status: actionStatusSchema,
     /** 动作对象：issue/PR 编号或分支名。 */
     target: z
@@ -493,7 +493,7 @@ export const auditRowSchema = z
         ref: z.string().min(1).max(200).nullable(),
       })
       .strict(),
-    intent: executorActionIntentSchema,
+    intent: recordedActionIntentSchema,
     status: actionStatusSchema,
     /** 跑的是哪个提交（没有提交可锚时为 `null`）。 */
     headSha: gitShaSchema.nullable(),
@@ -521,7 +521,7 @@ export const auditQuerySchema = z
     ...timeRangeShape,
     repo: repoFullNameSchema.optional(),
     command: z.string().min(1).max(64).optional(),
-    intent: executorActionIntentSchema.optional(),
+    intent: recordedActionIntentSchema.optional(),
     cursor: pageCursorSchema,
     limit: pageLimitSchema,
   })

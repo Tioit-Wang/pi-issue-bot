@@ -39,6 +39,8 @@ const INTENT_LABEL: Record<AuditRow['intent'], string> = {
   create_issue: '建 issue',
   push_branch: '推分支',
   close_issue: '关 issue',
+  'reaction.add': '加 reaction',
+  'reaction.remove': '删 reaction',
 };
 
 /** 事件结果 → tone（`dry-run` 是 warn：写没落地，但也没失败）。 */

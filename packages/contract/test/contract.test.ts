@@ -8,6 +8,7 @@ import {
   OUTCOMES,
   TASK_SOURCES,
   TASK_STATUSES,
+  actionIntentSchema,
   addRepoRequestSchema,
   auditQuerySchema,
   auditResponseSchema,
@@ -204,6 +205,12 @@ describe('8 个 GET 的响应 schema', () => {
     expect(auditResponseSchema.safeParse(body).success).toBe(true);
     expect(auditQuerySchema.safeParse({ intent: 'close_issue' }).success).toBe(true);
     expect(auditQuerySchema.safeParse({ intent: 'merge' }).success).toBe(false);
+    // v0.3 无感反馈：reaction 行也会落 `actions`，必须能通过审计响应校验（否则 /api/audit 直接 500）
+    const reactionRow = { ...body.items[0], intent: 'reaction.add', status: 'applied' };
+    expect(auditResponseSchema.safeParse({ ...body, items: [reactionRow] }).success).toBe(true);
+    expect(auditQuerySchema.safeParse({ intent: 'reaction.add' }).success).toBe(true);
+    // 但信封侧仍然不接受 reaction：agent 不能声明它
+    expect(actionIntentSchema.safeParse('reaction.add').success).toBe(false);
   });
 
   it('/api/system', () => {

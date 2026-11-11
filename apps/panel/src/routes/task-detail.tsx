@@ -57,6 +57,8 @@ const INTENT_LABEL: Record<TaskDetailResponse['actions'][number]['intent'], stri
   create_issue: '建 issue',
   push_branch: '推分支',
   close_issue: '关闭 issue',
+  'reaction.add': '加 reaction',
+  'reaction.remove': '删 reaction',
 };
 
 /** 从事件 payload 里安全取字符串（`payload` 是 `Record<string, unknown>`，不能直接点）。 */

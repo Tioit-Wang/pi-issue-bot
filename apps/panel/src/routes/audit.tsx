@@ -41,6 +41,8 @@ const INTENT_LABEL: Record<AuditRow['intent'], string> = {
   create_issue: '建 issue',
   push_branch: '推分支',
   close_issue: '关闭 issue',
+  'reaction.add': '加 reaction',
+  'reaction.remove': '删 reaction',
 };
 
 /** 会改仓库的写动作给 warn，只读的给 info：一眼分出「这条动没动东西」。 */
@@ -50,6 +52,8 @@ const INTENT_TONE: Record<AuditRow['intent'], 'warn' | 'info'> = {
   create_issue: 'warn',
   push_branch: 'warn',
   close_issue: 'warn',
+  'reaction.add': 'info',
+  'reaction.remove': 'info',
 };
 
 const INTENT_OPTIONS = [

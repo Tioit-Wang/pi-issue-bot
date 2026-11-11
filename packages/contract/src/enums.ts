@@ -114,6 +114,16 @@ export const EXECUTOR_ACTION_INTENTS = [...ACTION_INTENTS, ...EXECUTOR_ONLY_ACTI
 export const executorActionIntentSchema = z.enum(EXECUTOR_ACTION_INTENTS);
 export type ExecutorActionIntent = z.infer<typeof executorActionIntentSchema>;
 
+// 3. `RECORDED_ACTION_INTENTS` = `actions` 表里**会落库**的全部动作，比执行器多两类
+//    无感反馈的 reaction（`agent/ack.ts` 的 eyes/confused/终态）。它们同样进审计与详情页，
+//    所以「读 `actions` 的响应 schema」（`actionRecordSchema` / `auditRowSchema`）必须用它，
+//    否则一条 reaction 行就会让 `/api/audit` 的响应校验失败（500）。
+//    信封仍然只认 `ACTION_INTENTS`：agent 不能声明 reaction。
+export const REACTION_ACTION_INTENTS = ['reaction.add', 'reaction.remove'] as const;
+export const RECORDED_ACTION_INTENTS = [...EXECUTOR_ACTION_INTENTS, ...REACTION_ACTION_INTENTS] as const;
+export const recordedActionIntentSchema = z.enum(RECORDED_ACTION_INTENTS);
+export type RecordedActionIntent = z.infer<typeof recordedActionIntentSchema>;
+
 /** 写执行器对一个动作的处置结果（`actions.audit.status`）。 */
 export const ACTION_STATUSES = [
   'applied', // 已写回 GitHub

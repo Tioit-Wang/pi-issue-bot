@@ -101,6 +101,8 @@ function targetFor(intent: AuditRow['intent'], index: number): AuditRow['target'
       return { kind: 'pr', number, ref: null };
     case 'create_issue':
     case 'close_issue':
+    case 'reaction.add':
+    case 'reaction.remove':
       return { kind: 'issue', number, ref: null };
   }
 }

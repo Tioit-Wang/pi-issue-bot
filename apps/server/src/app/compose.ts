@@ -1135,6 +1135,10 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           },
         },
         cancelTaskJob: (taskId: string) => cancelTaskJob(queue, taskId),
+        // agent 调度（v0.3）：**必须**注入 enqueue —— 没有它，`agent-dispatch` 每分钟只会打一条
+        // 「未注入 enqueue」的 warning；webhook 那条即时路径能派发，但「上一条卡住/进程重启后」
+        // 的补偿派发就永远不发生（消息会停在 queued）。
+        agentEnqueue: agentDispatch.enqueue,
       };
       const registered = await registerJobs(queue, jobDeps, registerScheduleWorker);
       logger.info({ queues: registered, declared: JOB_SCHEDULES.length }, '定时作业已注册');
