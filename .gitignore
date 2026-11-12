@@ -8,8 +8,12 @@ build/
 *.tsbuildinfo
 
 # runtime data
+#
+# 这两条**必须锚定根目录**（前导 `/`）。不带 `/` 的 `jobs/` 会匹配任意层级同名目录，
+# 把 `apps/server/src/jobs/`（8 个源文件）一起忽略掉 —— 那些源码因此从未被提交，
+# 而 `app/compose.ts` 与 6 个 `test/jobs-*.test.ts` 都在 import 它们：干净克隆直接编译不过。
 data/
-jobs/
+/jobs/
 *.log
 
 # secrets
