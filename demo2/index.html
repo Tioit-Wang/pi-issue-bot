@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>总览 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="overview" data-crumb="近 7 天">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>总览 · 固定流水线</h1>
+          <p class="desc">三段串行：格式检查 → 分类（容器内验真）→ Agent。所有已接入仓库一律走三段。</p>
+        </div>
+        <div class="page-actions">
+          <select class="inp sm" id="range" aria-label="时间范围">
+            <option value="7">近 7 天</option>
+            <option value="1">今天</option>
+            <option value="30">近 30 天</option>
+          </select>
+          <button class="btn sm" data-toast="演示数据已刷新" data-toast-desc="原型不连真实服务，数字为静态快照" data-toast-tone="success">刷新</button>
+          <a class="btn primary sm" href="flow.html">查看流程地图 ⇢</a>
+        </div>
+      </div>
+
+      <div class="notice" style="margin-bottom:16px">
+        <span class="n-ico">◆</span>
+        <div><strong>全量切换已生效（E1）</strong> · <code class="inline">repos.settings.pipeline.enabled</code> 已删除，不存在「关闭流程」的项目配置；<code class="inline">triggers.enabled=false</code> / <code class="inline">commands.enabled=false</code> 都不能绕过三段。无 pipeline 行的存量 issue 按放行 + 懒创建 <code class="inline">ready</code> 行处理。</div>
+      </div>
+
+      <div class="grid g4" id="kpis"></div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-head"><h2>三段流水线<span class="sub">当前在途 issue 的阶段分布</span></h2>
+          <a class="btn ghost sm" href="flow.html">看状态转移规则 ⇢</a>
+        </div>
+        <div class="card-body">
+          <div class="stepper">
+            <div class="step done" data-stage-card="format" style="cursor:pointer">
+              <div class="s-top"><span class="s-idx">0</span><span class="s-name">格式检查</span><span class="s-state"><span class="badge info">2 条在途</span></span></div>
+              <div class="s-desc">light 运行时，无容器、无 diff。失败 → 评论 + <code class="inline">needs-info</code>，等用户补充；评论优先于正文编辑。</div>
+              <div class="s-meta">pipeline:format · AGENTS.md 全阶段注入 · 4000 正文截断</div>
+            </div>
+            <div class="step current" data-stage-card="classify" style="cursor:pointer">
+              <div class="s-top"><span class="s-idx">1</span><span class="s-name">标签分类</span><span class="s-state"><span class="badge brand">2 条在途</span></span></div>
+              <div class="s-desc">sandboxed：worktree + 容器 + 装依赖 + 可跑命令。<code class="inline">defect</code> 必须有 <code class="inline">path:line</code> 证据，否则降级 not-found。</div>
+              <div class="s-meta">pipeline:classify · 30min 闸 · role 标签由控制面决定</div>
+            </div>
+            <div class="step" data-stage-card="agent" style="cursor:pointer">
+              <div class="s-top"><span class="s-idx">2</span><span class="s-name">Agent</span><span class="s-state"><span class="badge success">5 条 ready</span></span></div>
+              <div class="s-desc">只有 <code class="inline">ready</code> 才响应 <code class="inline">@</code>；同一 issue 复用会话，30 轮或 7 天轮换。ready 后编辑 issue 只记 stale_at。</div>
+              <div class="s-meta">session/attach · cursor 防重放 · 四层提示词共存</div>
+            </div>
+          </div>
+          <div class="hr"></div>
+          <div class="row between">
+            <div class="small muted">点击任一段可跳到对应的筛选结果</div>
+            <div class="row"><span class="tiny faint">统计口径：issue_pipeline 表当前非 closed 行</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid main-side" style="margin-top:14px">
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>需要关注<span class="sub">按等待对象分列</span></h2>
+              <a class="btn ghost sm" href="issues.html">去 Issue 中心 ⇢</a></div>
+            <div class="card-body flush">
+              <div class="table-wrap">
+                <table class="tbl">
+                  <thead><tr><th>Issue</th><th>阶段 / 状态</th><th>等待谁</th><th>已停留</th><th>下一步</th></tr></thead>
+                  <tbody id="attention-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>阶段结果分布<span class="sub">近 7 天 · 点击行查看明细</span></h2>
+              <a class="btn ghost sm" href="runs.html">任务记录 ⇢</a></div>
+            <div class="card-body" id="stage-bars"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>最近事件</h2><a class="btn ghost sm" href="audit.html">全部审计 ⇢</a></div>
+            <div class="card-body"><div class="timeline" id="recent-events"></div></div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>配置健康度</h2><a class="btn ghost sm" href="settings-pipeline.html">去配置 ⇢</a></div>
+            <div class="card-body" id="health"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>系统常量<span class="sub">只读</span></h2></div>
+            <div class="card-body flush" id="constants"></div>
+            <div class="card-foot">改动走发布，面板不提供编辑（Q2 / Q5）。<a href="settings-pipeline.html" style="color:var(--brand);text-decoration:underline;text-underline-offset:2px">查看全部 8 项</a></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>快捷操作<span class="sub">仅 managers</span></h2></div>
+            <div class="card-body stack" style="gap:8px">
+              <button class="btn" data-cmd="next" style="justify-content:flex-start"><code class="inline">/pipeline next</code><span class="spacer"></span><span class="tiny faint">进入下一步</span></button>
+              <button class="btn" data-cmd="prev" style="justify-content:flex-start"><code class="inline">/pipeline prev</code><span class="spacer"></span><span class="tiny faint">返回上一步</span></button>
+              <button class="btn" data-cmd="recheck" style="justify-content:flex-start"><code class="inline">/recheck</code><span class="spacer"></span><span class="tiny faint">重跑当前阶段</span></button>
+              <button class="btn" data-cmd="force" style="justify-content:flex-start"><code class="inline">/recheck --force</code><span class="spacer"></span><span class="tiny faint">解 blocked</span></button>
+              <div class="tiny faint">指令需发在目标 issue 的 GitHub 评论里；这里只演示状态推演。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+
+  /* KPI：切换时间范围时按倍率重算，纯演示 */
+  var kpiDefs = [
+    { label: '进入流水线的 issue', v: 128, unit: '条', foot: '全量切换后 100% 走三段', delta: '+12' },
+    { label: '格式首次通过率', v: 71.9, unit: '%', foot: '复查后累计通过 89.1%', delta: '+3.4pt' },
+    { label: '等人工介入', v: 3, unit: '条', foot: '1 条等管理员 · 1 条等用户 · 1 条 blocked', delta: '需处理' },
+    { label: '到 ready 的中位耗时', v: 6.4, unit: '分钟', foot: '分类容器占 3–8 分钟', delta: '-1.2min' }
+  ];
+  function renderKpi(scale) {
+    document.getElementById('kpis').innerHTML = kpiDefs.map(function (k) {
+      var v = k.unit === '%' ? (k.v * scale).toFixed(1) : k.unit === '分钟' ? (k.v * scale).toFixed(1) : Math.round(k.v * scale);
+      var deltaClass = k.delta.indexOf('+') === 0 ? 't-up' : k.delta.indexOf('-') === 0 ? 't-down' : '';
+      return '<div class="card kpi"><div class="k-label">' + esc(k.label) + '</div>' +
+        '<div class="k-value">' + esc(v) + '<em>' + esc(k.unit) + '</em>' +
+        '<span class="k-delta ' + deltaClass + '">' + esc(k.delta) + '</span></div>' +
+        '<div class="k-foot">' + esc(k.foot) + '</div></div>';
+    }).join('');
+  }
+  renderKpi(1);
+  document.getElementById('range').addEventListener('change', function () {
+    var s = this.value === '1' ? 0.16 : this.value === '30' ? 4.1 : 1;
+    renderKpi(s);
+    document.body.setAttribute('data-crumb', this.options[this.selectedIndex].text);
+    D.toast('时间范围已切换', this.options[this.selectedIndex].text + ' · 演示数据按倍率重算');
+  });
+
+  /* 人工介入表 */
+  var attention = [
+    { n: 4125, t: '/review-pr 执行完容器没有销毁', stage: 'classify / awaiting_info', who: '管理员', dwell: '1 天', next: 'managers 评论重分类 / /pipeline next', tone: 'warn' },
+    { n: 4128, t: '导出 PDF 时中文标题乱码', stage: 'format / awaiting_info', who: '作者', dwell: '6 小时', next: '补充复现步骤，48h 未补自动关', tone: 'warn' },
+    { n: 4120, t: 'Agent 连续两次信封不合法', stage: 'agent / blocked', who: '维护者', dwell: '5 小时', next: '/recheck --force 或 /pipeline next', tone: 'danger' },
+    { n: 4126, t: '定时任务偶发重复投递 webhook', stage: 'classify / running', who: '—', dwell: '3 分钟', next: '容器内验真，30min 闸', tone: 'info' }
+  ];
+  document.getElementById('attention-rows').innerHTML = attention.map(function (a) {
+    return '<tr class="clickable" onclick="location.href=\'issue-detail.html?n=' + a.n + '\'">' +
+      '<td><span class="t-num">#' + a.n + '</span> <span class="t-title">' + esc(a.t) + '</span></td>' +
+      '<td><span class="badge ' + a.tone + '">' + esc(a.stage) + '</span></td>' +
+      '<td>' + esc(a.who) + '</td><td class="mono tiny">' + esc(a.dwell) + '</td>' +
+      '<td class="small muted">' + esc(a.next) + '</td></tr>';
+  }).join('');
+
+  /* 阶段结果分布 */
+  var bars = [
+    { label: '格式 pass（首次）', n: 92, pct: 72, color: 'var(--success)' },
+    { label: '格式 fail', n: 36, pct: 28, color: 'var(--warn)' },
+    { label: 'requirement', n: 41, pct: 46, color: 'var(--brand)' },
+    { label: 'defect', n: 28, pct: 31, color: 'var(--info)' },
+    { label: 'not-found', n: 12, pct: 13, color: 'var(--warn)' },
+    { label: 'other', n: 9, pct: 10, color: 'var(--neutral)' }
+  ];
+  document.getElementById('stage-bars').innerHTML = bars.map(function (b) {
+    return '<div class="bar-row" style="cursor:pointer" onclick="Demo.toast(\'' + esc(b.label) + '\', \'近 7 天 ' + b.n + ' 条 · 点击可在运行页按结果筛选\')">' +
+      '<span class="b-label">' + esc(b.label) + '</span>' +
+      '<span class="b-track"><span style="width:' + b.pct + '%;background:' + b.color + '"></span></span>' +
+      '<span class="b-num">' + b.n + ' 条</span></div>';
+  }).join('') + '<div class="tiny faint" style="margin-top:6px">分类合计 90 条 = 通过格式的 issue 减去尚在途的条数；not-found 全部停在 classify/awaiting_info 等管理员。</div>';
+
+  /* 最近事件 */
+  document.getElementById('recent-events').innerHTML = D.data.audit.slice(0, 5).map(function (a) {
+    return '<div class="tl-item ' + (a.tone === 'danger' ? 'danger' : a.tone === 'warn' ? 'warn' : a.tone === 'success' ? 'done' : 'current') + '">' +
+      '<div class="tl-head"><span class="tl-title">' + esc(a.action) + '</span>' +
+      '<span class="badge neutral mono">' + esc(a.target) + '</span>' +
+      '<span class="tl-time">' + esc(a.at) + '</span></div>' +
+      '<div class="tl-body">' + esc(a.detail) + ' · <span class="mono">' + esc(a.actor) + '</span></div></div>';
+  }).join('');
+
+  /* 配置健康度 */
+  var health = [
+    { k: 'managers', v: '2 人已配置', tone: 'success', href: 'settings-pipeline.html' },
+    { k: 'labels.vocabulary[].role', v: '3 个角色齐全', tone: 'success', href: 'settings-labels.html' },
+    { k: 'format_check 提示词', v: '项目版本 v3', tone: 'brand', href: 'settings-prompt.html' },
+    { k: 'classify 提示词', v: '系统默认 v0', tone: 'neutral', href: 'settings-prompt.html' },
+    { k: 'agent 提示词', v: '系统默认 v0', tone: 'neutral', href: 'settings-prompt.html' },
+    { k: 'project 提示词（P1）', v: '项目版本 v2', tone: 'brand', href: 'settings-prompt.html' },
+    { k: 'triggers.faces', v: '已删除（P7）', tone: 'neutral', href: 'settings-triggers.html' }
+  ];
+  document.getElementById('health').innerHTML = health.map(function (h) {
+    return '<a class="row between" style="padding:7px 0;border-bottom:1px solid var(--border)" href="' + h.href + '">' +
+      '<span class="mono small">' + esc(h.k) + '</span>' +
+      '<span class="badge ' + h.tone + '">' + esc(h.v) + '</span></a>';
+  }).join('') + '<div class="notice info" style="margin-top:12px"><span class="n-ico">◇</span><div>项目级可配项只剩 <strong>3 类</strong>：4 条提示词版本线、<code class="inline">managers</code>、<code class="inline">vocabulary[].role</code>。其余全是系统常量。</div></div>';
+
+  /* 系统常量（只读） */
+  document.getElementById('constants').innerHTML = D.data.constants.slice(0, 5).map(function (c) {
+    return '<div class="row between" style="padding:8px 16px;border-bottom:1px solid var(--border)">' +
+      '<span class="mono tiny truncate" style="max-width:190px" title="' + esc(c.key) + '">' + esc(c.key) + '</span>' +
+      '<span class="badge neutral mono">' + esc(c.value) + '</span></div>';
+  }).join('');
+
+  /* 阶段卡跳转筛选 */
+  document.querySelectorAll('[data-stage-card]').forEach(function (el) {
+    el.addEventListener('click', function () {
+      location.href = 'issues.html?stage=' + el.getAttribute('data-stage-card');
+    });
+  });
+
+  /* 快捷指令：状态推演 */
+  var cmdInfo = {
+    next: { t: '/pipeline next', b: 'format → classify/pending（分类任务入队）；classify → agent/ready；blocked 时等价解禁并推进。<br>仅 managers 可执行，不受 120s 冷却限制，每次操作记审计。', to: 'classify/pending → agent/ready' },
+    prev: { t: '/pipeline prev', b: 'agent/ready → classify/pending（重新分类）；classify/* → format/pending（重跑格式）。逐步退回，不是一步跳到头。', to: 'agent/ready → classify/pending' },
+    recheck: { t: '/recheck', b: '重跑当前阶段。锚为 <code class="inline">pipeline:&lt;stage&gt;:&lt;issueVersion&gt;</code>，同版本幂等；补信息类评论走优先通道，锚含 comment id。', to: '重跑当前阶段' },
+    force: { t: '/recheck --force', b: '解除 <code class="inline">blocked</code> 并回到运行态。运行失败 / 信封不合法连续 2 次才会进 blocked。', to: 'blocked → running' }
+  };
+  document.querySelectorAll('[data-cmd]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var c = cmdInfo[b.getAttribute('data-cmd')];
+      D.confirm(c.t, c.b + '<div class="notice" style="margin-top:10px"><span class="n-ico">⇢</span><div>状态推演：<strong>' + esc(c.to) + '</strong></div></div>', function () {
+        D.toast(c.t + ' 已推演', '真实环境需在 issue 评论里发送；此处仅演示', 'success');
+      }, '模拟执行');
+    });
+  });
+})();
+</script>
+</body>
+</html>

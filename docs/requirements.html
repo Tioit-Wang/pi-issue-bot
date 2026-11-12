@@ -1,0 +1,1882 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue 处理平台 · 需求文档 v2.1</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --shell:#f6f7f9;
+    --line:#e3e6ea;
+    --line2:#d3d9df;
+    --ink:#16191d;
+    --ink2:#4b5560;
+    --ink3:#7e8894;
+    --accent:#2f6fed;
+    --accent-bg:#eef3fe;
+    --rule:#b45309;
+    --rule-bg:#fdf7ec;
+    --ok:#0b7d70;
+    --ok-bg:#eaf7f5;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    --mono:"SFMono-Regular",Consolas,"Cascadia Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--shell);color:var(--ink);
+    font-family:var(--sans);font-size:14px;line-height:1.8;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- 顶部信息条 ---------- */
+  .top{
+    position:sticky;top:0;z-index:20;height:52px;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 24px;background:rgba(255,255,255,.92);
+    backdrop-filter:saturate(180%) blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .top .l{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--ink3)}
+  .top .l b{color:var(--ink);font-weight:640;font-size:13.5px}
+  .top .r{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
+  .tag{
+    display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;
+    border:1px solid var(--line2);color:var(--ink2);background:#fff;
+  }
+  .tag.draft{border-color:#e4d2ac;background:var(--rule-bg);color:var(--rule)}
+
+  /* ---------- 布局 ---------- */
+  .layout{display:grid;grid-template-columns:236px minmax(0,1fr);align-items:start}
+
+  nav.toc{
+    position:sticky;top:52px;height:calc(100vh - 52px);overflow-y:auto;
+    padding:26px 16px 60px 24px;border-right:1px solid var(--line);
+  }
+  nav.toc .t{
+    font-family:var(--mono);font-size:10px;letter-spacing:.13em;
+    color:var(--ink3);margin:0 0 10px;
+  }
+  nav.toc a{
+    display:block;padding:4px 10px;margin-left:-10px;border-radius:5px;
+    color:var(--ink2);text-decoration:none;font-size:12.5px;
+    border-left:2px solid transparent;
+  }
+  nav.toc a:hover{background:#eceef1;color:var(--ink)}
+  nav.toc a.on{background:var(--accent-bg);color:var(--accent);border-left-color:var(--accent);font-weight:600}
+  nav.toc a .n{display:inline-block;width:26px;color:var(--ink3);font-family:var(--mono);font-size:10.5px}
+  nav.toc a.sub{padding-left:26px;font-size:12px;color:var(--ink3)}
+  nav.toc a.sub .n{width:36px}
+
+  main{padding:40px 56px 120px;max-width:920px}
+
+  /* ---------- 文档头 ---------- */
+  .doc-head{margin-bottom:36px}
+  .doc-head .kicker{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;
+    color:var(--accent);margin-bottom:8px;
+  }
+  .doc-head h1{margin:0 0 6px;font-size:30px;line-height:1.35;letter-spacing:-.02em;font-weight:680}
+  .doc-head .sub{color:var(--ink2);font-size:14px;margin:0 0 22px}
+
+  .meta{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:0;
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff;
+  }
+  .meta div{padding:10px 14px;border-right:1px solid var(--line)}
+  .meta div:last-child{border-right:none}
+  .meta .k{font-size:10.5px;color:var(--ink3);margin-bottom:2px}
+  .meta .v{font-size:12.5px;color:var(--ink);font-weight:560}
+
+  /* ---------- 摘要 ---------- */
+  .abstract{
+    margin:22px 0 0;padding:18px 20px;border-radius:8px;
+    background:var(--accent-bg);border:1px solid #ccdaf9;
+    font-size:13.5px;color:#1d3557;
+  }
+  .abstract b{color:#12294a}
+  .abstract p{margin:0}
+  .abstract p + p{margin-top:8px}
+
+  /* ---------- 章节 ---------- */
+  section{margin:0 0 46px;scroll-margin-top:70px}
+  h2{
+    margin:0 0 4px;font-size:21px;font-weight:660;letter-spacing:-.012em;
+    display:flex;align-items:baseline;gap:10px;
+  }
+  h2 .num{
+    font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent);
+    background:var(--accent-bg);border-radius:4px;padding:2px 7px;
+  }
+  .lead{
+    color:var(--ink3);font-size:12.5px;margin:0 0 18px;padding-left:44px;
+    border-left:2px solid var(--line);margin-left:2px;line-height:1.7;
+  }
+  h3{
+    margin:26px 0 10px;font-size:15.5px;font-weight:640;
+    padding-bottom:6px;border-bottom:1px solid var(--line);
+  }
+  h4{margin:18px 0 6px;font-size:14px;font-weight:620;color:var(--ink2)}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px;color:var(--ink2)}
+  li{margin:5px 0}
+  li b,li strong{color:var(--ink)}
+  code{
+    font-family:var(--mono);font-size:.9em;background:#f1f3f6;
+    border:1px solid #e5e8ec;border-radius:3px;padding:0 4px;color:#1f2937;
+  }
+  a.ref{color:var(--accent);text-decoration:none;border-bottom:1px dashed #b9cdf5}
+  a.ref:hover{border-bottom-style:solid;background:#eef3fe}
+
+  /* 锚点跳转时不被顶栏遮住 */
+  section, h3, h4, .req, .ac li, tbody tr{scroll-margin-top:78px}
+
+  /* ---------- 表格 ---------- */
+  .tbl{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff;margin:14px 0}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  thead th{
+    text-align:left;font-weight:600;font-size:11.5px;color:var(--ink2);
+    background:#fafbfc;padding:9px 12px;border-bottom:1px solid var(--line2);
+    white-space:nowrap;
+  }
+  tbody td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink2)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody td:first-child{color:var(--ink);font-weight:560;white-space:nowrap}
+  td code{white-space:nowrap}
+
+  /* ---------- 需求条目 ---------- */
+  .req{
+    position:relative;margin:14px 0;padding:14px 18px 14px 18px;
+    background:#fff;border:1px solid var(--line);border-radius:8px;
+    border-left:3px solid var(--accent);
+  }
+  .req .hd{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+  .req .id{
+    font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent);
+    background:var(--accent-bg);border-radius:3px;padding:1px 6px;flex:none;
+  }
+  .req .ttl{font-size:13.5px;font-weight:640;color:var(--ink)}
+  .req .pri{
+    margin-left:auto;font-size:10.5px;color:var(--ink3);
+    border:1px solid var(--line);border-radius:999px;padding:0 7px;flex:none;
+  }
+  .req p{margin:6px 0;font-size:13px;color:var(--ink2)}
+  .req ul{margin:6px 0;font-size:13px}
+  .req .note{
+    margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);
+    font-size:12px;color:var(--ink3);
+  }
+  .req .note b{color:var(--ink2);font-weight:600}
+  .req.rule{border-left-color:var(--rule)}
+  .req.rule .id{color:var(--rule);background:var(--rule-bg)}
+
+  /* ---------- 提示块 ---------- */
+  .callout{
+    display:flex;gap:12px;margin:16px 0;padding:12px 16px;
+    border-radius:7px;font-size:13px;color:var(--ink2);
+    background:#fafbfc;border:1px solid var(--line);
+  }
+  .callout .k{
+    flex:none;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+    color:var(--ink3);padding-top:2px;width:56px;text-transform:uppercase;
+  }
+  .callout p{margin:0}
+  .callout.warn{background:var(--rule-bg);border-color:#ecd9b6}
+  .callout.warn .k{color:var(--rule)}
+  .callout.open{background:var(--accent-bg);border-color:#ccdaf9}
+  .callout.open .k{color:var(--accent)}
+
+  /* ---------- 验收 ---------- */
+  .ac{list-style:none;padding:0;margin:14px 0}
+  .ac li{
+    display:flex;gap:10px;align-items:flex-start;
+    padding:9px 12px;border:1px solid var(--line);border-radius:6px;
+    background:#fff;margin:6px 0;font-size:13px;color:var(--ink2);
+  }
+  .ac .box{
+    flex:none;width:14px;height:14px;border:1.5px solid var(--line2);
+    border-radius:3px;margin-top:3px;
+  }
+  .ac .id{font-family:var(--mono);font-size:11px;color:var(--ok);font-weight:600;flex:none}
+
+  /* ---------- 图示 ---------- */
+  .figure{
+    background:#fff;border:1px solid var(--line);border-radius:8px;
+    padding:16px;margin:16px 0;
+  }
+  .figure svg{display:block;width:100%;height:auto}
+  .figure .cap{
+    margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);
+    font-size:11.5px;color:var(--ink3);
+  }
+
+  /* ---------- 会话记录 demo（视觉对齐 pi-desktop） ---------- */
+  details.demo{margin:16px 0;border:1px solid var(--line);border-radius:8px;background:#fafbfc}
+  details.demo > summary{
+    cursor:pointer;padding:12px 16px;font-size:13px;font-weight:600;color:var(--ink);
+    list-style:none;display:flex;align-items:center;gap:8px;user-select:none;
+  }
+  details.demo > summary::-webkit-details-marker{display:none}
+  details.demo > summary::before{content:"＋";font-family:var(--mono);color:var(--ink3);font-size:12px}
+  details.demo[open] > summary::before{content:"−"}
+  details.demo > summary:hover{color:var(--accent)}
+  .demo-body{padding:0 16px 16px}
+
+  .dlg{background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden;max-width:760px;margin:0 auto}
+  .dlg-hd{
+    display:flex;flex-wrap:wrap;gap:16px;padding:11px 18px;background:#f9f9f9;
+    border-bottom:1px solid #eef0f2;font-size:11px;color:#8a8f96;
+  }
+  .dlg-hd b{color:#5d5d5d;font-weight:600;margin-right:4px}
+  .dlg-hd a{color:#1a1c1f;text-decoration:none;border-bottom:1px dashed rgba(26,28,31,.25)}
+
+  /* 系统提示词：弱化块，不是卡片 */
+  .d-sys{padding:15px 18px;background:#f9f9f9;border-bottom:1px solid #eef0f2}
+  .d-sys-h{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:11px;color:#8a8f96}
+  .d-sys-h .lb{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.05em;padding:1px 6px;border-radius:4px;
+    background:rgba(26,28,31,.06);color:#5d5d5d;
+  }
+  .d-sys pre{
+    margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.7;color:#5d5d5d;
+    white-space:pre-wrap;max-height:118px;overflow:auto;
+  }
+  .d-sys-more{margin-top:6px;font-size:10.5px;color:#a8adb4}
+
+  /* 消息行 */
+  .d-row{padding:12px 18px;border-bottom:1px solid #f4f5f7}
+  .d-row:last-child{border-bottom:none}
+  .d-row.in{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+  .d-meta{display:flex;flex-wrap:wrap;gap:12px;justify-content:flex-end;font-size:11px;color:#8a8f96}
+  .d-meta b{color:#5d5d5d;font-weight:600;margin-right:3px}
+  .d-meta a{color:#1a1c1f;text-decoration:none;border-bottom:1px dashed rgba(26,28,31,.25)}
+  .d-bubble{
+    max-width:min(82%,600px);background:#ededee;border-radius:18px 18px 8px 18px;
+    padding:10px 15px;font-family:var(--mono);font-size:12px;line-height:1.6;
+    color:#1a1c1f;white-space:pre-wrap;word-break:break-word;
+  }
+
+  /* 助手轮 */
+  .d-row.out{padding:9px 18px 16px}
+  .d-turn{
+    display:flex;align-items:center;gap:5px;padding:4px 0 8px;
+    border-bottom:1px solid rgba(26,28,31,.05);font-size:12.5px;color:#5d5d5d;cursor:default;
+  }
+  .d-turn .chev{font-size:11px;color:#afafaf}
+  .d-turn .sep{color:#d5d7da}
+  .d-group{display:flex;align-items:center;gap:5px;padding:8px 0 3px;font-size:11.5px;color:#8a8f96}
+  .d-group .chev{font-size:10px;color:#afafaf}
+  .d-tools{padding-left:12px}
+
+  .d-tool{
+    display:flex;align-items:center;gap:6px;min-height:24px;margin:3px 0;
+    padding:2px 4px;border-radius:10px;font-size:12.5px;color:#5d5d5d;
+  }
+  .d-tool:hover{background:rgba(26,28,31,.06)}
+  .d-tool svg{width:15px;height:15px;flex:none;stroke:#8a8f96;fill:none;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+  .d-tool .nm{font-weight:500;flex:none}
+  .d-tool .arg{
+    font-family:var(--mono);font-size:11.5px;color:#6b7078;flex:1;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .d-tool .chip{
+    flex:none;font-family:var(--mono);font-size:10.5px;padding:0 5px;border-radius:8px;
+    background:rgba(26,28,31,.08);color:#5d5d5d;
+  }
+  .d-tool .st{flex:none;font-size:11px;color:#8a8f96}
+  .d-tool .st.ok::before{
+    content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#00a240;margin-right:4px;vertical-align:1px;
+  }
+  .d-tool .st.err{color:#e02e2a}
+  .d-tool .st.err::before{
+    content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:#e02e2a;margin-right:4px;vertical-align:1px;
+  }
+
+  /* 展开的工具输出：无卡片，灰底圆角块 */
+  .d-outblock{margin:4px 0 8px 26px}
+  .d-outblock .sh{display:flex;align-items:center;font-size:11px;color:#8a8f96;min-height:20px;margin-bottom:4px}
+  .d-outblock pre{
+    margin:0;padding:10px 12px;border-radius:12px;background:#f5f5f6;
+    font-family:var(--mono);font-size:12px;line-height:1.5;color:#3f4247;
+    white-space:pre-wrap;word-break:break-word;max-height:210px;overflow:auto;
+  }
+
+  /* 助手回答：无气泡 */
+  .d-answer{margin-top:8px;font-size:13.5px;line-height:1.65;color:#1a1c1f}
+  .d-answer p{margin:0 0 8px}
+  .d-answer p:last-child{margin:0}
+  .d-answer pre{
+    margin:8px 0 0;padding:11px 14px;border-radius:12px;background:#fafafa;
+    font-family:var(--mono);font-size:12px;line-height:1.55;color:#383a42;
+    white-space:pre-wrap;word-break:break-word;overflow-x:auto;
+  }
+
+  /* 平台动作行 */
+  .d-act{
+    display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:9px 18px;
+    background:#fbfcfc;border-bottom:1px solid #f4f5f7;font-size:11.5px;color:#5d5d5d;
+  }
+  .d-act .tag{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.05em;padding:1px 6px;border-radius:4px;
+    background:rgba(0,162,64,.1);color:#0a7a35;
+  }
+  .d-act .tag.del{background:rgba(226,46,42,.09);color:#b8261f}
+
+  /* 收尾元信息 */
+  .d-foot{display:flex;flex-wrap:wrap;gap:8px;padding:10px 18px;background:#fcfcfd}
+  .d-foot .chip{
+    height:20px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;
+    border-radius:9999px;background:#f5f5f6;font-size:11px;color:#5d5d5d;
+  }
+  .d-foot .bar{display:inline-flex;gap:1px}
+  .d-foot .bar i{display:block;width:12px;height:4px;border-radius:1px;background:rgba(26,28,31,.14)}
+  .d-foot .bar i:nth-child(1){background:rgba(26,28,31,.34)}
+
+  /* ---------- 页脚 ---------- */
+  footer{
+    margin-top:60px;padding-top:18px;border-top:1px solid var(--line);
+    font-size:11.5px;color:var(--ink3);
+    display:flex;justify-content:space-between;
+  }
+
+  @media (max-width:1000px){
+    .layout{grid-template-columns:1fr}
+    nav.toc{display:none}
+    main{padding:28px 22px 80px}
+    .meta{grid-template-columns:1fr 1fr}
+  }
+  @media print{
+    body{background:#fff}
+    .top,nav.toc{display:none}
+    .layout{display:block}
+    main{max-width:none;padding:0}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="l">
+    <b>Issue 处理平台</b>
+    <span>需求文档</span>
+    <span class="tag draft">v2.1 评审中</span>
+  </div>
+  <div class="r">
+    <span>2026-11-12</span>
+    <span>·</span>
+    <span>依据两轮口述整理</span>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="toc" id="toc">
+    <p class="t">目录</p>
+    <a href="#s1"><span class="n">1</span>背景与问题</a>
+    <a href="#s2"><span class="n">2</span>目标与非目标</a>
+    <a href="#s3"><span class="n">3</span>角色与典型场景</a>
+    <a href="#s4"><span class="n">4</span>系统边界与总体结构</a>
+    <a href="#s5"><span class="n">5</span>功能需求</a>
+    <a href="#s5-1" class="sub"><span class="n">5.1</span>事件接入</a>
+    <a href="#s5-2" class="sub"><span class="n">5.2</span>事件触发配置</a>
+    <a href="#s5-3" class="sub"><span class="n">5.3</span>会话协调</a>
+    <a href="#s5-4" class="sub"><span class="n">5.4</span>提示词下发</a>
+    <a href="#s5-5" class="sub"><span class="n">5.5</span>执行</a>
+    <a href="#s5-6" class="sub"><span class="n">5.6</span>记录与查询</a>
+    <a href="#s6"><span class="n">6</span>配置模型</a>
+    <a href="#s7"><span class="n">7</span>业务规则</a>
+    <a href="#s8"><span class="n">8</span>数据需求</a>
+    <a href="#s9"><span class="n">9</span>非功能需求</a>
+    <a href="#s10"><span class="n">10</span>验收标准</a>
+    <a href="#s11"><span class="n">11</span>待确认事项</a>
+    <a href="#s12"><span class="n">12</span>附录 · 术语</a>
+  </nav>
+
+  <main>
+    <header class="doc-head">
+      <div class="kicker">PRODUCT REQUIREMENT DOCUMENT</div>
+      <h1>Issue 处理平台 · 需求文档</h1>
+      <p class="sub">以「一个 issue 一个会话」为核心，把 GitHub 上散落的事件收敛成可追溯的一次协作过程。</p>
+
+      <div class="meta">
+        <div><div class="k">版本</div><div class="v">v2.1</div></div>
+        <div><div class="k">状态</div><div class="v">评审中 · 决策已定</div></div>
+        <div><div class="k">日期</div><div class="v">2026-11-12</div></div>
+        <div><div class="k">范围</div><div class="v">L0 功能范围</div></div>
+      </div>
+
+      <div class="abstract">
+        <p><b>它解决什么：</b>issue 从创建到关闭会产生很多事件——新建、编辑、打标、评论、关闭。现在每来一个事件就当作一次独立任务，agent 每次从零开始，正文重复注入，结论互不相认，事后也拼不出一条完整的处理链路。</p>
+        <p><b>它怎么做：</b>平台接收 GitHub 的 webhook，按<strong>项目级配置</strong>判断这个事件要不要触发、用哪套提示词模板；触发的进入这个 issue 唯一的 agent 会话，由平台负责排队与协调；agent 的工具调用、token 消耗、完整对话全部落库，后台一处可查。</p>
+      </div>
+
+      <h4 style="margin-top:26px">修订记录</h4>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:80px">版本</th><th style="width:110px">日期</th><th style="width:90px">作者</th><th>变更</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>v2.1</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>按评审意见修正：<a class="ref" href="#fr-5-3">FR-5.3</a> 动作由四类扩为七类（四类默认开放 + 建 issue / 开 PR / 关单默认关闭），补产出格式字段与三条校验规则、槽位落地口径；<a class="ref" href="#br-11">BR-11</a> 改为显式「不自动管理」标记（取消「人删过永久不加回」）；<a class="ref" href="#s6-5">6.5</a> 补标签目录的固定注入方式；非目标补「本期不处理 PR 事件」；文档状态改为评审中；对话与工具示例按 pi-desktop 的实际对话界面重做（消息行无卡片、工具调用为三层折叠行、仅用户输入有气泡，补系统提示词与事件元信息两处后台特有内容）。</td>
+            </tr>
+            <tr>
+              <td>v2.0</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>5.6 增加两个可展开示例（<a class="ref" href="#fr-6-4">FR-6.4 后台查询</a> 之后）：完整对话（系统提示词 → 平台输入含时间/事件/人员/链接 → 工具调用 → 产出 → 写回 → 第二轮增量）与工具调用记录表；新增「<a class="ref" href="#tools">执行侧可用工具</a>」清单，明确 pi SDK 自带能力、平台补的两个只读工具，以及写操作一律不开放工具的三条理由。</td>
+            </tr>
+            <tr>
+              <td>v1.9</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>上下文压缩定案（<a class="ref" href="#q-4">Q-4</a>）：新增 <a class="ref" href="#fr-5-6">FR-5.6 上下文压缩</a>，对齐 pi-desktop 的 checkpoint 机制（阈值现算、追加不改写、增量更新、分层截断工具输出、六阶降级），并刻意偏离一处——保留真实最近窗口而非只留用户消息；补 <a class="ref" href="#ac-24">AC-24</a>、<a class="ref" href="#ac-25">AC-25</a>。</td>
+            </tr>
+            <tr>
+              <td>v1.8</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>五条决策落地：占位符全部转正（<a class="ref" href="#q-1">Q-1</a>）；未知占位符原样保留（<a class="ref" href="#q-2">Q-2</a>）；<b>会话取消结束状态</b>，issue 关闭只回收沙箱、记录保留、重开复用（<a class="ref" href="#fr-3-4">FR-3.4</a> / <a class="ref" href="#q-3">Q-3</a>）；事件判定权归项目配置（<a class="ref" href="#q-5">Q-5</a>）；上下文压缩按 pi-desktop 机制对齐（调研中）。第 11 章改为决策记录。</td>
+            </tr>
+            <tr>
+              <td>v1.7</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>角色清单落地调研结论（见 <a class="ref" href="#s6-6">6.6 评论触发配置</a>）：作者关联补全七个取值；指定成员用 GitHub login 而非邮箱，<b>只支持个人、不支持组织与团队</b>；补「login 会变 / 拼错静默失效」两条规避（id 兜底、保存时校验）。</td>
+            </tr>
+            <tr>
+              <td>v1.6</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>占位符新增 <code>{{repo.issues}}</code>（项目 issue 索引）：只给编号/状态/标题、仅 open、上限 200 条、排除 PR；明确惰性求值与缓存要求（见 <a class="ref" href="#s6-3">6.3 占位符清单</a>）；补 <a class="ref" href="#ac-21">AC-21</a>、<a class="ref" href="#ac-22">AC-22</a>。</td>
+            </tr>
+            <tr>
+              <td>v1.5</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>占位符新增 <code>{{issue.labels}}</code>（见 <a class="ref" href="#s6-3">6.3 占位符清单</a>），并补格式与边界说明：逗号分隔、空集渲染空串、沿用原顺序、取事件时刻快照；点明它是 <a class="ref" href="#fr-5-4">FR-5.4 标签目标态</a> 的前提。</td>
+            </tr>
+            <tr>
+              <td>v1.4</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>配置层级收缩：平台级只保留模型相关与 bot 相关，其余全部下放项目级；新增 <a class="ref" href="#s6-7">6.7 agent 系统提示词与执行限额</a>（系统提示词归项目级、并发与限额归项目级，并给出触顶行为）；改 6.1 / 6.2 与 4.1 示意图。</td>
+            </tr>
+            <tr>
+              <td>v1.3</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>幂等扩为三层：<a class="ref" href="#fr-3-5">FR-3.5 幂等：三层去重</a> 增加「同 issue 内同内容评论」的去重口径（规范化比较、与作者无关、失败不参与去重、跳过留痕）；补 <a class="ref" href="#br-3">BR-3</a>、<a class="ref" href="#ac-19">AC-19</a>、<a class="ref" href="#ac-20">AC-20</a>。</td>
+            </tr>
+            <tr>
+              <td>v1.2</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>评论闸门细化：新增 <a class="ref" href="#fr-2-5">FR-2.5 提及关键词与合法提及</a>（@ 关键词 + 分隔符才算命中）；「是否限定角色」改为从项目级角色清单中选择；新增 <a class="ref" href="#s6-6">6.6 评论触发配置</a>；移除「扩展位」概念。</td>
+            </tr>
+            <tr>
+              <td>v1.1</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>明确职责边界：一个事件一个提示词，平台不控制处理内容（<a class="ref" href="#fr-5-1">FR-5.1 不决定内容</a>）；新增<a class="ref" href="#fr-5-3">FR-5.3 产出契约</a>；标签改为目标态并赋予删除权（<a class="ref" href="#fr-5-4">FR-5.4 标签目标态</a>）；新增<a class="ref" href="#s6-5">6.5 标签目录</a>；补 <a class="ref" href="#br-9">BR-9~BR-12</a>、<a class="ref" href="#ac-13">AC-13~AC-16</a>；<a class="ref" href="#q-6">Q-6 多技能</a> 定案。</td>
+            </tr>
+            <tr>
+              <td>v1.0</td>
+              <td>2026-11-12</td>
+              <td>小豆</td>
+              <td>初稿。依据两轮口述整理：事件触发模板与占位符替换、平台级/项目级配置分级、评论事件额外闸门、一会话多事件、全量记录与后台查询。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </header>
+
+    <!-- ================= 1 ================= -->
+    <section id="s1">
+      <h2><span class="num">1</span>背景与问题</h2>
+      <p class="lead">本章说明为什么需要这个平台，以及不做会怎样。</p>
+
+      <p>仓库的 issue 是需求、缺陷、讨论的天然聚合点。一个 issue 从提出到关闭，通常经历这样一串动作：</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:120px">阶段</th><th style="width:170px">GitHub 事件</th><th>人的真实动作</th></tr></thead>
+          <tbody>
+            <tr><td>提出</td><td><code>issues.opened</code></td><td>写正文、贴日志、选模板</td></tr>
+            <tr><td>补充</td><td><code>issues.edited</code> / 评论</td><td>补环境、补复现步骤、回答提问</td></tr>
+            <tr><td>分类</td><td><code>issues.labeled</code></td><td>维护者打上类型与优先级</td></tr>
+            <tr><td>跟进</td><td><code>issue_comment.created</code></td><td>@机器人 问一句、要求重跑</td></tr>
+            <tr><td>收尾</td><td><code>issues.closed</code></td><td>确认修复、关闭</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>这些事件在 GitHub 侧是<strong>同一个 issue 的不同阶段</strong>，但在处理侧如果被当成互不相干的任务，会带来三个具体问题：</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:150px">问题</th><th>表现</th><th style="width:220px">后果</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>上下文断裂</td>
+              <td>第二次处理时 agent 不知道第一次已经判过什么、说过什么</td>
+              <td>结论互相打架，甚至推翻自己上一轮的判断</td>
+            </tr>
+            <tr>
+              <td>重复注入</td>
+              <td>每个事件都把完整正文、背景、规则再发一遍</td>
+              <td>token 随事件数线性膨胀，成本不可控</td>
+            </tr>
+            <tr>
+              <td>过程不可见</td>
+              <td>只有一个"成功/失败"结果，看不到中间调了什么工具、花了多少</td>
+              <td>出问题无法定位，也无法评估该不该继续用</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <span class="k">核心判断</span>
+        <p>issue 才是处理的<strong>基本单元</strong>，事件只是这个单元上的增量输入。平台的设计起点必须从这里开始。</p>
+      </div>
+    </section>
+
+    <!-- ================= 2 ================= -->
+    <section id="s2">
+      <h2><span class="num">2</span>目标与非目标</h2>
+      <p class="lead">本章划定做与不做，避免范围蔓延。</p>
+
+      <h3>2.1 目标</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:90px">编号</th><th style="width:220px">目标</th><th>达成标志</th></tr></thead>
+          <tbody>
+            <tr><td>G-1</td><td>一个 issue 只对应一个 agent 会话</td><td>同一 issue 的多次处理共享 session，历史可延续</td></tr>
+            <tr><td>G-2</td><td>事件是否触发、用哪套提示词，由配置决定</td><td>改配置即可改变行为，不需要改代码</td></tr>
+            <tr><td>G-3</td><td>全过程可查</td><td>后台能看到完整对话、每次工具调用、token 消耗</td></tr>
+            <tr><td>G-4</td><td>平台按项目分区</td><td>平台级给默认，项目级可覆盖；不同仓库互不干扰</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>2.2 非目标</h3>
+      <ul>
+        <li><b>不合并 PR。</b>平台只负责产生改动与评论，合并权始终在人。</li>
+        <li><b>不做多代码托管平台。</b>只对接 GitHub，不考虑 GitLab、GHES。</li>
+        <li><b>不做审批流。</b>不设置事前审批；异常走兜底通知，不走人工卡点。</li>
+        <li><b>不做多租户。</b>单组织、少量仓库、单机部署。</li>
+        <li><b>本期不处理 PR 事件。</b>GitHub 会投递 <code>pull_request.*</code>，平台收到后按「未触发」处理并留痕，不做评审、不开 PR 评审会话。文档里提到的「PR 与 issue 各自独立会话」是<b>预留边界</b>，不是本期需求。</li>
+      </ul>
+    </section>
+
+    <!-- ================= 3 ================= -->
+    <section id="s3">
+      <h2><span class="num">3</span>角色与典型场景</h2>
+      <p class="lead">本章用三个真实场景说明需求从哪来，后续功能需求都可以回溯到这里。</p>
+
+      <h3>3.1 角色</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:130px">角色</th><th style="width:180px">关心什么</th><th>在系统中的动作</th></tr></thead>
+          <tbody>
+            <tr><td>提交者</td><td>问题有没有被认真看</td><td>提 issue、补信息、追问进展</td></tr>
+            <tr><td>维护者</td><td>进来的东西是否合格、分类是否正确</td><td>打标、要求补充、关闭</td></tr>
+            <tr><td>平台配置者</td><td>触发规则是否符合这个仓库的习惯</td><td>改项目配置、调提示词模板</td></tr>
+            <tr><td>平台运维者</td><td>成本、稳定性、异常</td><td>看后台、查会话、调并发与配额</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3.2 场景 A：新 issue 进来，格式不合格</h3>
+      <p><b>经过。</b>提交者在仓库里开了一个 issue，正文只写了一句「导出闪退，急」。几分钟后收到一条评论，指出缺少复现环境、版本号、复现步骤，并给出模板示例；issue 被打上「需补充信息」的标签。</p>
+      <p><b>期望行为。</b>平台收到 <code>issues.opened</code>，按项目配置判定该事件触发；用这个事件的提示词模板渲染出指令，交给这个 issue 的会话。至于「该发什么评论、该打什么标签」，由提示词对应的处理自行决定——平台不预设动作，只负责把它们执行出去。</p>
+
+      <h3>3.3 场景 B：作者补充信息，需要复核</h3>
+      <p><b>经过。</b>提交者编辑正文，补上了版本、机型、复现步骤。系统不再重复一遍"请补信息"，而是针对新增内容判断是否已经足够，并把结论追加在原有评论下面。</p>
+      <p><b>期望行为。</b>平台收到 <code>issues.edited</code>，判定正文确实变了（不是只改标题或空白），复用场景 A 建立的会话，只把变更部分与本轮指令发过去，agent 基于已有上下文给出增量结论。</p>
+
+      <h3>3.4 场景 C：维护者在评论里追问</h3>
+      <p><b>经过。</b>维护者在评论区 <code>@机器人 这条和 #1942 是同一个问题吗</code>。平台识别到提及，进入同一会话回答，而不是新开一段对话。</p>
+      <p><b>期望行为。</b>平台收到 <code>issue_comment.created</code>，先过评论闸门（是否提及、是否限定角色、是否已关闭），通过后进入会话；提示词模板里可使用评论正文与评论人。</p>
+
+      <div class="callout">
+        <span class="k">共性</span>
+        <p>三个场景是同一个 issue 的三个阶段。会话必须是同一条，否则 B、C 都要重新解释一遍 A 发生过什么。</p>
+      </div>
+    </section>
+
+    <!-- ================= 4 ================= -->
+    <section id="s4">
+      <h2><span class="num">4</span>系统边界与总体结构</h2>
+      <p class="lead">本章界定两个系统各做什么，以及平台内部如何分工。</p>
+
+      <p>整体分为两个系统，边界清晰、职责互斥：</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:180px">系统</th><th style="width:200px">职责</th><th>不做什么</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>GitHub 平台</td>
+              <td>产生事件；承载 issue、评论、标签、PR；接收写回</td>
+              <td>不判断该不该处理，不保存处理过程</td>
+            </tr>
+            <tr>
+              <td>Issue 处理平台</td>
+              <td>接收事件、判定触发、协调会话、驱动 agent、记录全过程</td>
+              <td>不合并 PR，不替代人做最终决策</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>4.1 平台内部四个部件</h3>
+      <p>平台内部按职责分为四块，四块互有关联，但都在这一个平台之内：</p>
+
+      <div class="figure">
+        <svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg"
+             font-family="-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif">
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#2f6fed"/>
+            </marker>
+            <marker id="a2" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#24292f"/>
+            </marker>
+            <marker id="a3" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#5b6470"/>
+            </marker>
+            <marker id="a4" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#0b7d70"/>
+            </marker>
+          </defs>
+
+          <rect x="6" y="44" width="110" height="118" rx="10" fill="#f2f4f6" stroke="#24292f" stroke-width="1.4"/>
+          <text x="20" y="66" font-size="11.5" font-weight="650" fill="#15181c">GitHub</text>
+          <text x="20" y="83" font-size="9" fill="#6b7480">事件源</text>
+          <text x="20" y="97" font-size="9" fill="#6b7480">写回终点</text>
+          <text x="20" y="119" font-size="8.5" fill="#818b96" font-family="SFMono-Regular,Consolas,monospace">issues.*</text>
+          <text x="20" y="133" font-size="8.5" fill="#818b96" font-family="SFMono-Regular,Consolas,monospace">issue_comment.*</text>
+          <text x="20" y="147" font-size="8.5" fill="#818b96" font-family="SFMono-Regular,Consolas,monospace">pull_request.*</text>
+
+          <rect x="150" y="8" width="482" height="180" rx="12" fill="#fbfcfd" stroke="#9aa3ad" stroke-width="1.4"/>
+          <text x="166" y="30" font-size="11.5" font-weight="650" fill="#15181c">Issue 处理平台</text>
+
+          <rect x="166" y="44" width="100" height="124" rx="8" fill="#eff2f5" stroke="#5b6470"/>
+          <text x="178" y="64" font-size="10.5" font-weight="620" fill="#15181c">配置</text>
+          <text x="178" y="82" font-size="8.8" fill="#5b6470">系统提示词</text>
+          <text x="178" y="98" font-size="8.8" fill="#5b6470">事件模板</text>
+          <text x="178" y="114" font-size="8.8" fill="#5b6470">评论闸门</text>
+          <text x="178" y="130" font-size="8.8" fill="#5b6470">并发限额</text>
+          <text x="178" y="146" font-size="8.8" fill="#5b6470">标签目录</text>
+
+          <rect x="288" y="44" width="108" height="124" rx="8" fill="#eef3fe" stroke="#2f6fed"/>
+          <text x="300" y="64" font-size="10.5" font-weight="620" fill="#16337a">调度</text>
+          <text x="300" y="82" font-size="8.8" fill="#3b5b9e">验签 · 去重</text>
+          <text x="300" y="98" font-size="8.8" fill="#3b5b9e">触发判定</text>
+          <text x="300" y="114" font-size="8.8" fill="#3b5b9e">会话映射</text>
+          <text x="300" y="130" font-size="8.8" fill="#3b5b9e">事件排队</text>
+          <text x="300" y="146" font-size="8.8" fill="#3b5b9e">模板渲染</text>
+
+          <rect x="418" y="44" width="100" height="124" rx="8" fill="#f3f0fd" stroke="#6b58d6"/>
+          <text x="430" y="64" font-size="10.5" font-weight="620" fill="#322364">Agent</text>
+          <text x="430" y="82" font-size="8.8" fill="#5c4ba8">会话与轮次</text>
+          <text x="430" y="98" font-size="8.8" fill="#5c4ba8">上下文组装</text>
+          <text x="430" y="114" font-size="8.8" fill="#5c4ba8">工具与沙箱</text>
+          <text x="430" y="130" font-size="8.8" fill="#5c4ba8">模型调用</text>
+          <text x="430" y="146" font-size="8.8" fill="#5c4ba8">产出</text>
+
+          <rect x="538" y="44" width="88" height="124" rx="8" fill="#eaf7f5" stroke="#0b7d70"/>
+          <text x="550" y="64" font-size="10.5" font-weight="620" fill="#06443c">记录</text>
+          <text x="550" y="82" font-size="8.8" fill="#2f6b64">对话全文</text>
+          <text x="550" y="98" font-size="8.8" fill="#2f6b64">工具调用</text>
+          <text x="550" y="114" font-size="8.8" fill="#2f6b64">token</text>
+          <text x="550" y="130" font-size="8.8" fill="#2f6b64">时间线</text>
+          <text x="550" y="146" font-size="8.8" fill="#2f6b64">后台查询</text>
+
+          <path d="M118 84 H162" fill="none" stroke="#2f6fed" stroke-width="1.8" marker-end="url(#a1)"/>
+          <text x="120" y="77" font-size="8.5" fill="#16337a">webhook</text>
+
+          <path d="M162 152 H122" fill="none" stroke="#24292f" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a2)"/>
+          <text x="124" y="167" font-size="8.5" fill="#24292f">写回</text>
+
+          <path d="M266 106 H285" fill="none" stroke="#5b6470" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a3)"/>
+          <path d="M396 106 H415" fill="none" stroke="#2f6fed" stroke-width="1.8" marker-end="url(#a1)"/>
+          <path d="M518 106 H535" fill="none" stroke="#0b7d70" stroke-width="1.4" stroke-dasharray="2 3" marker-end="url(#a4)"/>
+        </svg>
+        <p class="cap">四个部件在同一平台内：配置决定行为，调度串起流程，Agent 负责执行，记录负责留痕。箭头是主要关联，不代表全部调用。</p>
+      </div>
+
+      <div class="callout">
+        <span class="k">边界</span>
+        <p>Agent <b>不直读配置</b>，也<b>不直连 GitHub</b>。它只接收调度渲染好的输入，输出也只回到调度。这条边界决定了配置改动不需要动 agent。</p>
+      </div>
+    </section>
+
+    <!-- ================= 5 ================= -->
+    <section id="s5">
+      <h2><span class="num">5</span>功能需求</h2>
+      <p class="lead">本章是文档主体。每个需求给出编号、描述、规则与验收要点，编号在后续设计与测试中直接引用。</p>
+
+      <!-- 5.1 -->
+      <h3 id="s5-1">5.1 事件接入</h3>
+
+      <div class="req" id="fr-1-1">
+        <div class="hd"><span class="id">FR-1.1</span><span class="ttl">接收 GitHub webhook</span><span class="pri">P0</span></div>
+        <p>平台提供单一 HTTP 入口接收 GitHub 的投递，支持的事件类型至少包括：<code>issues</code>、<code>issue_comment</code>、<code>pull_request</code>、<code>installation</code> 系列。</p>
+        <ul>
+          <li>必须读取原始请求体，不得先做 JSON 解析（否则签名无法校验）。</li>
+          <li>必须读取三个请求头：事件类型、投递 ID、签名。</li>
+        </ul>
+        <div class="note"><b>验收要点：</b>同一条真实投递重放两次，第二次不产生重复处理。</div>
+      </div>
+
+      <div class="req" id="fr-1-2">
+        <div class="hd"><span class="id">FR-1.2</span><span class="ttl">签名校验</span><span class="pri">P0</span></div>
+        <p>对每个请求做 HMAC-SHA256 校验。校验失败返回 401，但<b>仍要落库留痕</b>，便于排查配置错误。</p>
+      </div>
+
+      <div class="req" id="fr-1-3">
+        <div class="hd"><span class="id">FR-1.3</span><span class="ttl">投递去重</span><span class="pri">P0</span></div>
+        <p>以 GitHub 的投递 ID 作为唯一键。重复投递视为正常现象（GitHub 会重投），直接返回成功，不重复处理。</p>
+        <div class="note"><b>规则：</b>去重必须在持久层完成，不能只在内存里去重——进程重启后内存表会丢。</div>
+      </div>
+
+      <div class="req" id="fr-1-4">
+        <div class="hd"><span class="id">FR-1.4</span><span class="ttl">应答时限</span><span class="pri">P0</span></div>
+        <p>平台必须在 10 秒内返回 2xx，实际处理异步进行。超时会导致 GitHub 重投，放大负载。</p>
+      </div>
+
+      <!-- 5.2 -->
+      <h3 id="s5-2">5.2 事件触发配置</h3>
+
+      <div class="req" id="fr-2-1">
+        <div class="hd"><span class="id">FR-2.1</span><span class="ttl">每个事件一个触发开关</span><span class="pri">P0</span></div>
+        <p>项目配置中，每一种事件都要能单独配置「是否触发」。未配置时继承平台默认值。</p>
+        <p>事件全集与默认值：</p>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:210px">事件</th><th style="width:110px">平台默认</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>issues.opened</code></td><td>触发</td><td>首次处理，通常对应格式评审或分类</td></tr>
+              <tr><td><code>issues.edited</code></td><td>触发</td><td>仅正文变更时触发；只改标题或标签不触发</td></tr>
+              <tr><td><code>issues.labeled</code></td><td>条件</td><td>命中所配标签才触发</td></tr>
+              <tr><td><code>issues.closed</code></td><td>关闭</td><td>收尾语义，按需开启</td></tr>
+              <tr><td><code>issue_comment.created</code></td><td>条件</td><td>过评论闸门后才触发，见 <a class="ref" href="#fr-2-4">FR-2.4 评论事件的额外闸门</a></td></tr>
+              <tr><td><code>pull_request.*</code></td><td>独立</td><td>属于 PR 会话域，不进入 issue 会话</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="req" id="fr-2-2">
+        <div class="hd"><span class="id">FR-2.2</span><span class="ttl">触发时发送的提示词模板</span><span class="pri">P0</span></div>
+        <p>每个事件除了开关，还要能配置一份<b>提示词模板</b>。事件触发时，平台用这份模板生成发给 agent 的指令。</p>
+        <ul>
+          <li>模板是纯文本，可包含占位符（见 <a class="ref" href="#fr-2-3">FR-2.3 占位符替换</a>）。</li>
+          <li>模板按「项目 + 事件」维度配置；未配置时使用平台内置默认模板。</li>
+          <li>模板中通常包含技能触发词，用于让 agent 知道该加载哪套规则。</li>
+        </ul>
+        <div class="note"><b>示例模板：</b><code>/issue-format-check#{{issue.number}} {{issue.url}} 正文：```{{issue.content}}```</code></div>
+      </div>
+
+      <div class="req" id="fr-2-3">
+        <div class="hd"><span class="id">FR-2.3</span><span class="ttl">占位符替换</span><span class="pri">P0</span></div>
+        <p>模板中的占位符在发送前被替换为本次事件的实际内容。</p>
+        <ul>
+          <li><b>可重复出现：</b>同一个占位符在模板里出现多次，每一处都要替换，不能只替换第一次。</li>
+          <li><b>逐个替换：</b>一次遍历完成全部替换，替换结果不再参与二次替换（防止内容里带占位符被误替换）。</li>
+          <li><b>未知占位符：</b>原样保留，不做替换（<code>{{issue.foo}}</code> 是什么样就发什么样），同时在后台记一条配置告警。</li>
+        </ul>
+        <div class="note"><b>可用占位符：</b>见 <a class="ref" href="#s6-3">6.3 占位符清单</a>。</div>
+      </div>
+
+      <div class="req" id="fr-2-4">
+        <div class="hd"><span class="id">FR-2.4</span><span class="ttl">评论事件的额外闸门</span><span class="pri">P0</span></div>
+        <p>评论事件比其他事件多一层筛选，因为评论量最大、噪音最多。项目可为评论事件单独配置四个闸门：</p>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:180px">闸门</th><th style="width:90px">默认</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>是否提及才触发</td>
+                <td>是</td>
+                <td>评论里出现<b>合法的提及</b>才触发；合法规则见 FR-2.5</td>
+              </tr>
+              <tr>
+                <td>是否限定角色</td>
+                <td>否</td>
+                <td>只允许<b>项目级已定义的角色</b>触发；此处只能从角色清单里选，不能临时填写</td>
+              </tr>
+              <tr>
+                <td>是否忽略机器人自身</td>
+                <td>是</td>
+                <td>机器人自己发的评论不触发，避免自问自答</td>
+              </tr>
+              <tr>
+                <td>是否响应已关闭 issue</td>
+                <td>否</td>
+                <td>issue 关闭后的新评论默认不处理</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note"><b>优先级：</b>评论闸门在事件开关之后判断。开关关闭时，闸门一律不生效。</div>
+      </div>
+
+      <div class="req rule" id="fr-2-5">
+        <div class="hd"><span class="id">FR-2.5</span><span class="ttl">提及关键词与合法提及</span><span class="pri">P0</span></div>
+        <p>项目级配置里维护<b>提及关键词</b>（如机器人句柄、别名），评论闸门据此判断"是否被提及"。</p>
+        <p><b>合法提及</b>必须同时满足两条：</p>
+        <ul>
+          <li>以 <code>@</code> 开头，紧跟项目配置的关键词；</li>
+          <li>关键词之后<b>必须是分隔符</b>（空格、换行或标点），再接正文内容。</li>
+        </ul>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:110px">判定</th><th style="width:230px">评论内容</th><th>原因</th></tr></thead>
+            <tbody>
+              <tr><td>合法</td><td><code>@pi-bot 帮我看看这条</code></td><td>关键词后是空格，正文独立</td></tr>
+              <tr><td>合法</td><td><code>@pi-bot</code></td><td>只有提及、没有正文，也认</td></tr>
+              <tr><td>不合法</td><td><code>@pi-bot帮我看看这条</code></td><td>关键词与正文粘连，无法确定边界</td></tr>
+              <tr><td>不合法</td><td><code>@pi-botx 帮我看看</code></td><td>命中的是另一个更长的名字</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn" style="margin-top:12px">
+          <span class="k">注意</span>
+          <p>中文用户习惯写成 <code>@pi-bot你好</code>，按上面的规则不会被识别。这是为了不误伤 <code>@pi-botx</code> 这类名字而付出的代价——如果实际使用中漏触发严重，再考虑放宽到"关键词后紧跟中文也算"，但需要同时解决名字前缀冲突。</p>
+        </div>
+      </div>
+
+      <!-- 5.3 -->
+      <h3 id="s5-3">5.3 会话协调</h3>
+
+      <div class="req rule" id="fr-3-1">
+        <div class="hd"><span class="id">FR-3.1</span><span class="ttl">一个 issue 只对应一个会话</span><span class="pri">P0</span></div>
+        <p>平台维护「仓库 + issue 编号 → 会话 ID」的映射。同一 issue 的所有已触发事件，都进入这同一个会话。</p>
+        <ul>
+          <li>映射是一对一，且是唯一权威来源；其他部件不得自行推断会话归属。</li>
+          <li>首次触发时创建会话；后续触发复用，不新建。</li>
+        </ul>
+        <div class="note"><b>边界：</b>PR 与 issue 各自独立会话，不共享上下文。</div>
+      </div>
+
+      <div class="req rule" id="fr-3-2">
+        <div class="hd"><span class="id">FR-3.2</span><span class="ttl">多事件进入同一会话</span><span class="pri">P0</span></div>
+        <p>事件进入会话的方式是「追加一轮」，而不是「重开一段」。每一轮（turn）都建立在前一轮的历史之上。</p>
+        <div class="note"><b>为什么：</b>场景 B 需要知道场景 A 判过什么；否则 agent 会重复提问、重复下结论。</div>
+      </div>
+
+      <div class="req rule" id="fr-3-3">
+        <div class="hd"><span class="id">FR-3.3</span><span class="ttl">同 issue 串行，跨 issue 并行</span><span class="pri">P0</span></div>
+        <p>同一个 issue 的事件必须排队，同一时刻只允许一轮在跑；不同 issue 之间可以并行。</p>
+        <ul>
+          <li>事件到达即入队，不得因为前一轮在跑而丢弃。</li>
+          <li>队列按到达顺序消费，保证处理顺序与事件顺序一致。</li>
+        </ul>
+        <div class="note"><b>风险提示：</b>并发写同一会话会导致上下文交错、产出互相覆盖，这是硬约束而非优化项。</div>
+      </div>
+
+      <div class="req rule" id="fr-3-4">
+        <div class="hd"><span class="id">FR-3.4</span><span class="ttl">会话常驻，沙箱随 issue 关闭回收</span><span class="pri">P0</span></div>
+        <p>会话<b>没有「结束」这个状态</b>。issue 随时可能被重新打开，任何归档动作都会让重开的 issue 失去上下文。</p>
+        <ul>
+          <li>会话与该 issue 同生命周期：创建后一直有效，不归档、不释放映射。</li>
+          <li>issue 关闭时<b>只回收 agent 沙箱</b>（占资源的容器），会话与记录保留。</li>
+          <li>issue 重开时直接复用原会话，不需要重建，历史上下文仍在。</li>
+          <li>运行状态只有两种：<b>活跃</b>（沙箱存在）/ <b>空闲</b>（沙箱已回收，下次触发时重建）。</li>
+        </ul>
+        <div class="note"><b>回收是资源动作，不是数据动作：</b>记录永久保留，后台随时可查完整对话。别把「省内存」做成「丢历史」。</div>
+      </div>
+
+      <div class="req rule" id="fr-3-5">
+        <div class="hd"><span class="id">FR-3.5</span><span class="ttl">幂等：三层去重</span><span class="pri">P0</span></div>
+        <p>同一个输入不得被消费两次。去重分三层，逐层收窄：</p>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:110px">层</th><th style="width:190px">去重键</th><th>挡住什么</th></tr></thead>
+            <tbody>
+              <tr><td>投递级</td><td>GitHub 投递 ID</td><td>同一条 webhook 被重投（GitHub 自动重试）</td></tr>
+              <tr><td>事件级</td><td>事件自身唯一标识</td><td>同一事件经不同路径重复投递</td></tr>
+              <tr><td>内容级</td><td>同一 issue 内评论正文（规范化后）</td><td>人手动重复 @ 两次、同一段话反复粘贴</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4 style="margin-top:16px">内容级去重的口径</h4>
+        <ul>
+          <li><b>作用域只看 issue 内</b>：不同 issue 出现同样的话是正常现象，不能跨 issue 判重。</li>
+          <li><b>比较规范化后的正文</b>：去首尾空白、合并连续空行；不做语义近似判断——措辞不同就是不同内容，宁可多处理一次，也不能把新问题误判成旧问题。</li>
+          <li><b>与作者无关</b>：两个人贴了完全相同的日志，处理结果一样，只处理一次。</li>
+          <li><b>上次失败不参与去重</b>：上一轮是超时、崩溃或未产出，等同内容再来一次视为重试，必须放行。否则一次故障会把这个内容永久锁死。</li>
+          <li><b>跳过要留痕</b>：判定为重复时不静默丢弃，记一条「因重复内容跳过」，后台可查。</li>
+        </ul>
+
+        <div class="note"><b>与输出侧的分工：</b>输入侧靠内容去重（避免重复处理），输出侧靠评论槽位（避免重复发）。两者解决的是不同方向的重复，不能互相替代。</div>
+      </div>
+
+      <!-- 5.4 -->
+      <h3 id="s5-4">5.4 提示词下发</h3>
+
+      <div class="req" id="fr-4-1">
+        <div class="hd"><span class="id">FR-4.1</span><span class="ttl">拼接结构</span><span class="pri">P0</span></div>
+        <p>发给 agent 的提示词由四段构成，顺序固定：</p>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:60px">序</th><th style="width:150px">段</th><th style="width:220px">示例</th><th>作用</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>技能触发词</td><td><code>/issue-format-check</code></td><td>决定加载哪套技能与产出格式</td></tr>
+              <tr><td>2</td><td>issue 锚点</td><td><code>#1950</code></td><td>人可读的定位符，日志与评论中对照用</td></tr>
+              <tr><td>3</td><td>链接</td><td><code>https://github.com/.../issues/1950</code></td><td>agent 自取详情、评论、标签的入口</td></tr>
+              <tr><td>4</td><td>正文快照</td><td><code>正文：```…```</code></td><td>保证判定依据是事件发生时的版本</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout" style="margin-top:10px">
+          <span class="k">为什么</span>
+          <p>触发词不是装饰，它是<b>技能路由的唯一依据</b>；正文快照与链接并存，是为了「判定有依据、追查有出处」——链接可能指向已编辑后的版本。</p>
+        </div>
+      </div>
+
+      <div class="req" id="fr-4-2">
+        <div class="hd"><span class="id">FR-4.2</span><span class="ttl">首次全量、后续增量</span><span class="pri">P1</span></div>
+        <p>issue 的首个事件下发完整正文；后续事件只下发变更内容与本轮指令，不重复整篇正文——历史由会话承担。</p>
+        <div class="note"><b>待确认：</b>增量粒度（仅变更片段 / 变更前后对比）见 <a class="ref" href="#q-4">Q-4 上下文超限怎么办</a>。</div>
+      </div>
+
+      <!-- 5.5 -->
+      <h3 id="s5-5">5.5 执行</h3>
+
+      <div class="req" id="fr-5-1">
+        <div class="hd"><span class="id">FR-5.1</span><span class="ttl">平台不决定处理内容</span><span class="pri">P0</span></div>
+        <p>一个事件对应一份提示词。至于这份提示词会触发什么处理、产出哪些动作，<b>不由平台决定</b>——平台不维护技能注册表，也不按事件类型硬编码行为。</p>
+        <ul>
+          <li>平台只做三件事：把输入交给执行侧、校验产出、把产出执行出去。</li>
+          <li>同一事件换一份提示词，行为就应当随之改变，平台代码不动。</li>
+        </ul>
+        <div class="note"><b>边界：</b>平台不控制「做什么」，但必须定义「动作长什么样」，否则无法执行。见 <a class="ref" href="#fr-5-3">FR-5.3 产出契约：四类动作</a>。</div>
+      </div>
+
+      <div class="req" id="fr-5-2">
+        <div class="hd"><span class="id">FR-5.2</span><span class="ttl">工具调用与沙箱</span><span class="pri">P0</span></div>
+        <p>执行侧可以在受控环境内调用工具与命令（读文件、检索、执行命令）。每次调用都要记录工具名、入参与返回。</p>
+      </div>
+
+      <div class="req rule" id="fr-5-3">
+        <div class="hd"><span class="id">FR-5.3</span><span class="ttl">产出契约：动作与格式</span><span class="pri">P0</span></div>
+        <p>执行侧的产出必须落在一个<b>封闭的动作集合</b>里，集合外一律拒绝。动作分两组：默认开放的四类，与已定义但默认关闭的三类——后者不是没有，是需要项目显式开启。</p>
+
+        <h4>动作全集</h4>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:96px">动作</th><th style="width:210px">表达</th><th>平台行为</th><th style="width:64px">默认</th></tr></thead>
+            <tbody>
+              <tr><td>判定</td><td>结论 + 证据</td><td>存档，供后台查；不产生外部副作用</td><td>开放</td></tr>
+              <tr><td>标签</td><td>该 issue 应有的标签全集（目标态）</td><td>按目标态对齐：多的删、少的加</td><td>开放</td></tr>
+              <tr><td>评论</td><td>槽位名 + 正文</td><td>同槽位覆盖旧评论，无则新建</td><td>开放</td></tr>
+              <tr><td>reaction</td><td>加 / 减哪个</td><td>幂等执行</td><td>开放</td></tr>
+              <tr><td>建 issue</td><td>标题 + 正文 + 初始标签</td><td>按指纹去重、受日配额约束</td><td>关闭</td></tr>
+              <tr><td>开 PR</td><td>分支名 + 标题 + 正文</td><td>只允许 <code>bot/*</code> 分支，永不 force push</td><td>关闭</td></tr>
+              <tr><td>关闭 issue</td><td>无（不带理由）</td><td>仅在确定性条件满足时执行，不采信模型自评</td><td>关闭</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note"><b>后三类为什么默认关闭：</b>它们会改变仓库的可见状态（新建条目、产生分支、关单），误操作的代价远高于改一个标签。要开就在项目级显式打开，默认不给。</div>
+
+        <h4>产出格式</h4>
+        <p>平台要校验，就必须有格式。产出是一个<b>结构化对象</b>，不是自由文本——自然语言部分只作为评论正文出现。</p>
+        <div class="tbl">
+          <table>
+            <thead><tr><th style="width:150px">字段</th><th style="width:70px">必填</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>verdict</code></td><td>是</td><td><code>pass</code> / <code>fail</code>；没有判定的纯问答场景可省</td></tr>
+              <tr><td><code>evidence</code></td><td>否</td><td>判定依据，字符串数组；后台展示用，不参与执行</td></tr>
+              <tr><td><code>actions[]</code></td><td>是</td><td>动作数组，<b>按顺序执行</b>；空数组表示只判定不动作</td></tr>
+              <tr><td><code>actions[].type</code></td><td>是</td><td>动作全集里的七种之一，其他值一律拒绝</td></tr>
+              <tr><td><code>actions[].payload</code></td><td>是</td><td>按 type 决定形状，见各动作的「表达」列</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>三条校验规则：</p>
+        <ul>
+          <li><b>未知 type 拒绝整份产出</b>，不执行任何一条——避免「执行了一半才发现格式错」。</li>
+          <li><b>缺必填字段拒绝</b>，错误写进后台记录，可定位到具体字段。</li>
+          <li><b>按数组顺序执行，遇失败即停</b>；已成功的动作不回滚，但要记录到哪一步中断。</li>
+        </ul>
+
+        <div class="figure" style="background:#1c2027;border-color:#1c2027;padding:14px 16px">
+          <pre style="margin:0;color:#dfe4ea;font-family:SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.8;overflow-x:auto"><span style="color:#7f8b9c">// 一次格式评审的产出（示意）</span>
+{
+  <span style="color:#9ecbff">"verdict"</span>: <span style="color:#c8d3e0">"fail"</span>,
+  <span style="color:#9ecbff">"evidence"</span>: [<span style="color:#c8d3e0">"缺少 iOS 版本"</span>, <span style="color:#c8d3e0">"缺少复现步骤"</span>],
+  <span style="color:#9ecbff">"actions"</span>: [
+    { <span style="color:#9ecbff">"type"</span>: <span style="color:#c8d3e0">"label"</span>,   <span style="color:#9ecbff">"payload"</span>: { <span style="color:#9ecbff">"desired"</span>: [<span style="color:#c8d3e0">"needs-info"</span>], <span style="color:#9ecbff">"clear"</span>: false } },
+    { <span style="color:#9ecbff">"type"</span>: <span style="color:#c8d3e0">"comment"</span>, <span style="color:#9ecbff">"payload"</span>: { <span style="color:#9ecbff">"slot"</span>: <span style="color:#c8d3e0">"format-review"</span>, <span style="color:#9ecbff">"body"</span>: <span style="color:#c8d3e0">"缺少 2 项：iOS 版本、复现步骤"</span> } }
+  ]
+}</pre>
+        </div>
+
+        <h4>槽位怎么落地</h4>
+        <p>「同槽位覆盖」必须有一个可执行的判定依据，否则平台无法知道自己发过哪条评论。</p>
+        <ul>
+          <li><b>槽位名由执行侧声明</b>，平台不预设，也不校验语义（它只是一个键）。</li>
+          <li><b>平台在自己发的评论末尾写隐藏标记</b>（HTML 注释），记录 issue 编号与槽位名，人在 GitHub 页面上看不到。</li>
+          <li><b>覆盖时按标记查找</b>：找到就编辑，找不到就新建。</li>
+          <li><b>原评论被人删了</b>：标记随之消失，下次就新建一条，并在后台记录「原评论已不存在，已新建」。</li>
+          <li><b>同一 issue 上同一槽位只保留一条</b>；不同槽位互不影响（例如「格式评审」和「答复提问」各自一条）。</li>
+        </ul>
+
+        <div class="note"><b>为什么用目标态（标签）而不是增删指令：</b>平台不知道上一轮发生了什么，只有执行侧清楚这次「应该是什么样」。目标态让对齐成为幂等操作，重复执行结果一致。</div>
+      </div>
+
+      <div class="req rule" id="fr-5-4">
+        <div class="hd"><span class="id">FR-5.4</span><span class="ttl">标签目标态与删除权</span><span class="pri">P0</span></div>
+        <p>标签采用目标态：执行侧给出「这个 issue 最终应该有哪些标签」，平台与当前实际标签对齐。平台拥有<b>删除权</b>，包括删除人手动打的标签。</p>
+        <p>四条边界：</p>
+        <ul>
+          <li><b>作用域</b>：只作用于该项目的标签目录（见 <a class="ref" href="#s6-5">6.5 标签目录</a>）。目录即全量，不存在目录外的标签。</li>
+          <li><b>空集保护</b>：目标态为空时默认不清空，需显式声明清空意图。</li>
+          <li><b>超限整批拒绝</b>：目标集超过项目约定的上限时整批拒绝，不截断——避免出现「删了一半、加了一半」的中间状态。</li>
+          <li><b>删除留痕</b>：每次删除记录「原主人是人还是机器」，后台可查、可复盘。</li>
+          <li><b>人工删除不构成永久否决</b>：下一轮按目标态重新对齐。确实不想让平台碰某个标签，用项目级的「不自动管理」标记（见 <a class="ref" href="#br-11">BR-11</a>），那是显式契约，不是靠「删过一次」隐式推断。</li>
+        </ul>
+        <div class="note"><b>前提：</b>执行侧的输入必须包含<b>当前全部标签</b>（见 <a class="ref" href="#s6-3">6.3 占位符清单</a> 的 <code>{{issue.labels}}</code>）与<b>完整目录（含每个标签的含义）</b>。看不到全量就输出目标态，等于盲删。</div>
+      </div>
+
+      <div class="req" id="fr-5-5">
+        <div class="hd"><span class="id">FR-5.5</span><span class="ttl">写回与失败处理</span><span class="pri">P0</span></div>
+        <p>动作按顺序执行，失败不得静默：至少有兜底反馈（如普通评论）与后台告警。</p>
+        <ul>
+          <li>不合并 PR。</li>
+          <li>执行侧没有产出（超时、崩溃、输出不合契约）时，标签与评论<b>保持原状</b>——「没拿到结论」不等于「判定为不合格」。</li>
+        </ul>
+      </div>
+
+      <div class="req rule" id="fr-5-6">
+        <div class="hd"><span class="id">FR-5.6</span><span class="ttl">上下文压缩</span><span class="pri">P0</span></div>
+        <p>会话常驻（见 <a class="ref" href="#fr-3-4">FR-3.4 会话常驻，沙箱随 issue 关闭回收</a>）意味着上下文只会越来越长。超过模型窗口时必须<b>自动压缩</b>，而不是报错、丢消息，或强行开新会话。</p>
+
+        <h4>触发</h4>
+        <ul>
+          <li>阈值<b>从当前模型的上下文窗口现算</b>，不做成配置项——一个固定数字无法同时服务 32K 和 1M 窗口。</li>
+          <li>两条线：<b>自动压缩线</b>（安全预算的 90%）与<b>硬边界</b>（安全预算本身）。过了硬边界不发送请求，宁可失败也不发一个注定被拒的包。</li>
+          <li>检查点固定在「请求发出前」：新消息之前、每个轮次边界、工具批次之后。</li>
+          <li>临近边界时提前提醒模型收尾（两档：还能用多少 / 现在就把必须留存的写下来），每档只响一次。</li>
+        </ul>
+
+        <h4>压缩方式</h4>
+        <ul>
+          <li>让模型生成结构化摘要，覆盖<b>切点之前的全部消息</b>——不允许出现「消息离开了上下文却没被摘要覆盖」。</li>
+          <li>摘要必须保留：目标、约束与偏好、进度（已完成 / 进行中 / 受阻）、关键决策、下一步、关键上下文。<b>精确的文件路径、函数名、报错原文必须原样保留</b>，不能被改写成概述。</li>
+          <li>压缩区间内读写过的文件清单由系统追加，不依赖模型记忆。</li>
+        </ul>
+
+        <h4>压缩结果怎么放</h4>
+        <ul>
+          <li><b>追加一条 checkpoint，不改写历史。</b>原始对话一条不删，后台始终可查完整记录。</li>
+          <li>喂给模型的内容 = 从最新 checkpoint 重建；这与后台看到的对话是<b>两套视图</b>，不能混为一谈。</li>
+          <li>重建时保留最近一段真实消息，而不是只丢一份摘要进去（见下面的保留策略）。</li>
+        </ul>
+
+        <h4>多次压缩</h4>
+        <ul>
+          <li>第二次压缩<b>不是重压全量</b>，而是「上一版摘要 + 之后的新增消息」，用更新式提示词：保留旧信息、补充新进展、把「进行中」迁移到「已完成」。</li>
+          <li>区间过长时分块链式摘要，每块带上上一块的摘要，最终收敛成一份；<b>不允许把多份摘要拼接</b>，那会产生互相矛盾的段落。</li>
+        </ul>
+
+        <h4>工具输出</h4>
+        <p>大结果分三层处理，任何一层都不允许直接丢消息：</p>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:190px">阶段</th><th>处理</th></tr></thead>
+            <tbody>
+              <tr><td>执行时</td><td>抓取有上限，超出部分落文件，正文留截断标记与文件路径</td></tr>
+              <tr><td>拼摘要时</td><td>单条工具结果截断到 2000 字符，带「已截断 N 字符」标记</td></tr>
+              <tr><td>仍超预算时</td><td>降到 500 字符并丢弃思考块；正文与工具入参不动，也不删任何消息</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>保留策略：与参考实现的一处刻意偏离</h4>
+        <div class="callout warn">
+          <span class="k">偏离</span>
+          <p>参考实现压缩后只保留最近的用户消息，助手内容与工具结果只能通过摘要存活。我们<b>不照搬</b>：保留<b>真实最近窗口（含助手输出与工具结果）</b>，按 token 预算裁剪，摘要只负责补足窗口之外的旧历史。</p>
+          <p style="margin-top:6px"><b>理由：</b>摘要一旦漏掉一段报错原文或一个 diff，模型只能重新读文件、重跑命令。长任务里这一次返工，比多占 20k token 贵得多。</p>
+          <p style="margin-top:6px"><b>代价：</b>必须同时剔除「工具调用已不在窗口内的孤儿结果」，否则模型接口会直接报错。</p>
+        </div>
+
+        <h4>失败降级</h4>
+        <p>按顺序降级，每一步都有界、可观测：</p>
+        <ol style="margin:10px 0;padding-left:22px;color:var(--ink2);font-size:13px">
+          <li>预检 —— 用实际要发送的内容估算 token，不发注定失败的请求</li>
+          <li>摘要请求短重试 —— 3 次，退避 2 / 4 / 8 秒；鉴权、配额类错误首次即返回，不浪费时间</li>
+          <li>一次有界削减 —— 工具结果降到 500 字符、丢弃思考块，其余不动</li>
+          <li>分块摘要 —— 长区间切块链式压缩</li>
+          <li>兜底 checkpoint —— 沿用上版摘要 + 真实最近窗口 + 明确标记，说明这次是兜底而非正常压缩</li>
+          <li>仍超硬边界 —— 拒绝发送请求并明确报错，记录失败原因</li>
+        </ol>
+        <div class="note"><b>空摘要视为失败。</b>看起来压缩成功、实际把上下文丢了，比直接失败更糟——失败至少会被发现。</div>
+
+        <h4>可观测</h4>
+        <ul>
+          <li>每次压缩记录：压缩前后 token、摘要长度、是否走了兜底、第几代。</li>
+          <li>后台会话详情能标出压缩点，让人知道<b>哪一段历史已经不在模型上下文里了</b>。</li>
+        </ul>
+      </div>
+
+      <h4 id="tools">执行侧可用工具</h4>
+      <p>执行侧基于 pi SDK，工具分三层：<b>SDK 自带</b>、<b>平台补的只读能力</b>、<b>平台有意不提供的写能力</b>。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:104px">类别</th><th style="width:214px">工具</th><th style="width:82px">来源</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>文件</td><td><code>Read</code> <code>Write</code> <code>Edit</code> <code>Glob</code> <code>Grep</code></td><td>pi SDK</td><td>读写工作区内的代码与文档；路径限制在工作树内</td></tr>
+            <tr><td>执行</td><td><code>Bash</code></td><td>pi SDK</td><td>命令执行；输出有上限，超出部分落文件并留截断标记</td></tr>
+            <tr><td>计划</td><td><code>TodoWrite</code></td><td>pi SDK</td><td>长任务拆步与进度记录，不改变仓库状态</td></tr>
+            <tr><td>委派</td><td><code>Task</code></td><td>pi SDK</td><td>派生只读子代理并行调研；不共享主会话上下文</td></tr>
+            <tr><td>上下文</td><td><code>new_context</code></td><td>pi SDK</td><td>模型主动要求换窗口，触发压缩而非换会话</td></tr>
+            <tr><td>扩展</td><td><code>mcp__*</code> · <code>plugin_*</code></td><td>插件</td><td>需白名单，默认关闭</td></tr>
+            <tr><td>平台只读</td><td><code>IssueGet</code></td><td>我方实现</td><td>读单条 issue 的正文、评论与时间线，用于判断上下文</td></tr>
+            <tr><td>平台只读</td><td><code>IssueSearch</code></td><td>我方实现</td><td>按关键词 / 标签检索，补 <code>{{repo.issues}}</code> 只有标题索引的不足</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <span class="k">不提供的</span>
+        <p><b>评论、打标、关闭、开 PR 这类写操作，一律不作为工具开放。</b>它们只能通过产出契约（<a class="ref" href="#fr-5-3">FR-5.3 产出契约：四类动作</a>）表达，由平台执行。</p>
+      </div>
+
+      <p>三条理由，都不是洁癖：</p>
+      <ul>
+        <li><b>绕开治理</b>：agent 自己发评论就跳过了槽位覆盖、内容去重、写回闸门与审计，重复评论和误删标签会立刻出现。</li>
+        <li><b>无法幂等</b>：模型重试一次就可能发两条一样的评论；目标态交给平台做 diff，天然幂等。</li>
+        <li><b>权限外溢</b>：给 GitHub 凭证等于把仓库写权限交给执行环境，而执行环境跑的是模型生成的命令。</li>
+      </ul>
+
+      <p>读操作则可以给，但要满足两条：<b>走平台代理</b>（用平台自己的 App 凭证，token 不进沙箱）、<b>只读且可审计</b>（每次调用记入工具记录）。</p>
+
+      <!-- 5.6 -->
+      <h3 id="s5-6">5.6 记录与查询</h3>
+
+      <div class="req rule" id="fr-6-1">
+        <div class="hd"><span class="id">FR-6.1</span><span class="ttl">完整对话记录</span><span class="pri">P0</span></div>
+        <p>会话内每一轮的用户输入、助手输出、工具调用与结果，全部按顺序落库。</p>
+        <div class="note"><b>来源要求：</b>必须由执行侧生成，不能依赖 agent 在回答里自述——自述只是声称，不是证据。</div>
+      </div>
+
+      <div class="req rule" id="fr-6-2">
+        <div class="hd"><span class="id">FR-6.2</span><span class="ttl">工具调用记录</span><span class="pri">P0</span></div>
+        <p>每次工具调用记录：工具名、入参、返回摘要、耗时、成功与否。命令类还要记录 argv、退出码。</p>
+      </div>
+
+      <div class="req rule" id="fr-6-3">
+        <div class="hd"><span class="id">FR-6.3</span><span class="ttl">token 与成本</span><span class="pri">P0</span></div>
+        <p>按轮次记录 prompt token 与 completion token，并折算成本。可汇总到 issue、仓库、时间维度。</p>
+      </div>
+
+      <div class="req rule" id="fr-6-4">
+        <div class="hd"><span class="id">FR-6.4</span><span class="ttl">后台查询</span><span class="pri">P0</span></div>
+        <p>后台管理界面至少支持四种查询：</p>
+        <div class="tbl" style="margin-top:8px">
+          <table>
+            <thead><tr><th style="width:150px">视图</th><th>能看到什么</th></tr></thead>
+            <tbody>
+              <tr><td>会话详情</td><td>完整对话流，按轮次分组；每条工具调用可展开看入参</td></tr>
+              <tr><td>成本与用量</td><td>按 issue / 仓库 / 时间聚合；单轮成本可下钻</td></tr>
+              <tr><td>事件时间线</td><td>投递 → 判定 → 执行 → 写回；被忽略的事件也能看到原因</td></tr>
+              <tr><td>审计</td><td>谁触发、改了什么、失败了在哪一步</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <h4>示例：后台里一条会话长什么样</h4>
+      <p>下面两个展开区是同一份记录的两种视图。视觉按 <b>pi-desktop 的实际对话界面</b>做：消息行无卡片、工具调用是弱化的折叠行（轮 → 组 → 工具三层），只有用户输入才有气泡。我们的后台比它多三样东西：<b>系统提示词</b>（桌面端不展示）、<b>每条输入的事件元信息</b>、<b>平台写回结果</b>。</p>
+
+      <details class="demo">
+        <summary>完整对话（系统提示词 + 两轮事件）</summary>
+        <div class="demo-body">
+          <div class="dlg">
+            <div class="dlg-hd">
+              <span><b>会话</b>cs_7f3a2b91</span>
+              <span><b>Issue</b><a href="#fr-3-1">#1950</a></span>
+              <span><b>轮次</b>2</span>
+              <span><b>累计</b>18.4k in / 2.1k out</span>
+            </div>
+
+            <div class="d-sys">
+              <div class="d-sys-h"><span class="lb">系统提示词</span><span>项目级 · 每次调用都带 · 不参与压缩</span></div>
+              <pre>你是 org/repo 的 issue 助手。
+
+职责：
+- 判断 issue 是否包含复现所需的关键信息
+- 给出可执行的补充建议，而不是复述规则
+
+边界：
+- 不合并 PR，不直接修改代码
+- 标签只使用项目标签目录里的名字
+- 产出必须包含：结论、缺失项、目标标签</pre>
+              <div class="d-sys-more">完整内容约 1.4k token，此处截前 10 行；滚动可看全文</div>
+            </div>
+
+            <div class="d-row in">
+              <div class="d-meta">
+                <span><b>事件</b>issues.opened</span>
+                <span><b>人员</b>alice</span>
+                <span><b>链接</b><a href="#fr-3-1">issues/1950</a></span>
+                <span><b>10:02:31</b></span>
+              </div>
+              <div class="d-bubble">/issue-format-check#1950
+https://github.com/org/repo/issues/1950
+正文：```
+导出闪退，急
+```
+作者：alice · 当前标签：（无）</div>
+            </div>
+
+            <div class="d-row out">
+              <div class="d-turn">
+                <span class="chev">›</span><span>运行完成</span><span class="sep">·</span><span>5.2s</span><span class="sep">·</span><span>3 个工具</span>
+              </div>
+              <div class="d-group">
+                <span class="chev">›</span><span>读取文件并执行命令</span><span class="sep">·</span><span>3 次操作</span>
+              </div>
+              <div class="d-tools">
+                <div class="d-tool">
+                  <svg viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg>
+                  <span class="nm">列出</span>
+                  <span class="arg">.github/ISSUE_TEMPLATE</span>
+                  <span class="chip">3 项</span>
+                </div>
+                <div class="d-tool">
+                  <svg viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/></svg>
+                  <span class="nm">读取</span>
+                  <span class="arg">.github/ISSUE_TEMPLATE/bug_report.md</span>
+                  <span class="chip">1.2 KB</span>
+                </div>
+                <div class="d-tool">
+                  <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4"/><path d="M10.5 10.5L14 14"/></svg>
+                  <span class="nm">搜索</span>
+                  <span class="arg">导出 · 近 200 条 issue 索引</span>
+                  <span class="chip">2 处</span>
+                </div>
+                <div class="d-tool">
+                  <svg viewBox="0 0 16 16"><path d="M3 4l3.5 4L3 12"/><path d="M9 12h4"/></svg>
+                  <span class="nm">运行</span>
+                  <span class="arg">grep -c "缺" docs/triage.md</span>
+                  <span class="st ok">已完成</span>
+                </div>
+              </div>
+
+              <div class="d-outblock">
+                <div class="sh">输出</div>
+                <pre>缺失项判定：
+- version  未找到 iOS 版本
+- device   未找到机型
+- steps    未找到复现步骤
+
+对照模板 bug_report.md：四项必填，仅「期望结果」可省。</pre>
+              </div>
+
+              <div class="d-answer">
+                <p>缺三项，按模板要求补齐即可。</p>
+                <pre>{
+  "verdict": "fail",
+  "evidence": ["缺少 iOS 版本", "缺少机型", "缺少复现步骤"],
+  "actions": [
+    { "type": "label",   "payload": { "desired": ["needs-info"], "clear": false } },
+    { "type": "comment", "payload": { "slot": "format-review",
+      "body": "缺少 3 项：iOS 版本、机型、复现步骤。模板见 .github/ISSUE_TEMPLATE/bug_report.md" } }
+  ]
+}</pre>
+              </div>
+
+              <div class="d-foot">
+                <span class="chip">deepseek-chat</span>
+                <span class="chip"><span class="bar"><i></i><i></i><i></i></span>9.1k in / 0.9k out · 4.8s</span>
+              </div>
+            </div>
+
+            <div class="d-act">
+              <span class="tag">写回</span>
+              <span>标签 + needs-info</span>
+              <span>评论 slot=format-review · 新建</span>
+              <span class="st ok" style="color:#0a7a35">2/2 成功</span>
+            </div>
+
+            <div class="d-row in">
+              <div class="d-meta">
+                <span><b>事件</b>issues.edited</span>
+                <span><b>人员</b>alice</span>
+                <span><b>链接</b><a href="#fr-3-1">issues/1950</a></span>
+                <span><b>10:06:12</b></span>
+              </div>
+              <div class="d-bubble">/issue-format-check#1950 正文有更新，只判断补充部分
+变更：
++ 环境：iOS 18.2 / iPhone 15
++ 步骤：设置 → 导出 → 点击导出按钮后闪退</div>
+            </div>
+
+            <div class="d-row out">
+              <div class="d-turn">
+                <span class="chev">›</span><span>运行完成</span><span class="sep">·</span><span>3.8s</span><span class="sep">·</span><span>无工具调用</span>
+              </div>
+              <div class="d-answer">
+                <p>三项已补齐。上一轮的模板对照结论还在会话里，不需要重读。</p>
+                <pre>{
+  "verdict": "pass",
+  "actions": [
+    { "type": "label",   "payload": { "desired": [], "clear": false } },
+    { "type": "comment", "payload": { "slot": "format-review",
+      "body": "信息已齐备，进入处理流程。" } }
+  ]
+}</pre>
+              </div>
+              <div class="d-foot">
+                <span class="chip">deepseek-chat</span>
+                <span class="chip"><span class="bar"><i></i><i></i><i></i></span>2.3k in / 0.2k out · 3.6s</span>
+              </div>
+            </div>
+
+            <div class="d-act">
+              <span class="tag del">写回</span>
+              <span>标签 − needs-info</span>
+              <span>评论 slot=format-review · 更新（未新增）</span>
+              <span style="color:#0a7a35">1/1 成功</span>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <details class="demo">
+        <summary>工具调用记录（同一会话的另一种视图）</summary>
+        <div class="demo-body">
+          <div class="tbl">
+            <table>
+              <thead>
+                <tr><th style="width:68px">时间</th><th style="width:52px">轮次</th><th style="width:62px">动作</th><th>参数</th><th style="width:150px">结果</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>10:02:33</td><td>#1</td><td>列出</td><td><code>.github/ISSUE_TEMPLATE</code></td><td>3 项 · 148 B</td></tr>
+                <tr><td>10:02:34</td><td>#1</td><td>读取</td><td><code>bug_report.md</code></td><td>1.2 KB</td></tr>
+                <tr><td>10:02:35</td><td>#1</td><td>搜索</td><td><code>导出</code> · 近 200 条索引</td><td>2 处命中</td></tr>
+                <tr><td>10:02:36</td><td>#1</td><td>运行</td><td><code>grep -c "缺" docs/triage.md</code></td><td>退出码 0 · 4 行</td></tr>
+                <tr><td>10:06:17</td><td>#2</td><td>—</td><td>无工具调用（上下文已有上一轮结论）</td><td>—</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout" style="margin-top:12px">
+            <span class="k">读法</span>
+            <p>第二轮没有工具调用是<b>正常且期望</b>的——模板与历史已经在会话里。如果第二轮又完整跑一遍，说明会话没被复用，是缺陷。</p>
+          </div>
+        </div>
+      </details>
+
+    </section>
+
+    <!-- ================= 6 ================= -->
+    <section id="s6">
+      <h2><span class="num">6</span>配置模型</h2>
+      <p class="lead">本章定义配置放在哪、谁能改、怎么生效。</p>
+
+      <h3 id="s6-1">6.1 两个层级</h3>
+      <p>平台级只管两件事：连哪个模型、用哪个 bot 身份。其余全部下放到项目级——同一个平台服务不同仓库时，仓库之间的差异应该只体现在项目配置里。</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:110px">层级</th><th style="width:150px">作用范围</th><th>内容</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>平台级</td>
+              <td>所有项目</td>
+              <td><b>模型相关</b>：端点地址、模型名、密钥、调用参数<br><b>bot 相关</b>：bot 身份、句柄、App 凭证</td>
+            </tr>
+            <tr>
+              <td>项目级</td>
+              <td>单个仓库</td>
+              <td><b>执行侧</b>：agent 系统提示词、并发与限流（并发数 / 日配额 / 超时）<br><b>触发侧</b>：事件开关、事件提示词模板、评论提及关键词、角色清单<br><b>标签</b>：标签目录（与 GitHub 同步）<br><b>其他</b>：数据保留期</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 id="s6-2">6.2 继承与覆盖</h3>
+      <p>平台级只有模型与 bot 两组配置，不参与业务默认值。业务侧的「默认」是<b>内置默认</b>（随程序发布的出厂值），不是平台级配置。</p>
+      <ul>
+        <li>项目未配置的项，<b>回落到内置默认</b>。</li>
+        <li>项目配置<b>整体覆盖</b>内置默认，不追加、不拼接。</li>
+        <li>配置改动对<b>下一个事件</b>生效；已经开始的那一轮不受影响。</li>
+        <li>配置随事件打成快照，保证「判定」与「渲染」用的是同一份配置。</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="k">注意</span>
+        <p>「整体覆盖」意味着项目一旦配了模板，就不再继承内置模板的任何内容。这避免了拼接带来的语义混乱，但也要求项目模板自带完整结构（含触发词）。</p>
+      </div>
+
+      <h3 id="s6-3">6.3 占位符清单</h3>
+      <p>占位符清单已全部确认，下列均为正式占位符。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:180px">占位符</th><th style="width:150px">含义</th><th style="width:120px">可用事件</th><th>示例值</th></tr></thead>
+          <tbody>
+            <tr><td><code>{{issue.author}}</code></td><td>issue 作者</td><td>全部</td><td>alice</td></tr>
+            <tr><td><code>{{issue.number}}</code></td><td>issue 编号</td><td>全部</td><td>1950</td></tr>
+            <tr><td><code>{{issue.url}}</code></td><td>issue 链接</td><td>全部</td><td>https://github.com/org/repo/issues/1950</td></tr>
+            <tr><td><code>{{issue.content}}</code></td><td>issue 正文快照</td><td>全部</td><td>用户在 iOS 18 上导出闪退…</td></tr>
+            <tr><td><code>{{issue.labels}}</code></td><td>issue 当前标签列表</td><td>全部</td><td>bug, needs-info</td></tr>
+            <tr><td><code>{{repo.issues}}</code></td><td>该项目全部 issue 列表（索引，非全文）</td><td>全部</td><td>#1942 [open] 导出闪退</td></tr>
+            <tr><td><code>{{comment.author}}</code></td><td>评论人</td><td>评论</td><td>bob</td></tr>
+            <tr><td><code>{{comment.body}}</code></td><td>评论正文</td><td>评论</td><td>这条和 #1942 是同一个问题吗</td></tr>
+            <tr><td><code>{{issue.title}}</code></td><td>issue 标题 </td><td>全部</td><td>导出按钮点击后闪退</td></tr>
+            <tr><td><code>{{repo}}</code></td><td>仓库全名 </td><td>全部</td><td>org/repo</td></tr>
+            <tr><td><code>{{actor}}</code></td><td>本次动作的触发人 </td><td>全部</td><td>carol</td></tr>
+            <tr><td><code>{{event.action}}</code></td><td>事件动作 </td><td>全部</td><td>opened / edited</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h4>标签列表的格式与边界</h4>
+      <ul>
+        <li><b>格式</b>：标签名以逗号加空格分隔，如 <code>bug, needs-info</code>；issue 没有任何标签时渲染为空串，不填「无」之类的占位词。</li>
+        <li><b>顺序</b>：沿用 GitHub 返回的顺序，不做排序——保证同一 issue 两次渲染的结果稳定，便于比对。</li>
+        <li><b>快照</b>：取本次事件发生时的标签。agent 运行期间标签被别人改了，不影响本轮判断。</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="k">关键</span>
+        <p>标签列表不只是「给 agent 看的一段文本」，它同时是<b>标签目标态的前提</b>（见 <a class="ref" href="#fr-5-4">FR-5.4 标签目标态与删除权</a>）。执行侧看不到当前全量标签，就无从判断该删该留，目标态必然是盲写。</p>
+      </div>
+
+      <div class="callout">
+        <span class="k">边界</span>
+        <p>GitHub 允许标签名里出现逗号。若某仓库确实这么用，分隔符需要改成换行或 <code>|</code>——届时按项目配置指定，默认仍是逗号。</p>
+      </div>
+
+      <h4>issue 列表的规模控制</h4>
+      <p>这个占位符和标签列表不是一回事：标签最多十几个，issue 可能几千条。全量塞进提示词会瞬间吃光上下文，所以必须带硬约束，不能做成「想给什么就给什么」。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:110px">约束</th><th style="width:150px">默认</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>字段</td><td>编号 + 状态 + 标题</td><td>不带正文、评论、标签。判重和找关联靠这三项就够</td></tr>
+            <tr><td>范围</td><td>仅 open</td><td>已关闭的不参与判重；需要时按项目配置改</td></tr>
+            <tr><td>上限</td><td>200 条</td><td>超出按更新时间倒序截断，末尾追加一行说明总数</td></tr>
+            <tr><td>排除 PR</td><td>是</td><td>GitHub 的 issues 接口会把 PR 混进来，必须过滤掉</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>渲染形态（一行一条）：</p>
+      <div class="figure" style="background:#1c2027;border-color:#1c2027;padding:14px 16px">
+        <pre style="margin:0;color:#dfe4ea;font-family:SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.9;overflow-x:auto"><span style="color:#c8d3e0">#1942 [open] 导出按钮点击后闪退
+#1943 [open] 登录后跳转异常
+#1951 [open] 列表滚动卡顿</span>
+<span style="color:#7f8b9c">（共 1243 条，仅列最近 200 条）</span></pre>
+      </div>
+
+      <div class="callout">
+        <span class="k">惰性</span>
+        <p>只有模板里真的写了 <code>{{repo.issues}}</code> 才去拉数据；没写就不拉。否则每条事件都要跑十几次分页请求，大部分是白花的。</p>
+      </div>
+
+      <div class="callout">
+        <span class="k">缓存</span>
+        <p>列表按项目缓存（默认 5 分钟），同一波事件共用一份。缓存过期后重新拉取——判重不需要秒级新鲜度。</p>
+      </div>
+
+      <div class="callout warn">
+        <span class="k">不是全文</span>
+        <p>这是<b>索引</b>，不是内容。agent 想知道某个 issue 具体讲了什么，应该走工具去读那一条，而不是指望列表里带正文。把正文塞进列表会让这个占位符在几百条时就不可用。</p>
+      </div>
+
+      <h3 id="s6-4">6.4 配置示例</h3>
+      <p>一个仓库的项目配置大致长这样（字段名待设计阶段确定）：</p>
+      <div class="figure" style="background:#1c2027;border-color:#1c2027">
+        <pre style="margin:0;color:#dfe4ea;font-family:SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.9;overflow-x:auto"><span style="color:#7f8b9c"># .github/pi-bot.yml（示意）</span>
+<span style="color:#9ecbff">triggers</span>:
+  <span style="color:#9ecbff">issues.opened</span>:
+    <span style="color:#9ecbff">enabled</span>: true
+    <span style="color:#9ecbff">prompt</span>: <span style="color:#c8d3e0">|
+      /issue-format-check#{{issue.number}} {{issue.url}}
+      正文：```{{issue.content}}```
+      作者：{{issue.author}}</span>
+
+  <span style="color:#9ecbff">issues.edited</span>:
+    <span style="color:#9ecbff">enabled</span>: true
+    <span style="color:#9ecbff">only_body_changed</span>: true
+    <span style="color:#9ecbff">prompt</span>: <span style="color:#c8d3e0">|
+      /issue-format-check#{{issue.number}} 正文有更新，只判断补充部分</span>
+
+  <span style="color:#9ecbff">issue_comment.created</span>:
+    <span style="color:#9ecbff">enabled</span>: true
+    <span style="color:#9ecbff">require_mention</span>: true
+    <span style="color:#9ecbff">require_role</span>: false
+    <span style="color:#9ecbff">ignore_bot</span>: true
+    <span style="color:#9ecbff">allow_closed</span>: false
+    <span style="color:#9ecbff">prompt</span>: <span style="color:#c8d3e0">|
+      /issue-answer#{{issue.number}} {{issue.url}}
+      问题：```{{comment.body}}```
+      提问人：{{comment.author}}</span></pre>
+      </div>
+
+      <h3 id="s6-5">6.5 标签目录</h3>
+      <p>平台按项目维护一份标签目录，<b>与 GitHub 仓库保持一致</b>。这份目录既是执行侧的候选集，也是标签目标态的作用域。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:130px">字段</th><th style="width:150px">来源</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>名称</td><td>GitHub</td><td>完全一致，含大小写与连字符，不做改写</td></tr>
+            <tr><td>颜色 / 描述</td><td>GitHub</td><td>与仓库同步，平台不单独维护</td></tr>
+            <tr><td>含义</td><td>平台</td><td>给人看的语义说明，GitHub 没有这个字段</td></tr>
+            <tr><td>分组</td><td>平台</td><td>互斥组，如 status / type / priority，同组只留一个</td></tr>
+            <tr><td>状态</td><td>平台</td><td>有效 / 已失效（GitHub 上被删除）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h4>三条同步规则</h4>
+      <ul>
+        <li><b>GitHub 是身份的事实源</b>：名称、颜色、是否存在，一律以仓库为准；平台不发明标签、不反向创建。</li>
+        <li><b>平台只补语义</b>：含义与分组由人在平台侧维护，同步时不覆盖。</li>
+        <li><b>漂移要显性</b>：仓库新增的标签自动进目录但含义为空；仓库删除的标签标记失效，不再出现在目标态里。</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="k">保护</span>
+        <p><b>含义为空的标签不进入自动对齐范围。</b>执行侧不知道它是什么意思，就不该删它。等有人补上含义，才纳入管理。</p>
+      </div>
+
+      <div class="callout">
+        <span class="k">时机</span>
+        <p>目录在处理事件前按需刷新（有有效期，不必每条事件都请求一次）。避免频繁调用，也避免拿着过期目录做删除判断。</p>
+      </div>
+
+      <h4>目录怎么交给执行侧</h4>
+      <p>目录<b>不作为模板占位符</b>，由平台在装配输入时固定注入，位置紧跟系统提示词。原因：它和系统提示词一样是常驻信息，放进模板容易被漏写；而漏写的后果是「看不到全量标签却输出目标态」——直接盲删。</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:180px">信息</th><th style="width:150px">从哪来</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>目录：可选标签</td><td>平台固定注入</td><td>每行「名称 | 含义 | 分组」，只列含义非空的（即可管理范围）</td></tr>
+            <tr><td>当前标签：已选</td><td>占位符 <code>{{issue.labels}}</code></td><td>这条 issue 现在挂着哪些</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <span class="k">区别</span>
+        <p>目录回答「有哪些可以选」，<code>{{issue.labels}}</code> 回答「现在选了哪些」。两者缺一，目标态都无从判断。</p>
+      </div>
+
+      <h3 id="s6-6">6.6 评论触发配置</h3>
+      <p>评论事件的两个闸门依赖项目级预先定义的数据。闸门里<b>只能选</b>，不能临时填写——否则每换一个人就要改一次闸门。</p>
+
+      <h4>提及关键词</h4>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:150px">项</th><th style="width:100px">必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>关键词</td><td>是</td><td>要命中的名字，如 <code>pi-bot</code>。可配多个（句柄、别名、历史叫法）</td></tr>
+            <tr><td>是否区分大小写</td><td>否</td><td>默认不区分</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>命中规则见 <a class="ref" href="#fr-2-5">FR-2.5 提及关键词与合法提及</a>：<code>@</code> 开头、紧跟关键词、关键词后必须是分隔符。</p>
+
+      <h4>角色清单</h4>
+      <p>项目级维护一份角色清单，每个角色要么按 GitHub 作者关联定义，要么按具体人定义：</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:130px">项</th><th style="width:280px">取值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>角色名</td><td>如「维护者」「值班同学」</td><td>给人看，闸门里按这个名字选</td></tr>
+            <tr><td>判定方式</td><td>作者关联 / 指定成员</td><td>二选一</td></tr>
+            <tr><td>作者关联</td><td>OWNER / MEMBER / COLLABORATOR<br>CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / FIRST_TIMER / NONE</td><td>GitHub 随每条评论直接给出，不需要额外查询</td></tr>
+            <tr><td>指定成员</td><td>GitHub 个人账号（login），如 <code>alice</code></td><td><b>只支持个人，不支持组织或团队</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <span class="k">为什么</span>
+        <p>成员用 login 而不是邮箱：协作者接口本身不返回邮箱，用户邮箱默认不公开（API 返回空），且一个人可能有多个邮箱、随时会换。login 才是 GitHub 上的稳定标识。</p>
+      </div>
+
+      <div class="callout warn">
+        <span class="k">两个坑</span>
+        <p><b>login 会变</b>：用户改名后旧 login 会被释放给他人注册。因此保存配置时把 login 解析成用户 id 一起存，匹配时以 id 为准。<br><b>拼错会静默失效</b>：写错一个字母，那个人永远触发不了且没有报错。保存时校验账号是否存在，不存在就拒绝。</p>
+      </div>
+
+      <div class="callout">
+        <span class="k">关系</span>
+        <p>角色清单是<b>定义</b>，评论闸门是<b>引用</b>。「是否限定角色」打开后，从这里选一个或多个；想加人只改清单，不用动闸门。</p>
+      </div>
+
+      <div class="figure" style="background:#1c2027;border-color:#1c2027">
+        <pre style="margin:0;color:#dfe4ea;font-family:SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.9;overflow-x:auto"><span style="color:#7f8b9c"># 项目级：评论触发相关（示意）</span>
+<span style="color:#9ecbff">comment</span>:
+  <span style="color:#9ecbff">mentions</span>:
+    - <span style="color:#9ecbff">keyword</span>: pi-bot
+    - <span style="color:#9ecbff">keyword</span>: 小豆
+    <span style="color:#9ecbff">case_sensitive</span>: false
+
+  <span style="color:#9ecbff">roles</span>:
+    - <span style="color:#9ecbff">name</span>: 维护者
+      <span style="color:#9ecbff">by</span>: association
+      <span style="color:#9ecbff">any_of</span>: [OWNER, MEMBER, COLLABORATOR]
+    - <span style="color:#9ecbff">name</span>: 值班同学
+      <span style="color:#9ecbff">by</span>: members
+      <span style="color:#9ecbff">members</span>: [alice, bob]   <span style="color:#7f8b9c"># GitHub 个人账号，不支持团队</span>
+
+<span style="color:#9ecbff">triggers</span>:
+  <span style="color:#9ecbff">issue_comment.created</span>:
+    <span style="color:#9ecbff">enabled</span>: true
+    <span style="color:#9ecbff">require_mention</span>: true
+    <span style="color:#9ecbff">allow_roles</span>: [维护者]   <span style="color:#7f8b9c"># 只能选上面定义过的</span>
+    <span style="color:#9ecbff">ignore_bot</span>: true
+    <span style="color:#9ecbff">allow_closed</span>: false</pre>
+      </div>
+
+      <h3 id="s6-7">6.7 agent 系统提示词与执行限额</h3>
+      <p>这两组都在项目级，因为不同仓库对 agent 的角色期待与承载能力本来就不一样。</p>
+
+      <h4>系统提示词</h4>
+      <p>常驻的角色设定与硬约束，每次调用都带；它<b>不是</b>某一次事件的具体指令。与事件模板的分工：</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:120px">维度</th><th style="width:250px">系统提示词</th><th>事件提示词模板</th></tr></thead>
+          <tbody>
+            <tr><td>回答什么</td><td>你是谁、边界在哪、怎么说话</td><td>这一次要做什么</td></tr>
+            <tr><td>生效方式</td><td>每次调用都携带</td><td>触发时渲染后携带</td></tr>
+            <tr><td>变化频率</td><td>稳定，很少改</td><td>随事件类型不同</td></tr>
+            <tr><td>归属</td><td>项目级（未配置用内置默认）</td><td>项目级（按事件分别配置）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <span class="k">为什么</span>
+        <p>系统提示词放项目级而非平台级：同一套平台服务不同仓库时，"这个项目的 agent 应该是什么角色"是仓库自己的事，平台不该替它决定。</p>
+      </div>
+
+      <h4>并发与限额</h4>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:130px">项</th><th style="width:190px">含义</th><th>触顶行为</th></tr></thead>
+          <tbody>
+            <tr><td>并发数</td><td>同一项目同时最多几个会话在跑</td><td>排队等待，不丢弃</td></tr>
+            <tr><td>日配额</td><td>每天最多处理多少个事件</td><td>拒绝处理并记录原因，可查</td></tr>
+            <tr><td>单轮超时</td><td>一轮执行的最长时长</td><td>终止并记为超时，不自动重试</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note"><b>为什么不设平台级限额：</b>不同仓库的负载差异很大，用一个全局值卡所有项目只会让轻的浪费、重的排队。平台只在部署层面给出总量级约束（见 <a class="ref" href="#s9">9 非功能需求</a>），不做业务限流。</div>
+    </section>
+
+    <!-- ================= 7 ================= -->
+    <section id="s7">
+      <h2><span class="num">7</span>业务规则</h2>
+      <p class="lead">本章是跨需求的硬规则，实现与测试都以此为准。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:80px">编号</th><th style="width:160px">规则</th><th>内容</th></tr></thead>
+          <tbody>
+            <tr id="br-1"><td>BR-1</td><td>会话唯一</td><td>同一 issue 在同一时刻只能有一个活跃会话；映射一对一，不允许并发创建。</td></tr>
+            <tr id="br-2"><td>BR-2</td><td>串行消费</td><td>同一 issue 的轮次串行；跨 issue 并行。</td></tr>
+            <tr id="br-3"><td>BR-3</td><td>事件幂等</td><td>投递级、事件级、内容级三层去重（见 <a class="ref" href="#fr-3-5">FR-3.5 幂等：三层去重</a>）；同 issue 内同内容评论只处理一次；上一轮失败的不算重复。</td></tr>
+            <tr id="br-4"><td>BR-4</td><td>增量投喂</td><td>后续事件只下发变更与指令，不重复整篇正文。</td></tr>
+            <tr id="br-5"><td>BR-5</td><td>会话域隔离</td><td>issue 与 PR 各自独立会话，上下文不互通。</td></tr>
+            <tr id="br-6"><td>BR-6</td><td>不触发也留痕</td><td>未通过开关或闸门的事件，必须记录判定结果与原因，可在后台查询。</td></tr>
+            <tr id="br-7"><td>BR-7</td><td>失败可见</td><td>执行失败必须有可见反馈（兜底评论或后台告警），不得静默。</td></tr>
+            <tr id="br-8"><td>BR-8</td><td>配置即快照</td><td>同一事件内，判定用的配置与渲染用的配置必须是同一份快照。</td></tr>
+            <tr id="br-9"><td>BR-9</td><td>标签以目录为准</td><td>标签身份以该项目的标签目录为准，与 GitHub 保持一致；目录外不存在可打的标签。</td></tr>
+            <tr id="br-10"><td>BR-10</td><td>删除留痕</td><td>任何标签删除都要记录原主人（人 / 机器）与删除原因，可复盘。</td></tr>
+            <tr id="br-11"><td>BR-11</td><td>标签管辖边界</td><td>人若不想让平台动某个标签，在项目级把该标签标记为「不自动管理」；标记后平台既不删也不加。未标记的标签按目标态正常对齐——<b>人工删除不构成永久否决</b>。</td></tr>
+            <tr id="br-12"><td>BR-12</td><td>无语义不删</td><td>目录里含义为空的标签，不参与自动对齐——不知道语义就不做删除判断。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= 8 ================= -->
+    <section id="s8">
+      <h2><span class="num">8</span>数据需求</h2>
+      <p class="lead">本章只给数据对象的职责与保留要求，字段设计留给技术方案。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:150px">对象</th><th style="width:200px">记录什么</th><th style="width:130px">保留</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td>事件投递</td><td>原始请求体、事件类型、动作、判定结果</td><td>90 天</td><td>去重、回放、排查"为什么没处理"</td></tr>
+            <tr><td>项目配置</td><td>该仓库当前生效的配置与版本</td><td>长期</td><td>判定与渲染的依据</td></tr>
+            <tr><td>会话</td><td>issue 与会话的映射、运行状态（活跃 / 空闲）</td><td>与 issue 同生命周期</td><td>保证一个 issue 一个会话；关闭 issue 只回收沙箱，不删会话</td></tr>
+            <tr><td>轮次</td><td>每次执行的起止、结果、失败原因</td><td>长期</td><td>统计与定位</td></tr>
+            <tr><td>对话</td><td>每轮的消息与工具调用明细</td><td>按需</td><td>后台查看完整对话</td></tr>
+            <tr><td>用量</td><td>token 数与成本</td><td>长期</td><td>成本核算</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= 9 ================= -->
+    <section id="s9">
+      <h2><span class="num">9</span>非功能需求</h2>
+      <p class="lead">本章给出量级与底线，不作为优化目标无限上探。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:120px">维度</th><th style="width:240px">要求</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>规模</td><td>&lt; 100 事件/天；单项目默认 2–4 并发</td><td>单组织、少量仓库、单机部署，不引入额外中间件；并发由项目级配置，平台不设业务限流</td></tr>
+            <tr><td>响应</td><td>webhook 应答 &lt; 10 秒</td><td>处理异步；应答只表示"已收到"</td></tr>
+            <tr><td>可靠</td><td>重复投递不产生重复处理</td><td>去重在持久层完成</td></tr>
+            <tr><td>安全</td><td>签名校验；模型凭证不进执行环境</td><td>仓库权限最小化，不授予合并权</td></tr>
+            <tr><td>可维护</td><td>改配置不改代码</td><td>触发规则、模板、闸门都在配置层</td></tr>
+            <tr><td>可追溯</td><td>任一 issue 的处理过程可回放</td><td>对话 + 工具 + 用量三线齐全</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= 10 ================= -->
+    <section id="s10">
+      <h2><span class="num">10</span>验收标准</h2>
+      <p class="lead">本章是可勾选的验收清单，每条都能用一次真实操作验证。</p>
+
+      <ul class="ac">
+        <li id="ac-1"><span class="box"></span><span class="id">AC-1</span><span>同一 issue 先后触发 <code>issues.opened</code> 与 <code>issues.edited</code>，两次处理共用同一个会话 ID。</span></li>
+        <li id="ac-2"><span class="box"></span><span class="id">AC-2</span><span>打开后台的该 issue 会话，能看到两轮的完整对话，且第二轮不再重复询问第一轮已确认的信息。</span></li>
+        <li id="ac-3"><span class="box"></span><span class="id">AC-3</span><span>把某事件的开关改为关闭后，新事件不再进入处理，后台能看到该事件被记为"未触发"及原因。</span></li>
+        <li id="ac-4"><span class="box"></span><span class="id">AC-4</span><span>在项目模板里写两次 <code>{{issue.number}}</code>，两处都被替换为真实编号。</span></li>
+        <li id="ac-5"><span class="box"></span><span class="id">AC-5</span><span>评论未 @ 机器人时（且「是否提及才触发」为开启），该评论不触发；@ 之后触发。</span></li>
+        <li id="ac-6"><span class="box"></span><span class="id">AC-6</span><span>issue 关闭后新增评论（且「是否响应已关闭」为关闭），不触发。</span></li>
+        <li id="ac-7"><span class="box"></span><span class="id">AC-7</span><span>同一 issue 连续快速来三个事件，处理顺序与到达顺序一致，没有并发交错。</span></li>
+        <li id="ac-8"><span class="box"></span><span class="id">AC-8</span><span>同一条 webhook 重放一次，不产生新的轮次。</span></li>
+        <li id="ac-9"><span class="box"></span><span class="id">AC-9</span><span>后台能查到该轮每次工具调用的名称、入参摘要与结果。</span></li>
+        <li id="ac-10"><span class="box"></span><span class="id">AC-10</span><span>后台能查到该轮 prompt 与 completion 的 token 数，并折算成本。</span></li>
+        <li id="ac-11"><span class="box"></span><span class="id">AC-11</span><span>项目未配置某事件模板时，使用平台默认模板，行为与内置一致。</span></li>
+        <li id="ac-12"><span class="box"></span><span class="id">AC-12</span><span>修改项目模板后，下一个事件立即生效，进行中的轮次不受影响。</span></li>
+        <li id="ac-13"><span class="box"></span><span class="id">AC-13</span><span>作者补齐缺失信息后，同槽位的评论被<b>编辑更新</b>（不新增一条），且「需补充信息」标签被自动移除。</span></li>
+        <li id="ac-14"><span class="box"></span><span class="id">AC-14</span><span>执行侧把目标态写成删除一个含义为空的标签时，该删除被拒绝并记录原因。</span></li>
+        <li id="ac-15"><span class="box"></span><span class="id">AC-15</span><span>维护者手动删除某标签后，后续轮次即使目标态里包含它，也不会被自动加回。</span></li>
+        <li id="ac-16"><span class="box"></span><span class="id">AC-16</span><span>执行侧超时未产出时，issue 上的标签与评论保持执行前状态，未被误删或误加。</span></li>
+        <li id="ac-17"><span class="box"></span><span class="id">AC-17</span><span>评论写 <code>@pi-bot帮我看看</code>（无分隔符）时不触发；写 <code>@pi-bot 帮我看看</code> 时触发。</span></li>
+                        <li id="ac-21"><span class="box"></span><span class="id">AC-21</span><span>模板里写 <code>{{repo.issues}}</code> 时，渲染结果只含编号/状态/标题，不含 PR；超过上限时有「共 N 条，仅列最近 M 条」的说明。</span></li>
+        <li id="ac-22"><span class="box"></span><span class="id">AC-22</span><span>模板里没有该占位符时，处理该事件不产生任何 issue 列表相关的请求。</span></li>
+<li id="ac-19"><span class="box"></span><span class="id">AC-19</span><span>同一 issue 内连续两次发相同内容的评论，第二次不触发处理，后台可查到「因重复内容跳过」的记录。</span></li>
+        <li id="ac-20"><span class="box"></span><span class="id">AC-20</span><span>上一轮执行失败后，用户原样重发同一内容，能够正常触发（不被内容去重挡住）。</span></li>
+<li id="ac-18"><span class="box"></span><span class="id">AC-18</span><span>不在项目角色清单内的人 @ 机器人，且「是否限定角色」为开启时，该评论不触发。</span></li>
+                <li id="ac-24"><span class="box"></span><span class="id">AC-24</span><span>同一会话压缩两次后，模型仍能复述第一轮确定的目标与硬约束（验证摘要没有丢关键信息）。</span></li>
+        <li id="ac-25"><span class="box"></span><span class="id">AC-25</span><span>压缩发生后，后台能看到压缩记录（前后 token、是否兜底、第几代），且原始对话一条不少。</span></li>
+<li id="ac-23"><span class="box"></span><span class="id">AC-23</span><span>issue 关闭后沙箱被回收，重新打开并触发时复用原会话：历史上下文仍在，沙箱自动重建。</span></li>
+      </ul>
+    </section>
+
+    <!-- ================= 11 ================= -->
+    <section id="s11">
+      <h2><span class="num">11</span>决策记录</h2>
+      <p class="lead">本章保留历次拍板的结论与理由，便于日后回看「当初为什么这么定」。未定的项会标出来。</p>
+
+      <div class="req" id="q-1">
+        <div class="hd"><span class="id">Q-1</span><span class="ttl">占位符清单 · 已定</span></div>
+        <p><b>已定：</b>现有占位符全部列为正式，不再区分待定。最终清单见 <a class="ref" href="#s6-3">6.3 占位符清单</a>。</p>
+      </div>
+
+      <div class="req" id="q-2">
+        <div class="hd"><span class="id">Q-2</span><span class="ttl">未知占位符怎么处理 · 已定</span></div>
+        <p><b>已定：</b>原样进入提示词，不做替换，同时记一条配置告警。</p>
+        <div class="note"><b>理由：</b>替换成空串会让模板悄悄变成残句，比留一个明显的 <code>{{issue.foo}}</code> 更难发现。</div>
+      </div>
+
+      <div class="req" id="q-3">
+        <div class="hd"><span class="id">Q-3</span><span class="ttl">会话何时结束 · 已定</span></div>
+        <p><b>已定：会话没有结束状态。</b>issue 随时可能被重新打开，因此只有 issue 有「关闭」这个状态，会话本身不归档。</p>
+        <div class="note"><b>关闭时做什么：</b>只回收对应的 agent 沙箱（容器），会话与全部记录保留；重开时直接复用原会话。见 <a class="ref" href="#fr-3-4">FR-3.4 会话常驻，沙箱随 issue 关闭回收</a>。</div>
+      </div>
+
+      <div class="req" id="q-4">
+        <div class="hd"><span class="id">Q-4</span><span class="ttl">上下文超限怎么办 · 已定</span></div>
+        <p><b>已定：参考 pi-desktop 的 checkpoint 压缩机制做自动压缩</b>，具体要求见 <a class="ref" href="#fr-5-6">FR-5.6 上下文压缩</a>。</p>
+        <p>三处关键取舍：</p>
+        <ul>
+          <li><b>阈值现算不配置</b>：从当前模型窗口推导「自动压缩线（90%）」与「硬边界」，避免一个固定数字吃掉不同模型的差异。</li>
+          <li><b>追加 checkpoint 不改写历史</b>：与「会话常驻、记录永久保留」天然一致，压缩只改喂给模型的那份视图。</li>
+          <li><b>偏离参考实现一处</b>：压缩后保留真实最近窗口（含助手输出与工具结果），而不是只留用户消息。摘要漏掉一段报错就得重跑命令，返工成本高于多占的 token。</li>
+        </ul>
+        <div class="note"><b>为什么不自创：</b>长会话压缩的坑集中在「摘要的摘要」与「工具结果丢失」两处，已有实现踩过一遍并留下多轮补丁，直接对齐比重新试验便宜。</div>
+      </div>
+
+      <div class="req" id="q-5">
+        <div class="hd"><span class="id">Q-5</span><span class="ttl">事件进不进会话，谁说了算 · 已定</span></div>
+        <p><b>已定：项目配置说了算。</b>事件开关、触发条件、模板全在项目级，平台只给一套内置默认值。</p>
+        <div class="note"><b>理由：</b>硬编码事件语义会让「同一套平台服务不同仓库」这件事失效。</div>
+      </div>
+
+      <div class="req" id="q-6">
+        <div class="hd"><span class="id">Q-6</span><span class="ttl">一条模板能不能挂多个技能 · 已定</span></div>
+        <p><b>已定：</b>一个事件对应一个提示词；具体触发什么处理不由平台控制。平台不维护技能注册表，只执行产出的四类动作（<a class="ref" href="#fr-5-1">FR-5.1 平台不决定处理内容</a> / <a class="ref" href="#fr-5-3">FR-5.3 产出契约：四类动作</a>）。</p>
+        <div class="note"><b>推论：</b>多技能串行、阶段间结果传递这类复杂度交给提示词与执行侧自行处理，平台不介入。</div>
+      </div>
+    </section>
+
+    <!-- ================= 12 ================= -->
+    <section id="s12">
+      <h2><span class="num">12</span>附录 · 术语</h2>
+      <p class="lead">本章统一口径，避免同一概念多种叫法。</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:140px">术语</th><th>定义</th></tr></thead>
+          <tbody>
+            <tr><td>事件</td><td>GitHub 投递到平台的一次通知，由「事件类型 + 动作」共同确定，如 <code>issues.opened</code>。</td></tr>
+            <tr><td>触发</td><td>某事件通过开关与闸门判断，被允许进入处理。</td></tr>
+            <tr><td>会话</td><td>一个 issue 在 agent 侧的身份，与 issue 同生命周期，持有历史上下文，跨事件复用；没有结束状态。</td></tr>
+            <tr><td>轮次</td><td>会话内的一次完整执行，由一条提示词驱动。</td></tr>
+            <tr><td>模板</td><td>项目配置里的事件提示词，含占位符，触发时渲染成实际指令。</td></tr>
+            <tr><td>占位符</td><td>模板中形如 <code>{{issue.author}}</code> 的变量，渲染时替换为真实值。</td></tr>
+            <tr><td>闸门</td><td>评论事件特有的附加判断条件，如是否提及、是否限定角色。</td></tr>
+            <tr><td>写回</td><td>平台把处理结果落到 GitHub 的动作：评论、打标、建 issue、开 PR、关闭 issue。后三类默认关闭，需项目显式开启（见 <a class="ref" href="#fr-5-3">FR-5.3 产出契约</a>）。</td></tr>
+            <tr><td>目标态</td><td>执行侧给出的「该 issue 最终应有哪些标签」的完整集合；平台与当前状态对齐，多的删、少的加。</td></tr>
+            <tr><td>标签目录</td><td>平台按项目维护的标签清单，身份与 GitHub 仓库一致，语义（含义、分组）由平台侧补充。</td></tr>
+            <tr><td>槽位</td><td>评论的固定位置标识。同一槽位只保留一条评论，更新时覆盖而不是新发。</td></tr>
+            <tr><td>提及关键词</td><td>项目级配置的触发名字（如 pi-bot）。评论里 @ 关键词且其后是分隔符，才算合法提及。</td></tr>
+            <tr><td>角色清单</td><td>项目级定义的可触发角色集合，每个角色按作者关联或指定成员（GitHub 个人账号）判定；闸门只能从中引用，不支持组织与团队。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <footer>
+        <span>Issue 处理平台 · 需求文档 v2.1 · 评审中</span>
+        <span>2026-11-12 · 决策记录见第 11 章</span>
+      </footer>
+    </section>
+  </main>
+</div>
+
+<script>
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var targets = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function sync(){
+    var y = window.scrollY + 120, idx = 0;
+    for (var i = 0; i < targets.length; i++){
+      if (targets[i] && targets[i].offsetTop <= y) idx = i;
+    }
+    links.forEach(function(a, i){ a.classList.toggle('on', i === idx); });
+  }
+  window.addEventListener('scroll', sync, { passive: true });
+  sync();
+})();
+</script>
+</body>
+</html>

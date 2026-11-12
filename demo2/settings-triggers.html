@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设置 · 触发 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="settings-triggers" data-crumb="触发">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>设置 · 触发</h1>
+          <p class="desc">删除 <code class="inline">triggers.faces</code>（P7），移除对应编辑项；<code class="inline">triggers.enabled</code> 只影响 @ 提及类触发，不影响 issue 流水线（P8）。</p>
+        </div>
+        <div class="page-actions">
+          <a class="btn ghost sm" href="flow.html">看 webhook 三分支 ⇢</a>
+          <button class="btn primary sm" data-toast="触发配置已保存" data-toast-desc="整份 settings PUT · 服务端是唯一事实源" data-toast-tone="success">保存</button>
+        </div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:200px minmax(0,1fr);align-items:start">
+        <div class="card" style="position:sticky;top:64px;padding:8px" id="settings-nav"></div>
+
+        <div class="stack">
+          <div class="card"><div class="card-body" id="settings-status"></div></div>
+
+          <div class="notice danger">
+            <span class="n-ico">×</span>
+            <div><strong>triggers.faces 已删除</strong>。代码复核 R3：<code class="inline">packages/contract/src/trigger.ts:270-302</code> 定义了它，但全仓<strong>零消费</strong>——「冻结 faces」一直是空操作，留着只会让人以为能关掉流程。0005 迁移会清掉残键；新 schema 用 <code class="inline">.strict()</code> 拒收（V17）。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>触发配置<span class="sub">仅 @ 提及类触发，与流水线无关</span></h2></div>
+            <div class="card-body flush"><table class="tbl">
+              <thead><tr><th style="width:26%">键</th><th style="width:20%">当前值</th><th>作用范围</th></tr></thead>
+              <tbody id="trigger-rows"></tbody>
+            </table></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>已删除的编辑项<span class="sub">面板不再渲染</span></h2><span class="badge danger">P7 / R3</span></div>
+            <div class="card-body" id="removed"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>不可绕过验真<span class="sub">V10 · 点击开关，看三段是否照常跑</span></h2></div>
+            <div class="card-body">
+              <div class="grid g2">
+                <div class="stack" style="gap:10px" id="switches"></div>
+                <div>
+                  <div class="card" style="background:var(--surface-2)">
+                    <div class="card-body" id="verdict"></div>
+                  </div>
+                  <div class="tiny faint" style="margin-top:8px">判据来源：<code class="inline">docs/plan-fixed-pipeline.md</code> §16.1 / V10。<code class="inline">repos.enabled=false</code> 只表示「未接入」，是部署准入，不是流程开关。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>webhook 三分支<span class="sub">issue 事件一律入流水线，auto:triage 分支已删（E1）</span></h2></div>
+            <div class="card-body flush"><table class="tbl">
+              <thead><tr><th style="width:26%">事件</th><th style="width:24%">产生任务</th><th>条件 / 动作</th></tr></thead>
+              <tbody id="webhook-rows"></tbody>
+            </table></div>
+            <div class="card-foot">pipeline 任务绕开 <code class="inline">checkCommandGate</code>；<code class="inline">commands.enabled=false</code> 与命令白名单都不影响它。</div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+  D.renderSettingsNav('triggers');
+  D.renderSettingsStatus('acme/pi-console');
+
+  var rows = [
+    ['triggers.users', 'all', '谁能用 @ 触发命令；不影响 issue 事件入流水线'],
+    ['triggers.aliases', '4 个别名', '/review-pr、/issue-triage、/issue-repro 等命令别名'],
+    ['triggers.enabled', 'true', 'P8：只关 @ 提及类触发，不影响 issue 流水线'],
+    ['commands.enabled', 'true', '命令门禁开关；pipeline 走独立分支，不进 checkCommandGate'],
+    ['commands.whitelist', '3 条', '命令白名单；对 pipeline:* 任务不适用'],
+    ['repos.enabled', 'true', '部署准入：false = 仓库未接入机器人；接了就必须走三段']
+  ];
+  document.getElementById('trigger-rows').innerHTML = rows.map(function (r) {
+    return '<tr><td class="mono small">' + esc(r[0]) + '</td><td><span class="badge neutral mono">' + esc(r[1]) + '</span></td>' +
+      '<td class="small muted">' + esc(r[2]) + '</td></tr>';
+  }).join('');
+
+  var faces = [
+    ['faces.issues', 'new_issue / issue_edited', '从未被服务端读取'],
+    ['faces.issue_comment', 'comment_created', '从未被服务端读取'],
+    ['faces.pull_request', 'pr_opened / pr_edited', '从未被服务端读取'],
+    ['faces.mention', 'bot_mentioned', '从未被服务端读取']
+  ];
+  document.getElementById('removed').innerHTML = faces.map(function (f) {
+    return '<div class="row between" style="padding:8px 0;border-bottom:1px solid var(--border)">' +
+      '<span class="mono small" style="text-decoration:line-through;color:var(--faint)">' + esc(f[0]) + '</span>' +
+      '<span class="mono tiny faint" style="text-decoration:line-through">' + esc(f[1]) + '</span>' +
+      '<span class="badge danger">' + esc(f[2]) + '</span></div>';
+  }).join('') + '<div class="notice info" style="margin-top:12px"><span class="n-ico">◇</span><div>原来这四项在设置页里有开关，但改了没有任何效果。现在整段删除，界面不再给出「看起来能关闭流程」的错觉。</div></div>';
+
+  /* ---------- 不可绕过验真 ---------- */
+  var sw = [
+    { k: 'triggers.enabled=false', d: '关闭 @ 提及类触发', on: false },
+    { k: 'commands.enabled=false', d: '关闭命令门禁', on: false },
+    { k: '白名单清空', d: 'commands.whitelist = []', on: false },
+    { k: 'triggers.faces 全关', d: '该键已删除，无法再设置', on: false, disabled: true },
+    { k: 'repos.enabled=false', d: '仓库未接入机器人', on: false }
+  ];
+  document.getElementById('switches').innerHTML = sw.map(function (s, i) {
+    return '<label class="switch"><input type="checkbox" data-sw="' + i + '"' + (s.disabled ? ' disabled' : '') + ' />' +
+      '<span class="track"></span><span><span class="mono small">' + esc(s.k) + '</span>' +
+      '<span class="tiny faint" style="display:block">' + esc(s.d) + '</span></span></label>';
+  }).join('');
+
+  function renderVerdict() {
+    var unplugged = sw[4].on;
+    var lines = ['decideWebhookTask(issues.opened)', '  → pipeline:format', '  → pipeline:classify', '  → agent/ready'];
+    var html;
+    if (unplugged) {
+      html = '<div class="row"><span class="dot neutral"></span><span class="strong small">仓库未接入 · 不处理事件</span></div>' +
+        '<p class="small muted" style="margin:8px 0 0">这是<strong>部署准入</strong>，不是流程开关。把 repos.enabled 调回 true 后，所有已接入仓库仍一律走三段。</p>' +
+        '<pre class="code" style="margin-top:10px">repos.enabled = false\n→ webhook 忽略该仓库（仓库行保留）</pre>';
+    } else {
+      html = '<div class="row"><span class="dot success"></span><span class="strong small">三段照常跑 · 没有任何配置能绕过</span></div>' +
+        '<p class="small muted" style="margin:8px 0 0">以上开关任意组合都不改变结果。全仓 grep 不到 <code class="inline">auto:triage</code> 任务，也没有老流程分支。</p>' +
+        '<pre class="code" style="margin-top:10px">' + esc(lines.join('\n')) + '</pre>' +
+        '<div class="row" style="margin-top:8px"><span class="badge success">V10 通过</span><span class="badge neutral mono">无 pipeline.enabled</span></div>';
+    }
+    document.getElementById('verdict').innerHTML = html;
+  }
+  document.getElementById('switches').addEventListener('change', function (e) {
+    var c = e.target.closest('[data-sw]'); if (!c) return;
+    sw[Number(c.getAttribute('data-sw'))].on = c.checked;
+    renderVerdict();
+    D.toast(sw[Number(c.getAttribute('data-sw'))].k, sw[4].on ? '仓库未接入，事件被忽略（部署准入）' : '三段流程照常运行（V10）', sw[4].on ? 'warn' : 'success');
+  });
+  renderVerdict();
+
+  /* ---------- webhook 三分支 ---------- */
+  var wh = [
+    ['issues.opened（非 bot）', 'pipeline:format', '建行 format/pending + 正文快照 target_title / target_body'],
+    ['issues.edited（body/title 变）', 'pipeline:format', 'format/pending 或 awaiting_info 时重跑（冷却 120s）；agent/ready 时忽略（D7）'],
+    ['issue_comment.created', 'pipeline:format / classify', '补信息优先通道；classify/awaiting_info 仅 managers 评论触发重分类'],
+    ['@bot /命令（未 ready）', 'pipeline:notice', '被拦的命令不建 command 任务；只回一条 AI 门禁回执（Q8）'],
+    ['PR 事件', '原命令门禁', 'target_kind=pr 走原路径，不受流水线影响']
+  ];
+  document.getElementById('webhook-rows').innerHTML = wh.map(function (r) {
+    return '<tr><td class="mono small">' + esc(r[0]) + '</td><td><span class="badge brand mono">' + esc(r[1]) + '</span></td>' +
+      '<td class="small muted">' + esc(r[2]) + '</td></tr>';
+  }).join('');
+})();
+</script>
+</body>
+</html>

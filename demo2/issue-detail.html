@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Issue 详情 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="issue-detail" data-crumb="单个 issue">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1 id="d-title">—</h1>
+          <p class="desc" id="d-desc">—</p>
+        </div>
+        <div class="page-actions">
+          <a class="btn ghost sm" href="issues.html">← Issue 中心</a>
+          <button class="btn sm" id="copy-link">复制链接</button>
+          <button class="btn sm" data-toast="打开 GitHub（演示）" data-toast-desc="原型不跳外部站点">打开 GitHub</button>
+          <button class="btn primary sm" id="reset-sim">重置演示</button>
+        </div>
+      </div>
+
+      <div class="stepper" id="d-stepper"></div>
+
+      <div class="grid main-side" style="margin-top:14px">
+        <div class="stack">
+
+          <div class="card">
+            <div class="card-head"><h2>阶段时间线<span class="sub">改造新增：阶段 → 任务 → 结论 → 评论</span></h2>
+              <span class="badge neutral mono" id="d-state-badge">—</span></div>
+            <div class="card-body"><div class="timeline" id="d-timeline"></div></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>分类结论与证据<span class="sub">§6 · 面板可复核「查不到」这句话</span></h2>
+              <button class="btn ghost sm" data-open-drawer="tpl-evidence" data-drawer-title="证据校验规则">校验规则</button></div>
+            <div class="card-body" id="d-conclusion"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>机器人评论<span class="sub">AI 自由撰写（Q8）· 控制面只追加 @</span></h2></div>
+            <div class="card-body" id="d-comments"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>补充信息与对话记录<span class="sub">评论优先（E4）：补充内容置顶进提示词</span></h2></div>
+            <div class="card-body" id="d-conversation"></div>
+          </div>
+
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>元信息</h2></div>
+            <div class="card-body" id="d-meta"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>模拟事件<span class="sub">点击即推演状态</span></h2></div>
+            <div class="card-body">
+              <div class="stack" style="gap:7px" id="simulator">
+                <button class="btn sm" data-ev="comment" style="justify-content:flex-start">作者补充评论 <span class="spacer"></span><span class="tiny faint">E4 / D8</span></button>
+                <button class="btn sm" data-ev="manager" style="justify-content:flex-start">managers 回复 <span class="spacer"></span><span class="tiny faint">Q6 修订</span></button>
+                <button class="btn sm" data-ev="next" style="justify-content:flex-start"><code class="inline">/pipeline next</code> <span class="spacer"></span><span class="tiny faint">Q7</span></button>
+                <button class="btn sm" data-ev="prev" style="justify-content:flex-start"><code class="inline">/pipeline prev</code> <span class="spacer"></span><span class="tiny faint">Q7</span></button>
+                <button class="btn sm" data-ev="recheck" style="justify-content:flex-start"><code class="inline">/recheck</code> <span class="spacer"></span><span class="tiny faint">P6</span></button>
+                <button class="btn sm" data-ev="force" style="justify-content:flex-start"><code class="inline">/recheck --force</code> <span class="spacer"></span><span class="tiny faint">解 blocked</span></button>
+              </div>
+              <div class="notice info" style="margin-top:10px"><span class="n-ico">◇</span><div>指令仅 <strong>managers</strong> 可用；这里的推演只改当前页面内存，刷新即还原。每次操作会同步追加时间线与审计记录。</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>该 issue 的审计</h2><a class="btn ghost sm" href="audit.html">全部 ⇢</a></div>
+            <div class="card-body" id="d-audit"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>本阶段提示词装配</h2><a class="btn ghost sm" href="settings-prompt.html">去配置 ⇢</a></div>
+            <div class="card-body" id="d-layers"></div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<template id="tpl-evidence">
+  <div class="stack">
+    <div class="notice warn"><span class="n-ico">!</span><div><strong>defect 是正确性校验，不是排版要求</strong>：<code class="inline">verdict.evidence</code> 至少一条 <code class="inline">rule</code> 以 <code class="inline">code:</code> 开头、<code class="inline">quote</code> 命中 <code class="inline">path:line</code> 正则，否则控制面强制降级 <code class="inline">not-found</code>。</div></div>
+    <div><div class="strong small" style="margin-bottom:6px">控制面校验三条</div>
+      <ol class="small muted" style="padding-left:18px;line-height:1.9;margin:0">
+        <li><code class="inline">stage.name</code> 必须等于任务阶段</li>
+        <li><code class="inline">result</code> 必须在该阶段允许集合内</li>
+        <li><code class="inline">result=defect</code> 时必须有代码证据，否则降级 not-found</li>
+      </ol>
+    </div>
+    <div><div class="strong small" style="margin-bottom:6px">「已查范围」为什么必须落库</div>
+      <p class="small muted" style="margin:0;line-height:1.8">模型写「查不到」是一句无法验证的话。要求把已查范围同时写进评论与 <code class="inline">verdict.evidence</code>（<code class="inline">rule=checked:...</code>），面板才能复核，管理员才知道该补什么证据。</p>
+    </div>
+    <div><div class="strong small" style="margin-bottom:6px">信封（阶段任务只开 comment）</div>
+      <pre class="code">{
+  "stage": { "name": "classify", "result": "not-found" },
+  "verdict": { "labels": [], "evidence": [
+    { "rule": "checked:grep", "quote": "src/**/*.ts", "passed": false }
+  ] },
+  "actions": [{ "intent": "comment", "body": "AI 自由撰写" }],
+  "usage": { "inputTokens": 0, "outputTokens": 0, "costUsd": 0 }
+}</pre>
+    </div>
+  </div>
+</template>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+  var TONE = { pending: 'info', running: 'info', awaiting_info: 'warn', ready: 'success', blocked: 'danger', closed: 'danger' };
+  var STAGE_NAME = { format: '格式检查', classify: '标签分类', agent: 'Agent', closed: '已关闭' };
+
+  /* ---------- 场景（对应 Issue 中心的示例数据） ---------- */
+  var SCENES = {
+    4125: {
+      title: '/review-pr 执行完容器没有销毁',
+      desc: '虚拟缺陷 / 无法分类 · 停在 classify/awaiting_info 等管理员（11:00 Q6 修订）',
+      stage: 'classify', state: 'awaiting_info', category: 'not-found', fail: 0, dwell: '1 天', author: 'wangpeng', mode: 'sandboxed',
+      session: 's_7d12（ephemeral，已 archive）', infoReq: 'NULL（不进 48h 关闭扫描）', mention: '@wangge @linjie（已发送，单槽）',
+      timeline: [
+        { c: 'done', t: 'issues.opened · 建行 + 正文快照', time: '昨天 14:02', b: 'stage=format, state=pending；target_title / target_body 随任务入队（P2）。' },
+        { c: 'done', t: '阶段 0 格式检查 pass（首次）', time: '昨天 14:02', b: 'light 运行时，2.1s / $0.0028。首次通过零评论，只打 rocket 并入队分类（V2）。' },
+        { c: 'done', t: '阶段 1 分类 not-found', time: '昨天 14:09', b: 'sandboxed 容器内 grep 未找到 path:line 证据 → 强制降级 not-found。4m51s / $0.1120。' },
+        { c: 'warn', t: '停在 classify/awaiting_info', time: '昨天 14:09', b: '评论 @managers 要求回复；info_requested_at=NULL，不进 48h 关闭扫描。只有管理员能推进。' },
+        { c: 'current', t: '门禁回执（@ 被拦）', time: '今天 11:20', b: 'pipeline:notice 轻量任务回一条「已转管理员分类，请等待」；每 issue 每小时 1 条限速。' }
+      ],
+      conclusion: { kind: 'not-found', text: '无法分类：当前查不到这个现象的缺陷证据，也没有足够信息判断它属于需求还是咨询。', checks: ['src/worker/run-task.ts · 容器生命周期分支', 'src/sandbox/lifecycle.ts · destroy 调用点', '全仓 grep：destroy / cleanup / removeContainer', '近 30 天 run_events 里该 issue 的任务记录'], need: '请提供一次可复现的任务 id（或 run 详情链接）、当时容器的 docker id，以及期望的销毁时机。' },
+      comments: [
+        { who: 'pi-bot[bot]', at: '昨天 14:09', tone: 'warn', text: '我查了 worker 的容器生命周期分支、sandbox/lifecycle.ts 的 destroy 调用点，以及全仓的 removeContainer 引用，没有找到与「执行完未销毁」对应的代码路径；近 30 天这个 issue 也没有相关任务记录，因此暂时无法定位缺陷或给出代码证据。\n\n为了继续分类，麻烦提供：① 一次可复现的任务 id 或 run 详情链接；② 当时容器的 docker id；③ 期望的销毁时机。有这些信息我会重新在容器里验真并给出 path:line。\n\n/cc @wangge @linjie' }
+      ],
+      conversation: [
+        { who: 'wangpeng', at: '昨天 14:02', text: '/review-pr 跑完之后容器好像还在，麻烦看下。' },
+        { who: 'guest07', at: '今天 10:41', text: '我也遇到过，重启之后才没的。', note: '他人评论只记录，不触发重跑（11:00 Q6 修订）' }
+      ],
+      audits: [['昨天 14:09', '分类 not-found → @managers'], ['今天 11:20', '门禁回执 · pipeline:notice'], ['今天 10:41', '他人评论仅记录，不重跑']]
+    },
+    4128: {
+      title: '导出 PDF 时中文标题乱码',
+      desc: '格式检查不通过 2 次 · 等作者补充（48h 后自动关闭）',
+      stage: 'format', state: 'awaiting_info', category: '—', fail: 2, dwell: '6 小时', author: 'zhangwei', mode: 'light',
+      session: 'ephemeral（create → run → archive）', infoReq: '今天 05:18（还剩 42h）', mention: '未发送',
+      timeline: [
+        { c: 'done', t: 'issues.opened · 入队 pipeline:format', time: '今天 05:18', b: 'light 运行时；提示词 = 项目版 format_check v3 + AGENTS.md + 输出契约。' },
+        { c: 'warn', t: '格式 fail #1', time: '今天 05:18', b: 'AI 评论指出缺少复现步骤与版本号；needs-info + confused；format_fail_count=1。' },
+        { c: 'done', t: '作者编辑正文 → 重跑（edited 通道）', time: '今天 09:34', b: '冷却 120s 已过；锚 pipeline:format:v2。' },
+        { c: 'warn', t: '格式 fail #2', time: '今天 11:18', b: '仍缺版本号与导出文件样例；format_fail_count=2 / 5（Q5，达到 5 次自动关）。' },
+        { c: 'current', t: '停在 format/awaiting_info', time: '现在', b: '评论优先通道已开启；作者一发补充评论就立即重跑，不受 120s 冷却让位规则限制。' }
+      ],
+      conclusion: { kind: 'format', text: '当前仍在格式检查阶段，尚未进入分类，没有类别结论。', checks: [], need: '缺：① 复现步骤；② 平台与导出器版本号；③ 一份乱码的 PDF 样例或截图。' },
+      comments: [
+        { who: 'pi-bot[bot]', at: '今天 11:18', tone: 'warn', text: '这份报告还差三样东西才能进入分类：① 可复现的步骤（从哪个入口导出、选了什么选项）；② 平台与导出器版本号；③ 一份乱码的 PDF 样例或截图。\n\n直接在下面回复补充即可，我会立刻重新检查（不用改正文，也不用 @ 我）；通过后会回一条确认。若 48 小时内没有补充，这个 issue 会被自动关闭。目前是第 2 次不通过，累计 5 次会自动关闭。' }
+      ],
+      conversation: [
+        { who: 'zhangwei', at: '今天 05:18', text: '导出 PDF 的时候中文标题是乱码，英文正常。' },
+        { who: 'zhangwei', at: '今天 09:34', text: '（编辑了正文，补了一句「在 Windows 上」）', note: 'issues.edited 触发重跑，冷却 120s' }
+      ],
+      audits: [['今天 05:18', '格式 fail #1 · needs-info'], ['今天 09:34', 'issues.edited → 重跑'], ['今天 11:18', '格式 fail #2 · 2 / 5']]
+    },
+    4124: {
+      title: '登录页在特定 token 下返回 500',
+      desc: '真实缺陷 · 直接 agent/ready，容器证据已定位到 path:line',
+      stage: 'agent', state: 'ready', category: 'defect', fail: 0, dwell: '3 天', author: 'liuqi', mode: 'persistent',
+      session: 's_31ac（复用中 · 12 轮 / 30）', infoReq: 'NULL', mention: '@wangge（已发送，单槽）',
+      timeline: [
+        { c: 'done', t: '阶段 0 格式检查 pass（首次）', time: '3 天前 09:12', b: '零评论 + rocket；2.3s / $0.0030。' },
+        { c: 'done', t: '阶段 1 分类 defect（证据通过）', time: '3 天前 09:18', b: 'evidence 命中 apps/server/src/http/auth.ts:214；标签「缺陷」由控制面按 role 取，模型给的 labels 被忽略。' },
+        { c: 'done', t: 'agent/ready · 打标签 + 缺陷报告 + /cc', time: '3 天前 09:18', b: '真实类别直接放行，不受 Q6 修订影响。' },
+        { c: 'done', t: '第 1 次 @ · 复用 session s_31ac', time: '昨天 09:58', b: 'session/attach + cursor 防重放；41.6s / $0.2181。' },
+        { c: 'current', t: '第 2 次 @ · 同一 session', time: '昨天 10:47', b: 'session_id 未变、session_turns +1、无 archive 调用（V13）。' }
+      ],
+      conclusion: { kind: 'defect', text: '缺陷已定位：token 解析分支在空 payload 时未做非空校验，直接读取 claims.sub 导致 500。', checks: [], evidence: [['code:auth-parse', 'apps/server/src/http/auth.ts:214'], ['code:null-check', 'apps/server/src/http/auth.ts:208'], ['checked:test', 'tests/auth.spec.ts:88']], need: '建议在解析前补 payload 判空，并加一条空 payload 的回归用例。' },
+      comments: [
+        { who: 'pi-bot[bot]', at: '3 天前 09:18', tone: 'info', text: '缺陷报告\n\n结论：token 解析分支在 payload 为空时直接读取 claims.sub，触发 500。\n依据：apps/server/src/http/auth.ts:214（解析入口）、:208（缺少非空校验）。\n影响范围：所有带自定义 claim 但 payload 为空的登录请求。\n实现要点：解析前判空 + 返回 401，并补一条空 payload 回归用例（tests/auth.spec.ts:88 已有相邻用例）。\n风险与待确认：需要确认网关是否会提前拦截空 payload。\n工作量档位：S。\n\n/cc @wangge' }
+      ],
+      conversation: [
+        { who: 'liuqi', at: '昨天 09:58', text: '@pi-bot 这个能顺手补个测试吗？' },
+        { who: 'pi-bot[bot]', at: '昨天 09:59', text: '可以。我会在 auth.spec.ts 里加一条空 payload 的回归用例，覆盖 401 而不是 500。' },
+        { who: 'liuqi', at: '昨天 10:47', text: '@pi-bot 记得别改网关那层。' }
+      ],
+      audits: [['3 天前 09:18', 'defect → agent/ready'], ['昨天 09:58', '@ 复用 session'], ['昨天 10:47', '@ 复用同一 session']]
+    },
+    4122: {
+      title: '帮我看看这个报错（无复现步骤）',
+      desc: '格式不通过累计 5 次 · 自动关闭（Q5），不是 blocked',
+      stage: 'closed', state: 'closed', category: '—', fail: 5, dwell: '—', author: 'guest42', mode: '—',
+      session: '—', infoReq: 'NULL（已 closed）', mention: '未发送',
+      timeline: [
+        { c: 'warn', t: '格式 fail #1 → #4', time: '3 天前', b: '每次都是 AI 评论 + needs-info；用户只回「还是不行」，没有补复现步骤。重跑不限次，只计失败次数。' },
+        { c: 'danger', t: '格式 fail #5 → 自动关闭', time: '3 天前 10:31', b: 'format_fail_count 达到 PIPELINE_FORMAT_MAX_FAILS=5；closeIssue 恰好 1 次，closed_at 落库（V19）。' },
+        { c: 'current', t: 'closed · 不再接事件', time: '现在', b: '第 5 次 fail 的 AI 评论即最后反馈，不再另发关闭评论；@ 门禁静默。' }
+      ],
+      conclusion: { kind: 'closed', text: '未进入分类即关闭，没有类别结论。', checks: [], need: '关闭原因：格式检查累计 5 次不通过（Q5），非 48h 超时、非人工关闭。' },
+      comments: [
+        { who: 'pi-bot[bot]', at: '3 天前 10:31', tone: 'danger', text: '这已经是第 5 次格式检查不通过了，仍然缺少可复现的步骤与环境信息。按项目规则，累计 5 次不通过会自动关闭这个 issue；如果你有新的复现材料，可以新开一条并一次给全。' }
+      ],
+      conversation: [
+        { who: 'guest42', at: '3 天前 09:02', text: '帮我看看这个报错。（无正文细节）' },
+        { who: 'guest42', at: '3 天前 09:40', text: '还是不行。' },
+        { who: 'guest42', at: '3 天前 10:10', text: '是不是你们服务的问题？' }
+      ],
+      audits: [['3 天前 10:31', 'format_fail_count=5 → 自动关闭'], ['3 天前 10:31', 'closeIssue 1 次 · closed_at 落库']]
+    },
+    4120: {
+      title: 'Agent 连续两次信封不合法',
+      desc: '运行失败 / 信封不合法连续 2 次 → blocked（不是 Q5 的自动关闭）',
+      stage: 'agent', state: 'blocked', category: '—', fail: 0, dwell: '5 小时', author: 'system', mode: 'persistent',
+      session: 's_2b90（attach 失败已重建）', infoReq: 'NULL', mention: '未发送',
+      timeline: [
+        { c: 'done', t: '阶段 0 / 1 通过 → agent/ready', time: '5 小时前', b: '分类结论 other，只打标签不评论（V7）。' },
+        { c: 'warn', t: '第 1 次信封不合法', time: '5 小时前 08:12', b: '模型输出缺 usage 对象；不写任何东西，仅记录。' },
+        { c: 'danger', t: '第 2 次信封不合法 → blocked', time: '5 小时前 08:19', b: '连续 2 次 → blocked；面板红点 + 异常通知（AI 写，Q8）。' },
+        { c: 'current', t: '等待维护者', time: '现在', b: '/recheck --force 解禁，或 /pipeline next 等价解禁并推进；门禁回执会提示这两种做法。' }
+      ],
+      conclusion: { kind: 'blocked', text: '已 ready 但被 blocked 暂停，不是格式失败导致的关闭。', checks: [], need: '建议先在设置页检查 agent 提示词是否被改成「不要输出 JSON」——输出契约仍由代码追加在最后，但项目自定义正文可能干扰模型。' },
+      comments: [
+        { who: 'pi-bot[bot]', at: '5 小时前 08:19', tone: 'danger', text: '自动流程已暂停：连续两次拿到的结果不符合输出契约，为避免写坏数据，我先停在这里。维护者可以用 /recheck --force 解禁重跑，或用 /pipeline next 直接推进到下一步。' }
+      ],
+      conversation: [ { who: 'system', at: '5 小时前 08:12', text: '（运行失败，无机器人正文）', note: '失败轮不参与「结论正文」选取' } ],
+      audits: [['5 小时前 08:12', '信封不合法 #1'], ['5 小时前 08:19', '信封不合法 #2 → blocked']]
+    }
+  };
+
+  /* ---------- 状态 ---------- */
+  var num = (location.search.match(/[?&]n=(\d+)/) || [])[1] || '4125';
+  if (!SCENES[num]) num = '4125';
+  var base = SCENES[num];
+  var S;
+
+  function reset() {
+    S = JSON.parse(JSON.stringify({
+      stage: base.stage, state: base.state, category: base.category, fail: base.fail,
+      dwell: base.dwell, timeline: base.timeline, comments: base.comments,
+      conversation: base.conversation, audits: base.audits,
+      conclusion: base.conclusion, infoReq: base.infoReq, mention: base.mention
+    }));
+    render();
+  }
+
+  function nowLabel() { return '刚刚（模拟）'; }
+
+  /* ---------- 事件推演 ---------- */
+  function pushTl(c, t, b) { S.timeline.push({ c: c, t: t, time: nowLabel(), b: b }); }
+  function pushAudit(text) { S.audits.push([nowLabel(), text]); }
+
+  function applyEvent(ev) {
+    var st = S.stage + '/' + S.state;
+    if (ev === 'comment') {
+      if (st !== 'format/awaiting_info') return D.toast('当前状态不适用', '作者补充评论只在 format/awaiting_info 触发重跑', 'warn');
+      S.state = 'pending';
+      pushTl('done', '作者补充评论 → 立即重跑（评论优先）', '评论内容置顶进 {{body}}（最近 3 条，每条 ≤1000）；锚含 comment id；其后 120s 的 issues.edited 跳过。');
+      S.state = 'running';
+      S.stage = 'classify'; S.state = 'pending';
+      S.infoReq = 'NULL（补充触发后清空）';
+      pushTl('done', '格式复查 pass → 一条确认评论（D8）', '「已收到补充信息，格式检查通过。」+ rocket + 入队 pipeline:classify。通过不计入失败次数。');
+      S.comments.push({ who: 'pi-bot[bot]', at: nowLabel(), tone: 'success', text: '已收到补充信息，格式检查通过。现在进入分类阶段，我会在容器里核对代码后再给结论。' });
+      S.conversation.push({ who: 'zhangwei', at: nowLabel(), text: '（模拟补充）版本号 v2.4.1，导出入口在「报表 → 导出 PDF」，样例已上传。', note: '该评论置顶进 {{body}}，优先于 issue 正文被判定' });
+      pushAudit('评论补充 → 重跑格式 → pass（D8 确认）→ classify/pending');
+      D.toast('已推演：评论优先 + D8', 'format/awaiting_info → classify/pending，并回一条确认', 'success');
+    } else if (ev === 'manager') {
+      if (st !== 'classify/awaiting_info') return D.toast('当前状态不适用', 'managers 回复只在 classify/awaiting_info 触发重分类', 'warn');
+      S.state = 'pending';
+      pushTl('current', 'managers 回复 → 重跑分类', '仅 managers 的普通评论触发；作者 / 他人评论只记录不重跑。锚含 comment id。');
+      S.conversation.push({ who: 'wangge', at: nowLabel(), text: '（模拟）任务 id t_6b1e88，容器 docker id 已在 run 详情里，销毁时机是 turn 结束后。', note: 'managers 评论 → 重跑分类' });
+      pushAudit('managers 评论 → classify/pending（重分类）');
+      D.toast('已推演：重跑分类', 'classify/awaiting_info → classify/pending', 'success');
+    } else if (ev === 'next') {
+      if (S.state === 'closed') return D.toast('issue 已关闭', 'closed 不再接事件', 'warn');
+      if (S.stage === 'format') { S.stage = 'classify'; S.state = 'pending'; }
+      else if (S.stage === 'classify') { S.stage = 'agent'; S.state = 'ready'; }
+      else if (S.state === 'blocked') { S.state = 'ready'; }
+      else { S.state = 'ready'; }
+      pushTl('done', '/pipeline next · 进入下一步', '仅 managers；不受 120s 冷却；blocked 时等价解禁并推进；操作记审计（V20）。');
+      pushAudit('/pipeline next → ' + S.stage + '/' + S.state);
+      D.toast('已推演 /pipeline next', '当前 ' + S.stage + '/' + S.state, 'success');
+    } else if (ev === 'prev') {
+      if (S.stage === 'agent') { S.stage = 'classify'; S.state = 'pending'; }
+      else if (S.stage === 'classify') { S.stage = 'format'; S.state = 'pending'; }
+      else return D.toast('已经是最前一步', 'format 没有上一阶段', 'warn');
+      pushTl('warn', '/pipeline prev · 返回上一步', '逐步退回：agent/ready → classify/pending（重分类）→ format/pending（重跑格式）；记审计。');
+      pushAudit('/pipeline prev → ' + S.stage + '/' + S.state);
+      D.toast('已推演 /pipeline prev', '当前 ' + S.stage + '/' + S.state, 'success');
+    } else if (ev === 'recheck') {
+      if (S.state === 'closed') return D.toast('issue 已关闭', 'closed 不再接事件', 'warn');
+      S.state = 'pending';
+      pushTl('current', '/recheck · 重跑当前阶段', '锚 pipeline:' + S.stage + ':<issueVersion>；同版本幂等。');
+      pushAudit('/recheck → 重跑 ' + S.stage);
+      D.toast('已推演 /recheck', S.stage + ' 阶段重新入队', 'success');
+    } else if (ev === 'force') {
+      if (S.state !== 'blocked') return D.toast('当前未 blocked', '/recheck --force 只用于解禁', 'warn');
+      S.state = 'running';
+      pushTl('done', '/recheck --force · 解除 blocked', '回到运行态；后续失败仍按「连续 2 次 → blocked」处理。');
+      pushAudit('/recheck --force → 解禁');
+      D.toast('已推演 /recheck --force', 'blocked → running', 'success');
+    }
+    render();
+  }
+
+  /* ---------- 渲染 ---------- */
+  function render() {
+    document.getElementById('d-title').innerHTML = '<span class="mono small muted">issue#' + num + '</span> &nbsp;' + esc(base.title);
+    document.getElementById('d-desc').textContent = base.desc;
+    document.title = 'issue#' + num + ' · 固定流水线改造 Demo';
+
+    document.getElementById('d-state-badge').textContent = S.stage + '/' + S.state;
+    document.getElementById('d-state-badge').className = 'badge ' + TONE[S.state] + ' mono';
+
+    /* stepper */
+    var order = ['format', 'classify', 'agent'];
+    var idx = order.indexOf(S.stage);
+    document.getElementById('d-stepper').innerHTML = order.map(function (s, i) {
+      var cls = S.stage === 'closed' ? 'done' : idx > i ? 'done' : idx === i ? (S.state === 'awaiting_info' || S.state === 'blocked' ? 'blocked' : 'current') : '';
+      var label = S.stage === 'closed' ? '已完成' : idx > i ? '通过' : idx === i ? (S.state === 'awaiting_info' ? '等待中' : S.state === 'blocked' ? '已阻塞' : S.state === 'ready' ? '已就绪' : S.state) : '未开始';
+      return '<div class="step ' + cls + '"><div class="s-top"><span class="s-idx">' + i + '</span>' +
+        '<span class="s-name">阶段 ' + i + ' · ' + STAGE_NAME[s] + '</span>' +
+        '<span class="s-state"><span class="badge ' + (cls === 'done' ? 'success' : cls === 'blocked' ? 'warn' : cls === 'current' ? 'brand' : 'neutral') + '">' + label + '</span></span></div>' +
+        '<div class="s-desc">' + (i === 0 ? 'light · 格式检查 · 项目版提示词 + AGENTS.md' : i === 1 ? 'sandboxed · 容器内验真 · path:line 证据' : 'persistent · 会话复用 · 四层提示词') + '</div>' +
+        '<div class="s-meta">pipeline:' + (i === 0 ? 'format' : i === 1 ? 'classify' : 'mention') + ' · ' + (i === 2 ? 'session ' + base.session : 'ephemeral') + '</div></div>';
+    }).join('');
+
+    /* timeline */
+    document.getElementById('d-timeline').innerHTML = S.timeline.map(function (t) {
+      return '<div class="tl-item ' + t.c + '"><div class="tl-head"><span class="tl-title">' + esc(t.t) + '</span>' +
+        '<span class="tl-time mono">' + esc(t.time) + '</span></div><div class="tl-body">' + t.b + '</div></div>';
+    }).join('');
+
+    /* 分类结论 */
+    var c = S.conclusion;
+    var kindBadge = { 'not-found': 'warn', defect: 'info', format: 'neutral', closed: 'danger', blocked: 'danger' }[c.kind] || 'neutral';
+    var html = '<div class="row" style="margin-bottom:10px"><span class="badge ' + kindBadge + ' mono">result = ' + esc(c.kind) + '</span>' +
+      '<span class="small muted">' + esc(c.text) + '</span></div>';
+    if (c.evidence) {
+      html += '<div class="strong small" style="margin:12px 0 6px">代码证据（path:line）</div><div class="evidence">' +
+        c.evidence.map(function (e) {
+          return '<div class="ev-row"><span class="ev-rule">' + esc(e[0]) + '</span><span class="ev-quote"><a href="runs.html">' + esc(e[1]) + '</a></span>' +
+            '<span class="badge success" style="margin-left:auto">passed</span></div>';
+        }).join('') + '</div>';
+    }
+    if (c.checks && c.checks.length) {
+      html += '<div class="strong small" style="margin:12px 0 6px">已查范围（同时落 verdict.evidence，rule=checked:…）</div><div class="evidence">' +
+        c.checks.map(function (x) { return '<div class="ev-row"><span class="ev-rule">checked</span><span class="ev-quote">' + esc(x) + '</span><span class="badge neutral" style="margin-left:auto">未命中</span></div>'; }).join('') + '</div>';
+    }
+    html += '<div class="notice ' + (c.kind === 'not-found' ? 'warn' : 'info') + '" style="margin-top:12px"><span class="n-ico">?</span><div><strong>还缺什么</strong><br>' + esc(c.need) + '</div></div>';
+    document.getElementById('d-conclusion').innerHTML = html;
+
+    /* 评论 */
+    document.getElementById('d-comments').innerHTML = S.comments.map(function (m) {
+      return '<div style="border:1px solid var(--border);border-left:3px solid var(--' + (m.tone === 'danger' ? 'danger' : m.tone === 'warn' ? 'warn' : m.tone === 'success' ? 'success' : 'info') + ');border-radius:6px;padding:11px 13px;margin-bottom:10px">' +
+        '<div class="row between" style="margin-bottom:6px"><span class="mono small strong">' + esc(m.who) + '</span><span class="tiny faint mono">' + esc(m.at) + '</span></div>' +
+        '<div class="small" style="white-space:pre-wrap;line-height:1.75">' + esc(m.text) + '</div>' +
+        '<div class="tiny faint" style="margin-top:8px">AI 撰写 · 控制面仅追加 /cc 与长度/频率限制（Q8）</div></div>';
+    }).join('');
+
+    /* 对话 */
+    document.getElementById('d-conversation').innerHTML = S.conversation.map(function (m) {
+      return '<div class="row" style="align-items:flex-start;gap:9px;padding:8px 0;border-bottom:1px solid var(--border)">' +
+        '<span class="dot ' + (m.who.indexOf('bot') >= 0 ? 'brand' : 'neutral') + '" style="margin-top:6px"></span>' +
+        '<div style="flex:1;min-width:0"><div class="row"><span class="mono tiny strong">' + esc(m.who) + '</span><span class="tiny faint mono">' + esc(m.at) + '</span></div>' +
+        '<div class="small" style="margin-top:3px">' + esc(m.text) + '</div>' +
+        (m.note ? '<div class="tiny faint" style="margin-top:4px">↳ ' + esc(m.note) + '</div>' : '') + '</div></div>';
+    }).join('');
+
+    /* 元信息 */
+    var meta = [
+      ['编号', 'issue#' + num], ['阶段', S.stage], ['状态', S.state], ['类别', S.category],
+      ['format_fail_count', S.fail + ' / 5'], ['停留时长', S.dwell], ['等待对象', S.stage === 'format' && S.state === 'awaiting_info' ? '作者' : S.stage === 'classify' && S.state === 'awaiting_info' ? '管理员' : S.state === 'blocked' ? '维护者' : '—'],
+      ['info_requested_at', S.infoReq], ['mention', S.mention], ['会话', base.session], ['运行时', base.mode]
+    ];
+    document.getElementById('d-meta').innerHTML = '<dl style="display:grid;grid-template-columns:1fr 1fr;gap:9px 10px;margin:0;font-size:11.5px">' +
+      meta.map(function (p) { return '<div style="min-width:0"><dt class="tiny faint">' + esc(p[0]) + '</dt><dd class="mono small truncate" style="margin:2px 0 0" title="' + esc(p[1]) + '">' + esc(p[1]) + '</dd></div>'; }).join('') + '</dl>' +
+      '<div class="notice" style="margin-top:12px"><span class="n-ico">◇</span><div>数据来自 <code class="inline">issue_pipeline</code> + <code class="inline">envelopes.stage_name/stage_result</code>，不需要解 JSONB。</div></div>';
+
+    /* 审计 */
+    document.getElementById('d-audit').innerHTML = S.audits.map(function (a) {
+      return '<div class="row" style="gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">' +
+        '<span class="tiny faint mono" style="width:76px;flex:none">' + esc(a[0]) + '</span>' +
+        '<span class="small">' + esc(a[1]) + '</span></div>';
+    }).join('');
+
+    /* 提示词装配 */
+    var layers = [
+      ['阶段系统提示词', S.stage === 'format' ? 'format_check · 项目版 v3' : S.stage === 'classify' ? 'classify · 系统默认 v0' : 'agent · 系统默认 v0'],
+      ['P1 用户设定提示词', S.stage === 'agent' ? 'project · 项目版 v2' : '不注入'],
+      ['AGENTS.md', '是（Q9：任意时刻生效）'],
+      ['技能层', S.stage === 'agent' ? '是' : '不注入'],
+      ['输出契约', '是（代码追加，不可配）']
+    ];
+    document.getElementById('d-layers').innerHTML = layers.map(function (l) {
+      return '<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="small muted">' + esc(l[0]) + '</span><span class="badge ' + (l[1].indexOf('不注入') >= 0 ? 'neutral' : 'brand') + ' mono">' + esc(l[1]) + '</span></div>';
+    }).join('') + '<div class="tiny faint" style="margin-top:8px">阶段 0/1 的最终 prompt 里 grep 不到 P1 与技能层，但能 grep 到 AGENTS.md（V9）。</div>';
+  }
+
+  /* ---------- 绑定 ---------- */
+  document.getElementById('simulator').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-ev]'); if (!b) return;
+    var ev = b.getAttribute('data-ev');
+    var st = S.stage + '/' + S.state;
+    var needConfirm = ev === 'next' || ev === 'prev' || ev === 'force';
+    var msgs = {
+      next: ['模拟 /pipeline next', '当前 <strong>' + esc(st) + '</strong>。执行后进入下一阶段；blocked 时等价解禁。仅 managers 可用，不受 120s 冷却，操作记审计。'],
+      prev: ['模拟 /pipeline prev', '当前 <strong>' + esc(st) + '</strong>。执行后逐步退回上一阶段并重跑。仅 managers 可用，操作记审计。'],
+      force: ['模拟 /recheck --force', '解除 <strong>blocked</strong> 并回到运行态。真实环境需发在 issue 评论里。']
+    };
+    if (needConfirm) D.confirm(msgs[ev][0], msgs[ev][1], function () { applyEvent(ev); }, '模拟执行');
+    else applyEvent(ev);
+  });
+  document.getElementById('reset-sim').addEventListener('click', function () {
+    reset(); D.toast('演示已重置', '回到 issue#' + num + ' 的初始状态');
+  });
+  document.getElementById('copy-link').addEventListener('click', function () {
+    D.copy(location.href.split('?')[0] + '?n=' + num);
+  });
+
+  reset();
+})();
+</script>
+</body>
+</html>

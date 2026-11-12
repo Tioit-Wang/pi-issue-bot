@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>审计 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="audit" data-crumb="近 7 天">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>审计</h1>
+          <p class="desc">状态转移、管理员指令、自动关闭、门禁回执全部留痕。<code class="inline">/pipeline next|prev</code> 每次操作记审计（V20）。</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn sm" id="export-audit">导出 CSV</button>
+          <a class="btn ghost sm" href="runs.html">任务记录 ⇢</a>
+          <a class="btn primary sm" href="issue-detail.html?n=4125">看一条完整轨迹 ⇢</a>
+        </div>
+      </div>
+
+      <div class="grid g4" style="margin-bottom:14px">
+        <div class="card kpi"><div class="k-label">近 7 天事件</div><div class="k-value">412<em>条</em></div><div class="k-foot">含投递、写回、状态转移、指令</div></div>
+        <div class="card kpi"><div class="k-label">管理员指令</div><div class="k-value">17<em>次</em></div><div class="k-foot">next 9 · prev 4 · recheck 4</div></div>
+        <div class="card kpi"><div class="k-label">自动关闭</div><div class="k-value">6<em>条</em></div><div class="k-foot">5 次不通过 4 · 48h 超时 2</div></div>
+        <div class="card kpi"><div class="k-label">门禁回执</div><div class="k-value">23<em>条</em></div><div class="k-foot">每 issue 每小时 1 条限速</div></div>
+      </div>
+
+      <div class="grid main-side" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start">
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>事件流<span class="sub">共 <span data-filter-count>9</span> 条 · 点击看原始记录</span></h2>
+              <button class="btn ghost sm" data-filter-reset>重置筛选</button></div>
+            <div class="card-body" style="border-bottom:1px solid var(--border)">
+              <div class="filters">
+                <div class="search-box"><input class="inp" data-filter-search placeholder="搜索动作、issue、操作者…" /></div>
+                <select class="inp" data-filter="type" aria-label="事件类型">
+                  <option value="all">全部类型</option>
+                  <option value="instruction">管理员指令</option>
+                  <option value="classify">分类结论</option>
+                  <option value="format">格式检查</option>
+                  <option value="gate">门禁回执</option>
+                  <option value="close">自动关闭</option>
+                  <option value="recheck">重跑</option>
+                </select>
+                <select class="inp" data-filter="actor" aria-label="操作者">
+                  <option value="all">全部操作者</option>
+                  <option value="system">system</option>
+                  <option value="pi-bot[bot]">pi-bot[bot]</option>
+                  <option value="human">人工</option>
+                </select>
+              </div>
+            </div>
+            <div class="card-body flush"><div class="table-wrap"><table class="tbl" id="audit-table">
+              <thead><tr><th style="width:84px">时间</th><th style="width:110px">操作者</th><th style="width:20%">动作</th><th style="width:12%">对象</th><th>明细</th><th></th></tr></thead>
+              <tbody id="audit-rows"></tbody>
+            </table></div></div>
+            <div class="card-foot">dry-run 仓库：只推进内部状态、不写 GitHub，面板会显式标注「dry-run：仅推进内部状态」，避免 ready 与用户感知不一致。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>V20 验收清单<span class="sub">管理员进 / 退 · 点击可勾选</span></h2></div>
+            <div class="card-body" id="v20"></div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>审计口径</h2></div>
+            <div class="card-body small muted" style="line-height:1.85">
+              <strong style="color:var(--fg)">什么会留痕</strong><br>
+              · 每次 <code class="inline">/pipeline next|prev</code> / <code class="inline">/recheck</code>（含调用者与被拒记录）<br>
+              · 状态转移与 <code class="inline">stage.result</code><br>
+              · <code class="inline">pipeline:notice</code> 进投递审计与面板计数<br>
+              · 自动关闭（原因与 <code class="inline">closed_at</code>）<br>
+              · 会话重置（<code class="inline">blocked_reason=session-reset</code>）<br><br>
+              <strong style="color:var(--fg)">什么不会留痕</strong><br>
+              被拦的命令<strong>不建 command 任务</strong>，因此任务表里查不到它；只有回执任务与一条审计说明。作者 / 他人的普通评论在 <code class="inline">classify/awaiting_info</code> 下只记录、不重跑。
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>决策轨迹<span class="sub">v1.5 当天拍板</span></h2></div>
+            <div class="card-body" id="decision-trail"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>相关入口</h2></div>
+            <div class="card-body stack" style="gap:7px">
+              <a class="btn sm" style="justify-content:flex-start" href="flow.html">流程地图 · 状态转移规则 ⇢</a>
+              <a class="btn sm" style="justify-content:flex-start" href="settings-triggers.html">不可绕过验真（V10）⇢</a>
+              <a class="btn sm" style="justify-content:flex-start" href="settings-pipeline.html">系统常量与 managers ⇢</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+
+  function typeOf(a) {
+    if (a.indexOf('/pipeline') >= 0 || a.indexOf('/recheck') >= 0) return 'instruction';
+    if (a.indexOf('48h') >= 0 || a.indexOf('自动关闭') >= 0 || a.indexOf('自动关') >= 0) return 'close';
+    if (a.indexOf('门禁') >= 0) return 'gate';
+    if (a.indexOf('分类') >= 0) return 'classify';
+    if (a.indexOf('格式') >= 0) return 'format';
+    return 'recheck';
+  }
+  function actorOf(a) { return a === 'system' ? 'system' : a.indexOf('[bot]') >= 0 ? 'pi-bot[bot]' : 'human'; }
+
+  document.getElementById('audit-rows').innerHTML = D.data.audit.map(function (a, i) {
+    var t = typeOf(a.action);
+    return '<tr class="clickable" data-row data-type="' + t + '" data-actor="' + actorOf(a.actor) +
+      '" data-search="' + esc(a.action + ' ' + a.target + ' ' + a.detail + ' ' + a.actor).toLowerCase() + '" data-audit="' + i + '">' +
+      '<td class="mono tiny faint">' + esc(a.at) + '</td>' +
+      '<td><span class="mono tiny ' + (actorOf(a.actor) === 'human' ? 'strong' : 'muted') + '">' + esc(a.actor) + '</span></td>' +
+      '<td><span class="badge ' + (t === 'instruction' ? 'brand' : t === 'close' ? 'danger' : t === 'gate' ? 'neutral' : t === 'classify' ? 'info' : 'warn') + '">' + esc(a.action) + '</span></td>' +
+      '<td class="mono tiny">' + esc(a.target) + '</td>' +
+      '<td class="small muted">' + esc(a.detail) + '</td>' +
+      '<td><span class="dot ' + a.tone + '"></span></td></tr>';
+  }).join('') + '<tr class="empty-row" style="display:none"><td colspan="6">没有符合条件的记录</td></tr>';
+
+  D.bindFilters('#audit-table');
+
+  document.getElementById('audit-rows').addEventListener('click', function (e) {
+    var tr = e.target.closest('[data-audit]'); if (!tr) return;
+    var a = D.data.audit[Number(tr.getAttribute('data-audit'))];
+    var rec = {
+      at: a.at, actor: a.actor, action: a.action, target: a.target,
+      type: typeOf(a.action), detail: a.detail,
+      audit_source: a.actor === 'system' ? 'control-plane' : 'writeback',
+      dry_run: false, github_written: a.actor.indexOf('[bot]') >= 0
+    };
+    D.openDrawer('审计记录 · ' + a.at,
+      '<div class="stack"><div class="row"><span class="badge ' + a.tone + '">' + esc(typeOf(a.action)) + '</span><span class="badge neutral mono">' + esc(a.target) + '</span></div>' +
+      '<pre class="code">' + esc(JSON.stringify(rec, null, 2)) + '</pre>' +
+      '<div class="notice"><span class="n-ico">◇</span><div>这条记录来自控制面状态转移与写回动作，不依赖解 JSONB 信封。<code class="inline">envelopes.stage_name / stage_result</code> 已单独落列。</div></div>' +
+      '<a class="btn sm" href="issue-detail.html">查看该 issue 的完整轨迹 ⇢</a></div>');
+  });
+
+  /* V20 清单 */
+  var v20 = [
+    'format/awaiting_info + /pipeline next → classify/pending 且分类任务入队',
+    'classify/awaiting_info + /pipeline next → agent/ready',
+    'agent/ready + /pipeline prev → 重新分类',
+    '非 managers 调用被拒',
+    '每次操作有审计记录',
+    'blocked 时 next 等价解禁并推进',
+    '操作不受 120s 冷却限制'
+  ];
+  document.getElementById('v20').innerHTML = v20.map(function (v, i) {
+    return '<label class="switch" style="padding:6px 0;border-bottom:1px solid var(--border)"><input type="checkbox" data-v20="' + i + '" checked />' +
+      '<span class="track"></span><span class="small">' + esc(v) + '</span></label>';
+  }).join('') + '<div class="tiny faint" style="margin-top:8px">点击切换仅作演示勾选，不改真实数据。判据见 docs/plan-fixed-pipeline.md §12 V20。</div>';
+  document.getElementById('v20').addEventListener('change', function (e) {
+    var c = e.target.closest('[data-v20]'); if (!c) return;
+    var done = document.querySelectorAll('[data-v20]:checked').length;
+    D.toast('V20 清单 ' + done + ' / ' + v20.length + ' 项', c.checked ? '已勾选' : '已取消勾选');
+  });
+
+  /* 决策轨迹 */
+  var trail = [
+    ['09:54', 'E1–E4', '全量切换 / 独立会话 / 四段提示词 / 评论优先'],
+    ['10:03', 'Q1–Q3', '整体覆盖 / 阈值收系统常量 / 撤销伪问题，agent 上限改 4000'],
+    ['10:22', 'Q4', '无兼容承诺，严格 schema + 迁移重置存量数据'],
+    ['10:41', 'Q5–Q8', '5 次不通过自动关 / @managers / next|prev / 不做模板渲染'],
+    ['11:00', 'Q6 修订 + Q9', '虚拟缺陷停住等管理员 / AGENTS.md 全阶段生效']
+  ];
+  document.getElementById('decision-trail').innerHTML = trail.map(function (t) {
+    return '<div class="row" style="align-items:flex-start;gap:9px;padding:7px 0;border-bottom:1px solid var(--border)">' +
+      '<span class="mono tiny faint" style="width:40px;flex:none">' + esc(t[0]) + '</span>' +
+      '<div style="min-width:0"><span class="badge brand mono">' + esc(t[1]) + '</span>' +
+      '<div class="tiny muted" style="margin-top:4px">' + esc(t[2]) + '</div></div></div>';
+  }).join('');
+
+  document.getElementById('export-audit').addEventListener('click', function () {
+    var head = ['时间', '操作者', '动作', '对象', '明细', '类型'];
+    var csv = '\ufeff' + [head].concat(D.data.audit.map(function (a) { return [a.at, a.actor, a.action, a.target, a.detail, typeOf(a.action)]; }))
+      .map(function (row) { return row.map(function (v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(','); }).join('\r\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var el = document.createElement('a'); el.href = URL.createObjectURL(blob); el.download = 'pipeline-audit-demo.csv';
+    document.body.appendChild(el); el.click(); el.remove();
+    D.toast('CSV 已导出', D.data.audit.length + ' 条演示审计记录', 'success');
+  });
+})();
+</script>
+</body>
+</html>

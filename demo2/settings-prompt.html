@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设置 · 提示词 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="settings-prompt" data-crumb="提示词">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>设置 · 提示词</h1>
+          <p class="desc">四条独立版本线：项目约定 / 格式检查 / 分类 / Agent。项目版本<strong>整体覆盖</strong>内置默认，输出契约永远由代码追加在最后且不可配。</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn sm" data-open-drawer="tpl-versions" data-drawer-title="版本历史">版本历史</button>
+          <button class="btn sm" data-open-drawer="tpl-default" data-drawer-title="内置默认模板（只读）">查看内置默认</button>
+          <a class="btn ghost sm" href="settings-pipeline.html">← 流水线配置</a>
+        </div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:200px minmax(0,1fr);align-items:start">
+        <div class="card" style="position:sticky;top:64px;padding:8px" id="settings-nav"></div>
+
+        <div class="stack">
+          <div class="card"><div class="card-body" id="settings-status"></div></div>
+
+          <div class="card">
+            <div class="card-head" style="padding-bottom:0;border-bottom:0">
+              <h2>提示词编辑器<span class="sub" id="ed-sub">—</span></h2>
+              <span class="row"><span class="badge brand mono" id="ed-version">—</span><span class="badge neutral mono" id="ed-limit">—</span></span>
+            </div>
+            <div class="tabs" style="padding:0 12px" id="kind-tabs"></div>
+            <div class="card-body">
+              <div class="notice info" style="margin-bottom:12px"><span class="n-ico">◇</span><div id="ed-notice">—</div></div>
+              <div class="grid" style="grid-template-columns:minmax(0,1fr) 300px;align-items:start">
+                <div class="stack" style="gap:10px">
+                  <div class="row between">
+                    <label class="field" style="flex:1"><span class="lbl">提示词正文</span></label>
+                    <span class="tiny mono faint" id="ed-count">0 字符</span>
+                  </div>
+                  <textarea class="inp" id="ed-text" rows="17" spellcheck="false"></textarea>
+                  <div class="row" id="ed-placeholders"></div>
+                  <div id="ed-validation"></div>
+                  <div class="row">
+                    <button class="btn sm" id="ed-format" data-toast="已按内置模板排版" data-toast-desc="原型不做真实格式化，仅演示按钮">格式化</button>
+                    <button class="btn sm" id="ed-save-as">另存为项目版本</button>
+                    <button class="btn sm" id="ed-restore">恢复默认</button>
+                    <span class="spacer"></span>
+                    <span class="tiny faint" id="ed-scope">—</span>
+                  </div>
+                </div>
+
+                <div class="stack" style="gap:10px">
+                  <div class="card">
+                    <div class="card-head" style="padding:9px 12px"><h2 style="font-size:12px">层序预览</h2><span class="tiny faint">12k 预算</span></div>
+                    <div class="card-body" style="padding:12px" id="layer-summary"></div>
+                  </div>
+                  <div class="card">
+                    <div class="card-head" style="padding:9px 12px"><h2 style="font-size:12px">作用域矩阵</h2></div>
+                    <div class="card-body" style="padding:12px" id="matrix-tabs">
+                      <div class="tabs" style="margin-bottom:10px">
+                        <button class="active" data-tab="lp-s0" data-tab-group="#matrix-tabs">阶段 0</button>
+                        <button data-tab="lp-s1" data-tab-group="#matrix-tabs">阶段 1</button>
+                        <button data-tab="lp-s2" data-tab-group="#matrix-tabs">阶段 2</button>
+                      </div>
+                      <div class="tab-panel active" id="lp-s0"></div>
+                      <div class="tab-panel" id="lp-s1"></div>
+                      <div class="tab-panel" id="lp-s2"></div>
+                    </div>
+                  </div>
+                  <div class="card">
+                    <div class="card-head" style="padding:9px 12px"><h2 style="font-size:12px">本条版本线</h2></div>
+                    <div class="card-body" style="padding:12px" id="ed-history"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>保存期校验规则<span class="sub">§16.3 · 点击行看判据</span></h2></div>
+            <div class="card-body flush"><table class="tbl"><thead><tr><th>规则</th><th>适用 kind</th><th>失败结果</th></tr></thead><tbody id="val-rules"></tbody></table></div>
+          </div>
+
+          <div class="save-bar" data-dirty="0">
+            <span class="dirty-mark" data-dirty-only style="display:none"><span class="dot warn"></span>有未保存的改动</span>
+            <span class="tiny faint" data-clean-only>服务端是唯一事实源 · 当前无改动</span>
+            <span class="spacer"></span>
+            <button class="btn sm" data-dirty-only style="display:none" id="ed-discard">放弃改动</button>
+            <button class="btn primary sm" id="ed-save">保存提示词</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<div id="tpl-default" style="display:none">
+  <div class="stack">
+    <div class="notice"><span class="n-ico">◆</span><div><strong>三套阶段默认模板是代码常量</strong>，不进 DB、不占版本号；<code class="inline">version=0</code> 时使用。项目保存后<strong>整体覆盖</strong>，不再拼接默认正文（Q1）。门禁回执提示词同为代码常量、不可配（Q8）。</div></div>
+    <div id="default-body"></div>
+  </div>
+</div>
+
+<div id="tpl-versions" style="display:none">
+  <div class="stack">
+    <div class="notice info"><span class="n-ico">◇</span><div>4 条版本线各自独立：版本号、保存、回滚互不干扰。「恢复默认」只把指针回 0，<strong>不删历史版本</strong>。</div></div>
+    <div id="versions-body"></div>
+  </div>
+</div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+  D.renderSettingsNav('prompt');
+  D.renderSettingsStatus('acme/pi-console');
+
+  var KINDS = [
+    { k: 'project', label: '项目约定', stage: '阶段 2（P1）', max: 4000, v: 2, ph: [], note: 'version=0 时不注入。项目提示词是独立于阶段系统提示词的一层「人格 / 业务约定」，只在阶段 2 生效；不做插值、不校验未知占位符。', scope: '阶段 2 注入' },
+    { k: 'format_check', label: '格式检查', stage: '阶段 0', max: 8000, v: 3, ph: ['title', 'body', 'repo', 'target', 'labels', 'author', 'url', 'recheck'], note: '必须含 {{title}} 与 {{body}}，缺一个保存 400（V11）。{{body}} = 补充评论段（最近 3 条、置顶）+ issue 正文，总长受 PROMPT_LIMITS.body=4000 约束。{{recheck}} 为 true 时即使通过也要回一句确认（D8）。', scope: '阶段 0 注入' },
+    { k: 'classify', label: '分类', stage: '阶段 1', max: 8000, v: 0, ph: ['labels', 'title', 'body', 'repo', 'target', 'author', 'url'], note: 'defect 必须有 path:line 证据，否则控制面强制降级 not-found。模型给的 labels 被忽略，标签由控制面按 role 取。', scope: '阶段 1 注入' },
+    { k: 'agent', label: 'Agent', stage: '阶段 2', max: 4000, v: 0, ph: ['repo', 'title', 'body', 'target', 'author', 'url'], note: 'R6：agent 落在 basePrompt，计入 baseChars，会直接扣减 P1 可保存额度，故上限收窄到 4000（与 P1 同档）。层序预览实时显示 available 与预计丢弃项。', scope: '阶段 2 注入（head）' }
+  ];
+  var HISTORY = {
+    project: [['v2', '今天 09:12', '补充中文语气与领域背景'], ['v1', '3 天前', '初版项目人格']],
+    format_check: [['v3', '昨天 16:40', '把「版本号」列为必填项'], ['v2', '5 天前', '增加补充评论置顶说明'], ['v1', '8 天前', '从内置默认另存']],
+    classify: [['v0', '—', '系统默认（当前）']],
+    agent: [['v0', '—', '系统默认（当前）']]
+  };
+  var drafted = {};
+  KINDS.forEach(function (k) { drafted[k.k] = D.data.prompts[k.k]; });
+  var saved = {};
+  KINDS.forEach(function (k) { saved[k.k] = D.data.prompts[k.k]; });
+
+  var cur = 'format_check';
+  var m = location.search.match(/[?&]kind=([a-z_]+)/);
+  if (m && KINDS.some(function (k) { return k.k === m[1]; })) cur = m[1];
+
+  function def(k) { return KINDS.filter(function (x) { return x.k === k; })[0]; }
+
+  /* ---------- tab ---------- */
+  document.getElementById('kind-tabs').innerHTML = KINDS.map(function (k) {
+    return '<button data-ptab="' + k.k + '"' + (k.k === cur ? ' class="active"' : '') + '>' + esc(k.label) +
+      '<span class="tiny faint mono" style="margin-left:6px">v' + k.v + '</span></button>';
+  }).join('');
+  document.getElementById('kind-tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-ptab]'); if (!b) return;
+    cur = b.getAttribute('data-ptab');
+    document.querySelectorAll('[data-ptab]').forEach(function (x) { x.classList.toggle('active', x.getAttribute('data-ptab') === cur); });
+    renderEditor();
+  });
+
+  /* ---------- 编辑器 ---------- */
+  function renderEditor() {
+    var k = def(cur);
+    document.getElementById('ed-sub').textContent = k.k + ' · ' + k.stage;
+    document.getElementById('ed-version').textContent = 'v' + k.v + (k.v === 0 ? ' · 系统默认' : ' · 项目版本');
+    document.getElementById('ed-version').className = 'badge ' + (k.v === 0 ? 'neutral' : 'brand') + ' mono';
+    document.getElementById('ed-limit').textContent = '上限 ' + k.max;
+    document.getElementById('ed-notice').innerHTML = '<strong>' + esc(k.label) + '</strong>：' + esc(k.note);
+    document.getElementById('ed-text').value = drafted[cur];
+    document.getElementById('ed-scope').textContent = k.scope;
+    document.getElementById('ed-placeholders').innerHTML = k.ph.length
+      ? '<span class="tiny faint" style="margin-right:4px">可用占位符</span>' + k.ph.map(function (p) {
+          return '<button class="chip" style="cursor:pointer" data-insert="{{' + p + '}}">' + '{{' + p + '}}</button>';
+        }).join('')
+      : '<span class="tiny faint">该 kind 不做插值，不校验未知占位符</span>';
+    document.getElementById('ed-history').innerHTML = HISTORY[cur].map(function (h) {
+      return '<div class="row between" style="padding:5px 0;border-bottom:1px solid var(--border)">' +
+        '<span class="mono small strong">' + esc(h[0]) + '</span><span class="tiny faint">' + esc(h[1]) + '</span></div>' +
+        '<div class="tiny muted" style="padding-bottom:5px">' + esc(h[2]) + '</div>';
+    }).join('') + '<button class="btn sm" style="margin-top:8px;width:100%" data-open-drawer="tpl-versions" data-drawer-title="版本历史">全部版本与回滚 ⇢</button>';
+    updateCount();
+    renderLayers();
+  }
+
+  function placeholders(text) {
+    var out = [], re = /\{\{([a-zA-Z0-9_]+)\}\}/g, x;
+    while ((x = re.exec(text)) !== null) out.push(x[1]);
+    return out;
+  }
+  function updateCount() {
+    var k = def(cur), text = document.getElementById('ed-text').value;
+    var n = text.length;
+    document.getElementById('ed-count').textContent = n + ' 字符 / ' + k.max;
+    document.getElementById('ed-count').style.color = n > k.max ? 'var(--danger-fg)' : '';
+    var found = placeholders(text);
+    var unknown = found.filter(function (p) { return k.ph.indexOf(p) < 0; });
+    var missing = cur === 'format_check' ? ['title', 'body'].filter(function (p) { return found.indexOf(p) < 0; }) : [];
+    var html = '';
+    if (n > k.max) html += '<div class="notice danger"><span class="n-ico">!</span><div>超出软上限 ' + (n - k.max) + ' 字符 → 保存 400。<code class="inline">' + esc(k.k) + '</code> 上限 ' + k.max + '。</div></div>';
+    if (unknown.length) html += '<div class="notice danger"><span class="n-ico">!</span><div>未识别占位符：<code class="inline">' + esc(unknown.join('、')) + '</code> → 400 并列出名字（§16.3）。</div></div>';
+    if (missing.length) html += '<div class="notice danger"><span class="n-ico">!</span><div><code class="inline">format_check</code> 缺少必填占位符 <code class="inline">' + esc(missing.join('、')) + '</code> → 保存 400（V11）。</div></div>';
+    if (!html) html = '<div class="notice" style="border-left-color:var(--success);background:var(--success-bg)"><span class="n-ico">✓</span><div><strong>校验通过</strong> · ' + found.length + ' 个占位符全部可识别' + (cur === 'project' ? '（该 kind 不校验）' : '') + ' · ' + n + ' / ' + k.max + ' 字符。</div></div>';
+    document.getElementById('ed-validation').innerHTML = html;
+    renderLayers();
+  }
+
+  document.getElementById('ed-text').addEventListener('input', function () {
+    drafted[cur] = this.value; updateCount(); D.setDirty(true);
+  });
+  document.getElementById('ed-placeholders').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-insert]'); if (!b) return;
+    var ta = document.getElementById('ed-text');
+    var p = ta.selectionStart;
+    ta.value = ta.value.slice(0, p) + b.getAttribute('data-insert') + ta.value.slice(p);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = p + b.getAttribute('data-insert').length;
+    drafted[cur] = ta.value; updateCount(); D.setDirty(true);
+  });
+
+  /* ---------- 层序预览（R6 / V18） ---------- */
+  function renderLayers() {
+    var agentLen = drafted.agent.length;
+    var agentsLen = 3200, skillLen = 2400, p1Len = drafted.project.length;
+    var baseChars = agentLen;
+    var available = Math.min(4000, 12000 - (baseChars + agentsLen + skillLen));
+    var total = baseChars + p1Len + agentsLen + skillLen + 900;
+    var layers = [
+      ['head · agent 系统段', agentLen, 'var(--brand)', '永不丢弃'],
+      ['P1 · 用户设定提示词', p1Len, 'var(--info)', '超预算先丢'],
+      ['AGENTS.md（Q9 全阶段）', agentsLen, 'var(--success)', '就近 AGENTS 先丢'],
+      ['技能层', skillLen, 'var(--warn)', '第三顺位'],
+      ['tail · 输出契约', 900, 'var(--neutral)', '永不丢弃']
+    ];
+    document.getElementById('layer-summary').innerHTML =
+      '<div class="small muted" style="margin-bottom:8px">阶段 2 装配：<code class="inline">head → P1 → AGENTS → 技能 → tail</code></div>' +
+      layers.map(function (l) {
+        return '<div class="row between" style="padding:4px 0;border-bottom:1px solid var(--border)">' +
+          '<span class="tiny">' + esc(l[0]) + '</span><span class="mono tiny">' + l[1] + '</span></div>' +
+          '<div style="height:4px;background:var(--neutral-bg);border-radius:3px;margin:2px 0 6px;overflow:hidden"><div style="height:100%;width:' + Math.min(100, l[1] / 40) + '%;background:' + l[2] + '"></div></div>' +
+          '<div class="tiny faint" style="margin:-3px 0 5px">' + esc(l[3]) + '</div>';
+      }).join('') +
+      '<div class="hr"></div>' +
+      '<dl style="display:grid;grid-template-columns:1fr auto;gap:5px;font-size:11px;margin:0">' +
+      '<dt class="muted">baseChars（含 agent）</dt><dd class="mono">' + baseChars + '</dd>' +
+      '<dt class="muted">P1 保存期 available</dt><dd class="mono" style="color:' + (available < 2000 ? 'var(--danger-fg)' : 'var(--success-fg)') + '">' + available + '</dd>' +
+      '<dt class="muted">合计（含 tail）</dt><dd class="mono">' + total + ' / 12000</dd></dl>' +
+      '<div class="notice ' + (available < 2000 ? 'warn' : '') + '" style="margin-top:9px;font-size:11px"><span class="n-ico">!</span><div>超预算时 <code class="inline">truncated</code> 只会出现 <code class="inline">project/nearby:*/skill:*/root</code>，<strong>不会出现 base 或输出契约</strong>。把 agent 写长会直接挤掉 P1。</div></div>';
+  }
+
+  var MX = [
+    { l: '阶段系统提示词', s0: 'format_check', s1: 'classify', s2: 'agent' },
+    { l: 'P1（kind=project）', s0: '否', s1: '否', s2: '是' },
+    { l: 'AGENTS.md（Q9）', s0: '是', s1: '是', s2: '是' },
+    { l: '技能层', s0: '否', s1: '否', s2: '是' },
+    { l: '输出契约（不可配）', s0: '是', s1: '是', s2: '是' }
+  ];
+  ['s0', 's1', 's2'].forEach(function (s, i) {
+    document.getElementById('lp-' + s).innerHTML = '<div class="small muted" style="margin-bottom:8px"><strong>阶段 ' + i + '</strong> 实际注入的层</div>' +
+      MX.map(function (x) {
+        var v = x[s];
+        return '<div class="row between" style="padding:4px 0;border-bottom:1px solid var(--border)"><span class="tiny">' + esc(x.l) + '</span>' +
+          '<span class="badge ' + (v === '否' ? 'neutral' : v === '是' ? 'success' : 'brand') + ' mono">' + esc(v) + '</span></div>';
+      }).join('') + '<div class="tiny faint" style="margin-top:8px">阶段 0/1 传 <code class="inline">projectPrompt:\'\'</code>、无技能层，但传 agentsMd（Q9）。</div>';
+  });
+
+  /* ---------- 校验规则表 ---------- */
+  var rules = [
+    ['未识别占位符 → 400 并列出名字', 'format_check / classify / agent', '保存被拒绝'],
+    ['format_check 缺 {{title}} 或 {{body}} → 400', 'format_check', 'V11'],
+    ['format_check / classify 超 8000', 'format_check / classify', '保存被拒绝'],
+    ['agent 超 4000', 'agent', 'R6 预算约束'],
+    ['project 不插值、不校验未知占位符', 'project', '沿用现状'],
+    ['输出契约不可配（代码追加在最后）', '全部', 'V16'],
+    ['项目版本整体覆盖内置默认，不拼接', '全部', 'Q1 / V15']
+  ];
+  document.getElementById('val-rules').innerHTML = rules.map(function (r, i) {
+    return '<tr class="clickable" onclick="Demo.toast(\'' + esc(r[0]) + '\', \'' + esc(r[1] + ' · ' + r[2]) + '\')">' +
+      '<td class="small">' + esc(r[0]) + '</td><td class="mono tiny muted">' + esc(r[1]) + '</td><td><span class="badge neutral">' + esc(r[2]) + '</span></td></tr>';
+  }).join('');
+
+  /* ---------- 抽屉内容 ---------- */
+  document.getElementById('default-body').innerHTML = KINDS.filter(function (k) { return k.k !== 'project'; }).map(function (k) {
+    return '<div class="strong small" style="margin:12px 0 5px">' + esc(k.k) + ' · 内置默认（只读）</div><pre class="code">' + esc(D.data.prompts[k.k]) + '</pre>';
+  }).join('');
+  document.getElementById('versions-body').innerHTML = KINDS.map(function (k) {
+    return '<div class="strong small" style="margin:12px 0 5px">' + esc(k.label) + ' <span class="badge neutral mono">' + esc(k.k) + '</span></div>' +
+      HISTORY[k.k].map(function (h) {
+        return '<div class="row between" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:5px">' +
+          '<span><span class="mono small strong">' + esc(h[0]) + '</span> <span class="tiny muted">' + esc(h[2]) + '</span></span>' +
+          '<span class="row" style="flex-wrap:nowrap"><span class="tiny faint">' + esc(h[1]) + '</span>' +
+          (h[0] === 'v0' ? '' : '<button class="btn ghost sm" data-rollback="' + esc(k.k) + '|' + esc(h[0]) + '">切换</button>') + '</span></div>';
+      }).join('');
+  }).join('');
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rollback]'); if (!b) return;
+    var p = b.getAttribute('data-rollback').split('|');
+    D.toast('已切换到 ' + p[0] + ' ' + p[1], '指针变更，历史版本仍在；保存后下一轮生效', 'success');
+  });
+
+  /* ---------- 保存 / 另存 / 恢复 / 放弃 ---------- */
+  function validate() {
+    var k = def(cur), text = drafted[cur], found = placeholders(text);
+    if (text.length > k.max) return '超出软上限 ' + k.max + ' 字符';
+    if (k.ph.length) {
+      var un = found.filter(function (p) { return k.ph.indexOf(p) < 0; });
+      if (un.length) return '未识别占位符：' + un.join('、');
+      if (cur === 'format_check') {
+        var mi = ['title', 'body'].filter(function (p) { return found.indexOf(p) < 0; });
+        if (mi.length) return '缺少必填占位符：' + mi.join('、');
+      }
+    }
+    return null;
+  }
+  document.getElementById('ed-save').addEventListener('click', function () {
+    var err = validate();
+    if (err) return D.toast('保存被拒绝（400）', err, 'danger');
+    saved[cur] = drafted[cur]; D.setDirty(false);
+    D.toast('提示词已保存', cur + ' · 项目版本整体覆盖 · 输出契约仍由代码追加', 'success');
+  });
+  document.getElementById('ed-save-as').addEventListener('click', function () {
+    var err = validate();
+    if (err) return D.toast('另存被拒绝（400）', err, 'danger');
+    var k = def(cur); k.v += 1;
+    HISTORY[cur].unshift(['v' + k.v, '刚刚（模拟）', '从当前正文另存']);
+    document.getElementById('kind-tabs').querySelector('[data-ptab="' + cur + '"]').innerHTML = esc(k.label) + '<span class="tiny faint mono" style="margin-left:6px">v' + k.v + '</span>';
+    renderEditor(); D.setDirty(false);
+    D.toast('已另存为项目版本 v' + k.v, '内置默认仍只读保留，可随时恢复', 'success');
+  });
+  document.getElementById('ed-restore').addEventListener('click', function () {
+    var k = def(cur);
+    D.confirm('恢复默认 · ' + k.label, '把 <code class="inline">' + esc(k.k) + '</code> 的指针回 <strong>v0</strong>，装配时改用内置默认模板。<br>历史项目版本不会被删除，可随时切回。<br>输出契约不属于任何版本线，永远由控制面追加在最后。', function () {
+      k.v = 0; drafted[cur] = D.data.prompts[cur];
+      document.getElementById('kind-tabs').querySelector('[data-ptab="' + cur + '"]').innerHTML = esc(k.label) + '<span class="tiny faint mono" style="margin-left:6px">v0</span>';
+      renderEditor(); D.setDirty(true);
+      D.toast('已恢复默认（待保存）', cur + ' → v0 · 历史版本仍在', 'success');
+    }, '恢复默认');
+  });
+  document.getElementById('ed-discard').addEventListener('click', function () {
+    drafted[cur] = saved[cur]; renderEditor(); D.setDirty(false);
+    D.toast('已放弃改动', '草稿恢复到服务端上一份版本');
+  });
+
+  renderEditor();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>运行 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="runs" data-crumb="acme/pi-console">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>运行</h1>
+          <p class="desc">阶段任务 <code class="inline">source=pipeline</code>：format / classify / notice；运行时分 light 与 sandboxed，Agent 阶段用 persistent 会话。</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn sm" id="export-runs">导出 CSV</button>
+          <button class="btn sm" data-toast="已刷新" data-toast-desc="演示数据为静态快照">刷新</button>
+          <a class="btn primary sm" href="issues.html">回到 Issue 中心 ⇢</a>
+        </div>
+      </div>
+
+      <div class="grid g4" style="margin-bottom:14px">
+        <div class="card kpi"><div class="k-label">近 24h 任务</div><div class="k-value">86<em>条</em></div><div class="k-foot">其中 pipeline 任务 61 条</div></div>
+        <div class="card kpi"><div class="k-label">light 占比</div><div class="k-value">68.6<em>%</em></div><div class="k-foot">format + notice，不建容器</div></div>
+        <div class="card kpi"><div class="k-label">sandboxed 成功率</div><div class="k-value">96.2<em>%</em></div><div class="k-foot">分类容器 30min 闸</div></div>
+        <div class="card kpi"><div class="k-label">今日成本</div><div class="k-value">¥ 4.82</div><div class="k-foot">门禁回执约 ¥0.014 / 条</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>任务记录<span class="sub">共 <span data-filter-count>8</span> 条符合条件 · 点击行看信封</span></h2>
+          <button class="btn ghost sm" data-filter-reset>重置筛选</button></div>
+        <div class="card-body" style="border-bottom:1px solid var(--border)">
+          <div class="filters">
+            <div class="search-box"><input class="inp" data-filter-search placeholder="搜索任务 id、issue 编号…" /></div>
+            <select class="inp" data-filter="cmd" aria-label="任务类型">
+              <option value="all">全部任务类型</option>
+              <option value="pipeline:format">pipeline:format</option>
+              <option value="pipeline:classify">pipeline:classify</option>
+              <option value="pipeline:notice">pipeline:notice</option>
+              <option value="agent:mention">agent:mention</option>
+            </select>
+            <select class="inp" data-filter="mode" aria-label="运行时">
+              <option value="all">全部运行时</option>
+              <option value="light">light</option>
+              <option value="sandboxed">sandboxed</option>
+              <option value="persistent">persistent</option>
+            </select>
+            <select class="inp" data-filter="status" aria-label="状态">
+              <option value="all">全部状态</option>
+              <option value="succeeded">succeeded</option>
+              <option value="running">running</option>
+              <option value="failed">failed</option>
+            </select>
+          </div>
+        </div>
+        <div class="card-body flush">
+          <div class="table-wrap"><table class="tbl" id="run-table">
+            <thead><tr><th>任务 id</th><th>command</th><th>source</th><th>运行时</th><th>issue</th><th>状态</th><th>stage.result</th><th class="num">耗时</th><th class="num">成本</th><th>时间</th><th>会话</th></tr></thead>
+            <tbody id="run-rows"></tbody>
+          </table></div>
+          <div class="card-foot">写回闸门：<code class="inline">source='command'</code> 或 <code class="inline">source='pipeline' 且 command ∈ {format, classify, notice}</code> 才允许 comment，其余自动通道仍零评论。</div>
+        </div>
+      </div>
+
+      <div class="grid g3" style="margin-top:14px">
+        <div class="card"><div class="card-head"><h2>light<span class="sub">阶段 0 / 门禁回执</span></h2></div>
+          <div class="card-body small muted" style="line-height:1.8">只 <code class="inline">host.ready()</code> + 一次 turn；无 worktree、无容器、无 exec 代理、无 diff。阶段 0 不注入 P1 与技能层，但<strong>注入 AGENTS.md</strong>（Q9）。<code class="inline">pipeline:notice</code> 300s 过期。</div></div>
+        <div class="card"><div class="card-head"><h2>sandboxed<span class="sub">阶段 1 分类</span></h2></div>
+          <div class="card-body small muted" style="line-height:1.8">D6：worktree + 容器 + 安装依赖 + 可读代码 / 跑命令；30 分钟闸。容器结束后销毁，首响应 3–8 分钟，面板显示「分类中（已 X 分钟）」。</div></div>
+        <div class="card"><div class="card-head"><h2>persistent<span class="sub">阶段 2 Agent</span></h2></div>
+          <div class="card-body small muted" style="line-height:1.8">同一 issue 复用 session，<code class="inline">session_cursor</code> 作 <code class="inline">events/subscribe</code> 的 after 防重放；不 archive。30 轮或 7 天轮换；attach 失败 → 新建 + warn + <code class="inline">blocked_reason=session-reset</code>。</div></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+  var TONE = { succeeded: 'success', running: 'info', failed: 'danger' };
+  var MODE_TONE = { light: 'neutral', sandboxed: 'brand', persistent: 'info' };
+
+  document.getElementById('run-rows').innerHTML = D.data.runs.map(function (r, i) {
+    return '<tr class="clickable" data-row data-cmd="' + esc(r.cmd) + '" data-mode="' + esc(r.mode) + '" data-status="' + esc(r.status) +
+      '" data-search="' + esc(r.id + ' ' + r.cmd + ' issue#' + r.issue + ' ' + r.session).toLowerCase() + '" data-run="' + i + '">' +
+      '<td class="mono tiny strong">' + esc(r.id) + '</td>' +
+      '<td><span class="badge ' + (r.cmd.indexOf('pipeline') === 0 ? 'brand' : 'neutral') + ' mono">' + esc(r.cmd) + '</span></td>' +
+      '<td class="mono tiny muted">' + esc(r.src) + '</td>' +
+      '<td><span class="badge ' + MODE_TONE[r.mode] + ' mono">' + esc(r.mode) + '</span></td>' +
+      '<td><a class="mono tiny" style="color:var(--brand);text-decoration:underline;text-underline-offset:2px" href="issue-detail.html?n=' + r.issue + '" onclick="event.stopPropagation()">#' + r.issue + '</a></td>' +
+      '<td><span class="badge ' + TONE[r.status] + '">' + esc(r.status) + '</span></td>' +
+      '<td class="mono tiny">' + esc(r.result) + '</td>' +
+      '<td class="num">' + esc(r.dur) + '</td><td class="num">' + esc(r.cost) + '</td>' +
+      '<td class="mono tiny faint">' + esc(r.at) + '</td><td class="mono tiny faint">' + esc(r.session) + '</td></tr>';
+  }).join('') + '<tr class="empty-row" style="display:none"><td colspan="11">没有符合条件的任务</td></tr>';
+
+  D.bindFilters('#run-table');
+
+  var ENVELOPE = {
+    'pipeline:format': '{\n  "stage": { "name": "format", "result": "{{result}}" },\n  "verdict": { "labels": [], "evidence": [] },\n  "actions": [{ "intent": "comment", "body": "AI 自由撰写：缺什么、怎么补" }],\n  "usage": { "inputTokens": 1840, "outputTokens": 310, "costUsd": 0.0031 }\n}',
+    'pipeline:classify': '{\n  "stage": { "name": "classify", "result": "{{result}}" },\n  "verdict": { "labels": [], "evidence": [\n    { "rule": "checked:grep", "quote": "src/**/*.ts", "passed": false }\n  ] },\n  "actions": [{ "intent": "comment", "body": "AI 自由撰写：已查范围 + 需要什么" }],\n  "usage": { "inputTokens": 9120, "outputTokens": 740, "costUsd": 0.1120 }\n}',
+    'pipeline:notice': '{\n  "actions": [{ "intent": "comment", "body": "AI 自由撰写：一句门禁回执" }],\n  "usage": { "inputTokens": 420, "outputTokens": 68, "costUsd": 0.0019 }\n}',
+    'agent:mention': '{\n  "verdict": { "labels": [], "evidence": [] },\n  "actions": [{ "intent": "comment", "body": "AI 自由撰写：结论 + 依据" }],\n  "usage": { "inputTokens": 12400, "outputTokens": 1180, "costUsd": 0.2044 }\n}'
+  };
+
+  document.getElementById('run-rows').addEventListener('click', function (e) {
+    if (e.target.closest('a')) return;
+    var tr = e.target.closest('[data-run]'); if (!tr) return;
+    var r = D.data.runs[Number(tr.getAttribute('data-run'))];
+    var env = (ENVELOPE[r.cmd] || ENVELOPE['agent:mention']).replace('{{result}}', r.result);
+    var html =
+      '<div class="stack">' +
+      '<div class="row"><span class="badge ' + TONE[r.status] + '">' + esc(r.status) + '</span>' +
+      '<span class="badge ' + MODE_TONE[r.mode] + ' mono">' + esc(r.mode) + '</span>' +
+      '<span class="badge neutral mono">' + esc(r.id) + '</span></div>' +
+      '<dl style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-size:11.5px;margin:0">' +
+      '<dt class="faint">command</dt><dd class="mono" style="margin:0">' + esc(r.cmd) + '</dd>' +
+      '<dt class="faint">source</dt><dd class="mono" style="margin:0">' + esc(r.src) + '</dd>' +
+      '<dt class="faint">issue</dt><dd style="margin:0"><a class="mono" style="color:var(--brand);text-decoration:underline" href="issue-detail.html?n=' + r.issue + '">#' + r.issue + '</a></dd>' +
+      '<dt class="faint">stage.result</dt><dd class="mono" style="margin:0">' + esc(r.result) + '</dd>' +
+      '<dt class="faint">耗时 / 成本</dt><dd class="mono" style="margin:0">' + esc(r.dur) + ' · ' + esc(r.cost) + '</dd>' +
+      '<dt class="faint">session</dt><dd class="mono" style="margin:0">' + esc(r.session) + '</dd></dl>' +
+      '<div class="hr"></div><div class="strong small">信封（envelopes.stage_name / stage_result 已落列）</div>' +
+      '<pre class="code" id="env-text">' + esc(env) + '</pre>' +
+      '<div class="row"><button class="btn sm" id="copy-env">复制信封</button>' +
+      '<a class="btn sm" href="audit.html">查看审计 ⇢</a></div>' +
+      '<div class="notice"><span class="n-ico">◇</span><div>阶段任务 <code class="inline">allowedIntents</code> 只含 <code class="inline">comment</code>，没有 push / create_issue / label 能力；<code class="inline">verdict.labels</code> 在阶段任务里被忽略。</div></div>' +
+      '</div>';
+    D.openDrawer('任务详情 · ' + r.id, html, '<button class="btn sm" data-action="drawer-close">关闭</button>');
+    document.getElementById('copy-env').addEventListener('click', function () { D.copy(env); });
+  });
+
+  document.getElementById('export-runs').addEventListener('click', function () {
+    var head = ['任务id', 'command', 'source', 'mode', 'issue', 'status', 'result', '耗时', '成本', '时间', 'session'];
+    var csv = '\ufeff' + [head].concat(D.data.runs.map(function (r) { return [r.id, r.cmd, r.src, r.mode, r.issue, r.status, r.result, r.dur, r.cost, r.at, r.session]; }))
+      .map(function (row) { return row.map(function (v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(','); }).join('\r\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'pipeline-runs-demo.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    D.toast('CSV 已导出', D.data.runs.length + ' 条演示任务', 'success');
+  });
+})();
+</script>
+</body>
+</html>

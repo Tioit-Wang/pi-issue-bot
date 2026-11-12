@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>流程地图 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="flow" data-crumb="v1.5 定稿">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>流程地图</h1>
+          <p class="desc">状态取值：<code class="inline">stage ∈ {format, classify, agent, closed}</code> · <code class="inline">state ∈ {pending, running, awaiting_info, ready, blocked, closed}</code>。点击任一节点看转移规则。</p>
+        </div>
+        <div class="page-actions">
+          <a class="btn sm" href="issues.html">看实际 issue 分布 ⇢</a>
+          <a class="btn primary sm" href="settings-pipeline.html">配置入口 ⇢</a>
+        </div>
+      </div>
+
+      <div class="notice info">
+        <span class="n-ico">◇</span>
+        <div><strong>两种 awaiting_info 不是一回事</strong>：<code class="inline">format/awaiting_info</code> 等<strong>用户</strong>补充，<code class="inline">info_requested_at</code> 非空，48h 自动关；<code class="inline">classify/awaiting_info</code> 等<strong>管理员</strong>，<code class="inline">info_requested_at=NULL</code>，不进关闭扫描，只有 managers 能推进（11:00 Q6 修订）。</div>
+      </div>
+
+      <div class="grid main-side" style="margin-top:14px;grid-template-columns:minmax(0,1fr) 340px">
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>状态机<span class="sub">点击节点 → 右侧规则卡</span></h2>
+              <button class="btn ghost sm" data-toast="状态机为 v1.5 定稿" data-toast-desc="来源 docs/plan-fixed-pipeline.md §2 / §5 / §6 / §7">规则来源</button></div>
+            <div class="card-body flush">
+              <div class="flow-map" id="flow-map"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>转移规则表<span class="sub">§2 · 事件 → 前置 → 后置 → 动作</span></h2>
+              <select class="inp sm" data-filter="col-stage" id="rule-stage">
+                <option value="all">全部阶段</option>
+                <option value="format">阶段 0 · format</option>
+                <option value="classify">阶段 1 · classify</option>
+                <option value="agent">阶段 2 · agent</option>
+                <option value="cmd">管理员指令</option>
+              </select>
+            </div>
+            <div class="card-body flush">
+              <div class="table-wrap">
+                <table class="tbl" id="rule-table">
+                  <thead><tr><th style="width:22%">事件</th><th style="width:22%">前置状态</th><th style="width:20%">后置</th><th>动作</th></tr></thead>
+                  <tbody id="rule-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>提示词作用域矩阵<span class="sub">§16.3 · Q9：AGENTS.md 全阶段生效</span></h2></div>
+            <div class="card-body" id="matrix-tabs">
+              <div class="tabs" style="margin-bottom:12px">
+                <button class="active" data-tab="mx-all" data-tab-group="#matrix-tabs">全矩阵</button>
+                <button data-tab="mx-s0" data-tab-group="#matrix-tabs">阶段 0</button>
+                <button data-tab="mx-s1" data-tab-group="#matrix-tabs">阶段 1</button>
+                <button data-tab="mx-s2" data-tab-group="#matrix-tabs">阶段 2</button>
+              </div>
+              <div class="tab-panel active" id="mx-all"></div>
+              <div class="tab-panel" id="mx-s0"></div>
+              <div class="tab-panel" id="mx-s1"></div>
+              <div class="tab-panel" id="mx-s2"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stack" style="position:sticky;top:64px">
+          <div class="card" id="rule-card">
+            <div class="card-head"><h2>节点规则</h2><span class="badge brand" id="rule-tag">默认</span></div>
+            <div class="card-body" id="rule-detail"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>门禁处置<span class="sub">未 ready 时收到 @</span></h2></div>
+            <div class="card-body" id="gate"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>决策与拍板<span class="sub">可点击展开</span></h2></div>
+            <div class="card-body" id="decisions"></div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+
+  /* ---------- 状态机节点 ---------- */
+  var cols = [
+    {
+      title: '阶段 0 · 格式检查', sub: 'light · 无容器 · AGENTS.md 注入',
+      nodes: [
+        { id: 'f-pending', code: 'format/pending', desc: 'issues.opened（非 bot）建行入队 pipeline:format', rule: { title: 'format/pending', from: '无行', event: 'issues.opened（非 bot）', to: 'format/pending', action: '建 issue_pipeline 行 + 入队 pipeline:format（light）。<br>正文快照写 tasks.target_title / target_body（P2），不受 webhook 载荷 90 天保留期影响。', src: '§2 / §4.2 / V1' } },
+        { id: 'f-running', code: 'format/running', desc: '一次 turn，无 worktree / 容器 / exec 代理 / diff', rule: { title: 'format/running', from: 'format/pending', event: '任务开始', to: 'pass 或 fail', action: '提示词 = format_check（默认或项目整体覆盖）+ AGENTS.md + 输出契约。<br>阶段任务 allowedIntents 只含 comment，没有 push / create_issue / label 能力。', src: '§4.1 / §5 / §16.3' } },
+        { id: 'f-pass', code: 'pass（首次 / 复查）', desc: '首次零评论；补信息后复查回一条确认（D8）', rule: { title: 'pass', from: 'format/running', event: '格式 pass', to: 'classify/pending', action: '首次：无评论 + rocket + 入队 pipeline:classify。<br>补信息后复查（format_fail_count>0）：一条 AI 确认评论（D8），模型没写则控制面补「已收到补充信息，格式检查通过。」——这是 Q8 唯一的故障兜底例外。', src: '§2 / §5 / V2 / V4' } },
+        { id: 'f-fail', code: 'fail', desc: 'AI 评论 + needs-info + confused，等用户补充', rule: { title: 'fail', from: 'format/running', event: '格式 fail', to: 'format/awaiting_info', action: 'AI 自由撰写评论（Q8 不做服务端模板渲染）+ needs-info 标签 + confused + info_requested_at=now。<br>format_fail_count +1；累计 5 次 → 自动关 issue（Q5），不再 blocked。', src: '§5 / §1.7 Q5 / V3 / V19' } },
+        { id: 'f-await', code: 'format/awaiting_info', desc: '评论优先；48h 无补充自动关闭', rule: { title: 'format/awaiting_info', from: 'fail', event: '评论补充 / 正文编辑 / 48h 超时', to: 'format/pending 或 closed', action: '评论优先三条（§16.2）：内容置顶（最近 3 条，每条≤1000）、触发优先（评论后立即重跑，其后 120s 的 edited 跳过）、冷却让位（edited 触发后 120s 内来评论，评论仍立即触发）。<br>48h 无补充 → pipeline-close 作业关 issue。', src: '§9 / §16.2 / V4b / V12' } }
+      ]
+    },
+    {
+      title: '阶段 1 · 标签分类', sub: 'sandboxed · worktree + 容器 · 30min 闸',
+      nodes: [
+        { id: 'c-pending', code: 'classify/pending', desc: '格式 pass 后入队；sandboxed 完整沙箱', rule: { title: 'classify/pending', from: 'classify/pending', event: '入队 pipeline:classify', to: 'classify/running', action: 'D6：分类阶段也开容器，worktree + 安装依赖 + 可读代码 / 跑命令。<br>上下文 = 正文 + 标签词表（含 role/meaning）+ 阶段 0 结论 + AGENTS.md，不注入 P1 / 技能层。', src: '§1.1 D6 / §6 / §16.3' } },
+        { id: 'c-evidence', code: 'defect 证据校验', desc: '必须有 path:line，否则强制降级 not-found', rule: { title: 'defect 证据校验', from: 'classify/running', event: 'result=defect', to: 'defect 或 not-found', action: 'verdict.evidence 至少一条 rule 以 <code class="inline">code:</code> 开头、quote 命中 <code class="inline">path:line</code> 正则。<br>不满足 → 强制降级 not-found（正确性校验，不是排版要求）。模型给的 labels 一律忽略，标签由控制面按 role 取。', src: '§4.1 / §6 / V6' } },
+        { id: 'c-ready', code: 'requirement / defect / other', desc: '真实类别直接 agent/ready，不受影响', rule: { title: '真实类别 → ready', from: 'classify/running', event: 'result ∈ {requirement, defect, other}', to: 'agent/ready', action: 'requirement：标签 + 初步分析评论 + /cc @managers。<br>defect：标签 + 缺陷报告 + /cc @managers。<br>other：只打标签，不评论、不 @。<br>整个 issue 只 @ 一次（mention_sent_at 单槽），重分类不补 @。', src: '§1.8 / §6 / V5 / V7' } },
+        { id: 'c-notfound', code: 'not-found', desc: '虚拟缺陷 / 未知分类 → 停住等管理员', rule: { title: 'not-found（Q6 修订）', from: 'classify/running', event: '查不到缺陷证据 / 信息不足以判类', to: 'classify/awaiting_info', action: '不打缺陷标签；评论写「无法分类 / 当前查不到 + 已查范围 + 需要什么」并 /cc @managers 要求回复。<br>已查范围同时落 verdict.evidence（rule=checked:...）供面板复核。<br><strong>只有管理员能推进</strong>：managers 评论 → 重跑分类；/pipeline next → agent/ready。作者/他人评论只记录不重跑。', src: '§1.8 / §6 / §16.2 / V6' } },
+        { id: 'c-await', code: 'classify/awaiting_info', desc: 'info_requested_at=NULL，不进 48h 关闭扫描', rule: { title: 'classify/awaiting_info', from: 'not-found', event: 'managers 评论 / 指令', to: 'classify/pending 或 agent/ready', action: 'info_requested_at=NULL → 不进 pipeline-close 扫描，不会被 48h 误关。<br>门禁收到 @ 时回一条「已转管理员分类，请等待」的 pipeline:notice AI 评论（每 issue 每小时 1 条限速）。', src: '§1.8 / §8 / §9' } }
+      ]
+    },
+    {
+      title: '阶段 2 · Agent', sub: '门禁 + 会话复用 + 四层提示词',
+      nodes: [
+        { id: 'a-gate', code: '门禁', desc: '有行且 state != ready 拦截；无行放行', rule: { title: '阶段 2 门禁', from: '任意', event: '收到 @ / 命令', to: '拦截或建任务', action: '有 pipeline 行且 state != ready → 按 §8 处置，被拦的命令不建 command 任务。<br>无行 → 放行，并在首次处理时懒创建 ready 行（§1.3）。PR 不受影响。', src: '§1.3 / §7 / §8 / V8' } },
+        { id: 'a-ready', code: 'agent/ready', desc: '响应 @；同一 issue 复用会话', rule: { title: 'agent/ready', from: 'classify/* 或 /pipeline next', event: '被 @', to: 'agent/ready（保持）', action: 'session_id 存在 → session/attach 复用；session_cursor 作 events/subscribe 的 after 防重放；不 archive。<br>session_turns ≥ 30 或超 7 天 → archive 旧会话并新建。attach 失败 → 新建 + warn + blocked_reason=session-reset（不阻塞）。', src: '§7 / V13' } },
+        { id: 'a-stale', code: 'ready 后改动', desc: '只记 stale_at，不重跑、不重发（D7）', rule: { title: 'ready 后改动 issue（D7）', from: 'agent/ready', event: 'issues.edited', to: 'agent/ready', action: '忽略事件，只记 stale_at 供面板显示。<br>由 Agent 阶段自己处理，用户 @ 它即可。', src: '§2 / §7' } },
+        { id: 'a-blocked', code: 'blocked', desc: '运行失败 / 信封不合法连续 2 次', rule: { title: 'blocked', from: '运行态', event: '连续 2 次运行失败 / 信封不合法', to: 'blocked', action: '面板红点 + 异常通知（AI 写，Q8）。<br>/recheck --force 解禁；/pipeline next 等价解禁并推进。注意格式 5 次不通过是<strong>关闭</strong>不是 blocked（Q5）。', src: '§2 / §1.7 Q5 / §8' } },
+        { id: 'a-cmd', code: '/pipeline next | prev', desc: '任意步骤进退，仅 managers，记审计', rule: { title: '管理员进 / 退（Q7）', from: '任意非 closed', event: '/pipeline next | prev', to: '下一阶段 / 上一阶段', action: 'next：format → classify/pending → agent/ready；blocked 等价解禁；不受 120s 冷却。<br>prev：agent/ready → classify/pending（重分类）；classify/* → format/pending（重跑格式），逐步退回。<br>非 managers 调用被拒；每次操作记审计（V20）。', src: '§1.2 P6 / §1.7 Q7 / V20' } }
+      ]
+    }
+  ];
+
+  document.getElementById('flow-map').innerHTML = cols.map(function (c, ci) {
+    return '<div class="flow-col"><h3>' + esc(c.title) + '</h3><div class="fc-sub">' + esc(c.sub) + '</div>' +
+      c.nodes.map(function (n) {
+        return '<div class="flow-node" data-node="' + n.id + '"><div class="fn-top">' +
+          '<span class="dot ' + (ci === 0 ? 'info' : ci === 1 ? 'brand' : 'success') + '"></span>' +
+          '<span class="fn-code">' + esc(n.code) + '</span></div>' +
+          '<div class="fn-desc">' + esc(n.desc) + '</div></div>';
+      }).join('') + '</div>';
+  }).join('');
+
+  var rules = {};
+  cols.forEach(function (c) { c.nodes.forEach(function (n) { rules[n.id] = n.rule; }); });
+
+  function showRule(id) {
+    var r = rules[id]; if (!r) return;
+    document.querySelectorAll('.flow-node').forEach(function (n) { n.classList.toggle('active', n.getAttribute('data-node') === id); });
+    document.getElementById('rule-tag').textContent = r.src;
+    document.getElementById('rule-detail').innerHTML =
+      '<div style="font-size:14px;font-weight:650;color:var(--fg-strong);margin-bottom:10px">' + esc(r.title) + '</div>' +
+      '<dl style="display:grid;grid-template-columns:64px 1fr;gap:7px 10px;font-size:11.5px;margin:0">' +
+      '<dt class="faint">前置</dt><dd class="mono" style="margin:0">' + esc(r.from) + '</dd>' +
+      '<dt class="faint">事件</dt><dd style="margin:0">' + esc(r.event) + '</dd>' +
+      '<dt class="faint">后置</dt><dd style="margin:0"><span class="badge brand mono">' + esc(r.to) + '</span></dd>' +
+      '</dl><div class="hr"></div><div style="font-size:11.5px;line-height:1.75;color:var(--muted)">' + r.action + '</div>' +
+      '<div class="notice" style="margin-top:12px"><span class="n-ico">§</span><div>依据 <strong>' + esc(r.src) + '</strong>（docs/plan-fixed-pipeline.md）</div></div>';
+  }
+  document.querySelectorAll('[data-node]').forEach(function (n) {
+    n.addEventListener('click', function () { showRule(n.getAttribute('data-node')); });
+  });
+  showRule('c-notfound');
+
+  /* ---------- 转移规则表 ---------- */
+  var trans = [
+    { s: 'format', e: 'issues.opened（非 bot）', f: '无行', t: 'format/pending', a: '建行 + 入队 pipeline:format（light）' },
+    { s: 'format', e: '格式 pass（首次）', f: 'format/running', t: 'classify/pending', a: '无评论 + rocket + 入队分类' },
+    { s: 'format', e: '格式 pass（重检）', f: 'format/running', t: 'classify/pending', a: '一条确认评论（D8）+ 入队分类' },
+    { s: 'format', e: '格式 fail', f: 'format/running', t: 'format/awaiting_info', a: 'AI 评论 + needs-info + confused；info_requested_at=now' },
+    { s: 'format', e: 'issue_comment.created（补信息，优先）', f: 'format/awaiting_info', t: 'format/pending', a: '立即重跑，锚含 comment id；补充内容置顶' },
+    { s: 'format', e: 'issues.edited（body/title 变）', f: 'pending / awaiting_info', t: 'format/pending', a: '重跑（冷却 120s）；若 120s 内已有评论触发则跳过' },
+    { s: 'format', e: '格式不通过累计 5 次（Q5）', f: '任意 format 态', t: 'closed', a: '自动关 issue；第 5 次的 AI 评论即最后反馈' },
+    { s: 'format', e: 'awaiting_info 满 48h', f: 'awaiting_info', t: 'closed', a: 'pipeline-close 作业；closed_at 落库' },
+    { s: 'classify', e: '分类 → requirement / defect', f: 'classify/running', t: 'agent/ready', a: '标签 + 评论 + /cc @（一次）' },
+    { s: 'classify', e: '分类 → not-found（Q6 修订）', f: 'classify/running', t: 'classify/awaiting_info', a: '@managers 要求回复；仅管理员可推进' },
+    { s: 'classify', e: '分类 → other', f: 'classify/running', t: 'agent/ready', a: '只打标签' },
+    { s: 'classify', e: 'managers 普通评论', f: 'classify/awaiting_info', t: 'classify/pending', a: '重跑分类；作者/他人评论只记录不重跑' },
+    { s: 'agent', e: 'issues.edited', f: 'agent/ready', t: 'agent/ready', a: '忽略（D7），只记 stale_at' },
+    { s: 'agent', e: '运行失败 / 信封不合法连续 2 次', f: '运行态', t: 'blocked', a: '面板红点 + 异常通知（AI 写）' },
+    { s: 'agent', e: 'issues.closed（人工关）', f: '任意', t: 'closed', a: '不再接事件' },
+    { s: 'cmd', e: '/pipeline next（managers）', f: '任意非 closed', t: '下一阶段', a: 'format→classify→ready；blocked 等价解禁；记审计' },
+    { s: 'cmd', e: '/pipeline prev（managers）', f: 'classify/* 或 agent/ready', t: '上一阶段', a: '逐步重跑格式 / 重分类；记审计' },
+    { s: 'cmd', e: '/recheck | /recheck --force', f: '任意 / blocked', t: '当前阶段重跑', a: 'force 解 blocked；均限 managers' }
+  ];
+  function renderRules(f) {
+    var hits = trans.filter(function (t) { return f === 'all' || t.s === f; });
+    document.getElementById('rule-rows').innerHTML = hits.map(function (t) {
+      return '<tr><td class="small">' + esc(t.e) + '</td><td class="mono tiny muted">' + esc(t.f) + '</td>' +
+        '<td><span class="badge neutral mono">' + esc(t.t) + '</span></td><td class="small muted">' + esc(t.a) + '</td></tr>';
+    }).join('') || '<tr class="empty-row"><td colspan="4">没有匹配的规则</td></tr>';
+  }
+  renderRules('all');
+  document.getElementById('rule-stage').addEventListener('change', function () { renderRules(this.value); });
+
+  /* ---------- 作用域矩阵 ---------- */
+  var matrix = [
+    { layer: '阶段系统提示词 format_check', s0: '是', s1: '否', s2: '否' },
+    { layer: '阶段系统提示词 classify', s0: '否', s1: '是', s2: '否' },
+    { layer: '阶段系统提示词 agent', s0: '否', s1: '否', s2: '是' },
+    { layer: '用户设定提示词 P1（kind=project）', s0: '否', s1: '否', s2: '是' },
+    { layer: '仓库 AGENTS.md（Q9：任意时刻生效）', s0: '是', s1: '是', s2: '是' },
+    { layer: '技能层', s0: '否', s1: '否', s2: '是' },
+    { layer: '输出契约（代码追加，不可配）', s0: '是', s1: '是', s2: '是' }
+  ];
+  function cell(v) { return v === '是' ? '<span class="badge success">是</span>' : '<span class="badge neutral">否</span>'; }
+  function matrixTable(filter) {
+    return '<div class="table-wrap"><table class="tbl"><thead><tr><th>层</th><th>阶段 0</th><th>阶段 1</th><th>阶段 2</th></tr></thead><tbody>' +
+      matrix.map(function (m) {
+        if (filter && m['s' + filter] !== '是') return '';
+        return '<tr><td class="small">' + esc(m.layer) + '</td><td>' + cell(m.s0) + '</td><td>' + cell(m.s1) + '</td><td>' + cell(m.s2) + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="notice warn" style="margin-top:10px"><span class="n-ico">!</span><div><strong>预算约束（R6）</strong>：agent 落在 basePrompt，计入 baseChars，会直接扣减 P1 可保存额度，故上限收窄到 4000。运行期超预算时 head / tail 永不丢，被牺牲的只会是 P1 / AGENTS.md / 技能层。</div></div>';
+  }
+  document.getElementById('mx-all').innerHTML = matrixTable(null);
+  document.getElementById('mx-s0').innerHTML = matrixTable(0);
+  document.getElementById('mx-s1').innerHTML = matrixTable(1);
+  document.getElementById('mx-s2').innerHTML = matrixTable(2);
+
+  /* ---------- 门禁处置 ---------- */
+  var gates = [
+    { s: 'format/pending、classify/pending、*/running', a: '只打 eyes，不回复（正在跑，回复是噪音）', t: 'neutral' },
+    { s: 'format/awaiting_info（等用户）', a: 'pipeline:notice 写一条「请先按上一条评论补充信息」类提醒', t: 'info' },
+    { s: 'classify/awaiting_info（等管理员）', a: 'pipeline:notice 写一条「已转管理员分类，请等待」类提示', t: 'warn' },
+    { s: 'blocked', a: 'pipeline:notice 写一条「自动流程已暂停，可用 /recheck --force 或 /pipeline next」', t: 'danger' },
+    { s: 'closed', a: '静默', t: 'neutral' },
+    { s: '无行 / ready', a: '正常建任务', t: 'success' }
+  ];
+  document.getElementById('gate').innerHTML = gates.map(function (g) {
+    return '<div style="padding:7px 0;border-bottom:1px solid var(--border)">' +
+      '<div class="mono tiny strong">' + esc(g.s) + '</div>' +
+      '<div class="small muted" style="margin-top:3px">' + esc(g.a) + '</div></div>';
+  }).join('') + '<div class="tiny faint" style="margin-top:8px">所有回执由 AI 撰写（Q8，不做服务端模板渲染），控制面只管限速（每 issue 每小时 1 条）、长度、@ 追加与故障兜底。</div>';
+
+  /* ---------- 决策与拍板 ---------- */
+  var decisions = [
+    { k: 'D1 / E2', t: '三个阶段各自独立会话', b: '阶段 0/1 一次性会话（create → run → archive）；阶段 2 按 issue 复用会话。三个 session_id 两两不同。' },
+    { k: 'D2 / Q8', t: '评论由 AI 自由回复', b: '不做服务端模板渲染；固定措辞写进提示词，控制面只管追加 @、长度、频率、故障兜底。门禁回执走轻量 pipeline:notice。' },
+    { k: 'D3 → Q6 修订', t: '虚拟缺陷停住等管理员', b: '11:00 推翻 D3「不阻塞」：not-found → classify/awaiting_info，仅 managers 可推进；真实缺陷 / 需求直接 ready。「不打缺陷标签 + 评论找证据」保留。' },
+    { k: 'D4', t: '缺陷报告也 @ 管理人员', b: '需求 / 缺陷 / not-found 三类都 @，同一类别只 @ 一次（mention_sent_at 单槽）。' },
+    { k: 'D5 / Q2', t: '48h 超时自动关闭', b: '系统级常量 PIPELINE_CLOSE_AFTER_HOURS=48，不进 repos.settings；面板只读展示。' },
+    { k: 'D6', t: '分类阶段也开容器', b: '阶段 1 = 完整沙箱：worktree + 容器 + 安装依赖 + 可跑命令；30 分钟闸。' },
+    { k: 'D7', t: 'ready 后改动不回退', b: '不重跑、不重发，只记 stale_at；由 Agent 阶段自己处理。' },
+    { k: 'D8', t: '补信息且通过要回复', b: '重检 pass 时发一条确认，不受「合规即静默」约束；模型没写则控制面兜底一句。' },
+    { k: 'Q1', t: '项目提示词整体覆盖内置默认', b: 'activePromptBody 有项目版本时只返回项目正文，不拼接默认；默认模板只读展示，可「另存为项目版本」后再改。' },
+    { k: 'Q4', t: '无需兼容老配置 / 老数据', b: '读写同一套严格 schema，不做读路径宽容、不做 role 回填、不保留旧形状 settings；0005 迁移直接重置存量数据。' },
+    { k: 'Q5', t: '格式 5 次不通过自动关 issue', b: '废除「重跑上限」概念，计数 = 失败次数（通过不计）；PIPELINE_FORMAT_MAX_FAILS=5，第 5 次 fail 即关。' },
+    { k: 'Q9', t: 'AGENTS.md 任意时刻生效', b: '全阶段注入，不再只在阶段 2；阶段 0/1 仍不注入 P1 与技能层。' }
+  ];
+  document.getElementById('decisions').innerHTML = decisions.map(function (d, i) {
+    return '<div style="border-bottom:1px solid var(--border);padding:7px 0">' +
+      '<button class="row between" style="width:100%;background:transparent;border:0;padding:0;text-align:left" data-toggle="dec-' + i + '" aria-expanded="false">' +
+      '<span class="badge brand mono">' + esc(d.k) + '</span>' +
+      '<span class="small strong" style="flex:1;text-align:left;margin-left:6px">' + esc(d.t) + '</span>' +
+      '<span class="faint tiny">展开 ▾</span></button>' +
+      '<div id="dec-' + i + '" class="small muted" style="display:none;margin-top:6px;line-height:1.65">' + esc(d.b) + '</div></div>';
+  }).join('');
+})();
+</script>
+</body>
+</html>

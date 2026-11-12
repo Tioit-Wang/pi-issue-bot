@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设置 · 标签 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="settings-labels" data-crumb="标签">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>设置 · 标签词表</h1>
+          <p class="desc">改造新增 <code class="inline">vocabulary[].role</code> 下拉：分类阶段由控制面按 role 取标签，模型给的 labels 一律忽略。</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn sm" data-toast="校验通过" data-toast-desc="requirement 与 defect 各至少 1 个；每条都有 role" data-toast-tone="success">校验词表</button>
+          <a class="btn ghost sm" href="flow.html">看分类规则 ⇢</a>
+        </div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:200px minmax(0,1fr);align-items:start">
+        <div class="card" style="position:sticky;top:64px;padding:8px" id="settings-nav"></div>
+
+        <div class="stack">
+          <div class="card"><div class="card-body" id="settings-status"></div></div>
+
+          <div class="notice">
+            <span class="n-ico">◆</span>
+            <div><strong>role 是分类阶段的唯一分叉依据</strong>。原来标签只有 <code class="inline">name / meaning / group / color</code>，模型说什么就打什么；现在模型只负责给 <code class="inline">stage.result</code>，控制面用 <code class="inline">labelsOfRole(vocabulary, role)</code> 取标签，再走 <code class="inline">normalizeDesired</code>（互斥组 / 上限 / 人工否决）。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>标签词表<span class="sub">3 条 · role 为必填</span></h2>
+              <span class="badge brand">superRefine 无条件生效</span></div>
+            <div class="card-body flush">
+              <div class="table-wrap"><table class="tbl" id="label-table">
+                <thead><tr><th style="width:18%">标签名</th><th style="width:26%">meaning</th><th style="width:18%">role</th><th style="width:12%">颜色</th><th>分类阶段行为</th><th></th></tr></thead>
+                <tbody id="label-rows"></tbody>
+              </table></div>
+            </div>
+            <div class="card-body" style="border-top:1px solid var(--border)">
+              <div class="row">
+                <input class="inp sm" id="new-name" placeholder="标签名，如「优化」" />
+                <input class="inp sm" id="new-meaning" placeholder="含义（会进提示词词表）" style="min-width:220px" />
+                <select class="inp sm" id="new-role"><option value="other">other</option><option value="requirement">requirement</option><option value="defect">defect</option></select>
+                <button class="btn primary sm" id="add-label">添加标签</button>
+              </div>
+              <div class="tiny faint" style="margin-top:8px">Q4 无兼容承诺：缺 <code class="inline">role</code> 的老配置一律解析失败 / 保存 400，不做回填，不做读路径宽容。</div>
+            </div>
+          </div>
+
+          <div class="grid g2">
+            <div class="card">
+              <div class="card-head"><h2>role → 分类结果映射</h2></div>
+              <div class="card-body" id="role-map"></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h2>为什么模型不能自己打标签</h2></div>
+              <div class="card-body small muted" style="line-height:1.85">
+                分叉与词汇都属于<strong>项目配置</strong>，不是模型判断。让模型输出标签会带来三个问题：它能打出词表里不存在的名字、能绕过互斥组与上限、还能让「项目改提示词」意外改变流程行为。<br><br>
+                现在阶段任务的 <code class="inline">allowedIntents</code> 只开 <code class="inline">comment</code>，连 label 能力都没有；<code class="inline">verdict.labels</code> 在阶段任务里被直接忽略。<strong>项目改提示词 ≠ 自定义流程</strong>：阶段数、顺序、状态转移、输出契约、写回动作、标签分叉全部由代码固定。
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>配置片段<span class="sub">保存时整份 settings PUT</span></h2>
+              <button class="btn ghost sm" id="copy-json">复制 JSON</button></div>
+            <div class="card-body"><pre class="code" id="settings-json"></pre></div>
+          </div>
+
+          <div class="save-bar" data-dirty="0">
+            <span class="dirty-mark" data-dirty-only style="display:none"><span class="dot warn"></span>有未保存的改动</span>
+            <span class="tiny faint" data-clean-only>服务端是唯一事实源 · 当前无改动</span>
+            <span class="spacer"></span>
+            <button class="btn sm" data-dirty-only style="display:none" id="discard">放弃改动</button>
+            <button class="btn primary sm" id="save">保存标签</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+  D.renderSettingsNav('labels');
+  D.renderSettingsStatus('acme/pi-console');
+
+  var labels = [
+    { name: '需求', meaning: '新功能或改进诉求，需要初步分析', role: 'requirement', color: '#5a55e0' },
+    { name: '缺陷', meaning: '已定位到代码的真实问题，需要 path:line 证据', role: 'defect', color: '#d5453f' },
+    { name: '咨询', meaning: '提问 / 讨论，不需要机器人评论', role: 'other', color: '#7a8291' }
+  ];
+  var initial = JSON.parse(JSON.stringify(labels));
+
+  var ROLE_BEHAVIOR = {
+    requirement: '打标签 + 初步分析评论 + /cc @managers → 直接 agent/ready',
+    defect: '打标签 + 缺陷报告 + /cc @managers；必须有 path:line 证据 → 直接 agent/ready',
+    other: '只打标签，不发评论、不 @ → agent/ready',
+    '—': '不打标签（not-found 场景），评论 @managers 等管理员'
+  };
+  var ROLE_TONE = { requirement: 'brand', defect: 'danger', other: 'neutral', '—': 'warn' };
+
+  function renderJson() {
+    var obj = {
+      pipeline: { managers: ['wangge', 'linjie'], format_prompt_version: 3, classify_prompt_version: 0, agent_prompt_version: 0 },
+      labels: { vocabulary: labels.map(function (l) { return { name: l.name, role: l.role, meaning: l.meaning, color: l.color }; }) }
+    };
+    document.getElementById('settings-json').textContent = JSON.stringify(obj, null, 2);
+  }
+
+  function renderTable() {
+    document.getElementById('label-rows').innerHTML = labels.map(function (l, i) {
+      return '<tr><td><span class="badge mono" style="border-color:' + l.color + '55;color:' + l.color + '">' + esc(l.name) + '</span></td>' +
+        '<td class="small muted">' + esc(l.meaning) + '</td>' +
+        '<td><select class="inp sm" data-role="' + i + '">' +
+        ['requirement', 'defect', 'other'].map(function (r) {
+          return '<option value="' + r + '"' + (r === l.role ? ' selected' : '') + '>' + r + '</option>';
+        }).join('') + '</select></td>' +
+        '<td><span class="dot" style="background:' + l.color + '"></span> <span class="mono tiny faint">' + esc(l.color) + '</span></td>' +
+        '<td class="small muted">' + esc(ROLE_BEHAVIOR[l.role]) + '</td>' +
+        '<td><button class="btn ghost sm" data-del="' + i + '">删除</button></td></tr>';
+    }).join('');
+    renderJson();
+  }
+
+  function renderRoles() {
+    document.getElementById('role-map').innerHTML = ['requirement', 'defect', 'other', '—'].map(function (r) {
+      return '<div class="row between" style="padding:7px 0;border-bottom:1px solid var(--border)">' +
+        '<span class="badge ' + ROLE_TONE[r] + ' mono">' + esc(r) + '</span>' +
+        '<span class="small muted" style="flex:1;margin-left:10px">' + esc(ROLE_BEHAVIOR[r]) + '</span></div>';
+    }).join('') + '<div class="notice warn" style="margin-top:10px"><span class="n-ico">!</span><div><code class="inline">other</code> 可缺省 = 其他类型不打标；但 <code class="inline">requirement</code> 与 <code class="inline">defect</code> 各至少 1 个，否则保存 400。</div></div>';
+  }
+
+  document.getElementById('label-rows').addEventListener('change', function (e) {
+    var sel = e.target.closest('[data-role]'); if (!sel) return;
+    labels[Number(sel.getAttribute('data-role'))].role = sel.value;
+    renderTable(); D.setDirty(true);
+    D.toast('role 已改', '标签与分类结果的映射同步更新，记得保存');
+  });
+  document.getElementById('label-rows').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-del]'); if (!b) return;
+    var gone = labels.splice(Number(b.getAttribute('data-del')), 1)[0];
+    renderTable(); D.setDirty(true);
+    D.toast('已删除「' + gone.name + '」', '删除 requirement / defect 后保存会被拒', 'warn');
+  });
+  document.getElementById('add-label').addEventListener('click', function () {
+    var n = document.getElementById('new-name').value.trim();
+    var m = document.getElementById('new-meaning').value.trim();
+    var r = document.getElementById('new-role').value;
+    if (!n) return D.toast('请输入标签名', '', 'warn');
+    if (labels.some(function (l) { return l.name === n; })) return D.toast('标签名重复', '', 'warn');
+    labels.push({ name: n, meaning: m || '（未填写含义）', role: r, color: r === 'defect' ? '#d5453f' : r === 'requirement' ? '#5a55e0' : '#7a8291' });
+    document.getElementById('new-name').value = ''; document.getElementById('new-meaning').value = '';
+    renderTable(); D.setDirty(true);
+    D.toast('已添加「' + n + '」', 'role=' + r + ' · 保存后分类阶段生效', 'success');
+  });
+  document.getElementById('copy-json').addEventListener('click', function () {
+    D.copy(document.getElementById('settings-json').textContent);
+  });
+  function check() {
+    var roles = labels.map(function (l) { return l.role; });
+    var miss = ['requirement', 'defect'].filter(function (r) { return roles.indexOf(r) < 0; });
+    return miss.length ? 'vocabulary 缺少 role=' + miss.join(' / ') + '（各至少 1 个）' : null;
+  }
+  document.getElementById('save').addEventListener('click', function () {
+    var err = check();
+    if (err) return D.toast('保存被拒绝（400）', err, 'danger');
+    initial = JSON.parse(JSON.stringify(labels)); D.setDirty(false);
+    D.toast('标签词表已保存', '整份 settings PUT · 服务端是唯一事实源', 'success');
+  });
+  document.getElementById('discard').addEventListener('click', function () {
+    labels = JSON.parse(JSON.stringify(initial)); renderTable(); D.setDirty(false);
+    D.toast('已放弃改动');
+  });
+
+  renderTable(); renderRoles();
+})();
+</script>
+</body>
+</html>

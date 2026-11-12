@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Issue 中心 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="issues" data-crumb="acme/pi-console">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>Issue 中心</h1>
+          <p class="desc">新增列：<strong>阶段 / 状态 / 类别 / 停留时长</strong>，并支持按等待对象筛选（改造清单 §10.7）。</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn sm" id="export-csv">导出 CSV</button>
+          <button class="btn sm" data-toast="已刷新" data-toast-desc="演示数据为静态快照">刷新</button>
+          <a class="btn primary sm" href="flow.html">流程地图 ⇢</a>
+        </div>
+      </div>
+
+      <div class="grid g4" style="margin-bottom:14px">
+        <div class="card kpi"><div class="k-label"><span class="dot info"></span>阶段 0 · 在途</div><div class="k-value">2<em>条</em></div><div class="k-foot">1 条等用户补充 · 1 条 pending</div></div>
+        <div class="card kpi"><div class="k-label"><span class="dot brand"></span>阶段 1 · 在途</div><div class="k-value">2<em>条</em></div><div class="k-foot">1 条容器内验真 · 1 条等管理员</div></div>
+        <div class="card kpi"><div class="k-label"><span class="dot success"></span>阶段 2 · ready</div><div class="k-value">5<em>条</em></div><div class="k-foot">会话复用中，响应 @ 正常</div></div>
+        <div class="card kpi"><div class="k-label"><span class="dot danger"></span>blocked / closed</div><div class="k-value">3<em>条</em></div><div class="k-foot">1 条 blocked · 2 条自动关闭</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>全部 issue<span class="sub">共 <span data-filter-count>12</span> 条符合条件</span></h2>
+          <div class="row">
+            <button class="btn ghost sm" data-filter-reset>重置筛选</button>
+            <button class="btn ghost sm" data-toast="列配置已固定" data-toast-desc="阶段 / 状态 / 类别 / 停留时长为 v1.5 新增列，暂不支持隐藏">列设置</button>
+          </div>
+        </div>
+        <div class="card-body" style="border-bottom:1px solid var(--border)">
+          <div class="filters">
+            <div class="search-box"><input class="inp" data-filter-search placeholder="搜索标题、编号、作者…" /></div>
+            <select class="inp" data-filter="stage" aria-label="阶段">
+              <option value="all">全部阶段</option>
+              <option value="format">阶段 0 · format</option>
+              <option value="classify">阶段 1 · classify</option>
+              <option value="agent">阶段 2 · agent</option>
+              <option value="closed">closed</option>
+            </select>
+            <select class="inp" data-filter="state" aria-label="状态">
+              <option value="all">全部状态</option>
+              <option value="pending">pending</option>
+              <option value="running">running</option>
+              <option value="awaiting_info">awaiting_info</option>
+              <option value="ready">ready</option>
+              <option value="blocked">blocked</option>
+              <option value="closed">closed</option>
+            </select>
+            <select class="inp" data-filter="category" aria-label="类别">
+              <option value="all">全部类别</option>
+              <option value="requirement">requirement</option>
+              <option value="defect">defect</option>
+              <option value="not-found">not-found</option>
+              <option value="other">other</option>
+            </select>
+            <select class="inp" data-filter="wait" aria-label="等待对象">
+              <option value="all">全部等待对象</option>
+              <option value="user">等用户补充</option>
+              <option value="manager">等管理员</option>
+              <option value="maintainer">等维护者解禁</option>
+              <option value="none">无需等待</option>
+            </select>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn sm" data-quick="attention">只看需要人工介入</button>
+            <button class="btn sm" data-quick="stuck">只看停留 &gt; 1 天</button>
+            <button class="btn sm" data-quick="closed">只看自动关闭</button>
+            <span class="spacer"></span>
+            <span class="tiny faint">点击表头可排序 · 点击行进入详情</span>
+          </div>
+        </div>
+        <div class="card-body flush">
+          <div class="table-wrap">
+            <table class="tbl" id="issue-table">
+              <thead>
+                <tr>
+                  <th style="width:28px"><input type="checkbox" id="check-all" aria-label="全选" /></th>
+                  <th data-sort="num" style="cursor:pointer;width:34%">Issue ⇅</th>
+                  <th data-sort="stage" style="cursor:pointer">阶段 ⇅</th>
+                  <th data-sort="state" style="cursor:pointer">状态 ⇅</th>
+                  <th data-sort="category" style="cursor:pointer">类别 ⇅</th>
+                  <th data-sort="fail" style="cursor:pointer" class="num">失败次数</th>
+                  <th data-sort="dwell" style="cursor:pointer">停留时长</th>
+                  <th>运行时</th>
+                  <th>标签</th>
+                  <th>更新</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="issue-rows"></tbody>
+            </table>
+          </div>
+          <div class="card-foot">口径：停留时长 = 当前状态首次进入至现在 · 自动关闭的两条不再计时 · <span class="mono">format_fail_count</span> 只统计不通过次数，通过不计（Q5）。</div>
+        </div>
+      </div>
+
+      <div class="save-bar" id="batch-bar" style="display:none">
+        <span class="dirty-mark"><span class="dot warn"></span><span id="batch-count">已选 0 条</span></span>
+        <span class="spacer"></span>
+        <span class="tiny faint">批量指令仅对 managers 生效，真实环境仍需逐条发在 issue 评论里</span>
+        <button class="btn sm" id="batch-clear">取消选择</button>
+        <button class="btn primary sm" id="batch-next">模拟 /pipeline next</button>
+      </div>
+
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card"><div class="card-head"><h2>为什么加这四列</h2></div>
+          <div class="card-body small muted" style="line-height:1.8">
+            三段串行之后，一条 issue 卡在哪、卡了多久、由谁推进，成了唯一需要盯的信息。原来的列表只有「状态 / 标签 / 最后活动」，无法区分 <code class="inline">format/awaiting_info</code>（等用户、48h 会关）和 <code class="inline">classify/awaiting_info</code>（等管理员、不会被关）——这两者的处置完全不同。故把 <strong>阶段、状态、类别、停留时长</strong> 拆成独立列，并支持按「等待对象」筛选。
+          </div>
+        </div>
+        <div class="card"><div class="card-head"><h2>状态色约定</h2></div>
+          <div class="card-body row" style="gap:8px">
+            <span class="badge success">ready / pass</span><span class="badge info">pending / running</span>
+            <span class="badge warn">awaiting_info / not-found</span><span class="badge danger">blocked / closed</span>
+            <span class="badge neutral">other / 无类别</span><span class="badge brand">classify 在途</span>
+            <div class="small muted" style="width:100%;margin-top:6px">沿用项目原有四档状态色，不新增色相；阶段区分靠文字与品牌底，不靠颜色编码。</div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+
+  function waitOf(i) {
+    if (i.state === 'awaiting_info') return i.stage === 'format' ? 'user' : 'manager';
+    if (i.state === 'blocked') return 'maintainer';
+    return 'none';
+  }
+  var WAIT_LABEL = { user: '等用户补充', manager: '等管理员', maintainer: '等维护者解禁', none: '无需等待' };
+  var STAGE_LABEL = { format: '阶段 0 · format', classify: '阶段 1 · classify', agent: '阶段 2 · agent', closed: 'closed' };
+  var TONE = { pending: 'info', running: 'info', awaiting_info: 'warn', ready: 'success', blocked: 'danger', closed: 'danger' };
+
+  function renderRows(list) {
+    document.getElementById('issue-rows').innerHTML = list.map(function (i) {
+      var w = waitOf(i);
+      return '<tr class="clickable" data-row data-num="' + i.num + '" data-stage="' + i.stage + '" data-state="' + i.state +
+        '" data-category="' + i.category + '" data-wait="' + w + '" data-fail="' + i.fail + '" data-dwell="' + encodeURIComponent(i.dwell) +
+        '" data-search="' + esc(i.title + ' #' + i.num + ' ' + i.author + ' ' + i.stage + ' ' + i.state + ' ' + i.category).toLowerCase() + '">' +
+        '<td onclick="event.stopPropagation()"><input type="checkbox" class="row-check" value="' + i.num + '" aria-label="选择 #' + i.num + '" /></td>' +
+        '<td><span class="t-num">#' + i.num + '</span> <span class="t-title">' + esc(i.title) + '</span>' +
+        '<div class="tiny faint" style="margin-top:2px">作者 <span class="mono">' + esc(i.author) + '</span> · ' + esc(WAIT_LABEL[w]) + '</div></td>' +
+        '<td><span class="badge ' + (i.stage === 'classify' ? 'brand' : i.stage === 'closed' ? 'danger' : 'neutral') + ' mono">' + esc(STAGE_LABEL[i.stage]) + '</span></td>' +
+        '<td><span class="badge ' + TONE[i.state] + ' mono">' + esc(i.state) + '</span></td>' +
+        '<td><span class="badge ' + (i.category === 'not-found' ? 'warn' : i.category === '—' ? 'neutral' : 'info') + ' mono">' + esc(i.category) + '</span></td>' +
+        '<td class="num">' + (i.fail ? '<span class="' + (i.fail >= 5 ? 'strong' : i.fail >= 3 ? '' : 'muted') + '" style="color:' + (i.fail >= 5 ? 'var(--danger-fg)' : 'inherit') + '">' + i.fail + ' / 5</span>' : '—') + '</td>' +
+        '<td class="mono tiny">' + esc(i.dwell) + '</td>' +
+        '<td class="mono tiny muted">' + esc(i.mode) + '</td>' +
+        '<td>' + (i.labels.length ? i.labels.map(function (l) { return '<span class="badge neutral">' + esc(l) + '</span>'; }).join(' ') : '<span class="faint tiny">—</span>') + '</td>' +
+        '<td class="tiny faint">' + esc(i.updated) + '</td>' +
+        '<td><a class="btn ghost sm" href="issue-detail.html?n=' + i.num + '">详情 ⇢</a></td></tr>';
+    }).join('') + '<tr class="empty-row" style="display:none"><td colspan="11">没有符合条件的 issue</td></tr>';
+    bindRowClicks();
+    updateBatch();
+  }
+
+  function bindRowClicks() {
+    document.querySelectorAll('#issue-rows tr[data-row]').forEach(function (tr) {
+      tr.addEventListener('click', function () { location.href = 'issue-detail.html?n=' + tr.getAttribute('data-num'); });
+    });
+    document.querySelectorAll('.row-check').forEach(function (c) { c.addEventListener('change', updateBatch); });
+  }
+  function updateBatch() {
+    var n = document.querySelectorAll('.row-check:checked').length;
+    var bar = document.getElementById('batch-bar');
+    bar.style.display = n ? 'flex' : 'none';
+    document.getElementById('batch-count').textContent = '已选 ' + n + ' 条';
+    var all = document.querySelectorAll('.row-check');
+    var c = document.getElementById('check-all');
+    c.checked = all.length > 0 && n === all.length;
+    c.indeterminate = n > 0 && n < all.length;
+  }
+
+  renderRows(D.data.issues);
+  D.bindFilters('#issue-table');
+
+  /* URL 预筛选：从总览阶段卡跳进来 */
+  var m = location.search.match(/[?&]stage=([a-z]+)/);
+  if (m) {
+    var sel = document.querySelector('[data-filter="stage"]');
+    sel.value = m[1];
+    sel.dispatchEvent(new Event('change'));
+  }
+
+  /* 快捷筛选 */
+  document.querySelectorAll('[data-quick]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var q = b.getAttribute('data-quick');
+      var stage = document.querySelector('[data-filter="stage"]');
+      var state = document.querySelector('[data-filter="state"]');
+      var wait = document.querySelector('[data-filter="wait"]');
+      var search = document.querySelector('[data-filter-search]');
+      if (q === 'attention') { stage.value = 'all'; state.value = 'all'; wait.value = 'all';
+        document.querySelectorAll('#issue-rows tr[data-row]').forEach(function (tr) {
+          tr.style.display = ['user', 'manager', 'maintainer'].indexOf(tr.getAttribute('data-wait')) >= 0 ? '' : 'none';
+        });
+        D.toast('已切到「需要人工介入」', '等用户 / 等管理员 / 等维护者解禁');
+      } else if (q === 'stuck') { stage.value = 'all'; state.value = 'all'; wait.value = 'all';
+        document.querySelectorAll('#issue-rows tr[data-row]').forEach(function (tr) {
+          var d = decodeURIComponent(tr.getAttribute('data-dwell'));
+          tr.style.display = /天/.test(d) ? '' : 'none';
+        });
+        D.toast('已切到「停留 > 1 天」');
+      } else { stage.value = 'closed'; state.value = 'all'; wait.value = 'all';
+        stage.dispatchEvent(new Event('change'));
+        D.toast('已切到「自动关闭」', '5 次格式不通过 + 48h 无补充');
+      }
+      if (q !== 'closed' && search) search.value = '';
+    });
+  });
+
+  /* 排序 */
+  var sortKey = 'num', sortAsc = false;
+  document.querySelectorAll('[data-sort]').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var k = th.getAttribute('data-sort');
+      sortAsc = sortKey === k ? !sortAsc : true;
+      sortKey = k;
+      var list = D.data.issues.slice();
+      var order = { format: 0, classify: 1, agent: 2, closed: 3 };
+      list.sort(function (a, b) {
+        var x, y;
+        if (k === 'stage') { x = order[a.stage]; y = order[b.stage]; }
+        else if (k === 'dwell') { x = /天/.test(a.dwell) ? 999 : parseFloat(a.dwell) || 0; y = /天/.test(b.dwell) ? 999 : parseFloat(b.dwell) || 0; }
+        else { x = a[k]; y = b[k]; }
+        var r = typeof x === 'number' ? x - y : String(x).localeCompare(String(y));
+        return sortAsc ? r : -r;
+      });
+      renderRows(list);
+      D.bindFilters('#issue-table');
+      D.toast('已按 ' + k + ' 排序', sortAsc ? '升序' : '降序');
+    });
+  });
+
+  document.getElementById('check-all').addEventListener('change', function () {
+    document.querySelectorAll('.row-check').forEach(function (c) { c.checked = document.getElementById('check-all').checked; });
+    updateBatch();
+  });
+  document.getElementById('batch-clear').addEventListener('click', function () {
+    document.querySelectorAll('.row-check').forEach(function (c) { c.checked = false; });
+    updateBatch();
+  });
+  document.getElementById('batch-next').addEventListener('click', function () {
+    var n = document.querySelectorAll('.row-check:checked').length;
+    D.confirm('模拟 /pipeline next', '将对 <strong>' + n + '</strong> 条 issue 推演「进入下一步」。<br>真实环境里该指令必须逐条发在 issue 评论中，且仅 managers 生效，每次操作记审计（V20）。', function () {
+      D.toast('已推演 ' + n + ' 条', '演示数据不会被真实修改', 'success');
+    }, '模拟推进');
+  });
+
+  /* 真·CSV 下载 */
+  document.getElementById('export-csv').addEventListener('click', function () {
+    var head = ['编号', '标题', '阶段', '状态', '类别', '失败次数', '停留时长', '等待对象', '作者', '运行时'];
+    var rows = D.data.issues.map(function (i) {
+      return [i.num, i.title, i.stage, i.state, i.category, i.fail, i.dwell, WAIT_LABEL[waitOf(i)], i.author, i.mode];
+    });
+    var csv = '\ufeff' + [head].concat(rows).map(function (r) {
+      return r.map(function (v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(',');
+    }).join('\r\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'issue-pipeline-demo.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    D.toast('CSV 已导出', '12 条演示数据', 'success');
+  });
+})();
+</script>
+</body>
+</html>

@@ -2,15 +2,15 @@
 
 用 PI SDK（`pi-host` / `agent-runtime`）构建的 Issue / PR 自动处理平台。
 
-**当前阶段：技术方案 v1.1 + 代码实现完成（M0–M4 切片），真实环境验收待目标机。**
+**当前阶段：v2.1 已实现并完成集成，可编译、可跑（`pnpm -r typecheck` 6/6 全绿、v2.1 集成测试 42/42 全绿），但静态审查结论仍为 `IS_PASS: NO` —— 6 条 BLOCKER 等语义缺陷未修，尚未放行；真实环境验收（含 PostgreSQL 依赖用例）仍待目标机。**
 
 | 项 | 状态 |
 |---|---|
-| 需求与设计 | v0.4，已定稿（`docs/plan.md`） |
+| 需求与设计 | v0.4 已定稿（`docs/plan.md`）；v2.1 需求正文 `docs/requirements.html`（FR 26 / BR 12 / AC 25），接口冻结 `docs/v21-contract.md`，需求审查标尺 `docs/v21-requirements-summary.md`，静态审查与最终执行结果 `docs/v21-static-review.md` |
 | 视觉稿 | `docs/plan.html`（同一份计划的排版版本，浏览器直接打开） |
 | 技术方案 | v1.1，已定稿（`docs/tech-plan.md`） |
-| 契约 | 已冻结：`docs/spec/contract-{db,api,envelope}.md` + `packages/contract`（zod）+ `openapi/pi-bot.openapi.json` |
-| 实现 | 控制面/执行面/面板全部落代码，见下方「实现状态」 |
+| 契约 | 已冻结：`docs/spec/contract-{db,api,envelope}.md` + `packages/contract`（zod）+ `openapi/pi-bot.openapi.json`；v2.1 跨模块接口以 `docs/v21-contract.md` 为准 |
+| 实现 | 控制面/执行面/面板全部落代码，见下方「实现状态」；v2.1（WS1–WS6）已接入运行时，但静态审查 `IS_PASS: NO`，遗留清单见 `docs/v21-static-review.md` §5.5 |
 
 ## 它做什么
 
@@ -20,6 +20,7 @@
 - 自动创建 issue（带指纹去重与日配额）
 - 自动推 `bot/*` 分支并开 PR
 - 提供 Web 统计面板（吞吐、成本、自动执行后被人改回的次数、审计）
+- v2.1：事件级触发开关与提示词模板、评论闸门、七类动作产出与目标态写回（含评论槽位）、会话常驻与上下文压缩引擎 —— **已实现并接入运行时，静态审查仍列出待修项，见 `docs/v21-static-review.md`，不视为已全部达标**
 
 ## 它不做什么
 
@@ -48,6 +49,13 @@
 - [`docs/plan.html`](docs/plan.html) — 同一份计划的排版版本（视觉效果，内容以 `plan.md` 为准）
 - [`docs/tech-plan.md`](docs/tech-plan.md) — 技术方案 v1.0：选型、逐组件成熟库/自研判定、面板与后端结构
 - [`docs/dev-plan.md`](docs/dev-plan.md) — 开发计划：session 编排、切片波次、验收闸门、并行冲突规则
+
+**v2.1（当前迭代）**
+
+- [`docs/requirements.html`](docs/requirements.html) — 需求正文（FR 26 / BR 12 / AC 25）
+- [`docs/v21-contract.md`](docs/v21-contract.md) — 开发期接口冻结（配置形状 / 判定 / 占位符 / 产出 / 写回 / 会话 / 文件归属 / 验收映射；文末附录补记实现状态与已知偏离）
+- [`docs/v21-requirements-summary.md`](docs/v21-requirements-summary.md) — 需求审查标尺（7 组审查机器人的统一输入，只讲口径不预判实现）
+- [`docs/v21-static-review.md`](docs/v21-static-review.md) — 静态审查结论（`IS_PASS: NO`）+ 最终执行结果 + 遗留清单（§1–§4 是集成前快照，§5 是最终执行结果）
 
 ## 技术方案要点
 

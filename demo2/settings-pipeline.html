@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设置 · 流水线配置 · 固定流水线改造 Demo</title>
+<link rel="stylesheet" href="assets/app.css" />
+</head>
+<body data-page="settings-pipeline" data-crumb="流水线">
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main-col">
+    <header class="topbar" id="topbar"></header>
+    <main class="page">
+
+      <div class="page-head">
+        <div>
+          <h1>设置 · 流水线配置</h1>
+          <p class="desc">改造新增分区（§10.7）：管理人员、四段提示词入口、系统常量只读展示。</p>
+        </div>
+        <div class="page-actions">
+          <a class="btn ghost sm" href="flow.html">流程规则 ⇢</a>
+          <button class="btn sm" data-toast="配置校验通过" data-toast-desc="managers 非空 · vocabulary 含 requirement / defect role · 无已删除键" data-toast-tone="success">校验配置</button>
+        </div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:200px minmax(0,1fr);align-items:start">
+        <div class="card" style="position:sticky;top:64px;padding:8px" id="settings-nav"></div>
+
+        <div class="stack">
+          <div class="card"><div class="card-body" id="settings-status"></div></div>
+
+          <div class="notice">
+            <span class="n-ico">◆</span>
+            <div><strong>全量切换（E1），没有「关闭流程」这个开关</strong>。项目级可配项只剩 3 类：4 条提示词版本线、<code class="inline">managers</code>、<code class="inline">labels.vocabulary[].role</code>。阶段数、顺序、输出契约、写回动作、是否起容器、各种阈值全部系统级，改动走发布（Q2 / Q4 / Q5）。</div>
+          </div>
+
+          <div class="card" id="managers-card">
+            <div class="card-head"><h2>管理人员 <code class="inline">pipeline.managers</code></h2><span class="badge brand">必填</span></div>
+            <div class="card-body">
+              <p class="small muted" style="margin:0 0 10px">只有这些人能：<code class="inline">/recheck</code> · <code class="inline">/pipeline next|prev</code> · 在 <code class="inline">classify/awaiting_info</code> 用普通评论触发重分类。服务端追加 <code class="inline">/cc @…</code> 时只取这个列表，模型输出不参与 mention。</p>
+              <div class="row" id="manager-chips" style="margin-bottom:10px"></div>
+              <div class="row">
+                <input class="inp sm" id="manager-input" placeholder="输入 GitHub login，如 wangge" style="min-width:220px" />
+                <button class="btn sm" id="manager-add">添加</button>
+                <span class="tiny faint">superRefine 无条件生效：managers 为空一律解析失败 / 保存 400</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="prompts-card">
+            <div class="card-head"><h2>四段提示词版本线<span class="sub">项目提示词整体覆盖内置默认（Q1）</span></h2>
+              <a class="btn ghost sm" href="settings-prompt.html">打开提示词编辑器 ⇢</a></div>
+            <div class="card-body flush">
+              <div class="table-wrap"><table class="tbl">
+                <thead><tr><th style="width:20%">kind</th><th style="width:14%">生效阶段</th><th style="width:16%">当前指针</th><th style="width:14%">软上限</th><th>说明</th><th></th></tr></thead>
+                <tbody id="prompt-rows"></tbody>
+              </table></div>
+            </div>
+            <div class="card-foot">四条版本线各自独立：版本号、保存、回滚互不干扰；<code class="inline">version=0</code> 一律回落内置默认。「恢复默认」只把指针回 0，不删历史版本。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>系统常量<span class="sub">只读 · 不提供编辑</span></h2>
+              <span class="badge neutral">改动走发布</span></div>
+            <div class="card-body flush">
+              <div class="table-wrap"><table class="tbl">
+                <thead><tr><th style="width:30%">常量</th><th style="width:10%">值</th><th>含义</th><th style="width:24%">作用点</th></tr></thead>
+                <tbody id="const-rows"></tbody>
+              </table></div>
+            </div>
+            <div class="card-foot"><code class="inline">close_after_hours</code> 与 <code class="inline">max_runs_per_stage</code> 已从 <code class="inline">repos.settings</code> 移除；写入这两个键会被 <code class="inline">.strict()</code> 拒收（V12 / V17）。</div>
+          </div>
+
+          <div class="card" id="general">
+            <div class="card-head"><h2>通用<span class="sub">仓库级，与流水线开关无关</span></h2></div>
+            <div class="card-body grid g2">
+              <label class="field"><span class="lbl">repos.enabled</span><span class="mono small">true</span><span class="hint">部署准入：false = 该仓库未接入机器人；接了就必须走三段（§16.1.4）。</span></label>
+              <label class="field"><span class="lbl">dry_run</span><span class="mono small">false（真写）</span><span class="hint">只产出信封与审计 / 真的评论打标；与是否走三段无关。</span></label>
+              <label class="field"><span class="lbl">settings_valid</span><span class="badge success" style="width:fit-content">true</span><span class="hint">Q4：读写同一套严格 schema，不做读路径宽容、不做 role 回填。</span></label>
+              <label class="field"><span class="lbl">prompt.current_version</span><span class="mono small">2</span><span class="hint">kind=project 的版本指针沿用现有字段，不进 pipeline 段。</span></label>
+            </div>
+          </div>
+
+          <div class="card" id="limits">
+            <div class="card-head"><h2>限额<span class="sub">沿用现有配置，流水线不改变它</span></h2></div>
+            <div class="card-body grid g2">
+              <label class="field"><span class="lbl">max_comments_per_hour</span><span class="mono small">6</span><span class="hint">自由评论跑题/超长的兜底；门禁回执另有每 issue 每小时 1 条限速。</span></label>
+              <label class="field"><span class="lbl">max_task_minutes</span><span class="mono small">30</span><span class="hint">分类阶段容器 30min 闸；首响应 3–8 分钟见风险表。</span></label>
+            </div>
+          </div>
+
+          <div class="save-bar" data-dirty="0">
+            <span class="dirty-mark" data-dirty-only style="display:none"><span class="dot warn"></span>有未保存的改动</span>
+            <span class="tiny faint" data-clean-only>服务端是唯一事实源 · 当前无改动</span>
+            <span class="spacer"></span>
+            <button class="btn sm" data-dirty-only style="display:none" id="discard">放弃改动</button>
+            <button class="btn primary sm" id="save">保存</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="overlays"></div>
+
+<script src="assets/app.js"></script>
+<script>
+(function () {
+  var D = window.Demo, esc = D.esc;
+  D.renderSettingsNav('pipeline');
+  D.renderSettingsStatus('acme/pi-console');
+
+  /* ---------- managers ---------- */
+  var managers = ['wangge', 'linjie'];
+  function renderManagers() {
+    document.getElementById('manager-chips').innerHTML = managers.length
+      ? managers.map(function (m, i) {
+          return '<span class="chip">@' + esc(m) + '<button data-rm="' + i + '" title="移除">×</button></span>';
+        }).join('')
+      : '<span class="badge danger">managers 为空 → 配置不合法</span>';
+  }
+  renderManagers();
+  document.getElementById('manager-chips').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rm]'); if (!b) return;
+    var gone = managers.splice(Number(b.getAttribute('data-rm')), 1)[0];
+    renderManagers(); D.setDirty(true); D.toast('已移除 @' + gone, '记得保存；空列表会导致配置不合法', 'warn');
+  });
+  function addManager() {
+    var input = document.getElementById('manager-input');
+    var v = input.value.trim().replace(/^@/, '');
+    if (!v) return D.toast('请输入 login', '', 'warn');
+    if (managers.indexOf(v) >= 0) return D.toast('这个人已经在列表里', '', 'warn');
+    if (!/^[a-zA-Z0-9_-]+$/.test(v)) return D.toast('login 格式不对', '只允许字母、数字、下划线、连字符', 'warn');
+    managers.push(v); input.value = ''; renderManagers(); D.setDirty(true);
+    D.toast('已添加 @' + v, '该用户现在可以执行 /pipeline next|prev', 'success');
+  }
+  document.getElementById('manager-add').addEventListener('click', addManager);
+  document.getElementById('manager-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') addManager(); });
+
+  /* ---------- 四段提示词 ---------- */
+  var initial = { format_check: 3, classify: 0, agent: 0, project: 2 };
+  var versions = { format_check: 3, classify: 0, agent: 0, project: 2 };
+  var defs = [
+    { k: 'format_check', stage: '阶段 0', max: '8000', note: '必含 {{title}} / {{body}}；缺一个保存 400（V11）。项目版会整体覆盖内置默认。' },
+    { k: 'classify', stage: '阶段 1', max: '8000', note: '控制标签词表与 evidence 要求；标签由控制面按 role 取，模型 labels 被忽略。' },
+    { k: 'agent', stage: '阶段 2', max: '4000', note: '计入 baseChars，会扣减 P1 可保存额度（R6 / V18），故上限与 P1 同档。' },
+    { k: 'project', stage: '阶段 2（P1）', max: '4000', note: 'version=0 = 不注入；指针沿用 settings.prompt.current_version，不进 pipeline 段。' }
+  ];
+  function options(k, v) {
+    return [0, 1, 2, 3].map(function (n) {
+      return '<option value="' + n + '"' + (n === v ? ' selected' : '') + '>v' + n + (n === 0 ? ' · 系统默认' : ' · 项目版本') + '</option>';
+    }).join('');
+  }
+  function renderPrompts() {
+    document.getElementById('prompt-rows').innerHTML = defs.map(function (d) {
+      var v = versions[d.k];
+      return '<tr><td><span class="badge ' + (v === 0 ? 'neutral' : 'brand') + ' mono">' + esc(d.k) + '</span></td>' +
+        '<td class="small muted">' + esc(d.stage) + '</td>' +
+        '<td><select class="inp sm" data-kind="' + d.k + '">' + options(d.k, v) + '</select></td>' +
+        '<td class="mono tiny">' + esc(d.max) + '</td>' +
+        '<td class="small muted">' + esc(d.note) + '</td>' +
+        '<td><div class="row" style="flex-wrap:nowrap">' +
+        '<a class="btn ghost sm" href="settings-prompt.html?kind=' + d.k + '">编辑</a>' +
+        '<button class="btn ghost sm" data-restore="' + d.k + '"' + (v === 0 ? ' disabled' : '') + '>恢复默认</button></div></td></tr>';
+    }).join('');
+  }
+  renderPrompts();
+  document.getElementById('prompt-rows').addEventListener('change', function (e) {
+    var sel = e.target.closest('[data-kind]'); if (!sel) return;
+    versions[sel.getAttribute('data-kind')] = Number(sel.value);
+    D.setDirty(true);
+    D.toast('版本指针已改', sel.getAttribute('data-kind') + ' → v' + sel.value + '（保存后下一轮生效）');
+  });
+  document.getElementById('prompt-rows').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-restore]'); if (!b) return;
+    var k = b.getAttribute('data-restore');
+    D.confirm('恢复默认 · ' + k, '把指针回 <strong>v0</strong>，装配时改用内置默认模板；<strong>历史项目版本不会被删除</strong>，随时可以切回来。<br>输出契约仍由代码追加在最后，不受影响。', function () {
+      versions[k] = 0; renderPrompts(); D.setDirty(true);
+      D.toast('已恢复默认', k + ' → v0 · 历史版本仍在', 'success');
+    }, '恢复默认');
+  });
+
+  /* ---------- 系统常量 ---------- */
+  document.getElementById('const-rows').innerHTML = D.data.constants.map(function (c) {
+    return '<tr><td class="mono small">' + esc(c.key) + '</td><td><span class="badge neutral mono">' + esc(c.value) + '</span></td>' +
+      '<td class="small muted">' + esc(c.desc) + '</td><td class="tiny faint mono">' + esc(c.affect) + '</td></tr>';
+  }).join('');
+
+  /* ---------- 保存 / 放弃 ---------- */
+  document.getElementById('save').addEventListener('click', function () {
+    if (!managers.length) return D.toast('保存被拒绝', 'managers 不能为空（superRefine 无条件生效）', 'danger');
+    Object.keys(initial).forEach(function (k) { initial[k] = versions[k]; });
+    D.setDirty(false);
+    D.toast('配置已保存', '整份 settings PUT · 服务端是唯一事实源 · 下一轮任务生效', 'success');
+  });
+  document.getElementById('discard').addEventListener('click', function () {
+    Object.keys(initial).forEach(function (k) { versions[k] = initial[k]; });
+    managers = ['wangge', 'linjie'];
+    renderManagers(); renderPrompts(); D.setDirty(false);
+    D.toast('已放弃改动', '草稿恢复到服务端上一份配置');
+  });
+})();
+</script>
+</body>
+</html>
