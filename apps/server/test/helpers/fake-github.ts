@@ -70,6 +70,30 @@ export function createFakeWriteApi(
     closeIssue: async (input) => {
       calls.push({ method: 'closeIssue', input: { ...input } });
     },
+
+    updateIssueComment: async (input) => {
+      calls.push({ method: 'updateIssueComment', input: { ...input } });
+      // 覆盖语义：同一条评论的正文被替换，评论条数不变（槽位「覆盖而非新增」的前提）。
+      const index = comments.findIndex((comment) => comment.id === input.commentId);
+      if (index >= 0) {
+        comments[index] = { id: input.commentId, body: input.body };
+      }
+      return { id: input.commentId, htmlUrl: `https://example.invalid/#issuecomment-${String(input.commentId)}` };
+    },
+
+    getIssue: async (input) => {
+      calls.push({ method: 'getIssue', input: { ...input } });
+      return {
+        number: input.issueNumber,
+        title: `fake issue #${String(input.issueNumber)}`,
+        body: '',
+        state: 'open',
+        labels: [],
+        authorLogin: null,
+        updatedAt: '1970-01-01T00:00:00Z',
+        isPullRequest: false,
+      };
+    },
   };
 
   return api;

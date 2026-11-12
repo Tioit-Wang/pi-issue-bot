@@ -58,6 +58,17 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
       on_edited: 'issue-format',
       auto_label_after_format_pass: false,
       project_prompt: '',
+      // v2.1 新增：系统提示词（空串 = 用内置）、执行限额、后三类动作开关（默认全关）
+      system_prompt: '',
+      limits: {
+        system_prompt: '',
+        concurrency: 2,
+        daily_quota: 100,
+        turn_timeout_minutes: 20,
+        actions: { create_issue: false, open_pr: false, close_issue: false },
+        data_retention_days: 90,
+      },
+      actions: { create_issue: false, open_pr: false, close_issue: false },
     });
   });
 

@@ -170,8 +170,19 @@ describe('固定流水线的实现不得被接回来（§1 S0 退役）', () => 
     expect(names).not.toContain('command-gate.ts');
   });
 
-  it('prompt/ 目录整个消失、skills/ 下不再有 stage-prompts.ts / command.ts', () => {
-    expect(existsSync(join(REPO_ROOT, 'apps/server/src/prompt'))).toBe(false);
+  it('prompt/ 只剩 v2.1 的渲染模块、skills/ 下不再有 stage-prompts.ts / command.ts', () => {
+    /**
+     * v2.1 起 `prompt/` 重新有了合法用途：占位符渲染与 issue 索引（`docs/v21-contract.md` §3）。
+     * 护栏的意图是「v0.3 的四个提示词版本线模块不许复活」，不是「这个目录永不存在」——
+     * 所以这里逐文件断言旧模块缺失，而不是断言整个目录不存在。
+     */
+    const promptNames = readdirSync(join(REPO_ROOT, 'apps/server/src/prompt'), { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+    expect(promptNames).not.toContain('store.ts');
+    expect(promptNames).not.toContain('preview.ts');
+    expect(promptNames).not.toContain('budget.ts');
+    expect(promptNames).not.toContain('index.ts');
 
     const skillsNames = readdirSync(join(REPO_ROOT, 'apps/server/src/skills'), { withFileTypes: true })
       .filter((entry) => entry.isFile())

@@ -1,5 +1,6 @@
 /**
- * 数据模型唯一事实源 —— docs/tech-plan.md §7.2 的 16 张表 + 多仓库改造新增的 4 张表 + v0.3 issue agent 的 3 张表。
+ * 数据模型唯一事实源 —— docs/tech-plan.md §7.2 的 16 张表 + 多仓库改造新增的 4 张表
+ * + v0.3 issue agent 的 3 张表 + v2.1 的 2 张表（`comment_slots` / `agent_compactions`）。
  *
  * 约定（本文件是后续 `queries/`、`worker/`、`http/` 的共同底座，改列名等于改契约）：
  *  - 列名 snake_case，TS 字段 camelCase；时间列一律 `timestamptz`（§7.2「时间列一律带时区」）。
@@ -102,6 +103,25 @@ export const webhookDeliveries = pgTable(
     payload: jsonb('payload').notNull(),
     /** 验签结果：验签失败也落库（审计要求），但不入队 */
     signatureValid: boolean('signature_valid').notNull().default(true),
+    /**
+     * 触发判定结论（v2.1 / FR-2.1、BR-6）：`triggered` | `ignored`。
+     *
+     * 可空：v2.1 之前的历史投递没有这一列的值，且「还没判定完」与「判定为忽略」必须可区分
+     * （前者会重试，后者是终态）。面板的事件时间线按它画「投递 → 判定」两段。
+     */
+    decision: text('decision'),
+    /**
+     * 判定原因（BR-6：`webhook-v21.ts::v21DecisionRowOf` 对**触发与未触发都写**，便于时间线复盘）。
+     *
+     * 未触发侧（`docs/v21-contract.md` §2 的 `SkippedReason`）：
+     * `switch-off` / `body-unchanged` / `label-not-matched` / `not-mentioned` / `role-denied` /
+     * `bot-self` / `closed-not-allowed` / `pr-ignored` / `content-duplicate` / `daily-quota` /
+     * `repo-disabled`；
+     * 触发侧：`enabled` / `conditional-met`。
+     *
+     * 可空：v2.1 之前的历史投递没有这一列的值（NULL = 还没判定，与终态可区分）。
+     */
+    decisionReason: text('decision_reason'),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -647,12 +667,31 @@ export const agentSessions = pgTable(
     cursor: integer('cursor').notNull().default(0),
     /** 该会话已用轮数（达到上限会轮换新会话） */
     turns: integer('turns').notNull().default(0),
+    /**
+     * 运行状态（v2.1 / FR-3.4）：`active`（沙箱存在）/ `idle`（沙箱已回收，下次触发重建）。
+     *
+     * **没有 `ended`**：issue 随时可能被重开，任何归档动作都会让重开的 issue 失去上下文。
+     * 默认 `idle`：会话行先建、沙箱后拉，没拉起沙箱之前就是空闲态。
+     */
+    state: text('state').notNull().default('idle'),
+    /** 当前沙箱 id（`state='active'` 时非空）；沙箱回收后置 NULL，会话本身保留 */
+    sandboxId: text('sandbox_id'),
+    /** issue 关闭导致的**沙箱**回收时刻（资源动作，不是数据动作：会话与记录永久保留） */
+    closedAt: timestamp('closed_at', { withTimezone: true }),
     /** 会话创建时刻（超过上限天数 → 轮换） */
     startedAt: timestamp('started_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.repo, t.issueNumber] })],
 );
+
+/** `agent_sessions.state` 的取值（只有两种，见 `docs/v21-contract.md` §6）。 */
+export const AGENT_SESSION_STATE = {
+  /** 沙箱存在，可以直接续对话 */
+  active: 'active',
+  /** 沙箱已回收，下次触发时重建（历史上下文仍在） */
+  idle: 'idle',
+} as const;
 
 /**
  * agent 消息 + **永久幂等**的落点（需求 §1.2 / §5 规则 2）。
@@ -711,6 +750,72 @@ export const agentDenials = pgTable(
   (t) => [primaryKey({ columns: [t.repo, t.issueNumber, t.actorLogin] })],
 );
 
+/**
+ * 评论**槽位**（v2.1 / FR-5.3 的 `comment` 动作）：`(repo, issue, slot)` 一行，记这一槽位的评论 id。
+ *
+ * 为什么必须有这张表：槽位语义是「同 issue 同槽位只保留一条」。只靠正文末尾的隐藏标记
+ * （`<!-- pi-bot:slot repo#issue:slot -->`）去 GitHub 列表里翻，等于每次都把该 issue 的评论全量拉一遍，
+ * 且并发下两个 worker 会同时「找不到 → 新建」。落一张表就能点查 + `ON CONFLICT DO UPDATE`。
+ *
+ * `body_hash` 的用途：正文没变就不调 `updateIssueComment`（省一次写 + 不刷新编辑时间）。
+ * 评论被人在 GitHub 上删掉时，下一次写回查不到 id（`updateIssueComment` 404）→ 新建并记 `recreated`，
+ * 所以 `comment_id` 允许为空（还没建过 / 被删了）。
+ */
+export const commentSlots = pgTable(
+  'comment_slots',
+  {
+    /** `owner/name`，与 `tasks.repo` 同口径 */
+    repo: text('repo').notNull(),
+    issueNumber: integer('issue_number').notNull(),
+    /** 槽位名（如 `triage` / `format`）；同一 issue 内唯一 */
+    slot: text('slot').notNull(),
+    /** GitHub 评论 id（bigint 以 number 承载，GitHub 的 comment id 远小于 2^53） */
+    commentId: bigint('comment_id', { mode: 'number' }),
+    /** 该槽位正文的稳定摘要：没变就跳过写回 */
+    bodyHash: text('body_hash'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 槽位键就是主键：一个 (issue, slot) 只能有一条评论
+    primaryKey({ columns: [t.repo, t.issueNumber, t.slot] }),
+    // 「这个 issue 现在有哪些槽位」：面板详情与批量回收按它读
+    index('comment_slots_repo_issue_idx').on(t.repo, t.issueNumber),
+  ],
+);
+
+/**
+ * 上下文压缩记录（v2.1 / FR-5.6）：每次压缩追加一行，**不改写**历史。
+ *
+ * 为什么单独一张表而不是塞进 `run_events`：压缩是会话级的横切事件（一次压缩会影响后续所有轮次），
+ * 面板要按 issue 画「第几代 checkpoint、压掉了多少 token」，按 run 读的 `run_events` 要跨行聚合才能答。
+ * `generation` 单调递增，`fallback=true` 表示走了降级链（摘要模型不可用时的规则截断）。
+ */
+export const agentCompactions = pgTable(
+  'agent_compactions',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    repo: text('repo').notNull(),
+    issueNumber: integer('issue_number').notNull(),
+    /** 压缩发生在哪个会话（会话轮换后 generation 重新计数，所以两者要一起看） */
+    sessionId: text('session_id').notNull(),
+    /** 第几代 checkpoint（同一会话内单调递增） */
+    generation: integer('generation').notNull().default(0),
+    /** 压缩前的上下文 token 数（估算值，口径见 `compact/engine.ts`） */
+    beforeTokens: integer('before_tokens').notNull().default(0),
+    /** 压缩后喂给模型的视图 token 数 */
+    afterTokens: integer('after_tokens').notNull().default(0),
+    /** 摘要字符数（排查「摘要是不是被截断了」用，不必再回读全文） */
+    summaryChars: integer('summary_chars').notNull().default(0),
+    /** 是否走了降级链（模型摘要失败 → 规则截断） */
+    fallback: boolean('fallback').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 面板/排查：某个 issue 的压缩史（按时间正序）
+    index('agent_compactions_repo_issue_created_idx').on(t.repo, t.issueNumber, t.createdAt),
+  ],
+);
+
 /** schema 里的全部表（启动自检、迁移覆盖度检查、queries 生成都用得上）。 */
 export const ALL_TABLES = {
   webhookDeliveries,
@@ -735,6 +840,8 @@ export const ALL_TABLES = {
   agentSessions,
   agentMessages,
   agentDenials,
+  commentSlots,
+  agentCompactions,
 } as const;
 
 /** 表名清单（单测断言「`db/schema.ts` 里的每一张表都在库里」用它）。 */

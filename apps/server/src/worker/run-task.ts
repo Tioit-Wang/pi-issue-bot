@@ -57,6 +57,7 @@ import type { CommandTimeoutObservation } from './failure.ts';
 import type {
   ActionOutcome,
   EndpointRegistry,
+  EnvelopeRecord,
   PreparedEnvelope,
   RunOutcome,
   TaskRunInput,
@@ -64,11 +65,345 @@ import type {
   TaskRunnerDeps,
   TaskStep,
   WorkerTaskStatus,
+  WriteTargetContext,
 } from './types.ts';
 import { WORKER_TASK_STATUS } from './types.ts';
 import { actionTargetOf, executeActions, taskSourceOf } from './writeback.ts';
 import { applyFeedback, feedbackStageForOutcome } from '../feedback/index.ts';
 import type { FeedbackOutcome } from '../feedback/index.ts';
+// ── v2.1 接线（WS6-B）：产出契约 v2 + 七类动作执行器 + 压缩观测 ────────────────
+// 为什么在 worker 里直接 import 而不是包一层 adapter：`run-task.ts` 是**唯一**同时拿到
+// 「事件流 / GitHub 写面 / settings / ledger / clock」的地方；再抽一层只会多一个空壳模块。
+import { parseOutputV21Json, summarizeOutputV21Issues } from '../../../../packages/envelope/src/index.ts';
+import type { OutputV21, OutputV21Issue } from '../../../../packages/envelope/src/index.ts';
+import { createV21PortFromGithub, executeV21 } from '../writeback/v21/execute.ts';
+import type {
+  ExecuteV21Result,
+  V21ActionSwitches,
+  V21PortSources,
+} from '../writeback/v21/execute.ts';
+import type { CatalogEntry } from '../writeback/v21/labels.ts';
+import { readV21Settings, resolveAgentExecution, resolveManagedCatalog } from '../config/v21-settings.ts';
+import type { CompactionRecordInput, CompactStore } from '../compact/engine.ts';
+
+/* ── v2.1 运行时的可选注入（WS6-B）────────────────────────────────────────── */
+
+/**
+ * 装配层给 worker 的 v2.1 配置。
+ *
+ * 为什么是**可选**且独立成一块：`TaskRunnerDeps` 的必填字段被上百个单测钉住，
+ * 加一个必填项会让所有旧假实现一起崩。旧任务不注入 `v21` 时，
+ * `runTask()` 的九步、旧 4-intent 信封与写回逐字节不变。
+ */
+/** 装配层注入的执行器结论（与 `http/webhook-v21.ts::createV21Executor()` 同形）。 */
+export type V21RunExecution = {
+  readonly handled: boolean;
+  readonly valid: boolean;
+  readonly errors: readonly { readonly path: string; readonly message: string }[];
+  readonly verdict: unknown;
+  readonly actions: unknown;
+  readonly executed: readonly {
+    readonly index: number;
+    readonly type: string;
+    readonly outcome: string;
+  }[];
+  readonly stoppedAt: number | null;
+};
+
+export interface V21RuntimeConfig {
+  /** `repos.settings` 原始值（unknown）；`readV21Settings()` 自己兜底，坏配置不抛。 */
+  readonly settings?: unknown;
+  /**
+   * 装配层的 v2 执行器（可选）。注入时 runTask 走它（它内部就是 `executeV21()`）；
+   * 不注入时 runTask 用下面的 `reactions`/`openPullRequest` 自己装配一份端口直连。
+   * 两种形态并存是为了让「控制面装配」与「worker 自测直连」都能跑同一条分流逻辑。
+   */
+  readonly execute?:
+    | ((text: string, ctx: {
+        readonly repo: string;
+        readonly issueNumber: number;
+        readonly dryRun: boolean;
+      }) => Promise<V21RunExecution>)
+    | undefined;
+  /** reaction 写面（已由装配层把 `GithubReactionApi` 收窄成端口形状）。 */
+  readonly reactions?: V21PortSources['reactions'];
+  /** 开 PR 的能力（v2.1 之前没有任何路径会开 PR，单独注入）。 */
+  readonly openPullRequest?: V21PortSources['openPullRequest'];
+  /** 「这个 login 是不是我」的判定（App slug 优先，否则按 `[bot]` 后缀）。 */
+  readonly isOwn?: V21PortSources['isOwn'];
+  /** `agent_compactions` 的只追加存储（不注入 = 只观测不落库）。 */
+  readonly compactionStore?: CompactStore;
+  /**
+   * 事件钩子（与 `http/webhook-v21.ts::V21EventHook` 同形）：host 报出
+   * `itemType==='compaction'` 时只追加一条压缩记录。与 `compactionStore` 可同时注入，
+   * 两者各自负责一条留痕路径（装配层的钩子 / worker 自己的识别），互不覆盖。
+   */
+  readonly onEvent?:
+    | ((event: {
+        readonly kind: string;
+        readonly payload: unknown;
+        readonly repo: string;
+        readonly issueNumber: number;
+        readonly sessionId: string;
+      }) => Promise<void>)
+    | undefined;
+  /**
+   * 压缩引擎句柄（`createCompactor()` 的柯里化形态）。
+   *
+   * 本轮**只暴露、不自动调用**：RACP 客户端没有 session/history 与 compact 操作，
+   * host 侧拿不到完整历史，「请求发出前自动压缩」仍是遗留项（见最终报告）。
+   */
+  readonly compactor?: unknown | undefined;
+}
+
+/** `runTask()` 的依赖：旧端口 + 可选 v2.1 注入。 */
+export type V21RunnerDeps = TaskRunnerDeps & { readonly v21?: V21RuntimeConfig | undefined };
+
+/** 兼容别名（装配层与早期接线稿都用过这两个名字）。 */
+export type V21RunDeps = V21RunnerDeps;
+export type V21RunnerHooks = V21RuntimeConfig;
+
+/* ── v2 产出的「试探」：从事件流里找一份 v2 契约的原文 ─────────────────────── */
+
+/** 与旧 `findEnvelopeText()` 同口径的载体路径（v2 与 v1 共用同一批事件形状）。 */
+const V21_TEXT_PATHS: readonly (readonly string[])[] = [
+  ['event', 'message', 'content'],
+  ['message', 'content'],
+  ['event', 'message', 'text'],
+  ['text'],
+  ['message', 'text'],
+  ['item', 'text'],
+  ['content'],
+  ['output'],
+  ['result'],
+  ['envelope'],
+];
+
+/** 只在这些 kind 上找产出，避免把日志/工具输出当成信封。 */
+const V21_EVENT_KINDS: readonly string[] = ['item.completed', 'turn.completed', 'turn.failed'];
+
+const FENCED_V21_JSON = /```(?:json|jsonc)?\s*([\s\S]*?)```/gu;
+
+export type V21Probe =
+  | { readonly kind: 'valid'; readonly text: string; readonly output: OutputV21 }
+  | { readonly kind: 'rejected'; readonly text: string; readonly errors: readonly OutputV21Issue[] }
+  /** 不是 v2 产出（旧 4-intent 信封、纯人话、或压根没有产出）→ 回落旧路径。 */
+  | { readonly kind: 'not-v21' };
+
+function v21StringAt(value: unknown, path: readonly string[]): string | undefined {
+  let current = value;
+  for (const key of path) {
+    if (typeof current !== 'object' || current === null) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === 'string' && current.includes('{') ? current : undefined;
+}
+
+/** 一个事件载荷里的全部候选文本：每个 ```json 代码块优先，其次整串。 */
+function v21CandidateTexts(payload: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (text: string): void => {
+    if (text.includes('{') && !seen.has(text)) {
+      seen.add(text);
+      out.push(text);
+    }
+  };
+  if (typeof payload === 'string') {
+    add(payload);
+  }
+  for (const path of V21_TEXT_PATHS) {
+    const raw = v21StringAt(payload, path);
+    if (raw === undefined) {
+      continue;
+    }
+    for (const block of raw.matchAll(FENCED_V21_JSON)) {
+      const inner = block[1];
+      if (inner !== undefined) {
+        add(inner.trim());
+      }
+    }
+    add(raw);
+  }
+  return out;
+}
+
+/**
+ * 「像不像 v2 产出」的判定（不是校验）。
+ *
+ * 为什么必须区分「v2 形状但校验失败」与「旧信封」：一份含未知 `type` 的 v2 产出必须
+ * **整份拒绝**并把 `/actions/0/type` 写进 `envelopes.errors`；若一律回落到旧 Ajv，
+ * 面板只会看到一串和 v2 无关的旧字段错误。旧 4-intent 信封必带 `usage` 且
+ * `verdict` 是对象，所以这两个条件足以把两份契约分开。
+ */
+function looksLikeV21Output(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+    const record = value as Record<string, unknown>;
+    if (!Array.isArray(record['actions']) || 'usage' in record) {
+      return false;
+    }
+    const verdict = record['verdict'];
+    return verdict === undefined || typeof verdict === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/** 不合规产出也要把模型交出来的 `verdict` / `actions` 留在 envelopes 行里（面板要能看到原文）。 */
+function v21RawEnvelopeColumns(text: string): { readonly verdict: unknown; readonly actions: unknown } {
+  try {
+    const value: unknown = JSON.parse(text);
+    const record =
+      typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    return { verdict: record['verdict'] ?? null, actions: record['actions'] ?? null };
+  } catch {
+    return { verdict: null, actions: null };
+  }
+}
+
+/**
+ * 从后往前试探事件流：最后一条合规 v2 产出胜出；没有合规的但见过 v2 形状 → 整份拒绝。
+ *
+ * 用 `parseOutputV21Json()` 当探针而不是 `findEnvelopeText()`：后者以旧 Ajv 为探针，
+ * v2 产出没有 `usage` 且 `verdict` 是字符串，永远过不了旧 schema（也过不了
+ * `looksLikeEnvelope()` 的三键判定），会被误判成「没有交信封」。
+ */
+export function probeV21Output(events: readonly CapturedEvent[]): V21Probe {
+  let rejection: { readonly text: string; readonly errors: readonly OutputV21Issue[] } | null = null;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event === undefined || !V21_EVENT_KINDS.includes(event.kind)) {
+      continue;
+    }
+    for (const text of v21CandidateTexts(event.payload)) {
+      const parsed = parseOutputV21Json(text);
+      if (parsed.ok) {
+        return { kind: 'valid', text, output: parsed.output };
+      }
+      if (rejection === null && looksLikeV21Output(text)) {
+        rejection = { text, errors: parsed.errors };
+      }
+    }
+  }
+  return rejection === null
+    ? { kind: 'not-v21' }
+    : { kind: 'rejected', text: rejection.text, errors: rejection.errors };
+}
+
+/* ── v2 执行端口：把既有写面接到 `createV21PortFromGithub()` ───────────────── */
+
+/**
+ * 为什么逐个方法显式委托而不 `{ ...github }`：写面可能来自类实例（方法在原型上），
+ * 展开会静默丢方法。顺带把 `label` 的增删同步进 `bot_labels`（`deps.ledger`），
+ * 否则 v2 路径打过的标签下一轮「谁打的」就查不到了。
+ */
+export function v21WritePort(
+  github: TaskRunnerDeps['github'],
+  ledger: TaskRunnerDeps['ledger'],
+): V21PortSources['write'] {
+  return {
+    listIssueComments: (input) => github.listIssueComments(input),
+    createIssueComment: (input) => github.createIssueComment(input),
+    updateIssueComment: (input) => github.updateIssueComment(input),
+    addLabels: async (input) => {
+      await github.addLabels(input);
+      await ledger?.recordApplied({
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+        labels: input.labels,
+      });
+    },
+    removeLabel: async (input) => {
+      await github.removeLabel(input);
+      await ledger?.recordRemoved({
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+        labels: [input.label],
+      });
+    },
+    createIssue: (input) => github.createIssue(input),
+    closeIssue: (input) => github.closeIssue(input),
+  };
+}
+
+/**
+ * `ExecuteV21Input.catalog` 的装配：**全量**返回，不提前筛。
+ *
+ * `planLabelTargetState()` 自己会按 `managed` / `status` / `meaning` 判可管理集合；
+ * 在这里先筛掉 retired / unmanaged / 没填含义的条目，会把「目录外」和「不可管理」
+ * 压成同一种错误，面板就分不清该让人改产出还是改配置，而且 `skipped` 留痕也会丢。
+ */
+export function v21CatalogOf(settings: unknown): readonly CatalogEntry[] {
+  return resolveManagedCatalog(settings).map((entry) => ({
+    name: entry.name,
+    meaning: entry.meaning,
+    managed: entry.managed,
+    status: entry.status,
+  }));
+}
+
+/* ── 压缩事件的观测（FR-5.6：本轮只做「识别 + 落记录」）───────────────────── */
+
+function v21Record(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function v21Int(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback;
+}
+
+/**
+ * 从一条 RACP 事件里认出 `itemType === 'compaction'` 并还原 `agent_compactions` 的一行。
+ *
+ * 为什么只做识别、`compactSession()` 不在这里调：`packages/racp-client` 目前**没有**
+ * session/history 与 compact 操作，只在 `ITEM_TYPES` 里留了 `'compaction'` 字面量。
+ * host 侧不暴露历史，就无从在「请求发出前」判断上下文是否过线；本轮只能把 host 报出来的
+ * 压缩 checkpoint 如实落库（观测），不能假装已经自动压缩。
+ */
+export function compactionRecordOfEvent(
+  payload: unknown,
+  ctx: { readonly repo: string; readonly issueNumber: number; readonly sessionId: string },
+): CompactionRecordInput | null {
+  // `agent_compactions.session_id` 非空：拿不到会话 id 时宁可不写，也不写一条无法归因的行
+  if (ctx.sessionId === '') {
+    return null;
+  }
+  const outer = v21Record(payload);
+  const inner = v21Record(outer?.['item']) ?? outer;
+  const isCompaction =
+    outer?.['itemType'] === 'compaction' ||
+    inner?.['itemType'] === 'compaction' ||
+    outer?.['type'] === 'compaction' ||
+    inner?.['type'] === 'compaction';
+  if (!isCompaction) {
+    return null;
+  }
+  const detail = v21Record(inner?.['checkpoint']) ?? inner;
+  if (detail === null) {
+    return null;
+  }
+  const summary = detail['summary'];
+  return {
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    sessionId: ctx.sessionId,
+    generation: v21Int(detail['generation'], 0),
+    beforeTokens: v21Int(detail['beforeTokens'], 0),
+    afterTokens: v21Int(detail['afterTokens'], 0),
+    summaryChars: typeof summary === 'string' ? summary.length : v21Int(detail['summaryChars'], 0),
+    fallback: detail['fallback'] === true,
+  };
+}
 
 /** `/review-pr` 的命令名（决定 30min 而非 20min 的任务级时间闸，§4.7）。 */
 export const REVIEW_PR_COMMAND = '/review-pr';
@@ -187,7 +522,7 @@ function recordingOps(
 }
 
 /** 跑一次任务。**不抛异常**：任何失败都体现在 `report.outcome` 与 `report.signals` 上。 */
-export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promise<TaskRunReport> {
+export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise<TaskRunReport> {
   const clock = deps.clock ?? ((): number => Date.now());
   const logger = (deps.logger ?? createNullLogger()).child({ taskId: input.taskId, runId: input.runId });
   const startedAtMs = clock();
@@ -249,6 +584,23 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   let prepared: PreparedEnvelope | null = null;
   /** 终态无感反馈的结果（`null` = 没注入 feedback 端口 / 没走到收尾）。 */
   let feedbackOutcome: FeedbackOutcome | null = null;
+  /** 本轮是否走了 v2 分支（走了就跳过旧兜底评论：v2 的 `comment` 是槽位写回）。 */
+  let v21Handled = false;
+  /** 合规的 v2 产出，留到 execute 步执行（envelopes 每 run 只有一行，错误要等执行结果）。 */
+  let v21Plan: { readonly text: string; readonly output: OutputV21 } | null = null;
+  /** v2 分支是否已经写过 envelopes 行（唯一索引在 run_id 上，绝不能写第二行）。 */
+  let v21EnvelopeWritten = false;
+
+  /** 写一行 envelopes；失败只 warn（审计行写不进去不该杀掉整个 run）。 */
+  const writeV21Envelope = async (record: EnvelopeRecord): Promise<void> => {
+    if (v21EnvelopeWritten) {
+      return;
+    }
+    v21EnvelopeWritten = true;
+    await deps.store.recordEnvelope(record).catch((error: unknown) => {
+      logger.warn({ err: String(error) }, 'envelopes 行写入失败（已忽略）');
+    });
+  };
 
   await deps.store.beginRun({
     runId: input.runId,
@@ -419,6 +771,45 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
         events: observedEvents,
         onEvent: async (event) => {
           captured.push({ eventId: event.eventId, kind: event.kind, payload: event.payload });
+          // FR-5.6 压缩观测：host 在事件流里报出 `itemType==='compaction'` 时只追加一条
+          // `agent_compactions` 行。这里**不发起压缩** —— RACP 客户端目前没有 session/history
+          // 与 compact 操作，请求前自动压缩还接不上（见最终报告的遗留说明）。
+          // 两条留痕路径二选一，避免同一事件写两行：优先 worker 自己的 `compactionStore`
+          // （由 `createCompactionStore()` 装配），没注入时才走装配层的 `onEvent` 钩子。
+          if (deps.v21 !== undefined) {
+            const context = {
+              kind: event.kind,
+              payload: event.payload,
+              repo: input.repo,
+              issueNumber: input.targetNumber,
+              sessionId: recordedIds.sessionId ?? sessionId ?? '',
+            };
+            const store = deps.v21.compactionStore;
+            if (store !== undefined) {
+              const record = compactionRecordOfEvent(event.payload, context);
+              if (record !== null) {
+                try {
+                  await store.record(record);
+                  appendEvent('compact.recorded', {
+                    sessionId: record.sessionId,
+                    generation: record.generation,
+                    beforeTokens: record.beforeTokens,
+                    afterTokens: record.afterTokens,
+                    summaryChars: record.summaryChars,
+                    fallback: record.fallback,
+                  });
+                } catch (error) {
+                  logger.warn({ err: String(error) }, '压缩记录落库失败（不影响本轮）');
+                }
+              }
+            } else if (deps.v21.onEvent !== undefined) {
+              try {
+                await deps.v21.onEvent(context);
+              } catch (error) {
+                logger.warn({ err: String(error) }, 'v2.1 压缩留痕失败（不影响本轮）');
+              }
+            }
+          }
           // `item.delta` 是正文的**流式增量**（一次 turn 上百条，实机 125 条 / 27 秒）：
           // 退化检测需要它（走 `captured`，不进库），审计与面板不需要 —— 落库只会让
           // `run_events` 每轮多出上百行、把真正的事件挤出详情页（上限 500 条）。
@@ -486,25 +877,59 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   // ── 信封（第 7 步）：只有在拿到 turn 结果时才校验 ────────────────────────────
   recordStep('validate');
   if (turnResult !== undefined) {
-    const found = findEnvelopeText(captured);
-    prepared = prepareEnvelope(found?.text ?? null, {
-      ...(deps.allowedIntents === undefined ? {} : { allowedIntents: deps.allowedIntents }),
-      ...(deps.allowPushBranch === undefined ? {} : { allowPushBranch: deps.allowPushBranch }),
-      ...(deps.allowedLabels === undefined ? {} : { allowedLabels: deps.allowedLabels }),
-    });
-    const row = envelopeRowOf(prepared.text, prepared);
-    await deps.store.recordEnvelope({
-      runId: input.runId,
-      verdict: row.verdict,
-      actions: row.actions,
-      usage: row.usage,
-      valid: prepared.valid,
-      errors: prepared.errors,
-    });
-    if (!prepared.valid) {
-      signals.push(signalFromParse(summarizeIssues(prepared.errors)));
-    } else if (prepared.dropped.length > 0) {
-      appendEvent('writeback.dropped', { dropped: prepared.dropped });
+    // v2 产出分流（FR-5.3）：**仅 `tasks.source==='agent'`** 试探事件流里的 v2 信封。
+    //
+    // 三态而不能只看「parse ok / parse 失败」：
+    //  - `valid`    → 走 `executeV21()`（第 8 步），旧路径一次都不碰；
+    //  - `rejected` → v2 形状但校验不过（未知 type / 字段越界）→ **整份拒绝**，
+    //                 一条动作都不执行，错误落 envelopes.errors 与 run_events，**不回落**；
+    //  - `not-v21`  → 旧 4-intent 信封 / 纯人话 / 没有产出 → 原样回落 `prepareEnvelope()`。
+    // 于是 `command` / `pipeline` 与全部旧单测逐字节零回归，`actions: []` 也是合法 v2 产出
+    // （会进 `valid` 分支，只是第 8 步一条都不执行，不视为失败）。
+    const probe: V21Probe = taskSource === 'agent' ? probeV21Output(captured) : { kind: 'not-v21' };
+    if (probe.kind === 'valid') {
+      v21Handled = true;
+      v21Plan = { text: probe.text, output: probe.output };
+      appendEvent('envelope.v21', { contract: 'v2', actions: probe.output.actions.length });
+    } else if (probe.kind === 'rejected') {
+      v21Handled = true;
+      const errors = probe.errors.map((issue) => ({ path: issue.path, message: issue.message }));
+      const raw = v21RawEnvelopeColumns(probe.text);
+      await writeV21Envelope({
+        runId: input.runId,
+        verdict: raw.verdict,
+        actions: raw.actions,
+        usage: null,
+        valid: false,
+        errors,
+      });
+      appendEvent('envelope.v21.rejected', {
+        contract: 'v2',
+        errors,
+        text: probe.text.slice(0, 2_000),
+      });
+      signals.push(signalFromParse(`v2 产出整份拒绝：${summarizeOutputV21Issues(probe.errors)}`));
+    } else {
+      const found = findEnvelopeText(captured);
+      prepared = prepareEnvelope(found?.text ?? null, {
+        ...(deps.allowedIntents === undefined ? {} : { allowedIntents: deps.allowedIntents }),
+        ...(deps.allowPushBranch === undefined ? {} : { allowPushBranch: deps.allowPushBranch }),
+        ...(deps.allowedLabels === undefined ? {} : { allowedLabels: deps.allowedLabels }),
+      });
+      const row = envelopeRowOf(prepared.text, prepared);
+      await deps.store.recordEnvelope({
+        runId: input.runId,
+        verdict: row.verdict,
+        actions: row.actions,
+        usage: row.usage,
+        valid: prepared.valid,
+        errors: prepared.errors,
+      });
+      if (!prepared.valid) {
+        signals.push(signalFromParse(summarizeIssues(prepared.errors)));
+      } else if (prepared.dropped.length > 0) {
+        appendEvent('writeback.dropped', { dropped: prepared.dropped });
+      }
     }
   }
 
@@ -534,7 +959,9 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
   const envelopeValid = prepared !== null && prepared.valid;
   const hasCommentAction =
     prepared !== null && prepared.valid && prepared.accepted.some((item) => item.intent === 'comment');
-  if (prepared !== null && (!prepared.valid || !hasCommentAction)) {
+  // v2 分支**不发兜底评论**：它的 `comment` 是槽位写回（覆盖语义），再补一段人话会
+  // 在同一个 issue 上多出一条不可控的评论；v2 的 `actions: []` 也是「只判定不动作」的合法产出。
+  if (!v21Handled && prepared !== null && (!prepared.valid || !hasCommentAction)) {
     const agentText =
       turnResult !== undefined && terminal === 'turn.completed' ? findLastAgentText(captured) : null;
     const body = agentText === null ? null : buildFallbackCommentBody(agentText);
@@ -587,6 +1014,182 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
 
   // ── 写执行器（第 8 步） ────────────────────────────────────────────────────
   recordStep('execute');
+
+  // v2 七类动作（FR-5.4 / FR-5.5）：`executeV21()` 负责「顺序执行、遇失败即停、
+  // 后三类动作开关在**执行前**整份拒绝」。这里只做装配与留痕，不重写任何一条写回规则。
+  if (v21Handled && v21Plan !== null) {
+    // 目标现状：当前标签 / 我们打过的标签。`deps.targets.load()` 由装配层接
+    // （读 `bot_labels`，与 `deps.ledger` 是同一张表）；没注入时给空集合，是安全侧。
+    const target: WriteTargetContext =
+      deps.targets === undefined
+        ? {}
+        : await deps.targets
+            .load({ repo: input.repo, targetNumber: input.targetNumber })
+            .catch((): WriteTargetContext => ({}));
+    const currentLabels: readonly string[] = target.currentLabels ?? [];
+    const botLabels: readonly string[] = target.botLabels ?? [];
+
+    // settings 是仓库级配置，由装配层从 `repos.settings` 读出来注入（不注入 = 全默认，
+    // 于是后三类开关默认全关，是最保守的一侧）。
+    const rawSettings: unknown = deps.v21?.settings ?? null;
+    const settingsRead = readV21Settings(rawSettings);
+    const settings = settingsRead.settings;
+    const resolved = resolveAgentExecution(rawSettings);
+    if (!settingsRead.ok || !resolved.ok) {
+      // `ok:false` 只用来记告警，**不据此停工**：两个 resolve* 已回退到形状默认值
+      // （后三类动作开关默认全关，是最保守的一侧）；配置写坏了不该把整条处理链带崩。
+      logger.warn(
+        { repo: input.repo, error: settingsRead.error ?? resolved.error },
+        'v2.1 settings 解析失败：按形状默认值继续执行（受限动作开关默认全关）',
+      );
+    }
+    // 直接喂 `resolveAgentExecution(settings).actions`：它内部已按
+    // `agent.actions.X || agent.limits.actions.X` 裁决（任一处开启即开启，默认全 false）。
+    // 这里再抄一遍字段只会多一处「以后改了裁决规则却忘了同步」的漂移点。
+    const actionsEnabled: V21ActionSwitches = resolved.actions;
+    const catalog: readonly CatalogEntry[] = v21CatalogOf(rawSettings);
+
+    const v21Config = deps.v21;
+    const api = createV21PortFromGithub({
+      write: v21WritePort(deps.github, deps.ledger),
+      ...(v21Config?.reactions === undefined ? {} : { reactions: v21Config.reactions }),
+      ...(v21Config?.openPullRequest === undefined ? {} : { openPullRequest: v21Config.openPullRequest }),
+      ...(v21Config?.isOwn === undefined ? {} : { isOwn: v21Config.isOwn }),
+    });
+
+    let result: ExecuteV21Result;
+    try {
+      if (degeneracyHit !== null) {
+        // 熔断命中：plan §9.3 只说「照样校验入库」，没说照样发布 → 一条写动作都不做。
+        result = { ok: true, executed: [], stoppedAt: null, errors: [], finishedAtMs: clock() };
+        appendEvent('writeback.v21.skipped', { reason: 'degeneracy-hit' });
+      } else if (v21Config?.execute !== undefined) {
+        // 装配层注入的执行器（compose.ts → createV21Executor() → executeV21()）。
+        // 结论形状收成 `ExecuteV21Result`，下面「写 envelopes / actions / run_events」只有一份。
+        const execution = await v21Config.execute(v21Plan.text, {
+          repo: input.repo,
+          issueNumber: input.targetNumber,
+          dryRun,
+        });
+        result = {
+          ok: execution.valid,
+          executed: execution.executed.map((item) => ({
+            index: item.index,
+            type: item.type,
+            outcome: item.outcome === 'failed' ? ('failed' as const) : ('ok' as const),
+          })),
+          stoppedAt: execution.stoppedAt,
+          errors: execution.errors.map((issue) => ({
+            index: 0,
+            type: 'output',
+            message: `${issue.path} ${issue.message}`,
+          })),
+          finishedAtMs: clock(),
+        };
+      } else {
+        // 直连路径：worker 自己用 `createV21PortFromGithub(deps.github)` 装配端口，
+        // 开关 / 标签目录 / 上限全部来自注入的 settings，dryRun 原样透传。
+        result = await executeV21({
+          output: v21Plan.output,
+          repo: input.repo,
+          issueNumber: input.targetNumber,
+          dryRun,
+          actionsEnabled,
+          currentLabels,
+          botLabels,
+          catalog,
+          maxPerIssue: settings.labels.max_per_issue,
+          api,
+          now: clock,
+        });
+      }
+    } catch (error) {
+      // `executeV21()` 契约上不抛（装配层钩子可能抛）；真抛了也要收成一条可查错误，
+      // 不能让 run 崩掉，更不能回落旧信封重复写回。
+      const detail = error instanceof Error ? error.message : String(error);
+      result = {
+        ok: false,
+        executed: [],
+        stoppedAt: null,
+        errors: [{ index: 0, type: 'output', message: `v2 执行器异常：${detail}` }],
+        finishedAtMs: clock(),
+      };
+    }
+
+    const errors = result.errors.map((item) => ({
+      path: `/actions/${String(item.index)}/${item.type}`,
+      message: item.message,
+    }));
+    // envelopes 每 run 只有一行（唯一索引在 run_id）：**等执行结果出来才写**，
+    // 这样「执行前整份拒绝」（开关未开）的错误也能落在 envelopes.errors 上。
+    await writeV21Envelope({
+      runId: input.runId,
+      verdict: v21Plan.output.verdict ?? null,
+      actions: v21Plan.output.actions,
+      usage: null,
+      valid: result.ok,
+      errors: result.ok ? [] : errors,
+    });
+
+    // 结果写 actions 行与 run_events。dry-run 沿用旧口径：不写 actions 行（零库副作用），
+    // 只把计划留在 run_events 与 report.actions 里。
+    const actionTarget = actionTargetOf(input.repo, input.targetNumber);
+    for (const item of result.executed) {
+      const status: ActionOutcome['status'] =
+        item.outcome === 'failed' ? 'failed' : dryRun ? 'dry-run' : 'applied';
+      if (!dryRun) {
+        await deps.store
+          .recordAction({
+            runId: input.runId,
+            intent: `v21:${item.type}`,
+            target: actionTarget,
+            externalRef: null,
+            appliedAt: item.outcome === 'failed' ? null : new Date(clock()),
+            audit: {
+              source: 'v21',
+              contract: 'v2',
+              index: item.index,
+              type: item.type,
+              outcome: item.outcome,
+              detail: item.detail ?? null,
+              dryRun,
+            },
+          })
+          .catch((error: unknown) => {
+            logger.warn({ err: String(error) }, 'v2 actions 行写入失败（已忽略）');
+          });
+      }
+      actionOutcomes.push({
+        intent: `v21:${item.type}`,
+        status,
+        target: actionTarget,
+        externalRef: null,
+        reason: item.detail ?? '',
+      });
+    }
+    appendEvent('writeback.v21.result', {
+      contract: 'v2',
+      valid: result.ok,
+      dryRun,
+      stoppedAt: result.stoppedAt,
+      executed: result.executed.map((item) => ({
+        index: item.index,
+        type: item.type,
+        outcome: item.outcome,
+        detail: item.detail ?? null,
+      })),
+      errors,
+    });
+    if (!result.ok) {
+      // 整份拒绝 / 中途失败：一条动作都不该被当成「已发布」。错误同时进 run_events 与 signals。
+      signals.push(
+        signalFromParse(
+          `v2 执行未完成：${errors.map((issue) => `${issue.path} ${issue.message}`).join('; ')}`,
+        ),
+      );
+    }
+  }
+
   // 熔断命中时**只校验入库、不执行写动作**：plan §9.3 的处置是「已产出的结构化结果照样校验入库」，
   // 没说「照样发布」。一份在退化状态下产出的评论/标签，发布出去比丢掉代价大得多。
   // ★ `command` **有意不传**（`executeActions()` 的 `command` 缺省 = `undefined`）：

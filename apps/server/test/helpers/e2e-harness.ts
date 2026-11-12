@@ -554,6 +554,24 @@ export function createCountingGithubApi(): CountingGithubApi {
     async closeIssue() {
       record('closeIssue', true);
     },
+    async updateIssueComment(input) {
+      record(`updateIssueComment:${String(input.commentId)}`, true);
+      return { id: input.commentId, htmlUrl: null };
+    },
+    async getIssue(input) {
+      // 纯 GET：M0 的「GitHub 零副作用」口径里不算写调用。
+      record(`getIssue:${String(input.issueNumber)}`, false);
+      return {
+        number: input.issueNumber,
+        title: '',
+        body: '',
+        state: 'open',
+        labels: [],
+        authorLogin: null,
+        updatedAt: '',
+        isPullRequest: false,
+      };
+    },
   };
 
   return {

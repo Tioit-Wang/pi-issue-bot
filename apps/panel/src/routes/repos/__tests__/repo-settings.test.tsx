@@ -167,7 +167,8 @@ describe('设置页 · triggers', () => {
     expect(saved?.version).toBe(1);
     expect(saved?.limits.max_comments_per_hour).toBe(10);
     // v0.3：triggers 只剩 aliases，prompt / commands / create_issue 三段已删。
-    expect(saved?.agent.on_opened).toBe('format-check');
+    // on_opened 与契约默认值一致（issue #26）
+    expect(saved?.agent.on_opened).toBe('issue-format');
   });
 
   it('命中预览 ① 提及：@issuebot 后面跟正文 → 会交给 agent', async () => {

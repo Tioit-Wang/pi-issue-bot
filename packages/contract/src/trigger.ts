@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { eventTriggersSchema } from './settings-v21.ts';
 
 /** 部署默认别名（约束：默认 `@issuebot`、`@IssueBot`、`@ibot` 都能触发）。 */
 export const DEFAULT_TRIGGER_ALIASES: readonly string[] = Object.freeze(['issuebot', 'ibot']);
@@ -37,13 +38,21 @@ export const triggerAliasSchema = z
   .regex(/^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$/u, '别名只能是字母/数字/._-，且长度为 2–39');
 
 /**
- * `settings.triggers`：v0.3 只剩**别名**（`docs/dev-plan-issue-agent.md` §2.6）。
- * `enabled` / `users` / `merge_defaults` / `remove` 已删：「谁能 @」改由 `agent.managers` 决定。
+ * `settings.triggers`。
+ *
+ * v0.3 只剩**别名**（`docs/dev-plan-issue-agent.md` §2.6）；`enabled` / `users` / `merge_defaults`
+ * / `remove` 已删（「谁能 @」改由 `agent.managers` 决定）。
+ *
+ * v2.1 补回**事件面**（`docs/v21-contract.md` §1）：`events` 是五个事件各自的开关 + 提示词模板 +
+ * 附加条件（`issues.edited` 的只认正文、`issues.labeled` 的标签表、评论事件的四闸门）。
+ * 两个键并存而不是二选一：`aliases` 管「正文里怎么叫我」，`events` 管「什么事件叫我」。
  */
 export const triggersConfigSchema = z
   .object({
     /** 追加别名（1–8 个）；缺省用部署默认 */
     aliases: z.array(triggerAliasSchema).min(1).max(8).optional(),
+    /** 五个事件的触发配置；缺省 = FR-2.1 的默认值表（`eventTriggersSchema`）。 */
+    events: eventTriggersSchema.prefault({}),
   })
   .strict();
 

@@ -26,6 +26,7 @@ import type {
   GithubRequest,
   GithubWriteApi,
   IssueComment,
+  IssueSnapshot,
   RateLimitSignal,
   ReactionEntry,
   ReactionRef,
@@ -183,6 +184,18 @@ type RawIssueComment = { readonly id?: unknown; readonly body?: unknown };
 type RawIssue = { readonly number?: unknown };
 type RawComment = { readonly id?: unknown; readonly html_url?: unknown };
 
+/** `GET /issues/{n}` 的原始返回（只取快照需要的字段，全部 `unknown` 后逐个收窄）。 */
+type RawIssueDetail = {
+  readonly number?: unknown;
+  readonly title?: unknown;
+  readonly body?: unknown;
+  readonly state?: unknown;
+  readonly labels?: unknown;
+  readonly user?: { readonly login?: unknown } | null;
+  readonly updated_at?: unknown;
+  readonly pull_request?: unknown;
+};
+
 /**
  * 把 `GithubClient` 适配成写执行器需要的 `GithubWriteApi`。
  *
@@ -267,7 +280,68 @@ export function createGithubWriteApi(client: GithubClient): GithubWriteApi {
         state_reason: input.reason ?? 'not_planned',
       });
     },
+
+    async updateIssueComment(input): Promise<CommentRef> {
+      const { owner, repo } = splitRepo(input.repo);
+      const response = await client.request<RawComment>(
+        'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
+        { owner, repo, comment_id: input.commentId, body: input.body },
+      );
+      // 响应里没带 id 时回退成入参的 commentId：调用方要的是「这条评论的标识」，
+      // 而 PATCH 成功本身就证明它就是这个 id（返回 0 会让槽位索引写进一个假 id）。
+      return {
+        id: typeof response.data.id === 'number' ? response.data.id : input.commentId,
+        htmlUrl: typeof response.data.html_url === 'string' ? response.data.html_url : null,
+      };
+    },
+
+    async getIssue(input): Promise<IssueSnapshot> {
+      const { owner, repo } = splitRepo(input.repo);
+      const response = await client.request<RawIssueDetail>(
+        'GET /repos/{owner}/{repo}/issues/{issue_number}',
+        { owner, repo, issue_number: input.issueNumber },
+      );
+      const data = response.data ?? {};
+      const user = typeof data.user === 'object' && data.user !== null ? data.user : null;
+      return {
+        number: typeof data.number === 'number' ? data.number : input.issueNumber,
+        title: typeof data.title === 'string' ? data.title : '',
+        body: typeof data.body === 'string' ? data.body : '',
+        state: typeof data.state === 'string' ? data.state : 'open',
+        labels: normalizeLabelNames(data.labels),
+        authorLogin: typeof user?.login === 'string' ? user.login : null,
+        updatedAt: typeof data.updated_at === 'string' ? data.updated_at : '',
+        isPullRequest: data.pull_request !== undefined && data.pull_request !== null,
+      };
+    },
   };
+}
+
+/**
+ * issue 的 `labels` 字段归一化成名字集合。
+ *
+ * GitHub 在某些端点上返回 `string[]`，在另一些返回 `{ name }[]`（历史遗留）。
+ * 两种都接受，其它形状一律丢弃 —— 让「标签列表里混进一个 null」变成不可能，
+ * 下游（目标态对齐）才敢直接拿它做集合运算。
+ */
+function normalizeLabelNames(raw: unknown): readonly string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const names: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      names.push(item);
+      continue;
+    }
+    if (typeof item === 'object' && item !== null) {
+      const name = (item as { readonly name?: unknown }).name;
+      if (typeof name === 'string') {
+        names.push(name);
+      }
+    }
+  }
+  return names;
 }
 
 /* ── reaction：无感反馈的写面（W2-D） ────────────────────────────────────────── */

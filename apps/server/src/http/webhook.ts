@@ -75,6 +75,15 @@ import {
 } from '../agent/index.ts';
 import type { AgentMessageSettings, AgentSkillCatalogEntry, AgentTemplateId } from '../agent/index.ts';
 import { errorBodyOf } from './errors.ts';
+import {
+  V21_DECISION_SQL,
+  applyV21SessionOnEvent,
+  decideV21Delivery,
+  handleV21Webhook,
+  v21EventKeyOf,
+  writeV21Decision,
+} from './webhook-v21.ts';
+import type { V21Trace, V21WebhookDeps } from './webhook-v21.ts';
 import type { ZodFastify } from './types.ts';
 
 export const WEBHOOK_SQL = {
@@ -90,6 +99,16 @@ RETURNING "delivery_id"`,
   readDelivery: `SELECT "signature_valid" FROM "webhook_deliveries" WHERE "delivery_id" = $1`,
   /** 同一 delivery 先前验签失败、这次通过：把标记翻正后继续处理（不是重复投递）。 */
   markSignatureValid: `UPDATE "webhook_deliveries" SET "signature_valid" = true WHERE "delivery_id" = $1`,
+  /**
+   * v2.1 判定留痕（FR-2.1 / BR-6）：`decision` = `triggered|ignored`，`decision_reason` = §2 的 reason。
+   *
+   * 为什么是独立 UPDATE 而不是给 `insertDelivery` 加两列：判定要等第 4.5 步读出
+   * `repos.settings` 才有结论，而 INSERT 在第 3 步就发生了；且 replay / 验签失败重投时
+   * INSERT 会命中 `ON CONFLICT DO NOTHING`，补列根本写不进去。UPDATE 保证**每一条投递行
+   * 最终都有值**（包括未触发与 PR 的 `pr-ignored`）。语句本体放在 `webhook-v21.ts`，
+   * 这里只把它登记进管线的 SQL 目录，避免同一条 SQL 抄两份。
+   */
+  markDecision: V21_DECISION_SQL.write,
   /**
    * 建任务。`target_title` / `target_body` / `target_supplement` 是**入队时快照**（§4.2）：
    * 阶段任务可能在 `awaiting_info` 里等好几天，而 `webhook_deliveries.payload` 只留 90 天。
@@ -330,6 +349,13 @@ export type WebhookDeps = {
   readonly reactions?: GithubReactionApi;
   /** App slug（删自己的 reaction 时判归属）。 */
   readonly appSlug?: string | null;
+  /**
+   * v2.1 接线（BR-6 判定留痕 + FR-2.3 模板渲染）。
+   *
+   * **不注入 = 旧路径逐字节不变**：判定 UPDATE、模板渲染、issue 索引请求都只在这一段启用时发生，
+   * 所以既有的 webhook 单测（它们只构造旧 deps）不会被多出来的 SQL 或异步调用打乱。
+   */
+  readonly v21?: V21WebhookDeps | undefined;
 };
 
 export type WebhookInput = {
@@ -950,7 +976,57 @@ function installationMismatch(policy: RepoPolicy, incoming: string | null): stri
  *  - body 不是 JSON → 400 `bad-request`
  * 其余业务判定（重复、忽略、暂停、门禁不过）一律 **200**：GitHub 只看 2xx 决定是否重投。
  */
+/**
+ * 跑一次投递（九步）+ v2.1 的判定留痕（BR-6）。
+ *
+ * 为什么做成「外层包装 + 内层 `runWebhookPipeline()`」：判定要写进**每一条**投递行，
+ * 包括验签失败、暂停、未知仓库、开关关闭这些早早 return 的分支。逐个 return 点补一句
+ * `UPDATE` 会漏，也会把旧路径改得面目全非；包一层之后，内层一个字都不用改语义，
+ * 外层统一在返回前落一次 `decision / decision_reason`。
+ */
 export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Promise<WebhookResult> {
+  const trace: V21Trace = { decision: null, payload: null, action: null, skipDecision: false };
+  const result = await runWebhookPipeline(deps, input, trace);
+  if (deps.v21 === undefined || trace.skipDecision) {
+    // 投递级重复：原投递行已有判定，不覆盖（BR-6 的判定属于「第一次收到这条事件」）。
+    return result;
+  }
+
+  let decision = trace.decision;
+  if (decision === null && trace.payload !== null) {
+    // 内层在读到 `repos.settings` 之前就返回了（暂停 / 未知仓库 / 安装事件 / 验签失败…）。
+    // 这些投递仍然要留痕，且病因是「仓库不可用」，不能含糊记成一个别的 reason。
+    decision = decideV21Delivery({
+      event: input.event,
+      action: trace.action,
+      payload: trace.payload,
+      settings: null,
+      repoDisabled: true,
+    });
+  }
+  if (decision !== null) {
+    try {
+      // 不触发也写：BR-6 的「每次判定写 decision + decision_reason」是审计要求，不是成功路径的装饰。
+      await writeV21Decision(deps.v21.db, input.deliveryId, decision);
+    } catch (error) {
+      // 留痕失败不该让 GitHub 重投一次（幂等行已经写好了），只记 warn。
+      deps.logger.child({ deliveryId: input.deliveryId }).warn(
+        { err: describeError(error) },
+        'v2.1 判定留痕失败（不影响应答）',
+      );
+    }
+  }
+  return result;
+}
+
+/**
+ * 九步管线本体（v0.3 行为）。`trace` 只被 v2 包装读取，不注入 v21 时没人看它。
+ */
+async function runWebhookPipeline(
+  deps: WebhookDeps,
+  input: WebhookInput,
+  trace: V21Trace,
+): Promise<WebhookResult> {
   const now = deps.now ?? ((): Date => new Date());
   const startedAt = performance.now();
   const log = deps.logger.child({ deliveryId: input.deliveryId, event: input.event });
@@ -973,6 +1049,8 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
   }
 
   const action = readString(asRecord(payload), 'action');
+  trace.payload = payload;
+  trace.action = action;
 
   // 载荷里的「哪个项目、哪个安装」：第 4.5 步的判定依据，也进投递行的 `repo` 审计列
   const project = projectRefOf(payload);
@@ -1027,6 +1105,8 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
       const signatureValid = row?.['signature_valid'] === true;
       if (signatureValid) {
         log.info('重复投递，直接回 200');
+        // 别让外层包装把这行的原判定覆写成 repo-disabled（见 V21Trace.skipDecision 注释）
+        trace.skipDecision = true;
         return finish(200, accepted({ deliveryId: input.deliveryId, action: 'duplicate', taskId: null, duplicate: true, ackComment: null }));
       }
       // 同一 delivery 先前验签失败、这次通过：翻正后继续，不当作重复
@@ -1102,6 +1182,39 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
+  if (deps.v21 !== undefined) {
+    // 判定发生在「仓库可用性 → 事件开关」这一层：仓库禁用/配置非法时直接给 repo-disabled，
+    // 其余交给 decideEvent() 按 §2 的固定顺序判（开关 → 条件 → 闸门 → 去重 → 配额）。
+    trace.decision = decideV21Delivery({
+      event: input.event,
+      action,
+      payload,
+      settings: policy.settings,
+      repoDisabled: !policy.enabled || !policy.settingsValid,
+    });
+
+    // 会话状态（FR-3.4 / AC-23）：事件与 issue 状态的**权威来源**就在这一份载荷里，
+    // 所以迁移在这里做，而不是等 worker 跑起来再猜「这条任务属于哪个事件」。
+    // 只 UPDATE / INSERT，永不 DELETE 会话行。
+    const sessionEvent = v21EventKeyOf(input.event, action);
+    const issue = asRecord(asRecord(payload)?.['issue']);
+    const issueNumber = readNumber(issue, 'number');
+    const issueState = readString(issue, 'state');
+    if (sessionEvent !== null && sessionEvent !== 'pull_request.*' && issueNumber !== null) {
+      try {
+        await applyV21SessionOnEvent(deps.v21.db, {
+          repo,
+          issueNumber,
+          event: sessionEvent,
+          issueState: issueState === 'closed' ? 'closed' : 'open',
+        });
+      } catch (error) {
+        // 会话是唯一有状态的资产，但状态迁移失败不该让投递 500（下一轮事件会再修）
+        log.warn({ err: describeError(error) }, 'v2.1 会话状态迁移失败（不影响应答）');
+      }
+    }
+  }
+
   if (!policy.enabled || !policy.settingsValid) {
     log.warn(
       { repo, enabled: policy.enabled, settingsValid: policy.settingsValid, reason: 'repo-unusable' },
@@ -1127,12 +1240,51 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
     aliases,
     ...(deps.freeMention === undefined ? {} : { freeMention: deps.freeMention }),
   });
+  // ── v2.1 独立分支（只有注入 `WebhookDeps.v21` 时才启用）──────────────────────
+  // 判定留痕由外层 `handleWebhook()` 在返回前统一写（含未触发与 PR 的 `pr-ignored`）；
+  // 这里只负责「五个 EventKey + PR」的最终处置：触发 → 选模板 → 渲染 → 落 `agent_messages`
+  // 的 `comment_body`；未触发 → 200 ignored 且不入队。
+  // 旧命令通道（`source='command'`）与 v2 范围外的事件一律不接管，行为逐字节不变。
+  const v21Decision =
+    deps.v21 === undefined
+      ? null
+      : (trace.decision ??
+        decideV21Delivery({ event: input.event, action, payload, settings: policy.settings }));
+  if (deps.v21 !== undefined && v21Decision !== null) {
+    const legacyCommand = decision.action === 'task' && decision.plan.source === 'command';
+    const outcome = await handleV21Webhook({
+      deps: deps.v21,
+      logger: log,
+      deliveryId: input.deliveryId,
+      event: input.event,
+      action,
+      payload,
+      repo,
+      settings: policy.settings,
+      dryRun,
+      decision: v21Decision,
+      legacyCommand,
+      ...(deps.dispatchAgent === undefined ? {} : { dispatchAgent: deps.dispatchAgent }),
+      addEyesReaction: async (call): Promise<void> => {
+        await deps.ack.addEyesReaction({
+          repo: call.repo,
+          issueNumber: call.issueNumber,
+          commentId: call.commentId,
+        });
+      },
+    });
+    if (outcome !== null) {
+      return finish(outcome.status, outcome.body);
+    }
+  }
+
   if (decision.action === 'ignore') {
     log.info({ repo, reason: decision.reason }, '事件不在白名单，不建任务');
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
   // ── agent 通道（v0.3）：落 `agent_messages`，建任务与串行交给 dispatcher ──────────
+  // 注入 v21 时上面那条独立分支已经接管，这里只会由「未注入 v21 的旧装配」走到。
   if (decision.plan.agent !== undefined) {
     const result = await submitAgentMessage(deps, {
       plan: decision.plan,
@@ -1436,6 +1588,7 @@ async function submitAgentMessage(
     key,
     kind: agent.kind,
     commentId: plan.commentId,
+    // v0.3 组装产物就是消息正文；v2.1 走 `webhook-v21.ts` 的独立分支，不共用这条组装链。
     body: composed.text,
     // 触发人：mention = 评论作者，opened/edited = issue 作者。写回时靠它加 `@login`。
     actorLogin: plan.actorLogin,

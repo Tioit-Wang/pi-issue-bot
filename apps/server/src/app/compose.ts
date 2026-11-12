@@ -84,7 +84,10 @@ import { createHostUsageReader } from '../cost/index.ts';
 import type { Queries } from '../queries/index.ts';
 import { HostSupervisor, createNodeHostSpawn, resolveBundleCommand } from '../runtime/index.ts';
 import type { SandboxDocker } from '../sandbox/index.ts';
-import { createSupervisorHostPort, runTask, timeoutMsForCommand } from '../worker/index.ts';
+import { createSupervisorHostPort, timeoutMsForCommand } from '../worker/index.ts';
+// 直接引 run-task.ts：`worker/index.ts` 的便利包装把 deps 钉成了旧 `TaskRunnerDeps`，
+// 而 v2 钩子是它的可选超集。走实现文件才能让类型检查看到 `v21`。
+import { runTask } from '../worker/run-task.ts';
 import type { HostPort, SessionPlan, TaskRunnerDeps, TaskRunReport, WorktreePort } from '../worker/index.ts';
 import type { AppConfig } from './config.ts';
 import { describeAppConfig } from './config.ts';
@@ -102,6 +105,8 @@ import {
   createWorkerFeedbackDeps,
   createWorkerPorts,
   createWorkflowReactionPort,
+  createV21Compactor,
+  createV21CompactionStore,
   readTaskRow,
 } from './worker-deps.ts';
 import type { TaskJobRow, WorkerPorts } from './worker-deps.ts';
@@ -115,6 +120,22 @@ import {
   saveSession as saveAgentSessionRow,
 } from '../agent/index.ts';
 import type { AgentDispatchDeps } from '../agent/index.ts';
+import {
+  createRepoIssuesLister,
+  createV21CompactionHook,
+  createV21Executor,
+  createV21OpenPullRequest,
+  v21ReactionsOf,
+} from '../http/webhook-v21.ts';
+import { planSessionOnEvent } from '../agent/session-state.ts';
+import type {
+  AgentSessionRow as V21AgentSessionRow,
+  PlanSessionOnEventInput,
+  SessionEventKey,
+  SessionTransition,
+} from '../agent/session-state.ts';
+import { createV21TargetContextPort } from './worker-deps.ts';
+import { createRepoIssuesProvider } from '../prompt/repo-issues.ts';
 
 /* ── 队列的最小接口（结构可替换）────────────────────────────────────────────── */
 
@@ -219,6 +240,183 @@ export interface AgentSessionPlan {
  *  3. **复用**：有 id → `{mode:'persistent', sessionId, after: cursor}`（`after` 防重放旧事件）；
  *  4. **轮换**：`turns >= maxTurns` 或存活超过 `maxAgeDays` → 先 archive 旧会话再新建。
  */
+/**
+ * `tasks.command` → v2.1 会话状态机的事件键。
+ *
+ * v0.3 的 agent 任务只带命令名（事件类型不在 `tasks` 行上），所以这里是**保守推断**：
+ * 认不出的命令按 `issues.edited`（普通复用）处理，绝不猜成 `issues.closed` ——
+ * 后者会回收活跃沙箱。权威判定仍在 webhook 侧（那里有真实的 `X-GitHub-Event`）。
+ */
+export function v21EventOfCommand(command: string): SessionEventKey {
+  switch (command.trim().toLowerCase()) {
+    case 'agent:opened':
+      return 'issues.opened';
+    case 'agent:edited':
+      return 'issues.edited';
+    case 'agent:closed':
+      return 'issues.closed';
+    case 'agent:mention':
+      return 'issue_comment.created';
+    default:
+      return 'issues.edited';
+  }
+}
+
+/** v2.1 会话状态机的纯函数出口（FR-3.4：只有 active/idle，永不删会话行）。 */
+export function planV21SessionOnTask(input: PlanSessionOnEventInput): SessionTransition {
+  return planSessionOnEvent(input);
+}
+
+/**
+ * v2.1 会话状态迁移的**落库语句**（FR-3.4 / AC-23）。
+ *
+ * 只有 INSERT / UPDATE，**没有 DELETE**：issue 随时可能重开，删掉会话行就等于把
+ * 重开后的上下文一起丢了。同理这里也不发 `session/archive`（RACP 归档）——
+ * 关闭只回收沙箱资源，数据动作一律不做。
+ */
+export const V21_SESSION_TRANSITION_SQL = {
+  read: `SELECT "state", "sandbox_id", "session_id", "turns", "cursor"
+FROM "agent_sessions" WHERE "repo" = $1 AND "issue_number" = $2`,
+  create: `INSERT INTO "agent_sessions"
+  ("repo", "issue_number", "state", "sandbox_id", "closed_at", "cursor", "turns", "updated_at")
+VALUES ($1, $2, $3, $4, NULL, 0, 0, now())
+ON CONFLICT ("repo", "issue_number") DO NOTHING`,
+  recycle: `UPDATE "agent_sessions"
+SET "state" = 'idle', "sandbox_id" = NULL, "closed_at" = now(), "updated_at" = now()
+WHERE "repo" = $1 AND "issue_number" = $2`,
+  reuse: `UPDATE "agent_sessions"
+SET "state" = 'active', "sandbox_id" = COALESCE("sandbox_id", $3), "closed_at" = NULL, "updated_at" = now()
+WHERE "repo" = $1 AND "issue_number" = $2`,
+} as const;
+
+/** 一次事件后的会话迁移计划（纯函数：单测可以按输入矩阵逐格断言）。 */
+export interface V21SessionTransitionPlan {
+  readonly transition: SessionTransition;
+  readonly sql: string;
+  readonly params: readonly unknown[];
+  /** 恒为 `false`：会话行永不删除。 */
+  readonly deleteSession: false;
+  /** 恒为 `null`：v2.1 路径永不 archive。 */
+  readonly archiveSessionId: null;
+  /**
+   * `planSessionOnEvent()` 只给结论、不碰沙箱；`true` 时**由装配层**决定要不要（重新）
+   * 拉起沙箱，并把新 id 通过 `sandboxId` 回填到 `reuse` / `create` 的 SQL 参数里。
+   */
+  readonly rebuildSandbox: boolean;
+}
+
+/**
+ * 把 `planSessionOnEvent()` 的结论翻译成「只改状态、不动数据」的一条 SQL。
+ *
+ * 三条映射（顺序即 FR-3.4 / AC-23）：
+ *  - `issues.closed` 且 issue 实时状态确为 closed → `recycle-sandbox`：
+ *    `state='idle'`、`sandbox_id=NULL`、`closed_at=now()`，会话行原样保留；
+ *  - 重开 / 已关闭 issue 上的其它触发 → `reuse`：
+ *    `state='active'`、`closed_at=NULL`，沙箱按需重建；
+ *  - 首次 → `create`：只 INSERT 一行，不删任何东西、不 archive。
+ */
+export function planV21SessionOnEvent(input: {
+  readonly repo: string;
+  readonly issueNumber: number;
+  readonly session: V21AgentSessionRow | null;
+  readonly event: SessionEventKey;
+  readonly issueState: 'open' | 'closed';
+  readonly sandboxId?: string | null | undefined;
+}): V21SessionTransitionPlan {
+  const transition = planSessionOnEvent({
+    session: input.session,
+    issueState: input.issueState,
+    event: input.event,
+  });
+  const sandboxId = input.sandboxId ?? null;
+  let sql: string;
+  let params: readonly unknown[];
+  if (transition.action === 'create') {
+    sql = V21_SESSION_TRANSITION_SQL.create;
+    params = [input.repo, input.issueNumber, transition.state, sandboxId];
+  } else if (transition.action === 'recycle-sandbox') {
+    sql = V21_SESSION_TRANSITION_SQL.recycle;
+    params = [input.repo, input.issueNumber];
+  } else {
+    sql = V21_SESSION_TRANSITION_SQL.reuse;
+    params = [input.repo, input.issueNumber, sandboxId];
+  }
+  return {
+    transition,
+    sql,
+    params,
+    deleteSession: false,
+    archiveSessionId: null,
+    rebuildSandbox: transition.rebuildSandbox,
+  };
+}
+
+/** 从 `agent_sessions` 的行还原 `planSessionOnEvent()` 要的运行时快照。 */
+export function v21SessionRowOf(
+  row: Record<string, unknown> | undefined,
+  key: { readonly repo: string; readonly issueNumber: number },
+): V21AgentSessionRow | null {
+  if (row === undefined) {
+    return null;
+  }
+  const text = (name: string): string | null =>
+    typeof row[name] === 'string' ? (row[name] as string) : null;
+  const int = (name: string): number =>
+    typeof row[name] === 'number' && Number.isFinite(row[name]) ? Math.trunc(row[name] as number) : 0;
+  return {
+    repo: key.repo,
+    issueNumber: key.issueNumber,
+    sessionId: text('session_id'),
+    state: text('state') === 'active' ? 'active' : 'idle',
+    sandboxId: text('sandbox_id'),
+    turns: int('turns'),
+    cursor: int('cursor'),
+  };
+}
+
+/**
+ * 读现状 → 算迁移 → 只写一条 UPDATE/INSERT。**不删行、不 archive。**
+ *
+ * `planSessionOnEvent()` 是纯函数，`rebuildSandbox=true` 只表示「该拉沙箱了」，真正的
+ * 资源动作由装配层通过 `hooks.createSandbox()` 注入；拿到新 id 后重算一次**纯函数**计划，
+ * 让 `reuse`/`create` 的 SQL 把 `sandbox_id` 一并写进去（不重写规则、不碰 DB 之外的东西）。
+ * 没注入 `createSandbox` 时只更新状态列 —— 本仓库的容器是 **runTask 每轮创建、结束即销毁**
+ * 的临时沙箱（`sandbox/lifecycle.ts`），并没有常驻的 per-session 沙箱可拉起，因此
+ * `rebuildSandbox` 会如实留在返回的计划里供调用方留痕，不假装已经创建。
+ */
+export async function applyV21SessionTransition(
+  db: SqlExecutor,
+  input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly event: SessionEventKey;
+    readonly issueState: 'open' | 'closed';
+    readonly sandboxId?: string | null | undefined;
+  },
+  hooks: { readonly createSandbox?: (() => Promise<string | null>) | undefined } = {},
+): Promise<V21SessionTransitionPlan> {
+  const result = await db.query(V21_SESSION_TRANSITION_SQL.read, [input.repo, input.issueNumber]);
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  const base = {
+    repo: input.repo,
+    issueNumber: input.issueNumber,
+    session: v21SessionRowOf(row, { repo: input.repo, issueNumber: input.issueNumber }),
+    event: input.event,
+    issueState: input.issueState,
+  };
+  const planOf = (sandboxId: string | null): V21SessionTransitionPlan =>
+    planV21SessionOnEvent({ ...base, sandboxId });
+
+  let plan = planOf(input.sandboxId ?? null);
+  if (plan.transition.rebuildSandbox && hooks.createSandbox !== undefined) {
+    // 资源动作失败就不该把状态标成 active：直接抛，由调用方记 warn（不改变已存在的会话行）。
+    const createdId = await hooks.createSandbox();
+    plan = planOf(createdId ?? input.sandboxId ?? null);
+  }
+  await db.query(plan.sql, [...plan.params]);
+  return plan;
+}
+
 export function planAgentSession(input: {
   readonly session: AgentSessionRow | null;
   /** 这一轮是不是 agent 任务（`tasks.source === 'agent'`）。 */
@@ -322,6 +520,18 @@ export interface TaskExecutionInput {
   readonly attempt?: number;
   /** 强制 dry-run（`replay` / 测试用）；不给则「配置 || 仓库开关」。 */
   readonly dryRun?: boolean;
+  /**
+   * 触发本轮的真实 webhook 事件（v2.1 会话状态机用）。
+   *
+   * 不给 = 不在这里改会话状态（webhook 侧才是权威写入点，见 `http/webhook.ts` 的
+   * `applyV21SessionOnEvent`）。`tasks` 行上没有事件列，所以这一项由调用方
+   * （`app.executeTask()` 的直连调用 / 未来的 job 载荷）显式给，避免按命令名瞎猜。
+   */
+  readonly sessionEvent?: {
+    readonly event: SessionEventKey;
+    readonly issueState: 'open' | 'closed';
+    readonly sandboxId?: string | null | undefined;
+  };
 }
 
 export interface Application {
@@ -600,6 +810,53 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     overrides.metricsServer ??
     createMetricsServer({ metrics, host: config.metrics.host, port: config.metrics.port, logger });
 
+  /* ── v2.1 运行时（FR-2.3 / FR-5.3 / FR-5.6）─────────────────────────────
+   * 全部做成「注入到 webhook / runTask 的对象」，两个旧链路本身只多一个 `v21` 可选字段。
+   * 这样旧路径（source='pipeline'|'command'）与既有单测不会被新逻辑改到。
+   */
+  const v21RepoIssues =
+    baseGithubClient === null
+      ? undefined
+      : // 只建一份：{{repo.issues}} 的项目级 5 分钟缓存必须跨投递复用
+        createRepoIssuesProvider({ listIssues: createRepoIssuesLister(baseGithubClient.request) });
+  const v21Executor = createV21Executor({
+    write: ports.github,
+    settings: async (repo) => (await readRepoPolicy(pool, repo)).settings ?? null,
+    ...(feedback === null ? {} : { reactions: v21ReactionsOf(feedback.reactions) }),
+    ...(baseGithubClient === null
+      ? {}
+      : { openPullRequest: createV21OpenPullRequest(baseGithubClient.request) }),
+  });
+  const v21CompactionHook = createV21CompactionHook(pool);
+  /** `runTask` 的 v2 钩子：v2 产出分流 + 压缩事件留痕 + 暴露压缩引擎入口。 */
+  const v21RunnerHooks = {
+    execute: async (
+      text: string,
+      ctx: { readonly repo: string; readonly issueNumber: number; readonly dryRun: boolean },
+    ) => {
+      // `label` 目标态需要「当前标签」与「我们打过的标签」；两者都从 bot_labels 台账读，
+      // 读失败退化为空集（执行器会按「只加不删」处理，比用过期数据删标签安全）。
+      const currentLabels = await readAppliedLabels(pool, ctx.repo, ctx.issueNumber).catch(() => []);
+      const outcome = await v21Executor(text, { ...ctx, currentLabels, botLabels: currentLabels });
+      return {
+        handled: outcome.handled,
+        valid: outcome.valid,
+        errors: outcome.errors,
+        verdict: outcome.output?.verdict ?? null,
+        actions: outcome.output?.actions ?? [],
+        executed: (outcome.result?.executed ?? []).map((item) => ({
+          index: item.index,
+          type: item.type,
+          outcome: item.outcome,
+        })),
+        stoppedAt: outcome.result?.stoppedAt ?? null,
+      };
+    },
+    onEvent: v21CompactionHook,
+    // 只暴露不调用：RACP 没有 history/compact 操作，请求前自动压缩尚属遗留（见最终报告）
+    compactor: createV21Compactor,
+  };
+
   const verify = overrides.verify ?? createOctokitVerifier(config.webhook.secret);
   const ack: WebhookAck =
     overrides.ack ??
@@ -694,6 +951,11 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       // agent 消息落库后**立刻**为这个 issue 领一条（cron 那条只是兜底）
       dispatchAgent: (key) => dispatchNextForIssue(agentDispatch, key),
       now,
+      // v2.1：判定留痕 + 模板渲染。注入即启用，不注入时旧 webhook 行为完全不变。
+      v21: {
+        db: pool,
+        ...(v21RepoIssues === undefined ? {} : { repoIssues: v21RepoIssues }),
+      },
     },
     metrics,
     bodyLimitBytes: config.http.bodyLimitBytes,
@@ -871,6 +1133,71 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
         ? await loadAgentSession({ repo: row.repo, issueNumber: row.targetNumber })
         : null;
 
+    // v2.1 会话状态（FR-3.4 / AC-23）：`active`/`idle` 两种状态、关闭只回收沙箱、永不删会话行。
+    // **权威写入在 webhook 侧**（那里有真实事件名与 issue 实时状态，见 http/webhook.ts 的
+    // `applyV21SessionOnEvent`）；这里只跑一遍同一个纯函数做交叉校验并留一条 debug，
+    // 不额外发 GitHub 请求、也不在这里改库，避免任务执行期把刚回收的沙箱标回 active。
+    const v21SessionPlan = planV21SessionOnTask({
+      session:
+        agentSessionRow === null
+          ? null
+          : {
+              repo: row.repo,
+              issueNumber: row.targetNumber,
+              sessionId: agentSessionRow.sessionId,
+              state: 'active',
+              sandboxId: null,
+              turns: agentSessionRow.turns,
+              cursor: agentSessionRow.cursor,
+            },
+      issueState: 'open',
+      event: v21EventOfCommand(row.command),
+    });
+    logger.debug(
+      { action: v21SessionPlan.action, state: v21SessionPlan.state, reason: v21SessionPlan.reason },
+      'v2.1 会话状态机交叉校验（权威写入在 webhook 侧）',
+    );
+
+    // 会话状态的**执行侧落点**：调用方给了真实事件（含 issue 实时状态）就按状态机写一次。
+    // 只 UPDATE state / sandbox_id / closed_at，永不 DELETE 会话行、永不 archive（AC-23）。
+    //
+    // **互斥约定**：webhook 侧（`http/webhook.ts` 的 `applyV21SessionOnEvent`）才是权威写入点，
+    // 那里有真实 `X-GitHub-Event` + `issue.state`。这里只在 `app.executeTask()` 被直连调用且
+    // 显式传了 `sessionEvent` 时才写；队列 job 路径不传 → 不写，因此两处不会打架。
+    // 若将来改由 compose 侧统一写，必须先摘掉 webhook 侧那次调用。
+    // 失败只 warn：会话状态是资源编排，不该让一轮已经跑完的任务判死。
+    let v21SessionEventActive = false;
+    if (input.sessionEvent !== undefined) {
+      try {
+        const applied = await applyV21SessionTransition(pool, {
+          repo: row.repo,
+          issueNumber: row.targetNumber,
+          event: input.sessionEvent.event,
+          issueState: input.sessionEvent.issueState,
+          ...(input.sessionEvent.sandboxId === undefined
+            ? {}
+            : { sandboxId: input.sessionEvent.sandboxId }),
+        });
+        v21SessionEventActive = true;
+        logger.info(
+          {
+            repo: row.repo,
+            issue: row.targetNumber,
+            action: applied.transition.action,
+            state: applied.transition.state,
+            reason: applied.transition.reason,
+            rebuildSandbox: applied.rebuildSandbox,
+          },
+          'v2.1 会话状态已落库（只回收沙箱 / 复用，不删会话行、不归档）',
+        );
+      } catch (error) {
+        logger.warn(
+          { repo: row.repo, issue: row.targetNumber, err: String(error) },
+          'v2.1 会话状态写回失败（不影响本轮任务结论）',
+        );
+      }
+    }
+
     // 会话计划（E2 / §7）：agent 任务复用 / 新建 / 轮换；其余任务仍是 ephemeral。
     const agentSession = planAgentSession({
       session: agentSessionRow,
@@ -957,7 +1284,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     const channel = await racp(endpoint);
     // 轮换（§7）：**先 archive 旧会话、再新建**。archive 失败只告警（旧会话会被每日清理带走），
     // 不能因为清理动作失败就把这一轮任务判死。
-    if (agentSession.archiveSessionId !== null) {
+    // v2.1 会话状态机生效时**不 archive**：FR-3.4 明令会话没有「结束」这个状态，
+    // 归档会让重开的 issue 失去上下文。旧 v0.3 的轮次轮换只在没走 v2.1 路径时保留。
+    if (!v21SessionEventActive && agentSession.archiveSessionId !== null) {
       try {
         await channel.ops.sessionArchive({ sessionId: agentSession.archiveSessionId });
         logger.info(
@@ -1035,6 +1364,26 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           networkMode: config.worker.network,
           allowPushBranch: config.worker.allowPushBranch,
           logger,
+          // v2.1：只有 `source==='agent'` 的产出会试探 v2 契约；解析失败仍回落旧 4-intent 信封。
+          //
+          // 两种执行形态都给全：
+          //  - `execute` 钩子（控制面装配）→ runTask 优先走它，内部即 `createV21Executor`；
+          //  - 直连 `V21RuntimeConfig`（未注入钩子的部署 / 单测）→ runTask 自己用
+          //    `createV21PortFromGithub(deps.github)` + 下面这份 settings/能力装配 `executeV21()`。
+          // `settings` 用**本轮** `policy.settings`，与应用启动时构造的 `v21Executor` 不是同一份
+          // 闭包，避免「仓库配置改了但 worker 还读旧值」；`createV21Compactor` 只暴露不调用。
+          v21: {
+            ...v21RunnerHooks,
+            settings: policy.settings,
+            ...(feedback === null ? {} : { reactions: v21ReactionsOf(feedback.reactions) }),
+            ...(baseGithubClient === null
+              ? {}
+              : { openPullRequest: createV21OpenPullRequest(baseGithubClient.request) }),
+            compactionStore: createV21CompactionStore(pool),
+          },
+          // v2.1 目标现状：`label` 目标态要「当前标签 + 我们打过的标签」。
+          // 与上面的 `v21Executor` 读同一张 `bot_labels` 台账，避免两份事实源。
+          targets: createV21TargetContextPort({ pool, currentLabels }),
           onStep: (step, detail) => {
             logger.debug({ taskId: row.id, step, detail }, 'worker 步骤');
           },

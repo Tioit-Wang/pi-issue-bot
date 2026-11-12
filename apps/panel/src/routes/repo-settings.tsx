@@ -1,5 +1,6 @@
 /**
- * 仓库设置 `/repos/:repo/settings/:section`（4 分区：general / triggers / labels / limits）。
+ * 仓库设置 `/repos/:repo/settings/:section`（8 分区：v0.3 的 general / labels / triggers / limits
+ * + v2.1 的 events / comment / catalog / execution）。
  *
  * 这一页面向的问题只有一个：**「我要把某个仓库调对」**。所以信息组织是
  * 「左二级导航（每项一句话现状） + 右侧连续分区表单 + 吸底保存条」，
@@ -22,6 +23,10 @@ import { GeneralSection } from '../components/settings/general-section.tsx';
 import { LabelsSection } from '../components/settings/labels-section.tsx';
 import { LimitsSection } from '../components/settings/limits-section.tsx';
 import { TriggersSection } from '../components/settings/triggers-section.tsx';
+import { V21AgentSection } from '../components/settings/v21-agent-section.tsx';
+import { V21CatalogSection } from '../components/settings/v21-catalog-section.tsx';
+import { V21CommentSection } from '../components/settings/v21-comment-section.tsx';
+import { V21EventsSection } from '../components/settings/v21-events-section.tsx';
 import type { SettingsSectionProps } from '../components/settings/section-props.ts';
 import { IssueList } from '../components/settings/save-bar.tsx';
 import { SettingsNav, SettingsStatusBar, sectionSummary } from '../components/settings/settings-chrome.tsx';
@@ -35,8 +40,12 @@ import { NotFoundPage } from './not-found.tsx';
 /** 分区 key → 组件（顺序与左栏一致，不另建映射表）。 */
 const SECTION_COMPONENTS: Record<SettingsSectionKey, (props: SettingsSectionProps) => React.ReactElement> = {
   general: GeneralSection,
-  triggers: TriggersSection,
+  events: V21EventsSection,
+  comment: V21CommentSection,
   labels: LabelsSection,
+  catalog: V21CatalogSection,
+  execution: V21AgentSection,
+  triggers: TriggersSection,
   limits: LimitsSection,
 };
 

@@ -269,6 +269,23 @@ function createFakeGithub(): GithubWriteApi & {
     async closeIssue() {
       calls.push('closeIssue');
     },
+    async updateIssueComment(input) {
+      calls.push(`updateIssueComment:${String(input.commentId)}`);
+      return { id: input.commentId, htmlUrl: null };
+    },
+    async getIssue() {
+      calls.push('getIssue');
+      return {
+        number: 1,
+        title: '',
+        body: '',
+        state: 'open',
+        labels: [],
+        authorLogin: null,
+        updatedAt: '',
+        isPullRequest: false,
+      };
+    },
   };
 }
 

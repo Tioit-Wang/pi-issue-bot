@@ -86,6 +86,18 @@ function createApi(
     removeLabel: async () => undefined,
     createIssue: async () => ({ number: 1 }),
     closeIssue: async () => undefined,
+    // v2.1 写面新增的两个方法（本用例不走 v2 路径，给最小实现即可）
+    updateIssueComment: async (input) => ({ id: input.commentId, htmlUrl: null }),
+    getIssue: async (input) => ({
+      number: input.issueNumber,
+      title: '',
+      body: '',
+      state: 'open',
+      labels: [],
+      authorLogin: null,
+      updatedAt: '',
+      isPullRequest: false,
+    }),
   };
   return { api, posted };
 }

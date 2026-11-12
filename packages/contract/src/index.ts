@@ -10,6 +10,7 @@
  * - `schemas.ts`      名字 → schema 注册表（OpenAPI 生成的输入）
  *
  * - `trigger.ts`      触发别名 / 蒙版 / 命令解析（纯函数，webhook 与面板共用）
+ * - `settings-v21.ts` v2.1 配置段（事件开关 / 模板 / 评论闸门 / 角色 / 执行限额 / 标签目录）
  * - `skill-mentions.ts` 技能命中（`/名字`，纯函数；webhook 与面板预览共用）
  * 使用方：`apps/server/src/{http,queries,config,skills}` 与 `apps/panel`（后者只取类型）。
  * 硬约束：本包不得 import `apps/*` 或其它 workspace 包（lint 的 `no-restricted-paths` 强制）。
@@ -19,6 +20,7 @@ export * from './common.ts';
 export * from './api.ts';
 export * from './repo-config.ts';
 export * from './trigger.ts';
+export * from './settings-v21.ts';
 export * from './skill-mentions.ts';
 export * from './skills.ts';
 export * from './schemas.ts';

@@ -59,11 +59,25 @@ export function repoNavPath(repo: string, key: RepoNavKey): string {
   return `${repoWorkspacePath(repo)}${item?.suffix ?? ''}`;
 }
 
-/** 设置分区（`docs/impl-multi-repo.md` §4 W3-I；提示词分区已随 v0.3 退役，剩 4 个）。 */
+/**
+ * 设置分区（`docs/impl-multi-repo.md` §4 W3-I；提示词分区已随 v0.3 退役）。
+ *
+ * v2.1 新增四区（`docs/v21-contract.md` §1），**旧四区全部保留**：
+ * - `events` / `comment` / `catalog` / `execution` 是 v2.1 的配置面（事件开关与模板、评论触发、
+ *   标签目录、执行限额）；
+ * - `triggers` / `labels` / `limits` 是 v0.3 的存量配置面，删掉会让老配置失去编辑入口。
+ *
+ * 顺序 = 阅读顺序（不是字母序）：通用 → 新的事件面 → 旧的别名/词表/限额。
+ * 新的在前是因为它们决定「什么事件会进来」，旧的在后是因为它们只影响「进来之后怎么跑」。
+ */
 export const SETTINGS_SECTIONS = [
   { key: 'general', label: '通用' },
-  { key: 'triggers', label: '触发' },
+  { key: 'events', label: '事件与模板' },
+  { key: 'comment', label: '评论触发' },
   { key: 'labels', label: '标签' },
+  { key: 'catalog', label: '标签目录 v2.1' },
+  { key: 'execution', label: '执行与限额' },
+  { key: 'triggers', label: '触发' },
   { key: 'limits', label: '限额' },
 ] as const;
 

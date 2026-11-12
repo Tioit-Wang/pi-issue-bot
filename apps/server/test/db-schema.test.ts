@@ -17,7 +17,9 @@ import { getTableColumns, getTableName } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import {
   ALL_TABLE_NAMES,
+  agentCompactions,
   botLabels,
+  commentSlots,
   issueFeedback,
   issueStates,
   labelDecisions,
@@ -58,18 +60,24 @@ const MULTI_REPO_TABLES = ['issue_feedback', 'label_decisions', 'quota_counters'
 /** v0.3 issue agent 新增的三张表（`migrations/0006_agent.sql`）。 */
 const AGENT_TABLES = ['agent_sessions', 'agent_messages', 'agent_denials'] as const;
 
-const EXPECTED_TABLES = [...INIT_TABLES, ...MULTI_REPO_TABLES, ...AGENT_TABLES] as const;
+/** v2.1 新增的两张表（`migrations/0011_v21.sql`）：评论槽位 + 压缩记录。 */
+const V21_TABLES = ['comment_slots', 'agent_compactions'] as const;
+
+const EXPECTED_TABLES = [...INIT_TABLES, ...MULTI_REPO_TABLES, ...AGENT_TABLES, ...V21_TABLES] as const;
 
 /** `0003_multi_repo.sql`：纯新增的列与表（`ALTER TABLE ADD COLUMN` / `CREATE TABLE`）。 */
 const MIGRATION_0003 = path.join(REPO_ROOT, 'migrations', '0003_multi_repo.sql');
+
+/** `0011_v21.sql`：v2.1 的判定留痕 / 会话状态 / 槽位 / 压缩记录（同样只加列与建表）。 */
+const MIGRATION_0011 = path.join(REPO_ROOT, 'migrations', '0011_v21.sql');
 
 async function readMigration(): Promise<string> {
   return readFile(MIGRATION_FILE, 'utf8');
 }
 
-describe('db/schema：22 张表', () => {
-  it('表名清单 = tech-plan §7.2 的 16 张 + 多仓库 3 张 + issue agent 3 张（无多无少）', () => {
-    expect(ALL_TABLE_NAMES.length).toBe(22);
+describe('db/schema：24 张表', () => {
+  it('表名清单 = tech-plan §7.2 的 16 张 + 多仓库 3 张 + issue agent 3 张 + v2.1 2 张（无多无少）', () => {
+    expect(ALL_TABLE_NAMES.length).toBe(24);
     expect([...ALL_TABLE_NAMES].sort()).toEqual([...EXPECTED_TABLES].sort());
   });
 
@@ -276,5 +284,82 @@ describe('多仓库改造的增量列（db/schema ↔ 0003_multi_repo.sql）', (
     expect(sql).not.toMatch(/DROP COLUMN/i);
     // 唯一允许的 DROP 是 runtime_flags 的旧主键（改由 handle 两条 partial 唯一索引承担）
     expect(sql).toContain('DROP CONSTRAINT IF EXISTS "runtime_flags_pkey"');
+  });
+});
+
+describe('v2.1 的增量列与两张新表（db/schema ↔ 0011_v21.sql）', () => {
+  it('webhook_deliveries 带上判定留痕两列，且都允许为空（历史投递没有结论）', () => {
+    const columns = getTableColumns(webhookDeliveries);
+    expect(Object.keys(columns)).toEqual(expect.arrayContaining(['decision', 'decisionReason']));
+    // 「还没判定」与「判定为忽略」必须能区分，所以不能 NOT NULL + 默认值
+    expect(columns.decision.notNull).toBe(false);
+    expect(columns.decisionReason.notNull).toBe(false);
+  });
+
+  it('agent_sessions 带上 state / sandbox_id / closed_at（只有 active/idle，没有 ended）', () => {
+    const columns = getTableColumns(agentSessions);
+    expect(Object.keys(columns)).toEqual(
+      expect.arrayContaining(['state', 'sandboxId', 'closedAt']),
+    );
+    // 状态必须有值：NULL 会让「沙箱在不在」变成三态
+    expect(columns.state.notNull).toBe(true);
+    expect(columns.state.default).toBe('idle');
+    // 空闲态没有沙箱，所以 sandbox_id 可空
+    expect(columns.sandboxId.notNull).toBe(false);
+    expect(columns.closedAt.notNull).toBe(false);
+    expect(columns.closedAt.columnType).toBe('PgTimestamp');
+  });
+
+  it('comment_slots：槽位键就是主键，(repo, issue_number) 有索引', () => {
+    expect(getTableName(commentSlots)).toBe('comment_slots');
+    expect(Object.keys(getTableColumns(commentSlots))).toEqual(
+      expect.arrayContaining(['repo', 'issueNumber', 'slot', 'commentId', 'bodyHash', 'updatedAt']),
+    );
+    expect(getTableColumns(commentSlots).issueNumber.notNull).toBe(true);
+    expect(getTableColumns(commentSlots).slot.notNull).toBe(true);
+  });
+
+  it('agent_compactions：一次压缩一行，token 与降级标记都在', () => {
+    expect(getTableName(agentCompactions)).toBe('agent_compactions');
+    const columns = getTableColumns(agentCompactions);
+    expect(Object.keys(columns)).toEqual(
+      expect.arrayContaining([
+        'id',
+        'repo',
+        'issueNumber',
+        'sessionId',
+        'generation',
+        'beforeTokens',
+        'afterTokens',
+        'summaryChars',
+        'fallback',
+        'createdAt',
+      ]),
+    );
+    expect(columns.fallback.notNull).toBe(true);
+    expect(columns.beforeTokens.notNull).toBe(true);
+  });
+
+  it('0011_v21.sql 只加列与建表，且每条语句都能重复执行（IF NOT EXISTS）', async () => {
+    const sql = await readFile(MIGRATION_0011, 'utf8');
+    // 判定留痕
+    expect(sql).toContain('ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "decision" text');
+    expect(sql).toContain('ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "decision_reason" text');
+    // 会话状态
+    expect(sql).toContain('ALTER TABLE "agent_sessions" ADD COLUMN IF NOT EXISTS "state" text NOT NULL DEFAULT \'idle\'');
+    expect(sql).toContain('ALTER TABLE "agent_sessions" ADD COLUMN IF NOT EXISTS "sandbox_id" text');
+    expect(sql).toContain('ALTER TABLE "agent_sessions" ADD COLUMN IF NOT EXISTS "closed_at" timestamp with time zone');
+    // 两张新表 + 索引
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS "comment_slots"');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS "agent_compactions"');
+    expect(sql).toContain('"comment_slots_repo_issue_number_slot_pk"');
+    expect(sql).toContain('"comment_slots_repo_issue_idx"');
+    expect(sql).toContain('"agent_compactions_repo_issue_created_idx"');
+    // 不重写历史
+    expect(sql).not.toMatch(/DROP TABLE/i);
+    expect(sql).not.toMatch(/DROP COLUMN/i);
+    expect(sql).not.toMatch(/ALTER COLUMN/i);
+    // 语句分隔符是迁移运行器切句的依据（不要按分号切：函数体里有分号）
+    expect(sql).toContain('--> statement-breakpoint');
   });
 });

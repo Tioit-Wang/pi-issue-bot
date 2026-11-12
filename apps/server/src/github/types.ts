@@ -83,6 +83,30 @@ export type CommentRef = {
 };
 
 /**
+ * 一个 issue / PR 主贴的**只读**快照（`docs/v21-contract.md` §5 的槽位与占位符用）。
+ *
+ * 为什么要进这一层而不是让调用方自己发请求：v2.1 的槽位/占位符逻辑在
+ * `writeback/v21/`（纯逻辑、可单测），它们必须先拿到「这个 issue 现在长什么样」，
+ * 但那一层不认识 octokit。把它做成 `GithubWriteApi` 的一个方法，
+ * 端口就仍然是「唯一出口」，假实现也仍然只有一处要补。
+ *
+ * `labels` 归一化成名字字符串（GitHub 返回的是对象数组），
+ * `isPullRequest` 来自 `pull_request` 字段是否存在（REST 里 PR 就是 issue）。
+ */
+export type IssueSnapshot = {
+  readonly number: number;
+  readonly title: string;
+  readonly body: string;
+  /** `open` / `closed`（GitHub 目前只有这两个，但保留 string 以免 422 时炸掉）。 */
+  readonly state: string;
+  readonly labels: readonly string[];
+  readonly authorLogin: string | null;
+  /** ISO 时间串（`updated_at`）；取不到时是空串。 */
+  readonly updatedAt: string;
+  readonly isPullRequest: boolean;
+};
+
+/**
  * 写执行器依赖的「有副作用的最小动作集」。
  *
  * 真实实现由 `createGithubWriteApi(client)` 给出（走 REST route），测试用假实现记录调用；
@@ -119,6 +143,22 @@ export type GithubWriteApi = {
     readonly issueNumber: number;
     readonly reason?: 'completed' | 'not_planned';
   }): Promise<void>;
+  /**
+   * 改一条已存在的评论正文（`docs/v21-contract.md` §5 的槽位语义：同 issue 同槽位只保留一条）。
+   *
+   * 为什么必须有它：槽位写回的正确行为是「覆盖」而不是「再发一条」。没有 update 的话，
+   * 每次触发都会堆一条评论，`recreated` 与「同槽位一条」两个约束都无从实现。
+   *
+   * 必填而非可选：可选会让每个调用点在运行期判空，而「没有 update 能力」的执行器
+   * 实际上无法正确实现槽位语义——宁可让假实现在编译期就补齐。
+   */
+  updateIssueComment(input: {
+    readonly repo: string;
+    readonly commentId: number;
+    readonly body: string;
+  }): Promise<CommentRef>;
+  /** 读一个 issue / PR 主贴的快照（纯 GET，无副作用）。 */
+  getIssue(input: { readonly repo: string; readonly issueNumber: number }): Promise<IssueSnapshot>;
 };
 
 /**

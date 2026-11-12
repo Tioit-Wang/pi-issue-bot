@@ -622,7 +622,9 @@
                 "label",
                 "create_issue",
                 "push_branch",
-                "close_issue"
+                "close_issue",
+                "reaction.add",
+                "reaction.remove"
               ]
             }
           },
@@ -754,7 +756,9 @@
                 "label",
                 "create_issue",
                 "push_branch",
-                "close_issue"
+                "close_issue",
+                "reaction.add",
+                "reaction.remove"
               ]
             }
           },
@@ -1441,6 +1445,16 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 40
+                },
+                "managed": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "retired"
+                  ]
                 }
               },
               "required": [
@@ -1544,8 +1558,387 @@
                   "maxLength": 39,
                   "pattern": "^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$"
                 }
+              },
+              "events": {
+                "type": "object",
+                "properties": {
+                  "issues.opened": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "default": "on",
+                        "type": "string",
+                        "enum": [
+                          "on",
+                          "off",
+                          "conditional"
+                        ]
+                      },
+                      "prompt": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "only_body_changed": {
+                        "type": "boolean"
+                      },
+                      "labels": {
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 50
+                        }
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "prompt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "issues.edited": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "default": "on",
+                        "type": "string",
+                        "enum": [
+                          "on",
+                          "off",
+                          "conditional"
+                        ]
+                      },
+                      "prompt": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "only_body_changed": {
+                        "type": "boolean"
+                      },
+                      "labels": {
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 50
+                        }
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "prompt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "issues.labeled": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "default": "on",
+                        "type": "string",
+                        "enum": [
+                          "on",
+                          "off",
+                          "conditional"
+                        ]
+                      },
+                      "prompt": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "only_body_changed": {
+                        "type": "boolean"
+                      },
+                      "labels": {
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 50
+                        }
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "prompt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "issues.closed": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "default": "on",
+                        "type": "string",
+                        "enum": [
+                          "on",
+                          "off",
+                          "conditional"
+                        ]
+                      },
+                      "prompt": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "only_body_changed": {
+                        "type": "boolean"
+                      },
+                      "labels": {
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 50
+                        }
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "prompt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "issue_comment.created": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "default": "conditional",
+                        "type": "string",
+                        "enum": [
+                          "on",
+                          "off",
+                          "conditional"
+                        ]
+                      },
+                      "prompt": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "only_body_changed": {
+                        "type": "boolean"
+                      },
+                      "labels": {
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 50
+                        }
+                      },
+                      "gates": {
+                        "type": "object",
+                        "properties": {
+                          "require_mention": {
+                            "default": true,
+                            "type": "boolean"
+                          },
+                          "require_role": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "allow_roles": {
+                            "default": [],
+                            "maxItems": 50,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 40
+                            }
+                          },
+                          "ignore_bot": {
+                            "default": true,
+                            "type": "boolean"
+                          },
+                          "allow_closed": {
+                            "default": false,
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "require_mention",
+                          "require_role",
+                          "allow_roles",
+                          "ignore_bot",
+                          "allow_closed"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "prompt",
+                      "gates"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "issues.opened",
+                  "issues.edited",
+                  "issues.labeled",
+                  "issues.closed",
+                  "issue_comment.created"
+                ],
+                "additionalProperties": false
               }
             },
+            "required": [
+              "events"
+            ],
+            "additionalProperties": false
+          },
+          "comment": {
+            "type": "object",
+            "properties": {
+              "mentions": {
+                "minItems": 1,
+                "maxItems": 10,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "keyword": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50,
+                      "pattern": "^[^\\s@]+$"
+                    },
+                    "case_sensitive": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "keyword"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "roles": {
+                "default": [],
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        },
+                        "by": {
+                          "type": "string",
+                          "const": "association"
+                        },
+                        "any_of": {
+                          "minItems": 1,
+                          "maxItems": 7,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "OWNER",
+                              "MEMBER",
+                              "COLLABORATOR",
+                              "CONTRIBUTOR",
+                              "FIRST_TIME_CONTRIBUTOR",
+                              "FIRST_TIMER",
+                              "NONE"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "by",
+                        "any_of"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        },
+                        "by": {
+                          "type": "string",
+                          "const": "members"
+                        },
+                        "members": {
+                          "minItems": 1,
+                          "maxItems": 50,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                          }
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "by",
+                        "members"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            },
+            "required": [
+              "mentions",
+              "roles"
+            ],
             "additionalProperties": false
           },
           "labels": {
@@ -1589,6 +1982,16 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 40
+                    },
+                    "managed": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "retired"
+                      ]
                     }
                   },
                   "required": [
@@ -1728,7 +2131,7 @@
                 }
               },
               "on_opened": {
-                "default": "format-check",
+                "default": "issue-format",
                 "anyOf": [
                   {
                     "type": "string",
@@ -1741,7 +2144,7 @@
                 ]
               },
               "on_edited": {
-                "default": "format-check",
+                "default": "issue-format",
                 "anyOf": [
                   {
                     "type": "string",
@@ -1761,6 +2164,100 @@
                 "default": "",
                 "type": "string",
                 "maxLength": 4000
+              },
+              "system_prompt": {
+                "default": "",
+                "type": "string",
+                "maxLength": 20000
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "system_prompt": {
+                    "default": "",
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  "concurrency": {
+                    "default": 2,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "daily_quota": {
+                    "default": 100,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000
+                  },
+                  "turn_timeout_minutes": {
+                    "default": 20,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30
+                  },
+                  "actions": {
+                    "type": "object",
+                    "properties": {
+                      "create_issue": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "open_pr": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "close_issue": {
+                        "default": false,
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "create_issue",
+                      "open_pr",
+                      "close_issue"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "data_retention_days": {
+                    "default": 90,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365
+                  }
+                },
+                "required": [
+                  "system_prompt",
+                  "concurrency",
+                  "daily_quota",
+                  "turn_timeout_minutes",
+                  "actions",
+                  "data_retention_days"
+                ],
+                "additionalProperties": false
+              },
+              "actions": {
+                "type": "object",
+                "properties": {
+                  "create_issue": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "open_pr": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "close_issue": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "create_issue",
+                  "open_pr",
+                  "close_issue"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
@@ -1768,7 +2265,10 @@
               "on_opened",
               "on_edited",
               "auto_label_after_format_pass",
-              "project_prompt"
+              "project_prompt",
+              "system_prompt",
+              "limits",
+              "actions"
             ],
             "additionalProperties": false
           }
@@ -1778,6 +2278,7 @@
           "enabled",
           "dry_run",
           "triggers",
+          "comment",
           "labels",
           "skills",
           "limits",
@@ -2080,12 +2581,12 @@
         "properties": {
           "name": {
             "type": "string",
-            "pattern": "^\\/[a-z][a-z0-9-]{1,30}$"
+            "pattern": "^\\/?[a-z0-9](?:[a-z0-9]|-(?!-)){0,62}[a-z0-9]$|^\\/?[a-z0-9]$"
           },
           "description": {
             "type": "string",
             "minLength": 10,
-            "maxLength": 200
+            "maxLength": 1024
           },
           "allowed-tools": {
             "minItems": 1,
@@ -2157,13 +2658,33 @@
           },
           "requires-repo-config": {
             "type": "boolean"
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "compatibility": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "metadata": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 500
+            }
           }
         },
         "required": [
           "name",
-          "description",
-          "allowed-tools",
-          "outputs"
+          "description"
         ],
         "additionalProperties": false
       },
@@ -2639,8 +3160,279 @@
               "maxLength": 39,
               "pattern": "^@?[A-Za-z0-9][A-Za-z0-9._-]{1,38}$"
             }
+          },
+          "events": {
+            "type": "object",
+            "properties": {
+              "issues.opened": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": "on",
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off",
+                      "conditional"
+                    ]
+                  },
+                  "prompt": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "only_body_changed": {
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50
+                    }
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              },
+              "issues.edited": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": "on",
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off",
+                      "conditional"
+                    ]
+                  },
+                  "prompt": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "only_body_changed": {
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50
+                    }
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              },
+              "issues.labeled": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": "on",
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off",
+                      "conditional"
+                    ]
+                  },
+                  "prompt": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "only_body_changed": {
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50
+                    }
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              },
+              "issues.closed": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": "on",
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off",
+                      "conditional"
+                    ]
+                  },
+                  "prompt": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "only_body_changed": {
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50
+                    }
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              },
+              "issue_comment.created": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": "conditional",
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off",
+                      "conditional"
+                    ]
+                  },
+                  "prompt": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "only_body_changed": {
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50
+                    }
+                  },
+                  "gates": {
+                    "type": "object",
+                    "properties": {
+                      "require_mention": {
+                        "default": true,
+                        "type": "boolean"
+                      },
+                      "require_role": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "allow_roles": {
+                        "default": [],
+                        "maxItems": 50,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        }
+                      },
+                      "ignore_bot": {
+                        "default": true,
+                        "type": "boolean"
+                      },
+                      "allow_closed": {
+                        "default": false,
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "require_mention",
+                      "require_role",
+                      "allow_roles",
+                      "ignore_bot",
+                      "allow_closed"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "prompt",
+                  "gates"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "issues.opened",
+              "issues.edited",
+              "issues.labeled",
+              "issues.closed",
+              "issue_comment.created"
+            ],
+            "additionalProperties": false
           }
         },
+        "required": [
+          "events"
+        ],
         "additionalProperties": false
       },
       "WebhookAcceptedResponse": {
@@ -2722,7 +3514,9 @@
               "label",
               "create_issue",
               "push_branch",
-              "close_issue"
+              "close_issue",
+              "reaction.add",
+              "reaction.remove"
             ]
           },
           "status": {
@@ -3058,7 +3852,9 @@
               "label",
               "create_issue",
               "push_branch",
-              "close_issue"
+              "close_issue",
+              "reaction.add",
+              "reaction.remove"
             ]
           },
           "status": {

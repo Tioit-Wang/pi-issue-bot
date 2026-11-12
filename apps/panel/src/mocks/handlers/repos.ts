@@ -1,5 +1,6 @@
 import { http, HttpResponse, type HttpHandler } from 'msw';
 import type { RepoSettingsResponse, ReposResponse, SaveRepoSettingsRequest } from '../../lib/contract.ts';
+import { V21_DEFAULTS } from '../../../../../packages/contract/src/index.ts';
 import { MOCK_NOW } from '../fixtures.ts';
 import { requireCsrf, scenarioResponse } from './shared.ts';
 
@@ -28,17 +29,36 @@ import { requireCsrf, scenarioResponse } from './shared.ts';
  * `labels.vocabulary` 给三条**带 role** 的词条（需求 / 缺陷 / 其他 各一）：
  * 角色是分类阶段的流程分叉依据（§4.5 / Q4），空词表会让设置页的角色下拉与覆盖提示
  * 都没有行可渲染 —— mock 模式就看不到这条真实分支。三条名字互不重复（契约校验）。
+ *
+ * v2.1（`docs/v21-contract.md` §1）新增的六段**一律从契约默认值展开**（`V21_DEFAULTS`）：
+ * 面板读到的样本必须与 webhook 判定用的是同一份默认值，否则 mock 模式会演示出一套
+ * 「只有面板认」的行为。三条词条顺便覆盖 v2.1 的两个状态分支：
+ * - 「文档」`managed: false` → 目录里显示「不参与」（BR-11 的人工接管保护）；
+ * - 其余两条 `status: 'active'` + 有 `meaning` → 参与自动对齐。
  */
 const DEFAULT_SETTINGS = {
   version: 1,
   enabled: true,
   dry_run: true,
-  triggers: { aliases: ['issuebot'] },
+  triggers: { aliases: ['issuebot'], events: V21_DEFAULTS.events },
+  comment: V21_DEFAULTS.comment,
   labels: {
     vocabulary: [
-      { name: '需求', role: 'requirement', meaning: '用户希望新增或改变的行为', color: '0E8A16' },
-      { name: '缺陷', role: 'defect', meaning: '与既有行为不符的实现问题', color: 'D73A4A' },
-      { name: '文档', role: 'other', meaning: '不需要进入开发流程的改动', color: '5319E7' },
+      { name: '需求', role: 'requirement', meaning: '用户希望新增或改变的行为', color: '0E8A16', managed: true },
+      {
+        name: '缺陷',
+        role: 'defect',
+        meaning: '与既有行为不符的实现问题',
+        color: 'D73A4A',
+        managed: true,
+      },
+      {
+        name: '文档',
+        role: 'other',
+        meaning: '不需要进入开发流程的改动',
+        color: '5319E7',
+        managed: false,
+      },
     ],
     map: {},
     missing: 'warn',
@@ -54,10 +74,15 @@ const DEFAULT_SETTINGS = {
   },
   agent: {
     managers: ['alice', 'bob'],
-    on_opened: 'format-check',
-    on_edited: 'format-check',
+    // 与契约默认值一致（repo-config.ts 的 agentConfigSchema）：`format-check` 是谁都没有的
+    // 技能 id（issue #26/#27 实测），mock 里留着会演示「加载不到技能」的旧坏行为。
+    on_opened: 'issue-format',
+    on_edited: 'issue-format',
     auto_label_after_format_pass: false,
     project_prompt: '本仓库用 pnpm，跑 `pnpm -r test` 前先 `pnpm build`。',
+    system_prompt: '',
+    limits: V21_DEFAULTS.agent,
+    actions: V21_DEFAULTS.agent.actions,
   },
 } satisfies NonNullable<RepoSettingsResponse['settings']>;
 

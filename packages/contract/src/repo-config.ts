@@ -12,11 +12,28 @@
  * - `triggers` 只剩 `aliases`（`enabled` / `users` / `merge_defaults` / `remove` 删）；
  * - `skills` 收成 `project_skills` 一个布尔。
  *
+ * v2.1 的变化（`docs/v21-contract.md` §1）——**只新增，不删旧字段**：
+ * - `triggers.events`：五个事件的开关 + 提示词模板 + 附加条件（见 `settings-v21.ts`）；
+ * - `comment`：提及关键词 + 角色清单（§6.6）；
+ * - `agent.system_prompt` / `agent.limits` / `agent.actions`（§6.7 / FR-5.3）；
+ * - `labels.vocabulary[].managed` / `status`（FR-5.4 / BR-11）。
+ * 新字段全部有默认值，所以存量配置（没有这些键）照样解析成功，语义不变。
+ *
  * 为什么不像触发器别名那样在这里做归一化（`.transform()`）：注册表测试要求每个 schema 都能
  * 生成 JSON Schema（`packages/contract/test/contract.test.ts`），带 transform 的 schema 生成不了。
  */
 import { z } from 'zod';
 import { MODEL_NAME_RE } from './enums.ts';
+import {
+  SYSTEM_PROMPT_MAX_CHARS,
+  agentActionsSchema,
+  agentExecutionSchema,
+  commentConfigSchema,
+  DEFAULT_COMMENT_KEYWORD,
+  findDuplicateRoleNames,
+  findUnknownAllowRoles,
+  labelStatusSchema,
+} from './settings-v21.ts';
 import { triggersConfigSchema } from './trigger.ts';
 
 /* ── 标签 ──────────────────────────────────────────────────────────────────── */
@@ -45,6 +62,16 @@ export type LabelRole = z.infer<typeof labelRoleSchema>;
 /**
  * 标签词表的一项：面板的候选来源 + 注入提示词（替掉 `worker-deps.ts` / `builtin.ts` 里的硬编码标签集）。
  * `name` 是仓库里的真实标签名。
+ *
+ * v2.1 补两个**可选**字段（`docs/v21-contract.md` §1 / FR-5.4）：
+ * - `managed`（默认 `true`）：`false` = 不参与自动对齐（BR-11 的「不自动管理」标记）；
+ * - `status`（默认 `active`）：`retired` = GitHub 上已删除的标签，不再进入目标态。
+ *
+ * 为什么这里是 `.optional()` 而不是像 `settings-v21.ts` 的 `labelCatalogEntryV21Schema` 那样带默认值：
+ * 词表条目还有大量**存量调用点**（`skills/prompt.ts`、`workflows/normalize.ts`、测试夹具）按
+ * 「只有 name/role/几个可选字段」构造对象，给可选字段加默认值会把 `LabelVocabularyEntry` 的输出类型
+ * 变成「两个字段必填」，这些调用点会集体类型报错。判定侧统一走 `resolveManagedCatalog()`
+ * （`apps/server/src/config/v21-settings.ts`），拿到的永远是补齐后的值。
  */
 export const labelVocabularyEntrySchema = z
   .object({
@@ -59,6 +86,10 @@ export const labelVocabularyEntrySchema = z
     description: z.string().min(1).max(500).optional(),
     /** 互斥组：同一组内只保留一个标签（由应用层裁剪）。 */
     group: z.string().min(1).max(40).optional(),
+    /** v2.1：`false` = 不自动管理（不删不加，BR-11）。缺省按 `true` 解释。 */
+    managed: z.boolean().optional(),
+    /** v2.1：`retired` = 已在 GitHub 上删除。缺省按 `active` 解释。 */
+    status: labelStatusSchema.optional(),
   })
   .strict();
 export type LabelVocabularyEntry = z.infer<typeof labelVocabularyEntrySchema>;
@@ -113,10 +144,14 @@ export const limitsConfigSchema = z
 export const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/u;
 
 /**
- * `settings.agent` —— v0.3 的**唯一**项目级配置段（`docs/dev-plan-issue-agent.md` §2.6）。
+ * `settings.agent` —— issue agent 的项目级配置段（v0.3 建立，v2.1 扩）。
  *
  * 刻意**没有** `enabled`：`repos.enabled=false` 只表示「该仓库未接入」，不是 agent 开关。
- * 刻意**没有任何阈值**：轮换阈值、速率上限等都是系统常量，改常量走发布。
+ *
+ * v2.1 补三件事（§6.7 / FR-5.3）：`system_prompt`（常驻角色设定）、`limits`（并发/日配额/单轮超时/
+ * 动作开关/保留期）、`actions`（后三类写回动作的开关，默认全关）。
+ * 旧的 `on_opened` / `on_edited` / `auto_label_after_format_pass` 两套事件面**保留但不再由新路径读取**
+ * （新路径读 `triggers.events`），标记 deprecated 而不是删键：删键会让存量 `repos.settings` 直接解析失败。
  */
 export const agentConfigSchema = z
   .object({
@@ -137,8 +172,29 @@ export const agentConfigSchema = z
     on_edited: z.string().min(1).max(64).nullable().default('issue-format'),
     /** 格式检查通过后是否自动打标签（默认关：v0.3「默认只产出评论」）。 */
     auto_label_after_format_pass: z.boolean().default(false),
-    /** 项目级补充提示词（取代 v1.5 的 `prompt_versions` 版本表）。 */
+    /** 项目级补充提示词（取代 v1.5 的 `prompt_versions` 版本表）。@deprecated v2.1 用 `system_prompt`。 */
     project_prompt: z.string().max(4000).default(''),
+    /**
+     * v2.1 系统提示词（§6.7）：常驻角色设定，每次调用都带、不参与压缩；空串 = 用内置默认。
+     *
+     * 与 `limits.system_prompt` 是**同一份语义的两条路径**：面板写这里（一眼能看到），
+     * 判定/执行侧统一走 `resolveAgentExecution()`（它按「本字段非空则优先，否则读 `limits`」裁决）。
+     * 只有一个 resolver 会读这两个键，调用方不要自己挑路径。
+     */
+    system_prompt: z.string().max(SYSTEM_PROMPT_MAX_CHARS).default(''),
+    /**
+     * v2.1 执行限额（§6.7）：并发 / 日配额 / 单轮超时 / 动作开关 / 数据保留期。
+     *
+     * 整段就是 `agentExecutionSchema`（含 system_prompt 与 actions 的默认值），
+     * 这样「一份完整执行配置」在契约里只有一个类型，面板/服务端不必拼装。
+     */
+    limits: agentExecutionSchema.prefault({}),
+    /**
+     * v2.1 后三类写回动作的开关（FR-5.3，默认全关）。
+     *
+     * 与 `limits.actions` 同义；本字段非默认值时优先（见 `resolveAgentExecution()`）。
+     */
+    actions: agentActionsSchema.prefault({}),
   })
   .strict();
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
@@ -162,8 +218,18 @@ export const repoSettingsShapeSchema = z
     dry_run: z.boolean().default(true),
     /** 该仓库默认模型（`provider/model`）；技能可以覆盖，只影响成本归集。 */
     model: z.string().regex(MODEL_NAME_RE).optional(),
-    /** 触发体系：只剩别名（事件面由 agent 固定接管）。 */
+    /** 触发体系：v0.3 的别名 + v2.1 的事件面（`triggers.events`）。 */
     triggers: triggersConfigSchema.prefault({}),
+    /**
+     * v2.1 评论触发配置（§6.6）：提及关键词 + 角色清单。
+     *
+     * 默认 `mentions: [{keyword:'pi-bot'}]`：部署默认就该能 `@pi-bot` 叫起来——
+     * 关键词为空是「永远不触发」，不是一个能用的默认值。
+     */
+    comment: commentConfigSchema.prefault({
+      mentions: [{ keyword: DEFAULT_COMMENT_KEYWORD }],
+      roles: [],
+    }),
     labels: labelsConfigSchema.prefault({}),
     skills: skillsConfigSchema.prefault({}),
     limits: limitsConfigSchema.prefault({}),
@@ -194,7 +260,10 @@ function firstDuplicate(values: readonly string[]): string | null {
  * 1. `agent.managers` 非空（否则没人能 @ 动机器人）；
  * 2. `agent.managers` 内无重复 login；
  * 3. `labels.vocabulary` 内无重复 `name`（重复会让「同 role 打哪个标签」变成不确定）；
- * 4. `labels.vocabulary` 里 `role='requirement'` 与 `role='defect'` **各至少 1 个**（`other` 可缺省）。
+ * 4. `labels.vocabulary` 里 `role='requirement'` 与 `role='defect'` **各至少 1 个**（`other` 可缺省）；
+ * 5. 评论闸门的 `allow_roles` 只能引用 `comment.roles` 里已定义的角色（v2.1，§6.6）；
+ * 6. `comment.roles` 内无重复角色名；
+ * 7. `comment.mentions` 内无重复关键词（大小写不敏感）。
  */
 export const repoSettingsSchema = repoSettingsShapeSchema
   .superRefine((settings, ctx) => {
@@ -219,6 +288,39 @@ export const repoSettingsSchema = repoSettingsShapeSchema
         code: 'custom',
         path: ['labels', 'vocabulary'],
         message: `labels.vocabulary 里重复的 name：${duplicateLabel}`,
+      });
+    }
+    /**
+     * v2.1 的闸门是**引用**，角色清单是**定义**（§6.6）。同属 `repoSettings` 但分居两段，
+     * 所以这两条校验只能放在这里而不是各自的 schema 里：
+     * 5. `allow_roles` 里每个名字都必须在 `comment.roles` 里存在（写错一个字 = 那个人永远
+     *    触发不了且没有报错）；
+     * 6. `comment.roles` 内不许重名（重名会让「闸门选的是哪一个」变成不确定）；
+     * 7. `comment.mentions` 内不许重复关键词（大小写不敏感，同 GitHub 侧口径）。
+     */
+    const commentGates = settings.triggers.events['issue_comment.created'].gates;
+    const unknownRoles = findUnknownAllowRoles(settings.comment, commentGates.allow_roles);
+    if (unknownRoles.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['triggers', 'events', 'issue_comment.created', 'gates', 'allow_roles'],
+        message: `allow_roles 里有 comment.roles 未定义的角色：${unknownRoles.join('、')}（闸门只能引用已定义的角色）`,
+      });
+    }
+    const duplicateRole = findDuplicateRoleNames(settings.comment)[0];
+    if (duplicateRole !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['comment', 'roles'],
+        message: `comment.roles 里重复的角色名：${duplicateRole}`,
+      });
+    }
+    const duplicateKeyword = firstDuplicate(settings.comment.mentions.map((mention) => mention.keyword));
+    if (duplicateKeyword !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['comment', 'mentions'],
+        message: `comment.mentions 里重复的关键词：${duplicateKeyword}`,
       });
     }
     /**

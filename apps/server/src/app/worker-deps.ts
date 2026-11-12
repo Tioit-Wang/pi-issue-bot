@@ -58,12 +58,18 @@ import type {
   LabelWritebackPolicy,
   LifecycleDisposer,
   RunStore,
+  TargetContextPort,
   TaskRunnerDeps,
   TaskSourceKind,
   WorktreePort,
 } from '../worker/index.ts';
 import { ExecProxy, createLifecycleExecutor, createSandboxDocker } from '../sandbox/index.ts';
 import type { SandboxDocker, SandboxLogger } from '../sandbox/index.ts';
+import { createCompactor } from '../compact/engine.ts';
+import { createCompactionStore } from '../compact/store.ts';
+import type { CompactDeps, CompactInput, CompactResult, CompactStore } from '../compact/engine.ts';
+import type { SqlRunner as ConfigSqlRunner } from '../config/repo-config.ts';
+import { listBotLabels } from '../workflows/bot-labels.ts';
 import type { AppConfig } from './config.ts';
 
 /** worker 侧装配的错误码。 */
@@ -109,6 +115,10 @@ export function createUnavailableGithubWriteApi(reason: string): GithubWriteApi 
     removeLabel: fail,
     createIssue: fail,
     closeIssue: fail,
+    // v2.1 写面新增的两个方法同样「一调就抛」：没有令牌时它们也不该被悄悄跳过，
+    // 否则槽位更新会静默失效（dry-run 下这些方法一次都不会被调用）。
+    updateIssueComment: fail,
+    getIssue: fail,
   };
 }
 
@@ -991,5 +1001,72 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
     );
 
     return assembled.prompt;
+  };
+}
+
+/**
+ * v2.1 压缩引擎的装配层出口（FR-5.6）。
+ *
+ * 为什么在这里再导出一次：`compact/engine.ts` 属于 WS4 的冻结文件，装配层本就只从
+ * `worker-deps.ts` 取「注入给 worker 的能力」；多一层重导出让装配点不必知道引擎住在哪个目录。
+ *
+ * **本轮只暴露、不自动调用**：RACP 客户端（`packages/racp-client`）没有 session/history
+ * 与 compact 操作，请求前自动压缩还接不上。run-task 的事件流里认出 `itemType==='compaction'`
+ * 并写 `agent_compactions` 是这轮能落地的部分，真正的自动压缩留作遗留项。
+ */
+export { createCompactor, createCompactor as createV21Compactor };
+
+/* ── v2.1 执行侧装配（WS6-B：给 worker 的 `v21` 可选注入备料）───────────────── */
+
+/**
+ * `agent_compactions` 的只追加存储。
+ *
+ * `compact/store.ts::createCompactionStore()` 要的是 `config/repo-config.ts::SqlRunner`
+ * （`rows: unknown[]`），而装配层手里是 `db/pool.ts::SqlExecutor`（`values?: unknown[]`）。
+ * 这里显式转一次而不是硬 `as`：两个端口的 `values` 可变性不同，直接断言会把
+ * 参数形状的差异藏到运行期。
+ */
+export function createV21CompactionStore(pool: SqlExecutor): CompactStore {
+  const db: ConfigSqlRunner = {
+    query: async (text, values) => pool.query(text, values === undefined ? undefined : [...values]),
+  };
+  return createCompactionStore(db);
+}
+
+/**
+ * 压缩引擎的柯里化入口：装配层绑定「摘要模型 + 压缩记录存储」，调用点只关心 input。
+ *
+ * 注意这只是**把引擎挂出来**：host 侧不暴露 session/history，本轮不会在请求发出前调用它。
+ * 真正落地的只有「识别 compaction 事件 → 写一行记录」（见 `run-task.ts`）。
+ */
+export type V21Compactor = (input: CompactInput) => Promise<CompactResult>;
+
+export function createBoundV21Compactor(options: {
+  readonly pool: SqlExecutor;
+  readonly summarize: CompactDeps['summarize'];
+}): V21Compactor {
+  return createCompactor({
+    summarize: options.summarize,
+    store: createV21CompactionStore(options.pool),
+  });
+}
+
+/**
+ * `TaskRunnerDeps.targets` 的装配：`currentLabels` 由调用方给（compose 已从 `bot_labels`
+ * 读过一次，不重复查库），`botLabels` 从**同一张台账表**读，避免一次多余的 GitHub GET。
+ */
+export function createV21TargetContextPort(options: {
+  readonly pool: SqlExecutor;
+  readonly currentLabels: readonly string[];
+}): TargetContextPort {
+  const runner = toSqlRunner(options.pool);
+  return {
+    async load(input) {
+      const botLabels = await listBotLabels(runner, {
+        repo: input.repo,
+        issueNumber: input.targetNumber,
+      }).catch((): string[] => []);
+      return { currentLabels: options.currentLabels, botLabels };
+    },
   };
 }
