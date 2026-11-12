@@ -71,13 +71,27 @@ export const AGENT_MESSAGE_TEMPLATES = Object.freeze({
   mention: '{skills}{text}',
 } as const);
 
-/** 命中技能时的前置指令（需求 §1.5：「差别只有一句『先加载谁』」）。 */
-export const AGENT_SKILL_DIRECTIVE =
-  '先加载技能 {skills}（用 Skill 工具按 id 取正文），按它的要求执行；下面是我的原话。\n\n';
+/**
+ * 命中技能时的前置指令。
+ *
+ * 为什么不再写「用 Skill 工具按 id 取正文」：宿主的工具矩阵只有
+ * `Read / Write / Edit / Glob / Grep / Bash`（契约 `SKILL_ALLOWED_TOOLS`），RACP 也没有
+ * `tools/advertise` / `workspace/toolExecute` 通道 —— 那句话在真实链路里是**不存在的能力**，
+ * 模型照做只能失败（issue #26 实测：它回报「技能在 Host 上加载不到」，然后去翻退役配置）。
+ *
+ * 现在改成：命中的技能正文由装配层（`app/worker-deps.ts`）直接注入提示词，这里只留一句
+ * 「按哪个技能做」，不承诺任何取正文的动作。
+ */
+export const AGENT_SKILL_DIRECTIVE = '按技能 {skills} 的要求执行；下面是我的原话。\n\n';
 
-/** 技能目录段（只有目录，正文按需加载）。 */
+/**
+ * 技能目录段（只有目录，正文按需在**服务端**注入）。
+ *
+ * 同 `AGENT_SKILL_DIRECTIVE`：不指示模型去「加载」正文。目录的作用是让模型知道
+ * 「本项目有哪些技能」以及「没点名时该选哪个」，正文由装配层按点名结果决定注入哪一个。
+ */
 export const AGENT_SKILL_CATALOG_HEADER =
-  '可用技能（这里只有目录，正文不在上下文里；需要时用 Skill 工具按 id 加载）：';
+  '本项目可用的技能（只列目录；正文会按你选中的那一个自动提供）：';
 
 /** 正文为空时的占位（需求 X-10：不抛错，给明确占位）。 */
 export const AGENT_EMPTY_BODY = '（正文为空）';

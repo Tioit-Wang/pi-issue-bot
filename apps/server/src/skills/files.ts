@@ -24,26 +24,74 @@ const MAX_TEXT_BYTES = 5_000_000;
 /** 单个 zip 里允许的技能目录数（防「一次打包整个仓库」）。 */
 const MAX_BUNDLES_PER_ZIP = 50;
 
+/**
+ * 技能内相对路径的**唯一**规则（`SKILL.md`、`references/api.md`、`说明.md`）。
+ *
+ * 为什么必须合成一处：`zip.ts` 与 `files.ts` 曾经各有一套 —— zip 只挡控制字符/`..`/绝对路径，
+ * 允许中文、空格、长文件名；`files.ts` 另有一条 `[A-Za-z0-9._-]` 的段正则。结果是一条
+ * 上传成功的技能（附件叫 `参考 文档.md`）在面板里改任何一个字都会 400「非法文件路径」，
+ * 而报错点名的是他**没动过的文件**。
+ *
+ * 现在的口径：只要不是「逃逸路径」就允许（安全靠 `..` / 绝对路径 / 盘符 / 控制字符这几条挡），
+ * 长度按 `skillFileMetaSchema.path` 的 300 上限。中文与空格是正常文件名，不是攻击面。
+ */
+const MAX_SKILL_FILE_PATH = 300;
+/** 单段长度上限（NTFS 单段 255，留出余量；同时防「一个文件名塞爆 UI」）。 */
+const MAX_SEGMENT = 120;
+
 const sha256Hex = (input: string | Uint8Array): string =>
   createHash('sha256').update(input).digest('hex');
 
-/** 路径段：不允许空段、`.`、`..`、绝对路径与反斜杠（zip slip 在 zip.ts 已挡，这里挡手输路径）。 */
-const SEGMENT_RE = /^[A-Za-z0-9._-]{1,80}$/u;
-
 export type SkillFileTextInput = { path: string; text: string };
 
+export type SkillPathCheck =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly reason: string };
+
 /**
- * 规范化并校验一个技能内相对路径（`SKILL.md`、`references/API.md`）。
- * 返回 `null` 表示非法，调用方转 400。
+ * 校验并规范化一个技能内相对路径。**不抛异常**（调用方决定 400 还是记 warning）。
+ *
+ * 与 `normalizeEntryPath` 的关系：那个是 zip 侧的严格版（越界直接抛 `ZipError`），
+ * 这个给「手输路径 / 重建整包」用；两者接受同一批字符，差别只在错误表达方式。
  */
-export function normalizeSkillFilePath(raw: string): string | null {
-  const trimmed = raw.trim().replace(/\\/gu, '/');
-  if (trimmed === '' || trimmed.length > 300 || trimmed.startsWith('/')) return null;
-  const segments = trimmed.split('/');
-  if (segments.some((segment) => segment === '.' || segment === '..' || !SEGMENT_RE.test(segment))) {
-    return null;
+export function checkSkillPath(raw: string): SkillPathCheck {
+  for (const char of raw) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code <= 0x1f || code === 0x7f) {
+      return { ok: false, reason: '路径含控制字符' };
+    }
   }
-  return segments.join('/');
+  const slashed = raw.trim().replace(/\\/gu, '/');
+  if (slashed === '') return { ok: false, reason: '路径为空' };
+  if (slashed.length > MAX_SKILL_FILE_PATH) {
+    return { ok: false, reason: `路径超过 ${String(MAX_SKILL_FILE_PATH)} 字符` };
+  }
+  if (slashed.startsWith('/') || /^[A-Za-z]:/u.test(slashed)) {
+    return { ok: false, reason: '不接受绝对路径' };
+  }
+  const kept: string[] = [];
+  const segments = slashed.split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index] ?? '';
+    if (segment === '') {
+      if (index === segments.length - 1) continue; // 末尾目录斜杠
+      return { ok: false, reason: '路径含空段' };
+    }
+    if (segment === '.') continue;
+    if (segment === '..') return { ok: false, reason: '路径含 `..` 段' };
+    if (segment.length > MAX_SEGMENT) {
+      return { ok: false, reason: `单段超过 ${String(MAX_SEGMENT)} 字符` };
+    }
+    kept.push(segment);
+  }
+  if (kept.length === 0) return { ok: false, reason: '路径为空' };
+  return { ok: true, path: kept.join('/') };
+}
+
+/** 兼容旧调用点：返回规范化路径，非法给 `null`（等价于 `checkSkillPath` 的 `ok:false`）。 */
+export function normalizeSkillFilePath(raw: string): string | null {
+  const checked = checkSkillPath(raw);
+  return checked.ok ? checked.path : null;
 }
 
 /** 面板编辑器只渲染/编辑 markdown 与纯文本；二进制一律不可见不可改。 */
@@ -65,11 +113,14 @@ export function bundleFromFiles(files: readonly SkillFileTextInput[], warnings: 
   const seen = new Set<string>();
 
   for (const file of files) {
-    const path = normalizeSkillFilePath(file.path);
-    if (path === null) {
-      errors.push(`非法文件路径：${String(file.path).slice(0, 120)}`);
+    // 用 `checkSkillPath`（与 `zip.ts` 同一批字符规则）：以前这里是一条 `[A-Za-z0-9._-]` 段正则，
+    // 于是「zip 能上传、面板改一个字就 400」—— 而且 400 点名的是他没动过的中文附件。
+    const checked = checkSkillPath(file.path);
+    if (!checked.ok) {
+      errors.push(`非法文件路径（${checked.reason}）：${String(file.path).slice(0, 120)}`);
       continue;
     }
+    const path = checked.path;
     if (seen.has(path)) {
       errors.push(`文件路径重复：${path}`);
       continue;
@@ -197,7 +248,11 @@ export function splitZipBundles(buffer: Uint8Array): ZipBundleSplit {
     for (const entry of group) {
       const relative = root === '' ? entry.path : entry.path.slice(root.length + 1);
       const text = decodeUtf8(entry.bytes);
-      if (text === null) continue;
+      if (text === null) {
+        // 二进制附件不进包：必须出声，否则「导入后图标没了」永远查不出来（单包路径也是这么做的）。
+        warnings.push(`跳过二进制文件：${relative}`);
+        continue;
+      }
       files.push({ path: relative, text });
     }
     bundles.push(bundleFromFiles(files, warnings));

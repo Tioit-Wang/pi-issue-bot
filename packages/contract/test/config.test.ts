@@ -51,11 +51,11 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     // 触发体系只剩别名：不配就是 undefined（webhook 用部署默认）
     expect(settings.triggers.aliases).toBeUndefined();
     expect(settings.skills.project_skills).toBe(true);
-    // agent 段：没有 enabled、没有任何阈值；两个技能默认 format-check
+    // agent 段：没有 enabled、没有任何阈值；两个事件默认加载 issue-format（真实存在的技能）
     expect(settings.agent).toEqual({
       managers: ['alice'],
-      on_opened: 'format-check',
-      on_edited: 'format-check',
+      on_opened: 'issue-format',
+      on_edited: 'issue-format',
       auto_label_after_format_pass: false,
       project_prompt: '',
     });

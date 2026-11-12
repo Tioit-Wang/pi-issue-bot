@@ -120,7 +120,7 @@ describe('composeAgentMessage：人消息（mention）', () => {
     expect(composed.templateId).toBeNull();
   });
 
-  it('L-04：命中 `/format-check` → token 被删、前面加「先加载」指令', () => {
+  it('L-04：命中 `/format-check` → token 被删、前面加「按技能执行」指令', () => {
     const composed = composeAgentMessage({
       kind: 'mention',
       rawText: '@pi-bot 看看格式 /format-check',
@@ -131,7 +131,7 @@ describe('composeAgentMessage：人消息（mention）', () => {
     });
     expect(composed.skillIds).toEqual(['format-check']);
     expect(composed.text).not.toContain('/format-check');
-    expect(composed.text).toContain('先加载技能');
+    expect(composed.text).toContain('按技能');
     expect(composed.text).toContain('看看格式');
   });
 
@@ -196,7 +196,7 @@ describe('composeAgentMessage：事件消息（event）', () => {
     expect(composed.text).toContain('登录按钮没反应');
     expect(composed.text).toContain('复现步骤：点一下');
     expect(composed.text).toContain('必须有复现步骤');
-    expect(composed.text).toContain('先加载技能');
+    expect(composed.text).toContain('按技能');
     expect(composed.text).toContain(AGENT_SKILL_CATALOG_HEADER);
     // 目录里只有 id，正文不进上下文（需求 §2.3 第 1 条）
     expect(composed.text).toContain('- `format-check` — 格式检查: 检查 issue 格式');

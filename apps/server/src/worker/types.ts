@@ -284,6 +284,8 @@ export interface TaskRunInput {
   readonly headSha?: string;
   /** 拼好的提示词（技能模板 + 仓库配置 + 任务上下文）。 */
   readonly prompt: string;
+  /** 点名技能的 id（`tasks.agent_skill_ids`）；缺省 = 没点名，装配层走技能目录兜底。 */
+  readonly skillIds?: readonly string[];
   /** 第几次尝试（从 1 起）。 */
   readonly attempt?: number;
   /** 仓库开关：首周强制 dry-run（plan §11 M1）。 */
@@ -405,6 +407,13 @@ export interface TaskRunnerDeps {
     readonly basePrompt: string;
     /** 任务命令（`/issue-triage`、`@answer` …），装配层按它选技能。 */
     readonly command: string | null;
+    /**
+     * 这条任务**点名**的技能 id（不带前导 `/`，`tasks.agent_skill_ids`）。
+     *
+     * 为什么由上游给：`@bot /label-triage` 里的 token 在消息组装时已被摘掉并改写成一句指令，
+     * 装配层再从正文里找是找不到的（issue #26）。空数组 = 没有点名，交给技能目录兜底。
+     */
+    readonly skillIds?: readonly string[];
   }) => Promise<string>;
 }
 

@@ -42,16 +42,29 @@ export function bundleOfBuiltinSkill(name: string): SkillBundle | null {
   };
 }
 /**
- * 确保这个项目有那三个默认技能，返回**本次新建**的名字（已有则不算）。
+ * 确保这个项目有那三个默认技能，返回**本次新建**的名字（已有则不计）。
  *
  * 幂等：只补缺失的行；失败不抛（技能缺失不该让「打开技能页」整体失败）。
+ *
+ * 两个必须踩住的坑：
+ * 1. **来源写 `builtin`**。写成 `upload` 的话，面板的 `?source=builtin` 查询永远返回空，
+ *    三个默认技能会被当成「用户上传的副本」，只读保护与「内置副本」提示全部失效。
+ * 2. **软删/停用也算「已存在」**。存在性只看 `deleted_at is null` 的话，用户删掉一个默认技能 →
+ *    下次打开技能页它又带着默认正文回来了（用户改过的内容永远查不到）；停用同理会被绕过。
  */
 export async function seedProjectDefaults(store: SkillStore, repo: string): Promise<readonly string[]> {
-  const existing = await store.list({ repo });
-  const present = new Set(existing.map((item) => item.name));
+  // `includeDeleted` 让「删过/停用过的默认技能」留在 present 里，不再复活。
+  const existing = await store.list({ repo, includeDeleted: true });
+  const present = new Map(existing.map((item) => [item.name, item]));
   const created: string[] = [];
   for (const name of DEFAULT_PROJECT_SKILL_NAMES) {
-    if (present.has(name)) {
+    const found = present.get(name);
+    if (found !== undefined) {
+      // 已经存在：只纠正来源标记（历史行是 `upload`，会让面板把它当用户副本）。
+      // 内容一律不碰 —— 用户可能已经改过它。
+      if (found.source !== 'builtin') {
+        await store.markBuiltin({ id: found.id }).catch(() => undefined);
+      }
       continue;
     }
     const bundle = bundleOfBuiltinSkill(name);
@@ -59,7 +72,13 @@ export async function seedProjectDefaults(store: SkillStore, repo: string): Prom
       continue;
     }
     try {
-      await store.upload({ bundle, repo, enabled: true, actor: DEFAULT_SKILLS_ACTOR });
+      await store.upload({
+        bundle,
+        repo,
+        enabled: true,
+        actor: DEFAULT_SKILLS_ACTOR,
+        source: 'builtin',
+      });
       created.push(name);
     } catch {
       // 并发请求可能同时插入（唯一索引冲突）：视为已存在，不打断列表

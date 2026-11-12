@@ -1439,6 +1439,8 @@ async function submitAgentMessage(
     body: composed.text,
     // 触发人：mention = 评论作者，opened/edited = issue 作者。写回时靠它加 `@login`。
     actorLogin: plan.actorLogin,
+    // 点名的技能 id：正文里的 `/name` 已被摘掉，只有这一份结构化信息能传给装配层。
+    skillIds: composed.skillIds,
   });
   if (!saved.inserted) {
     const existingTaskId = await findTaskIdByKey(deps.db, agentTaskIdempotencyKey(key)).catch(() => null);

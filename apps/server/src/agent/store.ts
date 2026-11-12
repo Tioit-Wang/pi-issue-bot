@@ -28,6 +28,8 @@ export type AgentMessageRow = {
   readonly body: string | null;
   /** 触发人 login（人消息 = 评论作者，事件消息 = issue 作者）；老行为 `null`。 */
   readonly actorLogin: string | null;
+  /** 这条消息点名的技能 id（不带前导 `/`）：正文里的 `/name` 已被摘掉，只能靠它传递。 */
+  readonly skillIds: readonly string[];
   readonly createdAt: Date;
 };
 
@@ -90,11 +92,11 @@ export function agentTaskCommand(kind: AgentMessageKind): string {
 
 export const AGENT_SQL = {
   /** 幂等落库：返回行 = 新插入；0 行 = 同一 (repo, issue, fingerprint) 已经存在。 */
-  insertMessage: `INSERT INTO "agent_messages" ("repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "created_at", "updated_at")
-VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, now(), now())
+  insertMessage: `INSERT INTO "agent_messages" ("repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "skill_ids", "created_at", "updated_at")
+VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8::jsonb, now(), now())
 ON CONFLICT ("repo", "issue_number", "fingerprint") DO NOTHING
 RETURNING "created_at"`,
-  readMessage: `SELECT "repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "created_at"
+  readMessage: `SELECT "repo", "issue_number", "fingerprint", "kind", "status", "comment_id", "comment_body", "actor_login", "skill_ids", "created_at"
 FROM "agent_messages"
 WHERE "repo" = $1 AND "issue_number" = $2 AND "fingerprint" = $3`,
   /**
@@ -142,8 +144,8 @@ WHERE "repo" = $1 AND "issue_number" = $2 AND "fingerprint" = $3`,
   countPending: `SELECT COUNT(*)::int AS "n" FROM "agent_messages"
 WHERE "repo" = $1 AND "issue_number" = $2 AND "status" IN ('queued', 'running')`,
   /** dispatcher 建任务：`source='agent'`，幂等键按消息算。 */
-  insertTask: `INSERT INTO "tasks" ("id", "source", "repo", "target_kind", "target_number", "head_sha", "command", "actor_login", "queued_at", "idempotency_key", "status", "delivery_id", "prompt_text")
-VALUES ($1, 'agent', $2, 'issue', $3, NULL, $4, $5, now(), $6, 'queued', NULL, $7)
+  insertTask: `INSERT INTO "tasks" ("id", "source", "repo", "target_kind", "target_number", "head_sha", "command", "actor_login", "queued_at", "idempotency_key", "status", "delivery_id", "prompt_text", "agent_skill_ids")
+VALUES ($1, 'agent', $2, 'issue', $3, NULL, $4, $5, now(), $6, 'queued', NULL, $7, $8::jsonb)
 ON CONFLICT ("idempotency_key") DO NOTHING
 RETURNING "id"`,
   findTaskByIdempotencyKey: `SELECT "id" FROM "tasks" WHERE "idempotency_key" = $1`,
@@ -196,6 +198,7 @@ function messageRowOf(raw: unknown): AgentMessageRow | null {
     commentId: typeof commentId === 'number' ? commentId : null,
     body: typeof row['comment_body'] === 'string' ? row['comment_body'] : null,
     actorLogin: typeof row['actor_login'] === 'string' ? row['actor_login'] : null,
+    skillIds: toStringArray(row['skill_ids']),
     createdAt: row['created_at'] instanceof Date ? row['created_at'] : new Date(0),
   };
 }
@@ -215,6 +218,8 @@ export async function insertMessage(
     readonly body: string;
     /** 触发人 login（人消息 = 评论作者，事件消息 = issue 作者）；老调用点可以不传。 */
     readonly actorLogin?: string | null;
+    /** 点名的技能 id（不带前导 /）；与 	asks.agent_skill_ids 同源。 */
+    readonly skillIds?: readonly string[];
   },
 ): Promise<{ readonly inserted: boolean; readonly row: AgentMessageRow | null }> {
   const result = await db.query(AGENT_SQL.insertMessage, [
@@ -225,6 +230,7 @@ export async function insertMessage(
     input.commentId ?? null,
     input.body,
     input.actorLogin ?? null,
+    JSON.stringify(input.skillIds ?? []),
   ]);
   const inserted = (result.rowCount ?? result.rows.length) > 0;
   const existing = await readMessage(db, input.key);
@@ -305,6 +311,13 @@ export async function insertAgentTask(
     readonly body: string;
     /** 触发人 login：写进 `tasks.actor_login`，回复靠它加 `@login`（缺省回落 `AGENT_TASK_ACTOR`）。 */
     readonly actorLogin?: string | null;
+    /**
+     * 这条消息**点名**的技能 id（不带前导 `/`）。
+     *
+     * 必须由消息组装侧显式传下来：`@bot /label-triage` 里的 token 在组装时已被摘掉，
+     * 装配层再从正文里找只会永远找不到（issue #26）。
+     */
+    readonly skillIds?: readonly string[];
   },
 ): Promise<{ readonly taskId: string | null }> {
   const idempotencyKey = agentTaskIdempotencyKey(input.key);
@@ -316,12 +329,23 @@ export async function insertAgentTask(
     input.actorLogin ?? AGENT_TASK_ACTOR,
     idempotencyKey,
     input.body,
+    JSON.stringify(input.skillIds ?? []),
   ]);
   if ((result.rowCount ?? result.rows.length) > 0) {
     return { taskId: input.taskId };
   }
   const existing = await findTaskIdByKey(db, idempotencyKey);
   return { taskId: existing };
+}
+
+/** `jsonb` 字符串数组 → `string[]`（宽松：非数组/坏元素一律丢弃，不抛）。 */
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === 'string' && item !== '') out.push(item);
+  }
+  return out;
 }
 
 /** 按幂等键查已有任务 id（幂等命中时用来回填响应体的 `taskId`）。 */

@@ -23,7 +23,8 @@ describe('pickRequestedSkill：谁来决定用哪个技能', () => {
     expect(pickRequestedSkill('/issue-format', '/label-triage 归类一下', AVAILABLE)).toBe('/issue-format');
   });
 
-  it('从触发文本里认出已加载的技能名', () => {
+  it('结构化点名优先于触发文本', () => {
+    expect(pickRequestedSkill('agent:mention', '随便', AVAILABLE, ['label-triage'])).toBe('/label-triage');
     expect(pickRequestedSkill('agent:mention', '@bot /label-triage 麻烦归类', AVAILABLE)).toBe('/label-triage');
     expect(pickRequestedSkill('agent:mention', '/issue-format\n看看信息够不够', AVAILABLE)).toBe('/issue-format');
   });
@@ -44,11 +45,12 @@ describe('createPromptEnricher：技能真的进了提示词', () => {
       context: { repo: 'acme/widgets', targetKind: 'issue', targetNumber: 7, body },
     });
 
-  it('文本里点名了技能 → 注入该技能正文', async () => {
-    const prompt = await enricher('/label-triage 归类一下')({
+  it('结构化点名（tasks.agent_skill_ids）→ 注入该技能正文', async () => {
+    const prompt = await enricher('归类一下')({
       worktreeDir: tmpdir(),
       basePrompt: 'BASE-PROMPT',
       command: 'agent:mention',
+      skillIds: ['label-triage'],
     });
     expect(prompt).toContain('BASE-PROMPT');
     expect(prompt).toContain('# 技能 /label-triage');

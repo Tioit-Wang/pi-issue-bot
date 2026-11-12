@@ -136,23 +136,26 @@ describe('normalizeSkillFilePath', () => {
     expect(normalizeSkillFilePath(long)).toBe(long);
   });
 
-  it('非法路径一律 null：空串 / 绝对路径 / `.` `..` / 空段 / 超长 / 非法字符', () => {
+  it('非法路径一律 null：空串 / 绝对路径 / `..` / 空段 / 超长', () => {
     expect(normalizeSkillFilePath('')).toBeNull();
     expect(normalizeSkillFilePath('   ')).toBeNull();
     expect(normalizeSkillFilePath('/etc/passwd')).toBeNull();
+    expect(normalizeSkillFilePath('C:/windows/x.md')).toBeNull();
     expect(normalizeSkillFilePath('../etc/passwd')).toBeNull();
     expect(normalizeSkillFilePath('a/../b.md')).toBeNull();
-    expect(normalizeSkillFilePath('a/./b.md')).toBeNull();
     expect(normalizeSkillFilePath('a//b.md')).toBeNull();
-    expect(normalizeSkillFilePath('a/b/')).toBeNull();
     // 总长 > 300（4 × 80 + 3 = 323）
     expect(normalizeSkillFilePath([80, 80, 80, 80].map((n) => 'a'.repeat(n)).join('/'))).toBeNull();
-    // 单段 > 80
-    expect(normalizeSkillFilePath('a'.repeat(81))).toBeNull();
-    // 段内非法字符（空格、`?`、`:`）
-    expect(normalizeSkillFilePath('a b/c.md')).toBeNull();
-    expect(normalizeSkillFilePath('a/b?.md')).toBeNull();
-    expect(normalizeSkillFilePath('a/b:c.md')).toBeNull();
+    // 单段 > 120
+    expect(normalizeSkillFilePath('a'.repeat(121))).toBeNull();
+  });
+
+  it('中文 / 空格是正常文件名（与 zip 侧同一口径）', () => {
+    // 旧实现在这里返回 null：`[A-Za-z0-9._-]` 段正则把中文与空格判非法，
+    // 于是「zip 能上传、面板改一个字就 400」，而报错点名的是他没动过的附件。
+    expect(normalizeSkillFilePath('参考 文档.md')).toBe('参考 文档.md');
+    expect(normalizeSkillFilePath('references/设计 说明.md')).toBe('references/设计 说明.md');
+    expect(normalizeSkillFilePath('a/./b.md')).toBe('a/b.md');
   });
 });
 

@@ -189,15 +189,18 @@ function builtinSeed(input: {
   description: string;
   body: string;
   bytes: number;
+  /** 内置副本所属的项目：技能只有项目级，不再有「全局内置技能」。 */
+  repo: string;
 }): SkillDetail {
   const files = [fileMeta('SKILL.md', input.bytes)];
   return {
     id: input.id,
     name: input.name,
     description: input.description,
-    // 内置技能不归属任何项目（`repo: null`），所有项目都能看到它们
+    // 内置技能是**每个项目各自的副本**（播种而来）：`repo` 就是当前项目，`source='builtin'`。
+    // 以前这里造的是 `repo: null` 的「全局内置技能」，与「技能只有项目级」的模型相悖。
     scope: 'repo',
-    repo: null,
+    repo: input.repo,
     source: 'builtin',
     enabled: true,
     currentVersion: 1,
@@ -282,6 +285,7 @@ export function resetSkillsMock(): void {
       description: '把 issue 正文整理成固定结构：现象、复现步骤、期望行为、环境。',
       body: ISSUE_FORMAT_BODY,
       bytes: 1_840,
+      repo: 'acme/widgets',
     }),
     builtinSeed({
       id: 'sk-builtin-label-triage',
@@ -289,6 +293,7 @@ export function resetSkillsMock(): void {
       description: '按标签词表给 issue 打标签；与人工标签冲突时保留人工的那一个。',
       body: LABEL_TRIAGE_BODY,
       bytes: 1_620,
+      repo: 'acme/widgets',
     }),
     builtinSeed({
       id: 'sk-builtin-issue-analysis',
@@ -296,6 +301,7 @@ export function resetSkillsMock(): void {
       description: '读代码与日志给出一句话结论，不猜实现细节。',
       body: ISSUE_ANALYSIS_BODY,
       bytes: 2_100,
+      repo: 'acme/widgets',
     }),
   ];
 
@@ -306,6 +312,7 @@ export function resetSkillsMock(): void {
       description: '按合并日志生成发布说明草稿，只写用户可见的变更。',
       body: RELEASE_NOTES_BODY,
       bytes: 1_480,
+      repo: 'acme/widgets',
     }),
     scope: 'repo',
     repo: 'acme/widgets',
@@ -356,7 +363,7 @@ export function listSkillsMock(params?: URLSearchParams): SkillsResponse {
     .map((record) => toListItem(record.detail))
     .filter((item) => (source === '' ? true : item.source === source))
     .filter((item) => (enabled === '' ? true : String(item.enabled) === enabled))
-    .filter((item) => (repo === '' ? true : item.repo === repo || item.source === 'builtin'))
+    .filter((item) => repo === '' || item.repo === repo)
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return { generatedAt: new Date().toISOString(), skills };
@@ -1009,8 +1016,8 @@ export const skillsHandlers: HttpHandler[] = [
     const record = skillDetailMock(id);
     if (record === null) return errorResponse(404, 'not-found', '技能不存在');
 
-    // `?hard=1` 只对面板上传的技能有效（内置技能不能硬删，spec §6）
-    if (new URL(request.url).searchParams.get('hard') === '1' && record.source !== 'upload') {
+    // ?hard=true 只对面板上传的技能有效（内置副本不能硬删：会被重新播种）
+    if (new URL(request.url).searchParams.get('hard') === 'true' && record.source !== 'upload') {
       return errorResponse(409, 'conflict', '内置技能不能硬删（先停用）');
     }
 

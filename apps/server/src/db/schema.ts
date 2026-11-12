@@ -200,6 +200,13 @@ export const tasks = pgTable(
      * 默认 `[]` 而不是 NULL：读侧不必分支判断，`jsonb_array_elements` 也只在数组上成立。
      */
     targetSupplement: jsonb('target_supplement').notNull().default([]),
+    /**
+     * 这条 agent 任务**点名**的技能 id（`["label-triage"]`，不带前导 `/`）。
+     *
+     * 为什么落库：消息组装时 `@bot /label-triage` 里的 token 已被摘掉并改写成一句指令，
+     * 装配层从正文里再也找不到它（issue #26）。
+     */
+    agentSkillIds: jsonb('agent_skill_ids').notNull().default([]),
     /** 命令名：`/review-pr` 等；固定流水线的阶段任务记 `pipeline:format|classify|notice`（§4.6） */
     command: text('command').notNull(),
     /** 触发者 GitHub login；`/retry` 与 webhook 重投靠它区分（§7.2） */

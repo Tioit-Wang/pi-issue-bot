@@ -204,6 +204,14 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
         code: error.code,
       });
     }
+    // 唯一索引/主键冲突：并发保存或并发导入同名技能时会出现。翻成 409 而不是裸 500 ——
+    // 「另一个保存刚刚抢先落了一个版本」是可理解的结果，用户可以刷新后重试，而不是以为系统挂了。
+    const code = (error as { code?: unknown }).code;
+    if (code === '23505' || code === '23514' || code === '23503') {
+      throw httpError('conflict', '并发写入冲突：请刷新后重试（同一技能正在被另一个请求保存）', {
+        pgCode: code,
+      });
+    }
     throw error;
   };
 
@@ -324,10 +332,7 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
       const existing = await deps.store.get(request.params.id);
       if (existing === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
       const repo = existing.repo;
-      if (repo === null) {
-        // 全局技能已移除；老行（repo 为空）不能作为「新版本」的目标。
-        throw httpError('conflict', `技能缺少所属项目（repo）：${request.params.id}`);
-      }
+      // `skills.repo` 已是 NOT NULL（migration 0008），不需要再判空。
       const bundle = bundleOf(request.body);
       if (bundle.name !== existing.name) {
         throw httpError(
@@ -450,15 +455,35 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
         // 走错误处理中间件映射成 400（这条路只声明了 200，不能 reply.status(400)）
         throw httpError('bad-request', `SKILL_FRONTMATTER_INVALID：${parsed.detail}`);
       }
+      const detail = await deps.store.get(request.params.id);
+      if (detail === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+      if (parsed.name !== null && parsed.name !== detail.name) {
+        throw httpError(
+          'bad-request',
+          `不允许在编辑器里改技能名（当前 ${detail.name}，收到 ${parsed.name}）：请新建技能后再删旧的`,
+        );
+      }
+      const current = await deps.store.fileTexts({ id: request.params.id });
+      if (current === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+      // 整份 SKILL.md 覆盖：必须走「重建整包 + upload」，不能走 `store.patch({body})` ——
+      // patch 明确只换正文、保留原 frontmatter 原文，于是改 `allowed-tools` / `timeout` /
+      // `outputs` 的人看到「保存成功」，运行时却仍按旧配置（磁盘上的 SKILL.md 也没变）。
+      const bundle = bundleFromFiles(replaceFileIn(current, 'SKILL.md', request.body.text));
+      if (!bundle.validation.ok) {
+        throw httpError('bad-request', `技能校验不通过：${bundle.validation.errors.join('；')}`, {
+          errors: bundle.validation.errors,
+        });
+      }
       try {
-        const detail = await deps.store.patch({
-          id: request.params.id,
-          // `description` 列只用于列表展示（契约 200 上限），正文才是真来源
-          patch: { body: parsed.body, description: parsed.frontmatter.description.slice(0, 200) },
+        await deps.store.upload({
+          bundle,
+          repo: detail.repo,
+          enabled: detail.enabled,
           actor: actorOf(request),
         });
-        if (detail === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
-        return detail;
+        const next = await deps.store.get(request.params.id);
+        if (next === null) throw httpError('not-found', `技能不存在：${request.params.id}`);
+        return next;
       } catch (error) {
         return mapStoreError(error);
       }
@@ -530,9 +555,6 @@ export function registerSkillRoutes(app: ZodFastify, deps: SkillApiDeps): void {
         );
       }
       const repo = detail.repo;
-      if (repo === null) {
-        throw httpError('conflict', `技能缺少所属项目（repo）：${request.params.id}`);
-      }
       try {
         const result = await deps.store.upload({
           bundle,

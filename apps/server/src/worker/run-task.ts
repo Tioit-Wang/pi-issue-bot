@@ -387,6 +387,8 @@ export async function runTask(input: TaskRunInput, deps: TaskRunnerDeps): Promis
           worktreeDir: worktreeRoot,
           basePrompt: input.prompt,
           command: input.command,
+          // 点名的技能：任务行上的结构化字段（正文里的 `/name` 已在组装期被摘掉）。
+          ...(input.skillIds === undefined ? {} : { skillIds: input.skillIds }),
         });
         if (typeof enriched === 'string' && enriched.length > 0) {
           prompt = enriched;

@@ -125,10 +125,16 @@ export const agentConfigSchema = z
      * schema 层只保证形状；**非空**与**不重复**由 `repoSettingsSchema` 的 superRefine 无条件校验。
      */
     managers: z.array(z.string().regex(LOGIN_RE)).max(20).default([]),
-    /** `issues.opened` 要加载的技能 id；`null` = 不投递（0 任务）。 */
-    on_opened: z.string().min(1).max(64).nullable().default('format-check'),
+    /**
+     * `issues.opened` 要加载的技能 id；`null` = 不投递（0 任务）。
+     *
+     * 必须是一个**真实存在**的技能 id，且按本仓口径写成 `issue-format`（不带前导 `/`，
+     * 存储与目录 id 都这么存）。以前默认值是 `format-check` —— 一个谁都没有的技能名，
+     * 于是每个新 issue 都在指示模型「先加载 format-check」，模型只能回报「加载不到」（issue #26）。
+     */
+    on_opened: z.string().min(1).max(64).nullable().default('issue-format'),
     /** `issues.edited` 要加载的技能 id；`null` = 不投递。 */
-    on_edited: z.string().min(1).max(64).nullable().default('format-check'),
+    on_edited: z.string().min(1).max(64).nullable().default('issue-format'),
     /** 格式检查通过后是否自动打标签（默认关：v0.3「默认只产出评论」）。 */
     auto_label_after_format_pass: z.boolean().default(false),
     /** 项目级补充提示词（取代 v1.5 的 `prompt_versions` 版本表）。 */

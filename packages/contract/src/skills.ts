@@ -229,12 +229,13 @@ export const skillListItemSchema = z
   .object({
     id: z.string().min(1).max(64),
     /** 规范名：`/xxx`（入库归一，见 spec D2）。 */
-    name: z.string().min(2).max(33),
+    name: z.string().min(2).max(65),
     description: z.string().min(1).max(200),
     /** 恒为 `'repo'`：全局技能已移除（API 不再接受 `scope` 参数）。 */
     scope: skillScopeSchema,
     /** 技能所属项目 `owner/name`（库列 NOT NULL；全局技能已移除）。 */
-    repo: z.string().max(200).nullable(),
+    /** 技能所属项目 `owner/name`（库列 NOT NULL；全局技能已移除，因此**永不为 null**）。 */
+    repo: z.string().min(3).max(200),
     source: skillSourceSchema,
     enabled: z.boolean(),
     currentVersion: z.number().int().min(1),

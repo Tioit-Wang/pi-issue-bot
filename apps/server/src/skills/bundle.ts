@@ -344,7 +344,7 @@ function describeFrontmatterIssue(issue: string): string {
         ? 'name 使用了保留名（/retry、/help、/skills 不可用）'
         : `name 不合规（要求 ${SKILL_NAME_RE}）`;
     case 'description':
-      return 'description 不合规（10–200 字符、单行）';
+      return 'description 不合规（10–1024 字符；多行会被折叠成单行）';
     case 'allowed-tools':
       return 'allowed-tools 不合规（非空，且只能是 Read/Write/Edit/Glob/Grep/Bash）';
     case 'outputs':

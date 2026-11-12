@@ -21,8 +21,6 @@ import {
 } from '../src/skills/prompt.ts';
 import type { SkillPromptContext } from '../src/skills/prompt.ts';
 
-const registry = createSkillRegistry();
-
 /**
  * 渲染期契约测试需要一个**带占位符**的技能。
  *

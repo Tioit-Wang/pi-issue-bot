@@ -160,11 +160,23 @@ export interface TaskJobRow {
   readonly targetBody: string | null;
   /** 补充评论段（最近 3 条、每条 ≤1000）：`{{body}}` 里**置顶**在 issue 正文之前（§16.2）。 */
   readonly targetSupplement: readonly TaskSupplementRow[];
+  /** 点名技能的 id（`tasks.agent_skill_ids`，已去前导 `/`）；空数组 = 没点名。 */
+  readonly skillIds: readonly string[];
+}
+
+/** `jsonb` 字符串数组 → `string[]`（宽松：非数组/坏元素丢弃，不抛）。 */
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === 'string' && item !== '') out.push(item);
+  }
+  return out;
 }
 
 const READ_TASK_SQL = `select "id", "command", "repo", "target_kind", "target_number", "head_sha", "attempt",
   "prompt_text", "actor_login", "idempotency_key", "source",
-  "target_title", "target_body", "target_supplement"
+  "target_title", "target_body", "target_supplement", "agent_skill_ids"
 from "tasks" where "id" = $1`;
 
 /**
@@ -239,6 +251,7 @@ export async function readTaskRow(db: SqlExecutor, taskId: string): Promise<Task
     targetTitle: typeof row['target_title'] === 'string' ? row['target_title'] : null,
     targetBody: typeof row['target_body'] === 'string' ? row['target_body'] : null,
     targetSupplement: toSupplements(row['target_supplement']),
+    skillIds: toStringArray(row['agent_skill_ids']),
   };
 }
 
@@ -631,12 +644,16 @@ export interface PromptEnricherOptions {
   /** 技能的仓库配置快照（`readRepoPolicy().config`）；只用于 `requires-repo-config` 的判定。 */
   readonly config?: SkillRepoConfig | null;
   /**
-   * 技能渲染上下文（`{{repo}}` / `{{target}}` / `{{title}}` …）。
+   * 技能渲染上下文（仓库 / 目标编号 / 标题 / 正文 / 当前标签 / base·head）。
    *
    * 为什么由调用方给：这些值来自**任务行**（`tasks` 表），是装配层的知识；
-   * 而 enricher 的入参只有 worktree/basePrompt/command（`worker/types.ts` 的约定）。
+   * 而 enricher 的入参只有 worktree/basePrompt/command/skillIds（`worker/types.ts` 的约定）。
+   *
+   * `triggerText` 单独放：它是**触发这条任务的那段话**（人消息 = 评论，事件 = issue 正文快照），
+   * 与 `body`（issue 正文）不是一回事 —— 早年把两者混成一个字段，导致 `/issue-format`
+   * 之类的技能照着「触发评论」去判 issue 正文，结论自然不对。
    */
-  readonly context: SkillPromptContext;
+  readonly context: SkillPromptContext & { readonly triggerText?: string };
   /**
    * 额外技能文件：M2 面板上传的技能（zip → store）解出来之后塞这里，
    * 与本轮仓库技能走**同一条**装配（`createSkillRegistry` 的 `repoSkills`）。
@@ -828,25 +845,42 @@ export function createRepoAgentsMdLoader(
  * 唯一的抛错来源是 `assemblePrompt`（纯函数，实际不会抛）。
  */
 /**
- * 从「命令 / 触发文本 / 无」里挑出一个技能名。
+/**
+ * 决定这一轮注入哪个技能。
  *
- * 优先级：
- * 1. `command` 本身就是 `/xxx`（显式命令任务）；
- * 2. 触发文本（issue 正文或评论正文）里出现本仓库**已加载**的技能名 —— 这是 `agent:mention` 的主路径；
- * 3. 都没有 → `null`（交给上层注入技能目录，由模型按 `description` 自选）。
- *
- * 只认已加载的名字：文本里出现 `/usr/bin` 这种伪命令不该被当成技能。
+ * 优先级（越靠前越可信）：
+ * 1. **结构化点名** `skillIds`（`tasks.agent_skill_ids`）—— 唯一可靠的来源：`@bot /label-triage`
+ *    里的 token 在消息组装阶段就被摘掉并改写成一句指令（`agent/message.ts`），正文里根本
+ *    不再出现 `/label-triage`，所以「去文本里找」这条路注定失效（issue #26 的根因）。
+ * 2. `command` 本身就是 `/xxx`（显式命令任务，如 `/review-pr`）。
+ * 3. 触发文本里出现本仓库**已加载**的 `/name`：只为兼容「没走 agent_messages 的老调用点」
+ *    与人工构造的 prompt；命中要求名字在已加载集合里，`/usr/bin` 这类不会被误认。
+ * 4. 都没有 → `null`，交给上层注入技能目录，由模型按 `description` 自选。
  */
 export function pickRequestedSkill(
   command: string | null,
   messageText: string,
   available: readonly { readonly name: string }[],
+  skillIds: readonly string[] = [],
 ): string | null {
   const known = new Set(available.map((item) => item.name));
+  const canonical = (raw: string): string => {
+    const trimmed = raw.trim().toLowerCase().replace(/^\//u, '');
+    return trimmed === '' ? '' : `/${trimmed}`;
+  };
+  // 1) 结构化点名：取第一个在本仓库真正加载到的（点名了但没加载到的由上层 warn）
+  for (const id of skillIds) {
+    const name = canonical(id);
+    if (name !== '' && known.has(name)) {
+      return name;
+    }
+  }
+  // 2) 显式命令
   const fromCommand = command === null ? null : /^(\/[a-z][a-z0-9-]{0,62})\b/u.exec(command.trim())?.[1] ?? null;
   if (fromCommand !== null) {
     return fromCommand;
   }
+  // 3) 触发文本（老路径兜底）
   for (const match of messageText.matchAll(/(?:^|[\s(`])(\/[a-z][a-z0-9-]{0,62})\b/gu)) {
     const name = match[1];
     if (name !== undefined && known.has(name)) {
@@ -868,12 +902,13 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
       config: options.config ?? null,
       ...(logger === undefined ? {} : { logger }),
     });
-    // 技能选择：显式命令 → 触发文本里的 `/name` → 都没有则注入技能目录（不静默）。
+    // 技能选择：结构化点名 → 显式命令 → 触发文本兜底 → 技能目录（不静默）。
     const availableSkills = registry.summaries();
     const requestedSkill = pickRequestedSkill(
       input.command,
-      options.context.body ?? '',
+      options.context.triggerText ?? '',
       availableSkills,
+      input.skillIds ?? [],
     );
     const skill = requestedSkill === null ? undefined : registry.resolve(requestedSkill);
     if (requestedSkill !== null && skill === undefined) {
@@ -881,6 +916,7 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
         {
           repo: options.context.repo,
           requested: requestedSkill,
+          nominated: input.skillIds ?? [],
           available: availableSkills.map((item) => item.name),
         },
         '指定的技能不可用：已退回技能目录（本轮不注入该技能正文）',

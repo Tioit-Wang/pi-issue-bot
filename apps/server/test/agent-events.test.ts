@@ -63,7 +63,7 @@ async function taskCount(): Promise<number> {
 }
 
 describe('E-01 / E-10：issues.opened', () => {
-  it('非 bot 新 issue → 1 条 event 消息 + 1 个任务，模板点名 format-check', async () => {
+  it('非 bot 新 issue → 1 条 event 消息 + 1 个任务，模板点名配置的技能', async () => {
     const h = agentHarness(db, { skills: ['/format-check'] });
     const outcome = await deliver(h.deps, 'issues', issuesPayload({ action: 'opened' }));
 
@@ -73,7 +73,7 @@ describe('E-01 / E-10：issues.opened', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.['kind']).toBe('event');
     expect(String(rows[0]?.['comment_body'])).toContain('登录按钮没反应');
-    expect(String(rows[0]?.['comment_body'])).toContain('先加载技能');
+    expect(String(rows[0]?.['comment_body'])).toContain('按技能');
     expect(String(rows[0]?.['comment_body'])).toContain('format-check');
     expect(await taskCount()).toBe(1);
     expect(h.sent).toHaveLength(1);

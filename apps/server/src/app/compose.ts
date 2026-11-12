@@ -856,6 +856,9 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     const answerQuestion = isAgentTask ? null : (row.promptText ?? decodeFreeQuestion(row.command));
     // 面板上传技能的当前快照（仓库作用域优先，见 `SkillStore.activeSkillFiles`）。
     const uploadedSkills = await skillStore.activeSkillFiles(row.repo);
+    // 目标上当前生效的标签：技能正文要求「与『当前标签』比对」，没有它模型会重复打标。
+    // 取自 `bot_labels`（我们自己的记账表，已 `applied` 未 `removed` 的那些）。
+    const currentLabels = await readAppliedLabels(pool, row.repo, row.targetNumber);
 
     // ── 运行时 / 会话（v0.3：一个 issue 一个持久会话）──────────────────────────
     const runtimeMode = 'sandboxed' as const;
@@ -938,9 +941,14 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
         targetKind: row.targetKind,
         targetNumber: row.targetNumber,
         ...(row.headSha === null ? {} : { headSha: row.headSha }),
-        // 触发这条任务的原话（agent 任务是 comment_body 渲染结果，其余是 issue 正文）。
-        // 技能正文会引用 `## 任务上下文` 的「正文」段；不给它这段就是空的，技能等于没说。
-        ...(agentMessageBody === null || agentMessageBody === '' ? {} : { body: agentMessageBody }),
+        // 事实层三件套：标题 / issue 正文 / 当前标签。
+        // 以前只给了 `body`（且混用成「触发评论」），于是技能里写的「读 `## 任务上下文` 的
+        // issue 正文」「与『当前标签』比对」在真实运行里全是空的。
+        ...(row.targetTitle === null ? {} : { title: row.targetTitle }),
+        ...(row.targetBody === null ? {} : { body: row.targetBody }),
+        ...(currentLabels.length === 0 ? {} : { labels: currentLabels }),
+        // 触发这一轮的原话：agent 任务 = 那条评论，其余 = issue 正文本身（渲染时会去重）。
+        ...(agentMessageBody === null || agentMessageBody === '' ? {} : { triggerText: agentMessageBody }),
       },
       extraSkillFiles: uploadedSkills,
     });
@@ -992,6 +1000,8 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           ...(row.source === null ? {} : { source: row.source }),
           prompt,
           runtimeMode,
+          // 点名的技能：装配层靠它决定注入哪份正文（正文里的 `/name` 已在消息组装期被摘掉）。
+          ...(row.skillIds.length === 0 ? {} : { skillIds: row.skillIds }),
           ...(session === undefined ? {} : { session }),
           attempt,
           dryRun,
@@ -1246,4 +1256,33 @@ function portOf(listenAddress: string, server: FastifyInstance): number {
   // 兜底：`fastify.listen()` 的字符串形态是 `http://host:port`
   const matched = /:(\d+)$/u.exec(listenAddress);
   return matched === null ? 0 : Number(matched[1]);
+}
+
+/**
+ * 目标上当前生效的标签（`bot_labels` 里未 `removed` 的那些）。
+ *
+ * 为什么读自己的记账表而不是打一次 GitHub API：这是每次装配都要做的事，多一次远程调用
+ * 会让「发一条评论」变成「两次外部请求」；`bot_labels` 就是我们写回后的权威副本。
+ * 读失败不阻塞装配（标签只是提示词里的一个事实，不是判定依据）。
+ */
+async function readAppliedLabels(
+  db: SqlExecutor,
+  repo: string,
+  issueNumber: number,
+): Promise<string[]> {
+  try {
+    const result = await db.query(
+      `select distinct "label" from "bot_labels"
+       where "repo" = $1 and "issue_number" = $2 and "applied_at" is not null and "removed_at" is null
+       order by "label" asc`,
+      [repo, issueNumber],
+    );
+    const out: string[] = [];
+    for (const row of result.rows as { label?: unknown }[]) {
+      if (typeof row.label === 'string' && row.label !== '') out.push(row.label);
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }

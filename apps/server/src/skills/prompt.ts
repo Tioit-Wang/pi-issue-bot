@@ -53,6 +53,13 @@ export type SkillPromptContext = {
   readonly body?: string | null;
   readonly labels?: readonly string[];
   readonly headSha?: string | null;
+  /**
+   * **触发这条任务的那段话**（人消息 = 评论正文，事件 = issue 正文快照）。
+   *
+   * 与 `body` 分开：`body` 是「issue 正文」，`triggerText` 是「人这次说的」。两者混用会让
+   * `/issue-format` 这类判「issue 信息是否完整」的技能去读一条无关的评论。
+   */
+  readonly triggerText?: string | null;
   /** PR 的 base sha（`/review-pr` 的 diff 起点）。 */
   readonly baseSha?: string | null;
   /**
@@ -373,7 +380,12 @@ export function renderSkillPrompt(input: RenderSkillPromptInput): RenderSkillPro
   acc.truncated = acc.truncated || title.truncated || body.truncated;
 
   const target = `${context.targetKind}#${context.targetNumber}`;
+  const noun = context.targetKind === 'pr' ? 'PR' : 'issue';
   const labelsText = formatLabels(context.labels);
+  const triggerText =
+    context.triggerText === undefined || context.triggerText === null
+      ? null
+      : sanitizeUntrustedText(context.triggerText, PROMPT_LIMITS.body).text;
 
   const safeInputValues = new Map<string, string>();
   for (const [key, value] of Object.entries(inputs)) {
@@ -464,8 +476,12 @@ export function renderSkillPrompt(input: RenderSkillPromptInput): RenderSkillPro
     lines.push(`- base 提交：${context.baseSha}`);
   }
   lines.push(`- 参数：${formatInputs(Object.fromEntries(safeInputValues))}`);
-  lines.push('', `### ${context.targetKind === 'pr' ? 'PR' : 'issue'} 标题`, '', fenceUntrusted('title', title.text));
-  lines.push('', `### ${context.targetKind === 'pr' ? 'PR' : 'issue'} 正文`, '', fenceUntrusted('body', body.text));
+  lines.push('', `### ${noun} 标题`, '', fenceUntrusted('title', title.text));
+  lines.push('', `### ${noun} 正文（issue 原文，判信息是否完整就看这段）`, '', fenceUntrusted('body', body.text));
+  // 触发这条任务的那段话：人消息是评论，事件消息与 issue 正文同源（此时不重复渲染）。
+  if (triggerText !== null && triggerText.trim() !== '' && triggerText !== body.text) {
+    lines.push('', '### 触发这一轮的原话（评论 / 指令，不等于 issue 正文）', '', fenceUntrusted('trigger', triggerText));
+  }
 
   if (input.includeEnvelopeInstruction !== false) {
     lines.push('', envelopeInstruction(skill));

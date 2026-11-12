@@ -102,6 +102,8 @@ export async function dispatchNextForIssue(
     body: message.body ?? '',
     // 真实提问人：写回时靠它加 `@login`（不传就回落成 `agent`，即旧行为）
     actorLogin: message.actorLogin,
+    // 点名的技能 id（见 `tasks.agent_skill_ids`）：正文里的 `/name` 已被摘掉，只能靠它传递。
+    skillIds: message.skillIds,
   });
   const taskId = inserted.taskId;
   if (taskId === null) {

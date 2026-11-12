@@ -18,7 +18,13 @@
  * 已知边界（写在这里而不是留在人脑子里）：
  *  - `patch({description})` 只改库里的 `skills.description`，**不回写磁盘 SKILL.md 的
  *    frontmatter**（本包不引 yaml 库，回写 YAML 没有可靠做法）。正文与提示词不受影响。
- *  - 本表只管理**面板上传**的技能；内置与仓库文件技能是只读的，仍由 `/api/system` 展示。
+ *    要连 frontmatter 一起改（`allowed-tools` / `timeout` / `outputs`），走
+ *    `PUT /api/skills/:id` 或 `PUT /api/skills/:id/files`：它们是「重建整包 + upload」，
+ *    不经过 `patch`。
+ *  - 本表里 `source` 现在真的有三态：`builtin`（项目基线技能的副本，播种而来）、
+ *    `upload`（面板上传/编辑）、`repo-file`（保留位，当前无写入路径）。
+ *    `builtin` 只是**来源标记**，内容仍可编辑（编辑后仍是 `builtin`）；硬删会被拦下，
+ *    因为播种会把它带回来。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -72,6 +78,13 @@ export type SkillListFilter = {
   readonly repo: string;
   readonly enabled?: boolean;
   readonly source?: SkillSourceKind;
+  /**
+   * 把软删（`deleted_at`）的行也算进来。
+   *
+   * 只给播种用：默认技能被用户删掉之后，下一次打开技能页不能再把它播种回来 ——
+   * 判定「曾经存在过」必须看得见墓碑行。面板列表永远不传它。
+   */
+  readonly includeDeleted?: boolean;
 };
 
 export type SkillUploadInput = {
@@ -80,6 +93,14 @@ export type SkillUploadInput = {
   readonly repo: string;
   readonly enabled: boolean;
   readonly actor: string | null;
+  /**
+   * 技能来源。缺省 `'upload'`（面板上传）。
+   *
+   * 三态必须真的写进去，否则「内置技能只读」「面板按 source 过滤」「`overriddenBy`」全是死的：
+   * 播种的默认技能曾经也写成 `'upload'`，于是面板的 `?source=builtin` 查询永远返回空，
+   * 三个默认技能被当成用户上传的副本。
+   */
+  readonly source?: SkillSourceKind;
 };
 
 export type SkillUploadResult = {
@@ -101,8 +122,15 @@ export interface SkillStore {
   patch(input: { id: string; patch: SkillPatch; actor: string | null }): Promise<SkillDetail | null>;
   remove(input: { id: string; hard: boolean; actor: string | null }): Promise<boolean>;
   rollback(input: { id: string; version: number; actor: string | null }): Promise<SkillVersion | null>;
-    /** 见实现处的注释：本技能目录下的全部文件文本。 */
-    fileTexts(input: { id: string }): Promise<SkillFileText[] | null>;
+  /** 见实现处的注释：本技能目录下的全部文件文本。 */
+  fileTexts(input: { id: string }): Promise<SkillFileText[] | null>;
+  /**
+   * 把一条技能标成「内置副本」（`source='builtin'`）：只改来源标记，不碰内容。
+   *
+   * 为什么需要：早期播种把默认技能写成了 `upload`，历史行还在库里。播种时顺手纠正，
+   * 面板才能把它显示成「内置」并给出「这是副本」的提示。
+   */
+  markBuiltin(input: { id: string }): Promise<void>;
   /**
    * 装配用：把**该仓库**当前启用的上传技能读成 `{path,text}` 列表。
    * 正文只在 SKILL.md 里，所以这里做一次磁盘读；调用方（enricher）只关心顺序。
@@ -271,7 +299,9 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       name: row.name,
       description: row.description,
       scope: 'repo',
-      repo: row.repo,
+    // `repo` 列已是 NOT NULL（migration 0008 清过脏行、0009 再清 `repo=''`）；这里做一次兜底，
+    // 避免历史脏数据让整个列表在响应 schema 校验处 500。
+    repo: row.repo ?? '',
       source: row.source === 'repo-file' || row.source === 'builtin' ? row.source : 'upload',
       enabled: row.enabled,
       currentVersion: row.current_version,
@@ -283,20 +313,23 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
 
   return {
     async list(filter) {
+      // `includeDeleted` 只给播种用：判断「这个技能是不是曾经存在过」（删过就别再复活它），
+      // 因此它把软删行的 `name` 也带回来，但**不进面板列表**（面板永远只看到活着的行）。
+      const includeDeleted = filter.includeDeleted === true;
       const result = await pool.query(
         `select ${SELECT_COLUMNS}, v.files
            from skills s
            left join skill_versions v on v.skill_id = s.id and v.version = s.current_version
-          where s.deleted_at is null
-            and s.repo = $1
+          where s.repo = $1
+            and ($4::boolean or s.deleted_at is null)
             and ($2::boolean is null or s.enabled = $2)
             and ($3::text is null or s.source = $3)
           order by s.name asc`,
-        [filter.repo, filter.enabled ?? null, filter.source ?? null],
+        [filter.repo, filter.enabled ?? null, filter.source ?? null, includeDeleted],
       );
       const rows = result.rows as (SkillRow & { files: unknown })[];
 
-      // 没有覆盖关系可算：本表只有上传技能、且按仓库隔离，同名同仓库只会有一行（唯一索引）。
+      // 没有覆盖关系可算：本表只有本项目的技能、且按仓库隔离，同名同仓库只会有一行（唯一索引）。
       return rows.map((row) => toListItem(row, asFiles(row.files)));
     },
 
@@ -378,18 +411,19 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
         await writeVersionTree(id, version, bundle.files);
         await pool.query(
           `insert into skills (id, name, scope, repo, source, enabled, current_version, description, frontmatter, created_by, created_at, updated_at)
-           values ($1, $2, 'repo', $3, 'upload', $4, $5, $6, $7::jsonb, $8, $9, $9)`,
-          [
-            id,
-            bundle.name,
-            repo,
-            input.enabled,
-            version,
-            bundle.description === '' ? bundle.name : bundle.description,
-            JSON.stringify(bundle.frontmatter),
-            input.actor,
-            now(),
-          ],
+           values ($1, $2, 'repo', $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $10)`,
+        [
+          id,
+          bundle.name,
+          repo,
+          input.source ?? 'upload',
+          input.enabled,
+          version,
+          bundle.description === '' ? bundle.name : bundle.description.slice(0, 200),
+          JSON.stringify(bundle.frontmatter),
+          input.actor,
+          now(),
+        ],
         );
         await pool.query(
           `insert into skill_versions (skill_id, version, files, tree_sha256, validation, created_by, created_at)
@@ -428,22 +462,34 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
         };
       }
 
-      // 同仓库同名已存在 → 新版本（上传即新的 current_version，spec R4）。
-      const version = found.current_version + 1;
-      await writeVersionTree(found.id, version, bundle.files);
-      await pool.query(
-        `update skills set current_version = $2, description = $3, frontmatter = $4::jsonb,
-                enabled = $5, source = 'upload', updated_at = $6
-          where id = $1`,
-        [
-          found.id,
-          version,
-          bundle.description === '' ? bundle.name : bundle.description,
-          JSON.stringify(bundle.frontmatter),
-          input.enabled,
-          now(),
-        ],
-      );
+    // 同仓库同名已存在 → 新版本（上传即新的 current_version，spec R4）。
+    //
+    // 版本号**必须**在库里自增：`found.current_version + 1` 是应用层算的，两个并发写会算出
+    // 同一个 next version，然后撞 `skill_versions` 主键 `(skill_id, version)` 抛原始 pg 错误
+    // （用户看到 500，且不知道到底存进去没有）。这里用 `returning` 一次拿到权威新版本号。
+    //
+    // `source` 只在显式给出时才改：面板反复编辑一个内置副本，它仍然是「内置副本」
+    // （面板的提示语也这么说），不该被悄悄改成 `upload`。
+    const bumped = await pool.query(
+      `update skills set current_version = current_version + 1,
+         description = $2, frontmatter = $3::jsonb, enabled = $4,
+         source = coalesce($5, source), updated_at = $6
+       where id = $1
+       returning current_version`,
+      [
+        found.id,
+        bundle.description === '' ? bundle.name : bundle.description.slice(0, 200),
+        JSON.stringify(bundle.frontmatter),
+        input.enabled,
+        input.source ?? null,
+        now(),
+      ],
+    );
+    const version = Number((bumped.rows as { current_version: number }[])[0]?.current_version ?? 0);
+    if (!Number.isInteger(version) || version < 2) {
+      throw new SkillStoreError('conflict', `技能 ${bundle.name} 的版本号自增失败`);
+    }
+    await writeVersionTree(found.id, version, bundle.files);
       await pool.query(
         `insert into skill_versions (skill_id, version, files, tree_sha256, validation, created_by, created_at)
          values ($1, $2, $3::jsonb, $4, $5::jsonb, $6, $7)`,
@@ -554,6 +600,14 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       return this.get(input.id);
     },
 
+    /** 只改来源标记：内容、版本、审计都不动（播种顺手纠正历史行时用）。 */
+    async markBuiltin(input) {
+      await pool.query(
+        "update skills set source = 'builtin', updated_at = $2 where id = $1 and source <> 'builtin'",
+        [input.id, now()],
+      );
+    },
+
     /**
      * 当前版本里**每个文件的文本**（面板模态框的文件树 + 编辑器用）。
      *
@@ -575,8 +629,13 @@ export function createSkillStore(options: SkillStoreOptions): SkillStore {
       const row = await rowById(input.id);
       if (row === null) return false;
       if (input.hard) {
-        if (row.source !== 'upload') {
-          throw new SkillStoreError('conflict', '只有面板上传的技能能硬删；内置/仓库文件技能是只读的');
+        // 内置副本（`source='builtin'`）不给硬删：它代表「这个项目应有的基线技能」，
+        // 硬删之后播种会把默认正文再种回来，用户改过的内容就真丢了。要清掉痕迹请用软删。
+        if (row.source === 'builtin') {
+          throw new SkillStoreError(
+            'conflict',
+            '内置技能的副本不能硬删（会被重新播种）；请用软删或用「停用」藏起来',
+          );
         }
         await pool.query('delete from skill_versions where skill_id = $1', [input.id]);
         await pool.query('delete from skills where id = $1', [input.id]);
