@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>D · Bento 网格监控墙 — pi-issue-bot 布局方案</title>
+<link rel="stylesheet" href="assets/base.css" />
+<!--
+  方案 D：Bento 网格（全局态势 / 无固定导航）
+  ─────────────────────────────────────────────────────────────
+  骨架：12 列网格，瓦片跨列跨行；导航收成右下角一个浮动 dock 与顶栏一行。
+  赌的是：**使用者多数时间在「一眼看全局 + 投到大屏」**，
+  每个模块自成一个可独立存在的信息块，位置固定形成肌肉记忆。
+  代价：瓦片尺寸一旦固定，内容增减会破坏节奏；小屏退化成单列长页，优势消失。
+-->
+<style>
+  :root {
+    --accent-hue: 320;
+    --gap: 10px;
+    --tile: var(--surface);
+  }
+
+  body {
+    overflow: hidden;
+    font-size: 12.5px;
+  }
+
+  /* ── 顶行：不叫导航，叫「上下文」 ─────────────────────────── */
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 40px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .head .brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+  }
+
+  .head .brand i {
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 5px;
+    background: var(--ink);
+    color: var(--ink-fg);
+    font-family: var(--font-code);
+    font-size: 9px;
+    font-style: normal;
+  }
+
+  .repo-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 23px;
+    padding: 0 8px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    color: var(--fg-2);
+    font-size: 11.5px;
+  }
+
+  .clock {
+    color: var(--fg-3);
+    font-family: var(--font-code);
+    font-size: 10.5px;
+  }
+
+  .head .right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  /* ── 网格 ─────────────────────────────────────────────────── */
+  .wall {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-auto-rows: 132px;
+    gap: var(--gap);
+    height: calc(100vh - 40px);
+    padding: var(--gap) 14px 74px;
+    overflow: auto;
+    align-content: start;
+  }
+
+  .tile {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-page);
+    background: var(--tile);
+    overflow: hidden;
+  }
+
+  /* 唯一一块反色瓦片：告诉眼睛「这块最急」 */
+  .tile.ink {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--ink-fg);
+  }
+
+  .tile.ink .t-h,
+  .tile.ink .dim,
+  .tile.ink .faint {
+    color: color-mix(in oklab, var(--ink-fg) 62%, transparent);
+  }
+
+  .tile.ink .chip {
+    border-color: color-mix(in oklab, var(--ink-fg) 22%, transparent);
+    background: color-mix(in oklab, var(--ink-fg) 10%, transparent);
+    color: var(--ink-fg);
+  }
+
+  .t-h {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 30px;
+    flex: none;
+    padding: 0 11px;
+    color: var(--fg-3);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .t-h .r {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .t-b {
+    flex: 1;
+    min-height: 0;
+    padding: 0 11px 10px;
+    overflow: hidden;
+  }
+
+  .t-b.flush {
+    padding: 0;
+  }
+
+  /* 大数字 */
+  .big {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .big small {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--fg-3);
+  }
+
+  .tile.ink .big small {
+    color: color-mix(in oklab, var(--ink-fg) 60%, transparent);
+  }
+
+  .sub {
+    margin-top: 5px;
+    color: var(--fg-3);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 瓦片内的小行 */
+  .mini-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 11.5px;
+  }
+
+  .mini-row:last-child {
+    border-bottom: 0;
+  }
+
+  .tile.ink .mini-row {
+    border-bottom-color: color-mix(in oklab, var(--ink-fg) 16%, transparent);
+  }
+
+  .mini-row .k {
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    color: var(--fg-2);
+  }
+
+  .tile.ink .mini-row .k {
+    color: color-mix(in oklab, var(--ink-fg) 78%, transparent);
+  }
+
+  .mini-row .v {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 待办瓦片里的每条 */
+  .todo {
+    display: grid;
+    grid-template-columns: 6px 44px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .todo:last-child {
+    border-bottom: 0;
+  }
+
+  .todo .t {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .todo .why {
+    color: var(--fg-3);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .todo .id {
+    color: var(--fg-3);
+    font-family: var(--font-code);
+    font-size: 10.5px;
+  }
+
+  .todo .when {
+    color: var(--fg-3);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* doctor 检查项 */
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 0;
+    font-size: 11.5px;
+  }
+
+  .check .st {
+    margin-left: auto;
+    font-size: 10.5px;
+    font-family: var(--font-code);
+  }
+
+  .check .st.ok {
+    color: var(--ok-fg);
+  }
+
+  .check .st.warn {
+    color: var(--warn-fg);
+  }
+
+  .check .st.danger {
+    color: var(--danger-fg);
+  }
+
+  /* 分布条 */
+  .dist {
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr) 26px;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 11px;
+  }
+
+  .dist .nm {
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    color: var(--fg-2);
+  }
+
+  .dist .track {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    overflow: hidden;
+  }
+
+  .dist .track i {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+
+  .dist .track i.bad {
+    background: var(--danger);
+  }
+
+  .dist .track i.mid {
+    background: var(--warn);
+  }
+
+  .dist .n {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 活动流 */
+  .feed {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .feed div {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+
+  .feed div:last-child {
+    border-bottom: 0;
+  }
+
+  .feed time {
+    flex: none;
+    width: 32px;
+    color: var(--fg-3);
+    font-family: var(--font-code);
+    font-size: 10px;
+  }
+
+  /* 浮动 dock：导航的替代品 */
+  .dock {
+    position: fixed;
+    z-index: 40;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 5px;
+    border: 1px solid var(--line-2);
+    border-radius: 14px;
+    background: color-mix(in oklab, var(--surface) 88%, transparent);
+    box-shadow: var(--shadow-float);
+    backdrop-filter: blur(14px) saturate(1.2);
+  }
+
+  .dock a {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    width: 52px;
+    padding: 5px 0 4px;
+    border-radius: 10px;
+    color: var(--fg-2);
+    font-size: 9.5px;
+    transition: background-color 120ms var(--ease), color 120ms var(--ease);
+  }
+
+  .dock a:hover {
+    background: var(--surface-2);
+    color: var(--fg);
+  }
+
+  .dock a.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .dock a svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+  }
+
+  .dock .div {
+    width: 1px;
+    height: 22px;
+    margin: 0 4px;
+    background: var(--line-2);
+  }
+
+  .dock .badge-n {
+    position: absolute;
+    top: 2px;
+    right: 8px;
+    min-width: 13px;
+    height: 13px;
+    padding: 0 3px;
+    border-radius: 999px;
+    background: var(--danger);
+    color: oklch(0.99 0 0);
+    font-size: 8.5px;
+    font-weight: 700;
+    line-height: 13px;
+    text-align: center;
+  }
+
+  /* 跨列 / 跨行 */
+  .c3 { grid-column: span 3; }
+  .c4 { grid-column: span 4; }
+  .c5 { grid-column: span 5; }
+  .c7 { grid-column: span 7; }
+  .c8 { grid-column: span 8; }
+  .r2 { grid-row: span 2; }
+  .r3 { grid-row: span 3; }
+
+  @media (max-width: 1180px) {
+    .wall {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+
+    .c7,
+    .c8 {
+      grid-column: span 6;
+    }
+
+    .c5 {
+      grid-column: span 4;
+    }
+
+    .c4 {
+      grid-column: span 3;
+    }
+  }
+</style>
+</head>
+<body>
+<header class="head">
+  <span class="brand"><i>pi</i>pi-issue-bot</span>
+  <span class="repo-pill"><span class="dot accent"></span>acme/widgets <span class="ghost" aria-hidden="true">⌄</span></span>
+  <span class="clock">2026-05-31 08:52 UTC</span>
+  <div class="right">
+    <span class="chip warn"><span class="dot warn"></span>降级 · 1 项检查未通过</span>
+    <span class="chip"><span class="dot ok"></span>pi-host 在线 · 1 会话</span>
+    <button class="btn sq" aria-label="搜索">⌕</button>
+  </div>
+</header>
+
+<main class="wall">
+  <!-- 待办：最急的块，反色 + 跨 5 列 2 行 -->
+  <section class="tile ink c5 r2" aria-labelledby="d1">
+    <div class="t-h" id="d1">
+      需要你处理
+      <span class="r"><span class="chip">5 项</span><span>按优先级</span></span>
+    </div>
+    <div class="t-b" style="padding-bottom:0">
+      <div class="todo">
+        <span class="dot danger"></span>
+        <span class="id">#318</span>
+        <span><span class="t">Promote 按钮在 Safari 上无响应</span><span class="why">sandbox-oom ×2 → blocked</span></span>
+        <span class="when">3m</span>
+      </div>
+      <div class="todo">
+        <span class="dot danger"></span>
+        <span class="id">other/lib</span>
+        <span><span class="t">role 标签映射缺失</span><span class="why">写回闸门会拦下全部标签动作</span></span>
+        <span class="when">昨天</span>
+      </div>
+      <div class="todo">
+        <span class="dot warn"></span>
+        <span class="id">#308</span>
+        <span><span class="t">导入 CSV 时列名大小写被吞</span><span class="why">not-found，等 managers 复核</span></span>
+        <span class="when">2h</span>
+      </div>
+      <div class="todo">
+        <span class="dot warn"></span>
+        <span class="id">#295</span>
+        <span><span class="t">重构 repo 路由解析</span><span class="why">timed-out，p95 超阈</span></span>
+        <span class="when">昨天</span>
+      </div>
+      <div class="todo">
+        <span class="dot"></span>
+        <span class="id">#301</span>
+        <span><span class="t">能否支持多语言模板</span><span class="why">needs-info，48h 后自动关</span></span>
+        <span class="when">5h</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 队列：唯一的主数字 -->
+  <section class="tile c3" aria-labelledby="d2">
+    <div class="t-h" id="d2">队列 <span class="r">闸门 10m</span></div>
+    <div class="t-b">
+      <div class="big">3<small>排队 / 1 执行</small></div>
+      <div class="sub">最老 84s · 熔断已解除 08:02</div>
+    </div>
+  </section>
+
+  <!-- 成功率 -->
+  <section class="tile c4" aria-labelledby="d3">
+    <div class="t-h" id="d3">今日任务 <span class="r">窗口 24h</span></div>
+    <div class="t-b">
+      <div class="big">42<small>/ 投递 126</small></div>
+      <div class="sub">成功率 90.5% · 失败 4 · p95 6m12s</div>
+    </div>
+  </section>
+
+  <!-- 系统状态 -->
+  <section class="tile c4 r2" aria-labelledby="d4">
+    <div class="t-h" id="d4">系统状态 <span class="r">08:19 体检</span></div>
+    <div class="t-b">
+      <div class="check"><span class="dot ok"></span>docker-daemon<span class="st ok">ok</span></div>
+      <div class="check"><span class="dot ok"></span>pi-host<span class="st ok">online</span></div>
+      <div class="check"><span class="dot ok"></span>sqlite<span class="st ok">ok</span></div>
+      <div class="check"><span class="dot warn"></span>disk-space<span class="st warn">12%</span></div>
+      <div class="check"><span class="dot danger"></span>canary-network<span class="st danger">fail</span></div>
+      <div class="sub" style="margin-top:8px;line-height:1.5">
+        金丝雀不可达：写入类动作执行前会重新探测；沙箱创建不受影响。
+      </div>
+    </div>
+  </section>
+
+  <!-- 趋势：跨 7 列 -->
+  <section class="tile c7" aria-labelledby="d5">
+    <div class="t-h" id="d5">任务趋势 <span class="r">24h · 峰值 4 / 时</span></div>
+    <div class="t-b" style="padding-bottom:4px">
+      <svg class="spark" viewBox="0 0 620 92" role="img" aria-label="24 小时任务数面积图，凌晨最低，08 点与 20 点各出现 4 个任务的峰值">
+        <defs>
+          <linearGradient id="fillA" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22" />
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
+          </linearGradient>
+        </defs>
+        <line class="grid" x1="0" y1="18" x2="620" y2="18" />
+        <line class="grid" x1="0" y1="48" x2="620" y2="48" />
+        <line class="grid" x1="0" y1="78" x2="620" y2="78" />
+        <path d="M0,60 L27,78 L54,78 L81,60 L108,42 L135,60 L162,78 L189,60 L216,60 L243,42 L270,24 L297,42 L324,60 L351,42 L378,24 L405,18 L432,24 L459,42 L486,42 L513,24 L540,18 L567,24 L594,42 L620,42 L620,92 L0,92 Z"
+              fill="url(#fillA)" />
+        <polyline points="0,60 27,78 54,78 81,60 108,42 135,60 162,78 189,60 216,60 243,42 270,24 297,42 324,60 351,42 378,24 405,18 432,24 459,42 486,42 513,24 540,18 567,24 594,42 620,42"
+          stroke="var(--accent)" stroke-width="1.5" />
+        <text class="axis" x="0" y="10">4</text>
+        <text class="axis" x="0" y="90">0</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- 结果分布 -->
+  <section class="tile c5 r2" aria-labelledby="d6">
+    <div class="t-h" id="d6">结果分布 <span class="r">42 次运行</span></div>
+    <div class="t-b">
+      <div class="dist"><span class="nm">success</span><span class="track"><i style="width:100%"></i></span><span class="n">38</span></div>
+      <div class="dist"><span class="nm">failed</span><span class="track"><i class="bad" style="width:10.5%"></i></span><span class="n">4</span></div>
+      <div class="dist"><span class="nm">timed-out</span><span class="track"><i class="mid" style="width:5.2%"></i></span><span class="n">2</span></div>
+      <div class="dist"><span class="nm">parse-failed</span><span class="track"><i class="mid" style="width:2.6%"></i></span><span class="n">1</span></div>
+      <div class="dist"><span class="nm">interrupted</span><span class="track"><i style="width:2.6%;background:var(--fg-3)"></i></span><span class="n">1</span></div>
+      <div class="dist" style="margin-top:6px"><span class="nm">degenerate</span><span class="track"><i style="width:0"></i></span><span class="n">0</span></div>
+      <div class="sub" style="margin-top:8px">失败集中在 <span class="mono">sandbox-oom</span>（3 次，均 #318）</div>
+    </div>
+  </section>
+
+  <!-- 成本 -->
+  <section class="tile c3" aria-labelledby="d7">
+    <div class="t-h" id="d7">成本 <span class="r">今日</span></div>
+    <div class="t-b">
+      <div class="big">$3.84<small>USD</small></div>
+      <div class="sub">5.4M tok · 单价覆盖 100%</div>
+      <svg class="spark" viewBox="0 0 240 26" style="margin-top:6px" role="img" aria-label="今日成本按小时累计的小型面积曲线">
+        <polyline points="0,22 30,20 60,21 90,16 120,14 150,10 180,9 210,6 240,4"
+          stroke="var(--accent)" stroke-width="1.3" />
+      </svg>
+    </div>
+  </section>
+
+  <!-- 失败 Top -->
+  <section class="tile c4" aria-labelledby="d8">
+    <div class="t-h" id="d8">失败分类 <span class="r">Top 5</span></div>
+    <div class="t-b">
+      <div class="mini-row"><span class="k">sandbox-oom</span><span class="v">3</span></div>
+      <div class="mini-row"><span class="k">rate-limit</span><span class="v">2</span></div>
+      <div class="mini-row"><span class="k">timeout</span><span class="v">1</span></div>
+      <div class="mini-row"><span class="k">github-api</span><span class="v">1</span></div>
+    </div>
+  </section>
+
+  <!-- 活动 -->
+  <section class="tile c5" aria-labelledby="d9">
+    <div class="t-h" id="d9">最近活动 <span class="r">审计</span></div>
+    <div class="t-b">
+      <div class="feed">
+        <div><time>08:42</time><span><b>#318</b> 写回 comment + label</span></div>
+        <div><time>08:31</time><span><b>#312</b> succeeded 2m41s</span></div>
+        <div><time>08:19</time><span>doctor：canary 失败 · disk 12%</span></div>
+        <div><time>08:02</time><span>429 熔断解除</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 仓库 -->
+  <section class="tile c3" aria-labelledby="d10">
+    <div class="t-h" id="d10">仓库 <span class="r">2</span></div>
+    <div class="t-b">
+      <div class="mini-row"><span class="dot ok"></span><span class="k">acme/widgets</span><span class="v">24</span></div>
+      <div class="mini-row"><span class="dot danger"></span><span class="k">other/lib</span><span class="v">配置非法</span></div>
+    </div>
+  </section>
+</main>
+
+<!-- 导航收成 dock -->
+<nav class="dock" aria-label="主导航">
+  <a class="on" href="#" style="position:relative">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8l6-5 6 5v6H2z" /><path d="M6 14V9h4v5" /></svg>
+    总览
+  </a>
+  <a href="#" style="position:relative">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.2l2 1.4" /></svg>
+    Issue
+    <span class="badge-n">5</span>
+  </a>
+  <a href="#">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6" /></svg>
+    运行
+  </a>
+  <span class="div"></span>
+  <a href="#">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12V7M7 12V4M12 12V9" /></svg>
+    成本
+  </a>
+  <a href="#">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10v10H3z" /><path d="M6 7l1.6 1.8L10.5 5" /></svg>
+    质量
+  </a>
+  <a href="#">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 2v1.6M8 12.4V14M2 8h1.6M12.4 8H14" /></svg>
+    系统
+  </a>
+</nav>
+
+<div class="demo-note" style="bottom:70px">
+  <strong>D · Bento 网格</strong>
+  <span>每个模块一块瓦片，位置固定成肌肉记忆；导航缩进右下角 dock</span>
+</div>
+<script src="assets/theme.js"></script>
+</body>
+</html>

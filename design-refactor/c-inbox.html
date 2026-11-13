@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>C · 主从双栏收件箱 — pi-issue-bot 布局方案</title>
+<link rel="stylesheet" href="assets/base.css" />
+<!--
+  方案 C：主从双栏（队列优先 / 键盘驱动）
+  ─────────────────────────────────────────────────────────────
+  骨架：32px 状态带 + 348px 常驻列表 + 自适应详情；两栏各自滚动。
+  赌的是：**这个面板 90% 的时间在「处理一件具体的事」**，
+  全局统计退到状态带上一行数字，把屏宽全部让给「队列 + 当前这条」。
+  代价：一次只看得到一条；跨条对比要靠列表摘要，图表类内容要另开页面。
+-->
+<style>
+  :root {
+    --accent-hue: 245;
+    --list-w: 348px;
+  }
+
+  body {
+    overflow: hidden;
+  }
+
+  /* ── 状态带：32px，只放「现在什么状态」 ──────────────────── */
+  .strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 32px;
+    padding: 0 10px 0 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+    font-size: 11.5px;
+    color: var(--fg-2);
+  }
+
+  .strip .brand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+
+  .strip .brand i {
+    display: grid;
+    place-items: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 4px;
+    background: var(--ink);
+    color: var(--ink-fg);
+    font-family: var(--font-code);
+    font-size: 9px;
+    font-style: normal;
+  }
+
+  .strip .sep {
+    width: 1px;
+    height: 12px;
+    background: var(--line-2);
+  }
+
+  .strip .kv {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .strip .kv b {
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .strip .kv.hot b {
+    color: var(--danger-fg);
+  }
+
+  /* ── 主从骨架 ────────────────────────────────────────────── */
+  .split {
+    display: grid;
+    grid-template-columns: var(--list-w) minmax(0, 1fr);
+    height: calc(100vh - 32px);
+  }
+
+  /* 左：队列 */
+  .queue {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .queue-top {
+    flex: none;
+    padding: 8px 10px 6px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .q-search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 27px;
+    padding: 0 8px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-ctl);
+    color: var(--fg-3);
+    font-size: 11.5px;
+  }
+
+  .q-search kbd {
+    margin-left: auto;
+  }
+
+  .q-tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 7px;
+  }
+
+  .q-tabs button {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 23px;
+    padding: 0 7px;
+    border-radius: 5px;
+    color: var(--fg-3);
+    font-size: 11.5px;
+  }
+
+  .q-tabs button:hover {
+    background: var(--surface-2);
+    color: var(--fg);
+  }
+
+  .q-tabs button.on {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .q-tabs .n {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .q-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding-bottom: 28px;
+  }
+
+  .group-h {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in oklab, var(--surface) 92%, transparent);
+    backdrop-filter: blur(6px);
+    color: var(--fg-3);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 3px minmax(0, 1fr);
+    gap: 0;
+    padding: 8px 10px 9px 7px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    transition: background-color 110ms var(--ease);
+  }
+
+  .row:hover {
+    background: var(--surface-2);
+  }
+
+  .row.sel {
+    background: var(--accent-soft);
+  }
+
+  .row .bar {
+    border-radius: 999px;
+    background: transparent;
+  }
+
+  .row.sel .bar {
+    background: var(--accent);
+  }
+
+  .row .body {
+    min-width: 0;
+    padding-left: 6px;
+  }
+
+  .row .l1 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+
+  .row .l1 .t {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row .l1 .id {
+    flex: none;
+    color: var(--fg-3);
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    font-weight: 400;
+  }
+
+  .row .l2 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 3px;
+    color: var(--fg-3);
+    font-size: 10.5px;
+  }
+
+  .row .l2 .when {
+    margin-left: auto;
+    flex: none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .row .reason {
+    margin-top: 3px;
+    color: var(--fg-2);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 右：详情 */
+  .detail {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  .d-head {
+    flex: none;
+    padding: 14px 20px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .crumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-3);
+    font-size: 11px;
+    font-family: var(--font-code);
+  }
+
+  .d-title {
+    margin-top: 6px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.3;
+  }
+
+  .d-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    color: var(--fg-3);
+    font-size: 11px;
+  }
+
+  .d-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .d-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px 20px 40px;
+  }
+
+  /* 卡：只在需要分组的块上用 */
+  .block {
+    border: 1px solid var(--line);
+    border-radius: var(--r-page);
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .block + .block {
+    margin-top: 12px;
+  }
+
+  .block-h {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 11px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  .block-h .r {
+    margin-left: auto;
+    color: var(--fg-3);
+    font-size: 10.5px;
+    font-weight: 400;
+  }
+
+  .block-b {
+    padding: 11px;
+  }
+
+  /* 诊断块：结论 + 建议 + 证据 */
+  .dx {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 6px 12px;
+    font-size: 12px;
+  }
+
+  .dx dt {
+    color: var(--fg-3);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding-top: 2px;
+  }
+
+  .dx dd {
+    margin: 0;
+    color: var(--fg);
+    line-height: 1.5;
+  }
+
+  .dx dd .sm {
+    color: var(--fg-2);
+  }
+
+  pre {
+    margin: 0;
+    padding: 9px 11px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--fg-2);
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    line-height: 1.6;
+    overflow-x: auto;
+  }
+
+  pre b {
+    color: var(--danger-fg);
+    font-weight: 600;
+  }
+
+  /* 会话摘要 */
+  .msg {
+    display: flex;
+    gap: 9px;
+    padding: 9px 11px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+
+  .msg:last-child {
+    border-bottom: 0;
+  }
+
+  .msg .av {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    border-radius: 999px;
+    background: var(--surface-3);
+    color: var(--fg-2);
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .msg.bot .av {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .msg .who {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--fg-3);
+    font-size: 10.5px;
+  }
+
+  .msg .who b {
+    color: var(--fg);
+    font-size: 11.5px;
+  }
+
+  .msg .txt {
+    margin-top: 2px;
+    color: var(--fg-2);
+    line-height: 1.5;
+  }
+
+  /* 底部快捷键条 */
+  .keys {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 28px;
+    flex: none;
+    padding: 0 12px;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--fg-3);
+    font-size: 10.5px;
+  }
+
+  .keys span {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .keys .right {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+  }
+
+  @media (max-width: 1080px) {
+    :root {
+      --list-w: 300px;
+    }
+  }
+</style>
+</head>
+<body>
+<!-- 状态带：全局数字压成一行 -->
+<div class="strip">
+  <span class="brand"><i>pi</i>pi-issue-bot</span>
+  <span class="sep"></span>
+  <span class="kv"><span class="dot accent"></span>acme/widgets</span>
+  <span class="sep"></span>
+  <span class="kv">待处理 <b>5</b></span>
+  <span class="kv">运行中 <b>1</b></span>
+  <span class="kv hot">失败 <b>4</b></span>
+  <span class="kv">成功率 <b>90.5%</b></span>
+  <span class="kv">p95 <b>6m12s</b></span>
+  <span class="kv">今日 <b>$3.84</b></span>
+  <span class="spacer"></span>
+  <span class="chip warn"><span class="dot warn"></span>降级运行 · canary-network</span>
+  <span class="kv faint">队列 3 / 执行 1</span>
+  <span class="sep"></span>
+  <span class="kbd">⌘K</span>
+</div>
+
+<div class="split">
+  <!-- ══ 左：队列 ══ -->
+  <section class="queue" aria-label="待处理队列">
+    <div class="queue-top">
+      <div class="q-search"><span aria-hidden="true">⌕</span>筛选：#318、repo、failure_class…<kbd class="kbd">/</kbd></div>
+      <div class="q-tabs" role="tablist" aria-label="队列视图">
+        <button class="on" role="tab" aria-selected="true">待处理 <span class="n">5</span></button>
+        <button role="tab" aria-selected="false">运行中 <span class="n">1</span></button>
+        <button role="tab" aria-selected="false">已完成 <span class="n">38</span></button>
+      </div>
+    </div>
+
+    <div class="q-list">
+      <div class="group-h"><span class="dot danger"></span>阻塞 · 需要人决策 <span class="spacer"></span>2</div>
+
+      <div class="row sel" aria-current="true" tabindex="0">
+        <span class="bar"></span>
+        <div class="body">
+          <div class="l1"><span class="id">#318</span><span class="t">Promote 按钮在 Safari 上无响应</span></div>
+          <div class="l2"><span class="chip danger" style="height:16px;font-size:10px">blocked</span><span class="mono">sandbox-oom ×2</span><span class="when">3m</span></div>
+          <div class="reason">容器 2G 被 Vite 构建打满；上一轮已建议提高内存</div>
+        </div>
+      </div>
+
+      <div class="row" tabindex="0">
+        <span class="bar"></span>
+        <div class="body">
+          <div class="l1"><span class="id">—</span><span class="t">other/lib 的 role 标签映射缺失</span></div>
+          <div class="l2"><span class="chip danger" style="height:16px;font-size:10px">配置非法</span><span class="mono">labels.role</span><span class="when">昨天</span></div>
+          <div class="reason">写回闸门会拦下该仓库全部标签动作</div>
+        </div>
+      </div>
+
+      <div class="group-h"><span class="dot warn"></span>等人 · 48h 后自动关 <span class="spacer"></span>3</div>
+
+      <div class="row" tabindex="0">
+        <span class="bar"></span>
+        <div class="body">
+          <div class="l1"><span class="id">#308</span><span class="t">导入 CSV 时列名大小写被吞</span></div>
+          <div class="l2"><span class="chip warn" style="height:16px;font-size:10px">等管理员</span><span class="mono">not-found</span><span class="when">2h</span></div>
+          <div class="reason">分类缺 path:line 证据，只有 managers 评论会触发重分类</div>
+        </div>
+      </div>
+
+      <div class="row" tabindex="0">
+        <span class="bar"></span>
+        <div class="body">
+          <div class="l1"><span class="id">#295</span><span class="t">重构 repo 路由解析</span></div>
+          <div class="l2"><span class="chip warn" style="height:16px;font-size:10px">timed-out</span><span class="mono">timeout</span><span class="when">昨天</span></div>
+          <div class="reason">任务级 deadline 触发，p95 已超 6 分钟阈值</div>
+        </div>
+      </div>
+
+      <div class="row" tabindex="0">
+        <span class="bar"></span>
+        <div class="body">
+          <div class="l1"><span class="id">#301</span><span class="t">能否支持多语言模板</span></div>
+          <div class="l2"><span class="chip info" style="height:16px;font-size:10px">needs-info</span><span class="mono">format/awaiting_info</span><span class="when">5h</span></div>
+          <div class="reason">已追问 3 次，作者未回</div>
+        </div>
+      </div>
+
+      <div class="group-h"><span class="dot ok"></span>正在跑 <span class="spacer"></span>1</div>
+
+      <div class="row" tabindex="0">
+        <span class="bar"></span>
+        <div class="body">
+          <div class="l1"><span class="id">#320</span><span class="t">导出接口缺少分页</span></div>
+          <div class="l2"><span class="chip accent" style="height:16px;font-size:10px">running</span><span class="mono">turn 4 / 30</span><span class="when">1m</span></div>
+          <div class="reason">容器已拉起，正在读 src/export/*.ts</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 右：详情 ══ -->
+  <section class="detail" aria-label="当前选中 Issue 详情">
+    <div class="d-head">
+      <div class="crumb">acme/widgets · issue · 第 2 次运行 · run 7f3c1a</div>
+      <h1 class="d-title">Promote 按钮在 Safari 上无响应</h1>
+      <div class="d-meta">
+        <span class="chip danger"><span class="dot danger"></span>blocked</span>
+        <span class="chip">defect</span>
+        <span class="chip">pipeline:agent</span>
+        <span class="mono">sandbox-oom ×2</span>
+        <span>·</span>
+        <span>发起 @dana · 3 分钟前</span>
+        <span>·</span>
+        <span>会话 7 轮 / cursor 12</span>
+      </div>
+      <div class="d-actions">
+        <button class="btn primary">重跑（内存提到 4G）</button>
+        <button class="btn">打开完整会话</button>
+        <button class="btn">标记为人工处理</button>
+        <span class="spacer"></span>
+        <button class="btn ghost">跳过</button>
+      </div>
+    </div>
+
+    <div class="d-body">
+      <div class="block">
+        <div class="block-h">为什么停在这里 <span class="r">判定来自 runs.failure_class</span></div>
+        <div class="block-b">
+          <dl class="dx">
+            <dt>结论</dt>
+            <dd>连续 <b>2</b> 次 <span class="mono">sandbox-oom</span>，按规则自动进 blocked，不再自动重试。</dd>
+            <dt>建议</dt>
+            <dd>把该仓库容器内存从 2G 提到 4G（构建 Vite 峰值 3.1G），或把「复现」与「修复」拆成两个 issue。</dd>
+            <dt>影响</dt>
+            <dd class="sm">该 issue 的 Agent 会话已保留（7 轮，未轮换），重跑会接着会话继续，不丢上下文。</dd>
+            <dt>上次动作</dt>
+            <dd class="sm">08:42 写回 comment + label，dry-run 关闭，审计 ID <span class="mono">au_9d21</span>。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-h">失败证据 <span class="r">容器 stderr 尾部 · 8 行</span></div>
+        <pre><b>FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory</b>
+ 1: 0xb7c1a2 node::Abort() [node]
+ 2: 0xb7c2e0 node::Start()
+ 3: 0xa9b1f4 v8::internal::Heap::CollectGarbage()
+    ...
+vite v5.4.2 building for production...
+  transforming (1284) src/components/promote/…
+  ✓ 1284 modules transformed      <span style="color:var(--warn-fg)">← 在此中断</span></pre>
+      </div>
+
+      <div class="block">
+        <div class="block-h">会话摘要 <span class="r">最近 3 条 / 共 7 轮</span></div>
+        <div class="msg bot">
+          <span class="av">AI</span>
+          <div>
+            <div class="who"><b>agent</b>08:31</div>
+            <div class="txt">定位到 <span class="mono">promote-button.tsx</span> 的 <span class="mono">onClick</span> 在 Safari 下被 <span class="mono">preventDefault</span> 吞掉；已准备补丁，但项目构建 OOM。</div>
+          </div>
+        </div>
+        <div class="msg">
+          <span class="av">D</span>
+          <div>
+            <div class="who"><b>@dana</b>08:36</div>
+            <div class="txt">可以先只改这个文件，别跑全量构建。CI 里我们用 <span class="mono">pnpm --filter web build</span>。</div>
+          </div>
+        </div>
+        <div class="msg bot">
+          <span class="av">AI</span>
+          <div>
+            <div class="who"><b>agent</b>08:39</div>
+            <div class="txt">按你的方式重跑了，仍然 OOM —— 说明是 <span class="mono">vite build</span> 自己的峰值。需要提内存，我停在这里等你决定。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="keys">
+      <span><kbd class="kbd">j</kbd><kbd class="kbd">k</kbd> 上一条 / 下一条</span>
+      <span><kbd class="kbd">↵</kbd> 打开会话</span>
+      <span><kbd class="kbd">x</kbd> 选中多条</span>
+      <span><kbd class="kbd">/</kbd> 筛选</span>
+      <span class="right faint"><span>2 / 5</span><span>·</span><span>更新于 08:52</span></span>
+    </div>
+  </section>
+</div>
+
+<div class="demo-note">
+  <strong>C · 主从双栏</strong>
+  <span>屏宽全给「队列 + 当前这条」，j/k 连续处理；代价是一次只看得到一条</span>
+</div>
+<script src="assets/theme.js"></script>
+</body>
+</html>

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>pi-issue-bot 布局重构 · 四个方案对照</title>
+<link rel="stylesheet" href="assets/base.css" />
+<!--
+  对照页：四个方案用**同一份演示数据**渲染同一张「总览/工作台」，只有骨架不同。
+  缩略图用 iframe + transform: scale(.5) 保持 1280px 视口宽度（不会触发窄屏断点），
+  点缩略图开全尺寸页面。
+-->
+<style>
+  :root {
+    --accent-hue: 205;
+  }
+
+  body {
+    overflow: auto;
+  }
+
+  .wrap {
+    max-width: 1380px;
+    margin: 0 auto;
+    padding: 28px 24px 80px;
+  }
+
+  .hd {
+    display: flex;
+    align-items: flex-end;
+    gap: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .hd h1 {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .hd p {
+    margin-top: 4px;
+    color: var(--fg-3);
+    font-size: 12px;
+  }
+
+  .hd .meta {
+    margin-left: auto;
+    text-align: right;
+    color: var(--fg-3);
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  /* 缩略图矩阵 */
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-top: 18px;
+  }
+
+  .case {
+    width: 640px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-page);
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .case-h {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 11px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .case-h .tag {
+    display: grid;
+    place-items: center;
+    width: 19px;
+    height: 19px;
+    border-radius: 5px;
+    background: var(--ink);
+    color: var(--ink-fg);
+    font-family: var(--font-code);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .case-h b {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  .case-h .sub {
+    color: var(--fg-3);
+    font-size: 11px;
+  }
+
+  .case-h .open {
+    margin-left: auto;
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  /* 1280×860 等比缩到 0.5 —— 关键是 iframe 自身仍是 1280 宽，
+     页面内的 media query 不会被触发，看到的就是桌面版骨架。 */
+  .shot {
+    position: relative;
+    width: 640px;
+    height: 430px;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .shot iframe {
+    width: 1280px;
+    height: 860px;
+    border: 0;
+    transform: scale(0.5);
+    transform-origin: top left;
+  }
+
+  .case-f {
+    display: flex;
+    gap: 10px;
+    padding: 8px 11px;
+    border-top: 1px solid var(--line);
+    color: var(--fg-3);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .case-f b {
+    color: var(--fg-2);
+    font-weight: 600;
+  }
+
+  /* 对照表 */
+  .cmp {
+    margin-top: 34px;
+  }
+
+  .cmp h2 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+
+  table.cmp-t {
+    font-size: 12px;
+  }
+
+  table.cmp-t td {
+    height: auto;
+    padding: 9px 10px;
+    vertical-align: top;
+    line-height: 1.5;
+  }
+
+  table.cmp-t th {
+    height: 30px;
+  }
+
+  table.cmp-t td:first-child {
+    width: 132px;
+    font-weight: 600;
+    border-right: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+
+  .yes {
+    color: var(--ok-fg);
+    font-weight: 600;
+  }
+
+  .no {
+    color: var(--danger-fg);
+    font-weight: 600;
+  }
+
+  .meh {
+    color: var(--warn-fg);
+    font-weight: 600;
+  }
+
+  /* 判据 */
+  .criteria {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .c {
+    padding: 11px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-page);
+    background: var(--surface);
+  }
+
+  .c .k {
+    color: var(--fg-3);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .c .v {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--fg-2);
+  }
+
+  .c .v b {
+    color: var(--fg);
+  }
+
+  .foot {
+    margin-top: 26px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    color: var(--fg-3);
+    font-size: 11px;
+    line-height: 1.7;
+  }
+
+  .foot code {
+    font-family: var(--font-code);
+    font-size: 10.5px;
+    color: var(--fg-2);
+  }
+  /* 采用方向那张卡：比缩略图更显眼，但只用一条 accent 边框 */
+  .picked {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 18px;
+    padding: 13px 15px;
+    border: 1px solid color-mix(in oklab, var(--accent) 40%, transparent);
+    border-radius: var(--r-page);
+    background: var(--accent-soft);
+  }
+
+  .picked:hover {
+    border-color: var(--accent);
+  }
+
+  .pill-tag {
+    flex: none;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .picked-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .picked-main b {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .picked-main span {
+    color: var(--fg-2);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .picked-go {
+    flex: none;
+    margin-left: auto;
+    color: var(--accent);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  .sub2 {
+    margin-top: 24px;
+    color: var(--fg-3);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hd">
+    <div>
+      <h1>布局重构 · 四个方案</h1>
+      <p>同一份演示数据、同一套视觉令牌，只改骨架。缩略图按 1280×860 渲染后缩到一半，点右上角开全尺寸。</p>
+    </div>
+    <div class="meta">
+      演示数据标注为 <span class="mono">acme/widgets</span> · 2026-05-31 08:52 UTC<br />
+      真实字段名取自 <span class="mono">packages/contract</span>：successRate / p95Ms / failureClass / outcome
+    </div>
+  </div>
+
+  <!-- 采用方向：E（C 的骨架 + dock + 删减后的 IA） -->
+  <a class="picked" href="e-unified.html">
+    <span class="pill-tag">采用</span>
+    <div class="picked-main">
+      <b>E · 收敛版原型</b>
+      <span>Issue（主从）+ 设置 + 技能三项进 dock；全局只留一个「系统」模态框；项目在左上角切。</span>
+    </div>
+    <span class="picked-go">打开原型 →</span>
+  </a>
+
+  <h2 class="sub2">下面四份是选型时的对照稿（保留做记录）</h2>
+
+  <div class="grid">
+    <article class="case">
+      <div class="case-h">
+        <span class="tag">A</span>
+        <b>经典侧栏控制台</b>
+        <span class="sub">密度优先</span>
+        <a class="open" href="a-console.html">打开 →</a>
+      </div>
+      <div class="shot"><iframe src="a-console.html" title="方案 A 预览" loading="lazy"></iframe></div>
+      <div class="case-f">
+        <b>赌：</b>熟练运维，导航位置稳定、同屏信息最多。208px 左栏 + 顶栏 + 1fr/318px 双栏，KPI 压成一条六格。
+      </div>
+    </article>
+
+    <article class="case">
+      <div class="case-h">
+        <span class="tag">B</span>
+        <b>顶部主轴 · 宽单列</b>
+        <span class="sub">阅读优先</span>
+        <a class="open" href="b-topbar.html">打开 →</a>
+      </div>
+      <div class="shot"><iframe src="b-topbar.html" title="方案 B 预览" loading="lazy"></iframe></div>
+      <div class="case-f">
+        <b>赌：</b>一天只开几次，每次从「今天发生了什么」开始读。一句话摘要先行，区块用留白和 hairline 分隔而不是卡片。
+      </div>
+    </article>
+
+    <article class="case">
+      <div class="case-h">
+        <span class="tag">C</span>
+        <b>主从双栏 · 收件箱</b>
+        <span class="sub">处理优先</span>
+        <a class="open" href="c-inbox.html">打开 →</a>
+      </div>
+      <div class="shot"><iframe src="c-inbox.html" title="方案 C 预览" loading="lazy"></iframe></div>
+      <div class="case-f">
+        <b>赌：</b>90% 时间在处理一件具体的事。全局数字退成 32px 状态带，屏宽全给「队列 + 当前这条」，j/k 连续处理。
+      </div>
+    </article>
+
+    <article class="case">
+      <div class="case-h">
+        <span class="tag">D</span>
+        <b>Bento 网格监控墙</b>
+        <span class="sub">全局优先</span>
+        <a class="open" href="d-bento.html">打开 →</a>
+      </div>
+      <div class="shot"><iframe src="d-bento.html" title="方案 D 预览" loading="lazy"></iframe></div>
+      <div class="case-f">
+        <b>赌：</b>多数时间在一眼扫全局、偶尔投大屏。12 列网格瓦片，导航收进底部 dock，最急的一块用反色瓦片。
+      </div>
+    </article>
+  </div>
+
+  <section class="cmp">
+    <h2>四个方案怎么选</h2>
+    <table class="cmp-t">
+      <thead>
+        <tr>
+          <th>维度</th>
+          <th>A · 侧栏</th>
+          <th>B · 顶部单列</th>
+          <th>C · 主从</th>
+          <th>D · Bento</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>首屏能回答什么</td>
+          <td>全部：待办、KPI、趋势、活动</td>
+          <td>一句结论 + 关键数字</td>
+          <td>队列有多长、当前这条为什么停着</td>
+          <td>全局态势，每块都能单独看</td>
+        </tr>
+        <tr>
+          <td>同屏信息量</td>
+          <td><span class="yes">最高</span></td>
+          <td><span class="meh">中等</span></td>
+          <td><span class="meh">中等（一深一浅）</span></td>
+          <td><span class="yes">高（分布在各瓦片）</span></td>
+        </tr>
+        <tr>
+          <td>跳转成本</td>
+          <td><span class="yes">1 次点击</span></td>
+          <td>1 次点击（≤6 项）</td>
+          <td>列表内 j/k 不跳页</td>
+          <td><span class="no">dock + 页内滚动</span></td>
+        </tr>
+        <tr>
+          <td>连续处理多条的效率</td>
+          <td>差（每次都要回总览）</td>
+          <td>差</td>
+          <td><span class="yes">最好</span></td>
+          <td>差</td>
+        </tr>
+        <tr>
+          <td>深链接 / 可分享性</td>
+          <td>好</td>
+          <td>好</td>
+          <td>好（选中项进 URL）</td>
+          <td><span class="meh">弱（一屏多对象）</span></td>
+        </tr>
+        <tr>
+          <td>迁移成本（现有 panel）</td>
+          <td><span class="yes">≈0：就是现状</span></td>
+          <td>中：导航表拆两级、页面改单栏</td>
+          <td>高：详情要能独立成页，路由要双形态</td>
+          <td>高：每个模块要声明尺寸，新增块要重排</td>
+        </tr>
+        <tr>
+          <td>最适合的场景</td>
+          <td>每天看很多次、窗口够宽、要横向对比</td>
+          <td>低频巡检、要发给别人看、写周报</td>
+          <td>值班处理队列、事故复盘</td>
+          <td>大屏展示、多人围观、指标墙</td>
+        </tr>
+        <tr>
+          <td>主要风险</td>
+          <td>左栏吃掉 15% 宽；导航一多就膨胀</td>
+          <td>一级导航放不下第 7 项；长页要滚很久</td>
+          <td>看不到全局对比；图表没地方放</td>
+          <td>瓦片尺寸锁死内容；小屏退化严重</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="criteria">
+      <div class="c">
+        <div class="k">我个人的排序</div>
+        <div class="v">
+          <b>C &gt; A &gt; B &gt; D</b>。这个面板的核心任务不是「看报表」而是「处理卡住的任务」，
+          C 的形态最贴近；A 是唯一零风险的退路。
+        </div>
+      </div>
+      <div class="c">
+        <div class="k">也可以不选</div>
+        <div class="v">
+          <b>A 的壳 + C 的列表</b>：左栏保留，仓库内的「工作台」换成主从双栏。
+          两套骨架并存，按页面选，比全站统一更省事。
+        </div>
+      </div>
+      <div class="c">
+        <div class="k">四者共通的部分</div>
+        <div class="v">
+          令牌、状态四档、33px 行高、tabular-nums、等宽 ID、⌘K。
+          这些<b>不该在重构里变</b>——变了就不是布局对比，而是重做设计系统。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">
+    文件：<code>index.html</code>（本页）、<code>e-unified.html</code>（采用方向）、对照稿
+    <code>a-console.html</code>、<code>b-topbar.html</code>、<code>c-inbox.html</code>、<code>d-bento.html</code>，
+    以及 <code>assets/base.css</code>（共用令牌与控件）与 <code>assets/theme.js</code>。<br />
+    四个页面都支持深浅色（跟随系统，或打开 <code>?theme=dark</code>）；都是静态演示，没有接 <code>/api/*</code>，
+    按钮不假装成功。
+  </div>
+</div>
+<script src="assets/theme.js"></script>
+</body>
+</html>

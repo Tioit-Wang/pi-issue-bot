@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>B · 顶部主轴宽单列 — pi-issue-bot 布局方案</title>
+<link rel="stylesheet" href="assets/base.css" />
+<!--
+  方案 B：顶部主轴 + 宽单列（导航收敛 / 阅读优先）
+  ─────────────────────────────────────────────────────────────
+  骨架：一条 46px 顶栏（品牌 + 仓库 + 一级导航 + 全局控件）→ 一栏 max 1120px 居中内容。
+  赌的是：**这个后台一天只被打开几次**，每次都从「今天发生了什么」开始读，
+  所以导航不需要常驻，纵向阅读节奏比横向排布重要。
+  代价：一级导航最多放得下 6 项；二级入口必须靠页内区块导航或 ⌘K 承担。
+-->
+<style>
+  :root {
+    --accent-hue: 268;
+    --wrap: 1120px;
+    --pad: 32px;
+  }
+
+  body {
+    background: var(--bg);
+    font-size: 13.5px;
+  }
+
+  /* ── 顶栏：唯一一条横向导航 ──────────────────────────────── */
+  .top {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in oklab, var(--bg) 86%, transparent);
+    backdrop-filter: blur(12px) saturate(1.1);
+  }
+
+  .top-in {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    max-width: var(--wrap);
+    height: 46px;
+    margin: 0 auto;
+    padding: 0 var(--pad);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .logo .m {
+    display: grid;
+    place-items: center;
+    width: 19px;
+    height: 19px;
+    border-radius: 6px;
+    background: var(--ink);
+    color: var(--ink-fg);
+    font-family: var(--font-code);
+    font-size: 10px;
+  }
+
+  .repo {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 7px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    color: var(--fg-2);
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+
+  .repo:hover {
+    border-color: var(--line-3);
+    color: var(--fg);
+  }
+
+  /* 一级导航：下划线指示，不用胶囊底 */
+  .tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 46px;
+  }
+
+  .tabs a {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 46px;
+    padding: 0 9px;
+    color: var(--fg-3);
+    font-size: 12.5px;
+    transition: color 120ms var(--ease);
+  }
+
+  .tabs a:hover {
+    color: var(--fg);
+  }
+
+  .tabs a.on {
+    color: var(--fg);
+    font-weight: 550;
+  }
+
+  .tabs a.on::after {
+    content: '';
+    position: absolute;
+    left: 9px;
+    right: 9px;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .top-r {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .cmdk {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 190px;
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--line-2);
+    border-radius: 6px;
+    color: var(--fg-3);
+    font-size: 11.5px;
+  }
+
+  .cmdk kbd {
+    margin-left: auto;
+  }
+
+  /* ── 内容：单栏 ───────────────────────────────────────────── */
+  .page {
+    max-width: var(--wrap);
+    margin: 0 auto;
+    padding: 34px var(--pad) 72px;
+  }
+
+  /* 一句话摘要：整页唯一的 20px 级感性文字 */
+  .lede {
+    max-width: 660px;
+    margin-bottom: 26px;
+    color: var(--fg-2);
+    font-size: 15px;
+    line-height: 1.55;
+    letter-spacing: -0.005em;
+  }
+
+  .lede b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .kicker {
+    margin-bottom: 8px;
+    color: var(--fg-3);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .head-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 10px;
+  }
+
+  .title {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.2;
+  }
+
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    padding-top: 4px;
+  }
+
+  /* 数字行：不带卡片，靠竖线分组 */
+  .figures {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0;
+    margin: 0 0 8px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .fig {
+    padding: 0 20px;
+    border-right: 1px solid var(--line);
+  }
+
+  .fig:first-child {
+    padding-left: 0;
+  }
+
+  .fig:last-child {
+    border-right: 0;
+  }
+
+  .fig .k {
+    color: var(--fg-3);
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .fig .n {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    margin-top: 3px;
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .fig .n small {
+    color: var(--fg-3);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+
+  .fig .d {
+    margin-top: 2px;
+    color: var(--fg-3);
+    font-size: 10.5px;
+  }
+
+  .fig .n.bad {
+    color: var(--danger-fg);
+  }
+
+  /* ── 区块：标题左、说明右；分隔用留白 + hairline，不用卡片 ── */
+  .sec {
+    margin-top: 40px;
+  }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .sec-head h2 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .sec-head .note {
+    color: var(--fg-3);
+    font-size: 11.5px;
+  }
+
+  .sec-head .right {
+    margin-left: auto;
+    font-size: 11.5px;
+  }
+
+  /* 待办：列表行，不做表格；每行 = 序号 + 内容 + 动作 */
+  .queue {
+    border-top: 1px solid var(--line-2);
+  }
+
+  .item {
+    display: grid;
+    grid-template-columns: 24px 78px minmax(0, 1fr) 96px;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 4px;
+    border-bottom: 1px solid var(--line);
+    transition: background-color 120ms var(--ease);
+  }
+
+  .item:hover {
+    background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  }
+
+  .item .idx {
+    color: var(--fg-4);
+    font-family: var(--font-code);
+    font-size: 11px;
+  }
+
+  .item .who {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11.5px;
+    color: var(--fg-3);
+  }
+
+  .item .what {
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .item .why {
+    margin-top: 2px;
+    color: var(--fg-3);
+    font-size: 11.5px;
+  }
+
+  .item .act {
+    text-align: right;
+  }
+
+  .sev {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .sev.hi {
+    color: var(--danger-fg);
+  }
+
+  .sev.md {
+    color: var(--warn-fg);
+  }
+
+  .sev.lo {
+    color: var(--fg-3);
+  }
+
+  .empty-note {
+    padding: 14px 4px;
+    color: var(--fg-3);
+    font-size: 11.5px;
+  }
+
+  /* 趋势：整幅宽图 */
+  .chart-box {
+    padding: 6px 0 0;
+  }
+
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+    color: var(--fg-3);
+    font-size: 11px;
+  }
+
+  .legend i {
+    display: inline-block;
+    width: 10px;
+    height: 2px;
+    margin-right: 5px;
+    border-radius: 2px;
+    vertical-align: middle;
+  }
+
+  /* 两列儿 */
+  .duo {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 40px;
+  }
+
+  .stat-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+
+  .stat-line:last-child {
+    border-bottom: 0;
+  }
+
+  .stat-line .nm {
+    width: 118px;
+    flex: none;
+    font-family: var(--font-code);
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+
+  .stat-line .track {
+    flex: 1;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    overflow: hidden;
+  }
+
+  .stat-line .track i {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+
+  .stat-line .track i.bad {
+    background: var(--danger);
+  }
+
+  .stat-line .track i.mid {
+    background: var(--warn);
+  }
+
+  .stat-line .v {
+    width: 30px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 活动：两列瀑布 */
+  .feed2 {
+    columns: 2;
+    column-gap: 40px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .feed2 li {
+    break-inside: avoid;
+    display: flex;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+    color: var(--fg-2);
+    font-size: 12px;
+  }
+
+  .feed2 time {
+    flex: none;
+    width: 38px;
+    color: var(--fg-3);
+    font-family: var(--font-code);
+    font-size: 10.5px;
+  }
+
+  /* 页脚：相关入口（代替侧栏的「去哪里」） */
+  .related {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 44px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    color: var(--fg-2);
+    font-size: 11.5px;
+  }
+
+  .pill:hover {
+    border-color: var(--line-3);
+    color: var(--fg);
+  }
+
+  @media (max-width: 860px) {
+    :root {
+      --pad: 16px;
+    }
+
+    .duo,
+    .feed2 {
+      grid-template-columns: 1fr;
+      columns: 1;
+    }
+
+    .item {
+      grid-template-columns: 20px minmax(0, 1fr);
+      row-gap: 6px;
+    }
+
+    .item .who,
+    .item .act {
+      grid-column: 2;
+      text-align: left;
+    }
+
+    .cmdk {
+      display: none;
+    }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <a class="logo" href="#"><span class="m">pi</span>pi-issue-bot</a>
+    <a class="repo" href="#"><span class="dot accent"></span>acme/widgets <span class="ghost" aria-hidden="true">⌄</span></a>
+
+    <nav class="tabs" aria-label="一级导航">
+      <a class="on" href="#">总览</a>
+      <a href="#">Issue 中心</a>
+      <a href="#">运行</a>
+      <a href="#">成本</a>
+      <a href="#">质量</a>
+      <a href="#">审计</a>
+      <a href="#">系统</a>
+    </nav>
+
+    <div class="top-r">
+      <span class="cmdk">搜索或跳转…<kbd class="kbd">⌘K</kbd></span>
+      <span class="chip warn"><span class="dot warn"></span>降级</span>
+      <button class="btn sq" aria-label="更多">⋯</button>
+    </div>
+  </div>
+</header>
+
+<main class="page">
+  <div class="head-row">
+    <div>
+      <div class="kicker">2026-05-31 · 08:52 UTC · acme/widgets</div>
+      <h1 class="title">总览</h1>
+    </div>
+    <div class="head-actions">
+      <div class="seg" style="display:flex;padding:2px;border:1px solid var(--line-2);border-radius:6px">
+        <button class="btn ghost" style="height:22px;padding:0 8px" aria-pressed="true">今天</button>
+        <button class="btn ghost" style="height:22px;padding:0 8px" aria-pressed="false">7d</button>
+      </div>
+      <button class="btn">刷新</button>
+    </div>
+  </div>
+
+  <!-- 摘要先行：一屏一句话 -->
+  <p class="lede">
+    今天跑了 <b>42</b> 个任务，<b>4</b> 个失败；此刻有 <b>2</b> 项卡着等你处理，
+    其中 1 项已连续失败 2 次进入 blocked。系统处于<b>降级运行</b>：外网金丝雀不可达，磁盘剩余 12%。
+  </p>
+
+  <div class="figures">
+    <div class="fig">
+      <div class="k">投递</div>
+      <div class="n">126</div>
+      <div class="d">去重后 118</div>
+    </div>
+    <div class="fig">
+      <div class="k">任务</div>
+      <div class="n">42</div>
+      <div class="d">排队 3 · 执行 1</div>
+    </div>
+    <div class="fig">
+      <div class="k">成功率</div>
+      <div class="n">90.5<small>%</small></div>
+      <div class="d">38 / 42</div>
+    </div>
+    <div class="fig">
+      <div class="k">失败</div>
+      <div class="n bad">4</div>
+      <div class="d">oom 3 · rate-limit 1</div>
+    </div>
+    <div class="fig">
+      <div class="k">p95</div>
+      <div class="n">6<small>m</small>12<small>s</small></div>
+      <div class="d">p50 1m48s</div>
+    </div>
+    <div class="fig">
+      <div class="k">成本</div>
+      <div class="n">$3.84</div>
+      <div class="d">5.4M token</div>
+    </div>
+    <div class="fig">
+      <div class="k">最老排队</div>
+      <div class="n">84<small>s</small></div>
+      <div class="d">闸门 10m</div>
+    </div>
+  </div>
+
+  <!-- 待办 -->
+  <section class="sec" aria-labelledby="s1">
+    <div class="sec-head">
+      <h2 id="s1">需要你处理</h2>
+      <span class="note">失败 &gt; 超时 &gt; 待人回答 &gt; 配置非法</span>
+      <a class="right linkish" style="color:var(--accent);font-size:11.5px" href="#">全部 5 项 →</a>
+    </div>
+
+    <div class="queue">
+      <div class="item">
+        <span class="idx">01</span>
+        <span class="who"><span class="sev hi"><span class="dot danger"></span>阻塞</span><span class="num">#318</span></span>
+        <span>
+          <span class="what">Promote 按钮在 Safari 上无响应</span>
+          <span class="why">sandbox-oom 连续 2 次 → blocked。可提容器内存，或拆成「复现 + 修复」两个任务。</span>
+        </span>
+        <span class="act"><button class="btn" style="height:26px">查看运行</button></span>
+      </div>
+
+      <div class="item">
+        <span class="idx">02</span>
+        <span class="who"><span class="sev hi"><span class="dot danger"></span>配置</span><span class="num">other/lib</span></span>
+        <span>
+          <span class="what">other/lib 的 role 标签映射缺失</span>
+          <span class="why">写回闸门会拦下该仓库全部标签动作。补上 defect → bug 就能恢复。</span>
+        </span>
+        <span class="act"><button class="btn" style="height:26px">去设置</button></span>
+      </div>
+
+      <div class="item">
+        <span class="idx">03</span>
+        <span class="who"><span class="sev md"><span class="dot warn"></span>待复核</span><span class="num">#308</span></span>
+        <span>
+          <span class="what">导入 CSV 时列名大小写被吞</span>
+          <span class="why">分类判为 not-found（缺 path:line 证据）。等 managers 评论才会重分类，不计入 48 小时关闭。</span>
+        </span>
+        <span class="act"><button class="btn" style="height:26px">复核</button></span>
+      </div>
+
+      <div class="item">
+        <span class="idx">04</span>
+        <span class="who"><span class="sev md"><span class="dot warn"></span>超时</span><span class="num">#295</span></span>
+        <span>
+          <span class="what">重构 repo 路由解析</span>
+          <span class="why">任务级 deadline 触发（timed-out），p95 已超 6 分钟阈值。</span>
+        </span>
+        <span class="act"><button class="btn" style="height:26px">重跑</button></span>
+      </div>
+
+      <div class="item">
+        <span class="idx">05</span>
+        <span class="who"><span class="sev lo"><span class="dot"></span>等待</span><span class="num">#301</span></span>
+        <span>
+          <span class="what">能否支持多语言模板</span>
+          <span class="why">已提 3 个追问，作者 5 小时未回。48 小时后自动关闭。</span>
+        </span>
+        <span class="act"><button class="btn" style="height:26px">看会话</button></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 趋势：整幅 -->
+  <section class="sec" aria-labelledby="s2">
+    <div class="sec-head">
+      <h2 id="s2">最近 24 小时</h2>
+      <span class="note">每小时任务数 · 峰值 4</span>
+      <span class="right faint num">今日 42</span>
+    </div>
+    <div class="chart-box">
+      <svg class="spark" viewBox="0 0 1000 150" role="img" aria-label="24 小时任务数曲线：凌晨 0-2 点最低，8 点与 20 点出现两个峰值各 4 个任务">
+        <line class="grid" x1="0" y1="30" x2="1000" y2="30" />
+        <line class="grid" x1="0" y1="78" x2="1000" y2="78" />
+        <line class="grid" x1="0" y1="126" x2="1000" y2="126" />
+        <text class="axis" x="0" y="22">4</text>
+        <text class="axis" x="0" y="70">2</text>
+        <text class="axis" x="0" y="118">0</text>
+        <polyline points="0,102 43.5,126 87,126 130.4,102 173.9,78 217.4,102 260.9,126 304.3,102 347.8,102 391.3,78 434.8,54 478.3,78 521.7,102 565.2,78 608.7,54 652.2,30 695.7,54 739.1,78 782.6,78 826.1,54 869.6,30 913,54 956.5,78 1000,78"
+          stroke="var(--accent)" stroke-width="1.5" />
+        <polyline points="0,110 43.5,126 87,126 130.4,110 173.9,90 217.4,110 260.9,126 304.3,110 347.8,110 391.3,90 434.8,70 478.3,90 521.7,110 565.2,90 608.7,70 652.2,46 695.7,70 739.1,90 782.6,90 826.1,70 869.6,46 913,70 956.5,90 1000,90"
+          stroke="var(--ok)" stroke-width="1.25" stroke-dasharray="0" opacity="0.85" />
+        <circle cx="652.2" cy="30" r="3" fill="var(--accent)" />
+        <text class="axis" x="0" y="146">00</text>
+        <text class="axis" x="478" y="146">12</text>
+        <text class="axis" x="962" y="146">23</text>
+      </svg>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>任务</span>
+        <span><i style="background:var(--ok)"></i>成功</span>
+        <span style="margin-left:auto">峰值 08:00 与 20:00 各 4 个</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="sec duo">
+    <section aria-labelledby="s3">
+      <div class="sec-head"><h2 id="s3">结果分布</h2><span class="note">窗口内</span></div>
+      <div class="stat-line"><span class="nm">success</span><span class="track"><i style="width:100%"></i></span><span class="v">38</span></div>
+      <div class="stat-line"><span class="nm">failed</span><span class="track"><i class="bad" style="width:10.5%"></i></span><span class="v">4</span></div>
+      <div class="stat-line"><span class="nm">timed-out</span><span class="track"><i class="mid" style="width:5.2%"></i></span><span class="v">2</span></div>
+      <div class="stat-line"><span class="nm">parse-failed</span><span class="track"><i class="mid" style="width:2.6%"></i></span><span class="v">1</span></div>
+      <div class="stat-line"><span class="nm">interrupted</span><span class="track"><i style="width:2.6%;background:var(--fg-3)"></i></span><span class="v">1</span></div>
+    </section>
+
+    <section aria-labelledby="s4">
+      <div class="sec-head"><h2 id="s4">失败分类</h2><span class="note">Top 5</span></div>
+      <div class="stat-line"><span class="nm">sandbox-oom</span><span class="track"><i class="bad" style="width:100%"></i></span><span class="v">3</span></div>
+      <div class="stat-line"><span class="nm">rate-limit</span><span class="track"><i class="mid" style="width:66%"></i></span><span class="v">2</span></div>
+      <div class="stat-line"><span class="nm">timeout</span><span class="track"><i class="mid" style="width:33%"></i></span><span class="v">1</span></div>
+      <div class="stat-line"><span class="nm">github-api</span><span class="track"><i class="mid" style="width:33%"></i></span><span class="v">1</span></div>
+      <div class="stat-line"><span class="nm">degenerate</span><span class="track"><i style="width:0"></i></span><span class="v">0</span></div>
+    </section>
+  </div>
+
+  <section class="sec" aria-labelledby="s5">
+    <div class="sec-head">
+      <h2 id="s5">最近活动</h2>
+      <span class="note">审计日志 · 写回动作都带审计 ID</span>
+      <a class="right" style="color:var(--accent);font-size:11.5px" href="#">打开审计 →</a>
+    </div>
+    <ul class="feed2">
+      <li><time>08:42</time><span><b>#318</b> 写回 comment + label（dry-run 关）· <span class="mono">success</span></span></li>
+      <li><time>08:31</time><span><b>#312</b> 任务 succeeded · 2m41s · $0.112</span></li>
+      <li><time>08:19</time><span>doctor <span class="mono">canary-network</span> 失败 · <span class="mono">disk-space</span> 12%</span></li>
+      <li><time>08:02</time><span><span class="mono">rate_limit_pause</span> 解除，429 熔断结束</span></li>
+      <li><time>07:58</time><span><b>#316</b> 人工取消 · <span class="mono">interrupted</span></span></li>
+      <li><time>07:40</time><span><b>#308</b> 分类 <span class="mono">not-found</span>，转人工复核</span></li>
+    </ul>
+  </section>
+
+  <nav class="related" aria-label="相关页面">
+    <a class="pill" href="#">Issue 中心 · 5 待处理</a>
+    <a class="pill" href="#">运行 · 42</a>
+    <a class="pill" href="#">设置 · 4 分区</a>
+    <a class="pill" href="#">技能 · 3 启用</a>
+    <a class="pill" href="#">系统 · 1 项未通过</a>
+  </nav>
+</main>
+
+<div class="demo-note">
+  <strong>B · 顶部主轴</strong>
+  <span>没有侧栏，导航变一行；先用一句话说结论，再展开证据</span>
+</div>
+<script src="assets/theme.js"></script>
+</body>
+</html>

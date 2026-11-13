@@ -1,0 +1,545 @@
+/*
+ * 四个布局方案共用的视觉底座。
+ *
+ * 为什么共用：这一轮要比较的是**布局**，不是配色。四个方案如果各带一套色板，
+ * 「哪个更好用」的判断会被颜色干扰。所以令牌、排版、控件、状态语义全部锁定在这里，
+ * 每个方案页面只有自己的 <style> 负责骨架（栏位、栅格、滚动容器）。
+ *
+ * 视觉约定（沿用 apps/panel/src/index.css 的方向）：
+ * - 中性底盘 + 唯一一支强调色（每个方案只改 --accent-hue）；主操作是墨色实心，不是强调色。
+ * - 层级只用 1px hairline 与留白；阴影只给浮层。
+ * - 状态四档（成功 155 / 警示 72 / 失败 27 / 信息 245）只允许小面积出现。
+ * - 数字 tabular-nums；ID / 命令 / 路径等宽。
+ * - 深色跟随系统：?theme=dark 也可手动覆盖（给 <html data-theme="dark">）。
+ */
+:root {
+  color-scheme: light;
+
+  --accent-hue: 205;
+
+  --bg: oklch(0.986 0.002 95);
+  --surface: oklch(1 0 0);
+  --surface-2: oklch(0.972 0.003 95);
+  --surface-3: oklch(0.955 0.004 95);
+
+  --fg: oklch(0.205 0.012 264);
+  --fg-2: oklch(0.435 0.011 264);
+  --fg-3: oklch(0.605 0.01 264);
+  --fg-4: oklch(0.73 0.008 264);
+
+  --accent: oklch(0.475 0.088 var(--accent-hue));
+  --accent-fg: oklch(0.99 0.01 var(--accent-hue));
+  --accent-soft: color-mix(in oklab, var(--accent) 8%, var(--surface));
+
+  --ink: oklch(0.205 0.012 264);
+  --ink-fg: oklch(0.99 0.002 95);
+
+  --line: color-mix(in oklab, oklch(0.205 0.012 264) 9%, transparent);
+  --line-2: color-mix(in oklab, oklch(0.205 0.012 264) 15%, transparent);
+  --line-3: color-mix(in oklab, oklch(0.205 0.012 264) 26%, transparent);
+
+  --ok: oklch(0.52 0.125 155);
+  --ok-fg: oklch(0.4 0.1 155);
+  --ok-bg: color-mix(in oklab, var(--ok) 11%, var(--surface));
+  --warn: oklch(0.68 0.135 72);
+  --warn-fg: oklch(0.47 0.1 62);
+  --warn-bg: color-mix(in oklab, var(--warn) 16%, var(--surface));
+  --danger: oklch(0.55 0.185 27);
+  --danger-fg: oklch(0.48 0.17 27);
+  --danger-bg: color-mix(in oklab, var(--danger) 11%, var(--surface));
+  --info: oklch(0.55 0.1 245);
+  --info-fg: oklch(0.45 0.1 245);
+  --info-bg: color-mix(in oklab, var(--info) 10%, var(--surface));
+
+  --shadow-float: 0 18px 42px -16px oklch(0.2 0.01 264 / 0.26), 0 3px 10px -4px oklch(0.2 0.01 264 / 0.14);
+
+  --r-ctl: 6px;
+  --r-page: 10px;
+  --r-float: 12px;
+
+  --font-ui: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-code: ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: oklch(0.168 0.008 264);
+  --surface: oklch(0.207 0.009 264);
+  --surface-2: oklch(0.232 0.009 264);
+  --surface-3: oklch(0.262 0.01 264);
+
+  --fg: oklch(0.955 0.004 264);
+  --fg-2: oklch(0.78 0.008 264);
+  --fg-3: oklch(0.63 0.01 264);
+  --fg-4: oklch(0.52 0.01 264);
+
+  --accent: oklch(0.79 0.098 var(--accent-hue));
+  --accent-fg: oklch(0.18 0.02 var(--accent-hue));
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--surface));
+
+  --ink: oklch(0.955 0.004 264);
+  --ink-fg: oklch(0.168 0.008 264);
+
+  --line: color-mix(in oklab, oklch(0.955 0.004 264) 11%, transparent);
+  --line-2: color-mix(in oklab, oklch(0.955 0.004 264) 18%, transparent);
+  --line-3: color-mix(in oklab, oklch(0.955 0.004 264) 30%, transparent);
+
+  --ok: oklch(0.72 0.13 155);
+  --ok-fg: oklch(0.82 0.11 155);
+  --warn: oklch(0.8 0.13 78);
+  --warn-fg: oklch(0.86 0.11 82);
+  --danger: oklch(0.68 0.16 27);
+  --danger-fg: oklch(0.78 0.13 27);
+  --info: oklch(0.72 0.1 245);
+  --info-fg: oklch(0.8 0.09 245);
+
+  --shadow-float: 0 20px 46px -16px oklch(0 0 0 / 0.6), 0 3px 10px -4px oklch(0 0 0 / 0.4);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --bg: oklch(0.168 0.008 264);
+    --surface: oklch(0.207 0.009 264);
+    --surface-2: oklch(0.232 0.009 264);
+    --surface-3: oklch(0.262 0.01 264);
+
+    --fg: oklch(0.955 0.004 264);
+    --fg-2: oklch(0.78 0.008 264);
+    --fg-3: oklch(0.63 0.01 264);
+    --fg-4: oklch(0.52 0.01 264);
+
+    --accent: oklch(0.79 0.098 var(--accent-hue));
+    --accent-fg: oklch(0.18 0.02 var(--accent-hue));
+    --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--surface));
+
+    --ink: oklch(0.955 0.004 264);
+    --ink-fg: oklch(0.168 0.008 264);
+
+    --line: color-mix(in oklab, oklch(0.955 0.004 264) 11%, transparent);
+    --line-2: color-mix(in oklab, oklch(0.955 0.004 264) 18%, transparent);
+    --line-3: color-mix(in oklab, oklch(0.955 0.004 264) 30%, transparent);
+
+    --ok: oklch(0.72 0.13 155);
+    --ok-fg: oklch(0.82 0.11 155);
+    --warn: oklch(0.8 0.13 78);
+    --warn-fg: oklch(0.86 0.11 82);
+    --danger: oklch(0.68 0.16 27);
+    --danger-fg: oklch(0.78 0.13 27);
+    --info: oklch(0.72 0.1 245);
+    --info-fg: oklch(0.8 0.09 245);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── 排版原子 ────────────────────────────────────────────────────────────── */
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+.h1 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.h2 {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+}
+
+.lbl {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.sm {
+  font-size: 12px;
+}
+
+.xs {
+  font-size: 11px;
+}
+
+.dim {
+  color: var(--fg-2);
+}
+
+.faint {
+  color: var(--fg-3);
+}
+
+.ghost {
+  color: var(--fg-4);
+}
+
+.mono {
+  font-family: var(--font-code);
+  font-size: 0.94em;
+  font-variant-ligatures: none;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.trunc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.row.tight {
+  gap: 4px;
+}
+
+.row.between {
+  justify-content: space-between;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ── 控件 ────────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
+}
+
+.btn:hover {
+  background: var(--surface-2);
+  border-color: var(--line-3);
+}
+
+.btn.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ink-fg);
+}
+
+.btn.primary:hover {
+  background: color-mix(in oklab, var(--ink) 86%, var(--accent));
+  border-color: transparent;
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg-2);
+}
+
+.btn.ghost:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.btn[disabled] {
+  color: var(--fg-4);
+  border-color: var(--line);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.btn.sq {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  color: var(--fg-3);
+  font-family: var(--font-code);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* ── 徽章 / 状态点 ───────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip.ok {
+  color: var(--ok-fg);
+  background: var(--ok-bg);
+  border-color: color-mix(in oklab, var(--ok) 28%, transparent);
+}
+
+.chip.warn {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-color: color-mix(in oklab, var(--warn) 34%, transparent);
+}
+
+.chip.danger {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-color: color-mix(in oklab, var(--danger) 28%, transparent);
+}
+
+.chip.info {
+  color: var(--info-fg);
+  background: var(--info-bg);
+  border-color: color-mix(in oklab, var(--info) 26%, transparent);
+}
+
+.chip.accent {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--fg-3);
+  flex: none;
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--warn) 18%, transparent);
+}
+
+.dot.danger {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--danger) 16%, transparent);
+}
+
+.dot.accent {
+  background: var(--accent);
+}
+
+/* ── 表格 ────────────────────────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+th {
+  height: 26px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+td {
+  height: 32px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+tbody tr:hover td {
+  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+}
+
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 图表 ────────────────────────────────────────────────────────────────── */
+.spark {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.spark polyline {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark .grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark .axis {
+  fill: var(--fg-4);
+  font-size: 9px;
+  font-family: var(--font-code);
+}
+
+/* ── 滚动条：只在需要的容器里出现 ────────────────────────────────────────── */
+.scroll {
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+
+.scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 999px;
+}
+
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── 演示标注条（每个方案页都有，说明「这一版赌的是什么」） ──────────────── */
+.demo-note {
+  position: fixed;
+  z-index: 60;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 660px);
+  padding: 7px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: blur(10px);
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+.demo-note strong {
+  color: var(--fg);
+  font-weight: 600;
+}
