@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>快速开始 · pi-issue-bot</title>
+<link rel="stylesheet" href="assets/doc.css">
+</head>
+<body>
+
+<div class="top">
+  <div class="l">
+    <b>pi-issue-bot</b>
+    <span><a href="../README.md">README</a> / 快速开始</span>
+  </div>
+  <div class="r"><span>10 分钟 · 单机</span></div>
+</div>
+
+<main>
+  <header class="doc-head">
+    <div class="kicker">QUICKSTART</div>
+    <h1>快速开始</h1>
+    <p class="sub">在本机跑起来，接一个仓库，看它处理第一个 issue。</p>
+    <div class="meta">
+      <div><div class="k">前置</div><div class="v">Node 24 · pnpm 10 · PG 16 · Docker</div></div>
+      <div><div class="k">默认端口</div><div class="v">3000 / 面板 5173 / metrics 9464</div></div>
+      <div><div class="k">默认写入</div><div class="v">dry-run 开启（不写 GitHub）</div></div>
+      <div><div class="k">难度</div><div class="v">一条命令一步</div></div>
+    </div>
+  </header>
+
+  <section id="s1">
+    <h2><span class="num">1</span>装依赖并确认基线</h2>
+    <p>三条门禁全绿再往下走；任一红说明环境不对，先修环境。</p>
+    <pre class="code">pnpm install
+pnpm -r typecheck
+pnpm -r test
+pnpm lint</pre>
+    <div class="callout warn">
+      <span class="k">注意</span>
+      <p>有 25 个服务端测试硬依赖真 PostgreSQL，没有库时 <code>pnpm -r test</code> 会失败。要么先做第 2 步再回来跑，要么把这批的失败当作预期。</p>
+    </div>
+  </section>
+
+  <section id="s2">
+    <h2><span class="num">2</span>建库并跑迁移</h2>
+    <p>一个 PostgreSQL 同时存业务表和队列（pg-boss），不需要 Redis。DSN 从环境变量读，没有 <code>--dsn</code> 参数。</p>
+    <pre class="code">$env:PI_BOT_PG_DSN = 'postgres://postgres:postgres@127.0.0.1:5432/pi_issue_bot'
+pnpm cli -- migrate</pre>
+    <p>迁移结束应看到 16 张初始表与 <code>schema_migrations</code> 账本；重复执行是幂等的。</p>
+  </section>
+
+  <section id="s3">
+    <h2><span class="num">3</span>写最小环境变量</h2>
+    <p>先只填四项：数据库、webhook 密钥、模型端点、数据目录。其余留空即可启动。</p>
+    <pre class="code">$env:PI_BOT_PG_DSN          = 'postgres://postgres:postgres@127.0.0.1:5432/pi_issue_bot'
+$env:PI_BOT_WEBHOOK_SECRET  = 'local-dev-secret'
+$env:PI_BOT_MODEL_BASE_URL  = 'https://api.deepseek.com/v1'
+$env:PI_BOT_MODEL_NAME      = 'deepseek-chat'
+$env:PI_BOT_MODEL_API_KEY   = 'sk-...'
+$env:PI_BOT_DATA_DIR        = 'C:\pi-bot-data'</pre>
+    <p>模型端点只要说 OpenAI 兼容协议就能用（DeepSeek、OpenAI、MiMo 都一样）；配了 key 却没配模型名，启动会直接报错。</p>
+  </section>
+
+  <section id="s4">
+    <h2><span class="num">4</span>起服务</h2>
+    <pre class="code">pnpm cli -- serve</pre>
+    <p>起来后有三个地址：<code>http://127.0.0.1:3000/healthz</code>、<code>/api/*</code> 与面板用的静态资源、<code>http://127.0.0.1:9464/metrics</code>。缺表会直接抛 <code>MIGRATIONS_PENDING</code>，回第 2 步。</p>
+    <p>另开一个终端做环境预检，13 项里只要没有 <code>fail</code> 就能继续：</p>
+    <pre class="code">pnpm cli -- doctor</pre>
+  </section>
+
+  <section id="s5">
+    <h2><span class="num">5</span>打开面板</h2>
+    <p>开发态面板跑在 5173，<code>/api</code> 自动代理到 3000。没接 GitHub 也能先看界面：加 <code>?mock=empty</code> 用假数据。</p>
+    <pre class="code">pnpm --filter @pi-issue-bot/panel dev
+# http://127.0.0.1:5173/?mock=empty</pre>
+    <p>四个状态可以直接看：<code>?mock=empty</code>、<code>?mock=error</code>、<code>?mock=unauthorized</code>、<code>?mock=slow</code>。</p>
+  </section>
+
+  <section id="s6">
+    <h2><span class="num">6</span>接 GitHub 并投一次事件</h2>
+    <ol class="steps">
+      <li>建 GitHub App，权限给 Issues（读写）与 Pull requests（读写），订阅 <code>issues</code>、<code>issue_comment</code>、<code>pull_request</code>。</li>
+      <li>把 App 装到目标仓库，填三个变量：<code>PI_BOT_GITHUB_APP_ID</code>、<code>PI_BOT_GITHUB_APP_PRIVATE_KEY_PATH</code>、<code>PI_BOT_GITHUB_INSTALLATION_ID</code>，重启服务。</li>
+      <li>Webhook 指向 <code>https://&lt;你的域名&gt;/webhook</code>，secret 与 <code>PI_BOT_WEBHOOK_SECRET</code> 一致。本机调试用 ngrok 之类的隧道。</li>
+      <li>在那个仓库开一个 issue（或评论 <code>@pi-bot /issue-triage</code>）。</li>
+      <li>面板进 <code>/repos/&lt;owner&gt;__&lt;name&gt;/issues</code>，能看到这次会话：触发了什么、模型说了什么、写了什么。</li>
+    </ol>
+    <div class="callout ok">
+      <span class="k">安全</span>
+      <p><code>PI_BOT_DRY_RUN</code> 默认 <code>true</code>：这一次不会真的评论、打标或建 issue，只落一条 <code>writeback.dry-run</code> 事件。确认行为符合预期后，再设为 <code>false</code>。</p>
+    </div>
+  </section>
+
+  <section id="s7">
+    <h2><span class="num">7</span>下一步</h2>
+    <div class="cards">
+      <a class="card" href="project-overview.html">
+        <div class="k">理解</div>
+        <div class="t">项目说明</div>
+        <div class="d">一次事件经过哪 14 步、27 张表各管什么、哪些边界不能碰。</div>
+      </a>
+      <a class="card" href="testing-standards.html">
+        <div class="k">验收</div>
+        <div class="t">测试规范</div>
+        <div class="d">四层分工、三类骨架、哪些改动必须有测试。</div>
+      </a>
+      <a class="card" href="../AGENTS.md">
+        <div class="k">开发</div>
+        <div class="t">开发规范</div>
+        <div class="d">依赖方向、十条不变式、提交与交付格式。</div>
+      </a>
+      <a class="card" href="requirements.html">
+        <div class="k">需求</div>
+        <div class="t">需求正文 v2.1</div>
+        <div class="d">FR / BR / AC 的原始口径。</div>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    <span>pi-issue-bot · 快速开始</span>
+    <span><a class="ref" href="../README.md">回 README</a></span>
+  </footer>
+</main>
+
+</body>
+</html>

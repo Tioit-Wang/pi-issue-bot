@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>测试规范 · pi-issue-bot</title>
+<link rel="stylesheet" href="assets/doc.css">
+</head>
+<body>
+
+<div class="top">
+  <div class="l">
+    <b>pi-issue-bot</b>
+    <span><a href="../README.md">README</a> / 测试规范</span>
+  </div>
+  <div class="r"><span>158 文件 / ≈1990 用例</span></div>
+</div>
+
+<div class="layout">
+  <nav class="toc" id="toc">
+    <p class="t">目录</p>
+    <a href="#s1"><span class="n">1</span>命令</a>
+    <a href="#s2"><span class="n">2</span>分层与位置</a>
+    <a href="#s3"><span class="n">3</span>四段骨架</a>
+    <a href="#s4"><span class="n">4</span>必须写 / 可跳过</a>
+    <a href="#s5"><span class="n">5</span>检查清单</a>
+    <a href="#s6"><span class="n">6</span>常见坑</a>
+  </nav>
+
+  <main>
+    <header class="doc-head">
+      <div class="kicker">TESTING STANDARDS</div>
+      <h1>测试规范</h1>
+      <p class="sub">标准只有一句：改动之后，你能指出哪一条断言会红。</p>
+    </header>
+
+    <section id="s1">
+      <h2><span class="num">1</span>命令</h2>
+      <pre class="code">pnpm -r typecheck                          <span class="c"># 逐包 tsc --noEmit</span>
+pnpm -r test                               <span class="c"># 逐包 vitest run（25 个文件需要真 PG）</span>
+pnpm --filter @pi-issue-bot/panel test     <span class="c"># 面板（jsdom + MSW）</span>
+pnpm lint                                  <span class="c"># 含依赖方向门禁</span></pre>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:200px">命令</th><th>注意</th></tr></thead>
+          <tbody>
+            <tr><td><code>pnpm test:all</code></td><td>根配置只匹配 <code>*.test.ts</code>，环境是 node。面板 21 个测试文件里有 <b>17 个是 <code>.tsx</code></b>，不会被跑到。</td></tr>
+            <tr><td><code>pnpm -r test</code></td><td><code>openTestDb()</code> 不 skip：没有 PostgreSQL 时那 25 个文件直接失败，不算「全部通过」。</td></tr>
+            <tr><td>真 Docker / 真 git</td><td>用 <code>skipIf</code> 按机器能力跳过，文件头写明条件，交付里点名。</td></tr>
+            <tr><td>CI</td><td>仓库没有 CI，也没有覆盖率门禁；门禁就是上面四条在本机跑绿。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>DSN 变量目前三个名字并存：<code>PI_BOT_TEST_DSN</code>（<code>helpers/queries-db.ts</code>）、<code>PI_BOT_TEST_DATABASE_URL</code>、<code>PI_BOT_DATABASE_URL</code>。按被测文件用对应变量。</p>
+    </section>
+
+    <section id="s2">
+      <h2><span class="num">2</span>分层与位置</h2>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:60px">层</th><th style="width:200px">范围</th><th style="width:230px">放哪里</th><th>典型对象</th></tr></thead>
+          <tbody>
+            <tr><td><b>U</b></td><td>纯函数</td><td><code>apps/server/test/*.test.ts</code>、<code>packages/*/test/</code></td><td><code>decideEvent</code>、<code>planLabelDelta</code>、<code>decideRetry</code>、<code>renderPrompt</code>、<code>buildHostConfig</code></td></tr>
+            <tr><td><b>I</b></td><td>真 PG + 假 GitHub / 假 RACP</td><td><code>apps/server/test/</code>（<code>helpers/</code>）</td><td><code>queries/*</code>、webhook 九步、<code>runTask</code>、<code>jobs/*</code>、<code>dispatcher</code></td></tr>
+            <tr><td><b>P</b></td><td>jsdom + MSW</td><td><code>apps/panel/src/**/__tests__/</code>、<code>apps/panel/test/</code></td><td>路由四态、导航、设置草稿、技能模态框、<code>format</code></td></tr>
+            <tr><td><b>M</b></td><td>真环境手验，不计入自动化</td><td>结论写进交付说明</td><td>@ 是否点到人、GitHub 是否拒写、模型结论像不像人话</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li>服务端测试与被测代码分离，命名 <code>&lt;模块&gt;-&lt;子主题&gt;.test.ts</code>（<code>queue-retry-policy</code>、<code>queries-costs-audit</code>、<code>no-merge</code>）。</li>
+        <li>夹具不叫 <code>*.test.ts</code>，放 <code>helpers/</code>；<code>test/git-fixture.test.ts</code> 是历史遗留。</li>
+        <li><code>describe</code> / <code>it</code> 用中文；文件头写测什么、为什么这样假。</li>
+        <li>根 <code>vitest.config.ts</code> 只放共享默认值，各包 <code>mergeConfig</code> 继承并覆盖 <code>include</code>。</li>
+      </ul>
+    </section>
+
+    <section id="s3">
+      <h2><span class="num">3</span>四段骨架</h2>
+
+      <h3>3.1 纯函数（U）</h3>
+      <pre class="code">import { describe, expect, it } from 'vitest';
+import { decideRetry } from '../src/queue/retry-policy.ts';
+
+describe('重试矩阵', () =&gt; {
+  it('超时不重试', () =&gt; {
+    expect(decideRetry([signal('timeout')])).toEqual({ action: 'none' });
+  });
+  it('429 用 startAfter，不用 retryLimit', () =&gt; {
+    expect(decideRetry([signal('rate-limit')], { attempts: 2, retryAfterMs: 30_000 }))
+      .toMatchObject({ action: 'start-after', delayMs: 30_000 });
+  });
+});</pre>
+      <p>显式导入 <code>vitest</code>（<code>globals: false</code>）；相对导入带 <code>.ts</code>；断言传进去的参数，不只断言返回值。</p>
+
+      <h3>3.2 真库集成（I）</h3>
+      <pre class="code">import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { openTestDb, seedStandard, type TestDb } from './helpers/queries-db.ts';
+import { costsResponseSchema } from '@pi-issue-bot/contract';
+
+describe('queries/costs（真库）', () =&gt; {
+  let db: TestDb;
+  beforeAll(async () =&gt; { db = await openTestDb(); });
+  afterAll(async () =&gt; { await db.truncate(); await db.close(); });
+  beforeEach(async () =&gt; { await db.truncate(); await seedStandard(db); });
+
+  it('按仓库拆分与手算一致', async () =&gt; {
+    const r = await db.queries.costs({ window: '7d' });
+    expect(() =&gt; costsResponseSchema.parse(r)).not.toThrow();
+    expect(r.byRepo[0].costUsd).toBeCloseTo(0.22, 6);
+  });
+});</pre>
+      <p>隔离靠文件级 <code>pg_advisory_lock</code> + <code>fileParallelism: false</code>；<code>truncate</code> 只清自己写过的表；时钟用 <code>FIXED_NOW</code> 注入；响应必须过契约 <code>parse()</code>。</p>
+
+      <h3>3.3 扫源码的不变量</h3>
+      <pre class="code">it('src 里没有任何合并调用', () =&gt; {
+  const files = walk(['apps/server/src', 'packages/contract/src']);
+  expect(files.length).toBeGreaterThan(50);   // 先证明扫到了文件，防空转
+  for (const f of files) {
+    const text = read(f);
+    for (const re of [/\\.merge\\(/, /mergePullRequest/, /merge_pull_request/]) {
+      expect(text).not.toMatch(re);
+    }
+  }
+});</pre>
+
+      <h3>3.4 面板组件（P）</h3>
+      <pre class="code">const server = setupServer(...createHandlers());
+beforeAll(() =&gt; {
+  server.listen({ onUnhandledFrame: 'error' });   <span class="c">// msw 3 的选项名</span>
+  server.events.on('request:start', (e) =&gt; requests.push(e.request.url));
+});
+afterEach(() =&gt; server.resetHandlers());
+
+it('内容态并带时间窗参数', async () =&gt; {
+  renderWithProviders(&lt;CostsPage /&gt;, { route: '/costs?window=7d' });
+  expect(await screen.findByTestId('costs-content')).toBeTruthy();
+  expect(requests.some((u) =&gt; u.includes('/api/costs') &amp;&amp; u.includes('window=7d'))).toBe(true);
+});</pre>
+      <p>四态靠 URL 上的 <code>?mock=empty|error|unauthorized|slow</code> 制造，不塞组件 prop；断言用 <code>{testId}-loading|-error|-empty|-content|-offline</code>。</p>
+    </section>
+
+    <section id="s4">
+      <h2><span class="num">4</span>必须写 / 可跳过</h2>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:190px">变更</th><th style="width:90px">层级</th><th>最低验收</th></tr></thead>
+          <tbody>
+            <tr><td>修 bug</td><td>U/I</td><td>先有会红的用例（或明确基线），再修，再绿</td></tr>
+            <tr><td>新功能</td><td>U+I</td><td>分支用例 + 一条从真实入口进的用户路径</td></tr>
+            <tr><td>重构</td><td>沿用</td><td>声明保住的不变式，跑现有测试证明</td></tr>
+            <tr><td>契约变更</td><td>契约</td><td>生产方与消费方都覆盖，<code>gen:openapi</code> 产物同批提交</td></tr>
+            <tr><td>迁移</td><td>I</td><td>真库跑通，不假设空库</td></tr>
+            <tr><td>队列 / 重试 / 并发</td><td>U+I</td><td>信号优先级、重试决策、并发闸各有断言</td></tr>
+            <tr><td>安全边界</td><td>U/扫描</td><td>拒绝路径优先测，扫描型不许放宽</td></tr>
+            <tr><td>面板交互</td><td>P</td><td>四态 + 键盘、脏状态拦截、错误重试</td></tr>
+            <tr><td>文档 / 注释 / 样式</td><td>—</td><td>核对路径、命令、数字；不要求单测</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>可跳过但必须给替代验证：纯文档或注释；不影响交互与可访问性的视觉调整；机械生成的产物；已被现有测试覆盖的无分支重构。</p>
+    </section>
+
+    <section id="s5">
+      <h2><span class="num">5</span>检查清单</h2>
+      <ul class="ac">
+        <li><span class="box"></span><span class="id">C1</span><span><code>pnpm -r typecheck</code> 通过</span></li>
+        <li><span class="box"></span><span class="id">C2</span><span><code>pnpm -r test</code> 通过；没库时点名哪批未跑</span></li>
+        <li><span class="box"></span><span class="id">C3</span><span>改面板 → 面板测试也跑过</span></li>
+        <li><span class="box"></span><span class="id">C4</span><span><code>pnpm lint</code> 通过，没放宽依赖 zone</span></li>
+        <li><span class="box"></span><span class="id">C5</span><span>新行为有断言，能说清哪条会红</span></li>
+        <li><span class="box"></span><span class="id">C6</span><span>动契约 → <code>gen:openapi</code> 已跑；动库 → 真库迁移已跑</span></li>
+        <li><span class="box"></span><span class="id">C7</span><span>没有新增 <code>vi.mock</code>、快照、假时钟、sleep</span></li>
+        <li><span class="box"></span><span class="id">C8</span><span>skip 已点名，未混进「全部通过」</span></li>
+      </ul>
+    </section>
+
+    <section id="s6">
+      <h2><span class="num">6</span>常见坑</h2>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:210px">症状</th><th style="width:200px">原因</th><th>怎么办</th></tr></thead>
+          <tbody>
+            <tr><td>面板测试「全绿」但没测到改动</td><td>用了 <code>test:all</code>，根 include 不含 <code>.test.tsx</code></td><td>改用 <code>--filter @pi-issue-bot/panel test</code></td></tr>
+            <tr><td>随机红、重跑就好</td><td>共用真库没隔离，或依赖执行顺序</td><td>advisory lock + <code>fileParallelism: false</code> + 只清自己的表</td></tr>
+            <tr><td>连不上库</td><td>三个 DSN 变量名并存</td><td>按被测文件用对应变量</td></tr>
+            <tr><td>改过 <code>process.env</code> 后全错</td><td>没有复原，且 repo-config 有模块级缓存</td><td><code>finally</code> 复原 + <code>resetDefaultRepoSettingsCache()</code></td></tr>
+            <tr><td>扫描型测试永远绿</td><td>路径写错，扫到 0 个文件</td><td>先断言 <code>files.length &gt; N</code></td></tr>
+            <tr><td>夹具被当成用例跑</td><td>夹具命名成 <code>*.test.ts</code></td><td>放 <code>helpers/</code>，不叫 <code>*.test.ts</code></td></tr>
+            <tr><td><code>ResizeObserver is not defined</code></td><td>jsdom 缺它，Recharts 要</td><td><code>test/setup.ts</code> 已补，别绕过 setup</td></tr>
+            <tr><td>等待用 sleep，机器慢就红</td><td>没有同步点</td><td><code>waitFor(predicate)</code> / <code>findBy*</code></td></tr>
+            <tr><td>只断言 <code>outcome === 'succeeded'</code></td><td>只证明跑完，不证明做了什么</td><td>断言评论条数、标签集合、落库行数</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <footer>
+        <span>pi-issue-bot · 测试规范</span>
+        <span><a class="ref" href="../AGENTS.md">开发规范</a> · <a class="ref" href="../README.md">回 README</a></span>
+      </footer>
+    </section>
+  </main>
+</div>
+
+<script src="assets/doc.js"></script>
+</body>
+</html>

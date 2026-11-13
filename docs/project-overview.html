@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目说明 · pi-issue-bot</title>
+<link rel="stylesheet" href="assets/doc.css">
+</head>
+<body>
+
+<div class="top">
+  <div class="l">
+    <b>pi-issue-bot</b>
+    <span><a href="../README.md">README</a> / 项目说明</span>
+  </div>
+  <div class="r"><span>2026-11-13 · 依代码核对</span></div>
+</div>
+
+<div class="layout">
+  <nav class="toc" id="toc">
+    <p class="t">目录</p>
+    <a href="#s1"><span class="n">1</span>定位</a>
+    <a href="#s2"><span class="n">2</span>解决什么问题</a>
+    <a href="#s3"><span class="n">3</span>做与不做</a>
+    <a href="#s4"><span class="n">4</span>结构</a>
+    <a href="#s5"><span class="n">5</span>一次事件</a>
+    <a href="#s6"><span class="n">6</span>数据</a>
+    <a href="#s7"><span class="n">7</span>配置</a>
+    <a href="#s8"><span class="n">8</span>失败与重试</a>
+    <a href="#s9"><span class="n">9</span>边界与不变式</a>
+    <a href="#s10"><span class="n">10</span>现状与缺口</a>
+    <a href="#s11"><span class="n">11</span>术语</a>
+  </nav>
+
+  <main>
+    <header class="doc-head">
+      <div class="kicker">PROJECT OVERVIEW</div>
+      <h1>pi-issue-bot</h1>
+      <p class="sub">GitHub issue 自动处理平台：事件进、会话跑、结论写回、全过程可查。</p>
+      <div class="meta">
+        <div><div class="k">形态</div><div class="v">单进程 + 单 PostgreSQL</div></div>
+        <div><div class="k">规模假设</div><div class="v">&lt; 100 事件/天</div></div>
+        <div><div class="k">技术栈</div><div class="v">Node 24 · Fastify · React</div></div>
+        <div><div class="k">状态</div><div class="v">已实现 · 未放行</div></div>
+      </div>
+    </header>
+
+    <section id="s1">
+      <h2><span class="num">1</span>定位</h2>
+      <p>一个跑在你自己机器上的 GitHub 机器人服务。它接 webhook、用 PostgreSQL 记事实、用 pg-boss 排队、用 pi-host 跑 agent、用 Docker 隔离命令，最后把结论写回 GitHub。</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:170px">端点</th><th style="width:110px">端口</th><th>作用</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /webhook</code></td><td>3000</td><td>GitHub App 投递入口：验签 → 去重 → 判定 → 入队，2 秒内应答</td></tr>
+            <tr><td><code>/api/*</code></td><td>3000</td><td>面板读接口（另含仓库设置、技能管理写接口）</td></tr>
+            <tr><td><code>/healthz</code></td><td>3000</td><td>健康聚合，任一检查 <code>fail</code> 返回 503</td></tr>
+            <tr><td><code>/metrics</code></td><td>9464</td><td>独立实例与 Registry，只监听 loopback</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>面板是纯前端 SPA，不连数据库、不 import 服务端代码，两侧只通过 <code>packages/contract</code> 与 <code>openapi/pi-bot.openapi.json</code> 耦合。</p>
+    </section>
+
+    <section id="s2">
+      <h2><span class="num">2</span>解决什么问题</h2>
+      <div class="req">
+        <div class="hd"><span class="id">P1</span><span class="ttl">事件是散的</span></div>
+        <p>新建、编辑、打标、评论、关闭各算一次任务，agent 每次从零开始，正文重复注入、结论互不相认。</p>
+        <div class="note"><b>做法：</b>一个 issue 一条会话（<code>agent_sessions</code>），后续事件进 <code>agent_messages</code>，同一 issue 同时只跑一条。</div>
+      </div>
+      <div class="req">
+        <div class="hd"><span class="id">P2</span><span class="ttl">「要不要回」和「回什么」混在一起</span></div>
+        <p>让模型同时决定两件事，结果不可复现也无法解释。</p>
+        <div class="note"><b>做法：</b>触发判定是纯函数（<code>trigger/decide.ts</code>），顺序固定，跳过原因落库。</div>
+      </div>
+      <div class="req">
+        <div class="hd"><span class="id">P3</span><span class="ttl">写坏了没人兜</span></div>
+        <p>打错标、发错评论、推错分支，代价由人承担。</p>
+        <div class="note"><b>做法：</b>dry-run 默认开；推送集 = 声明 ∩ 实际；代码里不存在 merge 能力。</div>
+      </div>
+    </section>
+
+    <section id="s3">
+      <h2><span class="num">3</span>做与不做</h2>
+      <div class="split">
+        <div class="yes">
+          <h4>做</h4>
+          <ul>
+            <li>格式判定与模板回复（槽位覆盖，不刷屏）</li>
+            <li>分类打标（六级归一，只撤自己打的）</li>
+            <li><code>@pi-bot /命令</code> 执行技能</li>
+            <li>建 issue（指纹去重 + 日配额）</li>
+            <li>推 <code>bot/*</code> 分支、开 PR</li>
+            <li>会话常驻 + 上下文压缩</li>
+            <li>面板：吞吐 / 成本 / 改回率 / 审计 / 会话回放</li>
+          </ul>
+        </div>
+        <div class="no">
+          <h4>不做</h4>
+          <ul>
+            <li>不合并 PR（代码层无此能力）</li>
+            <li>不设置信阈值（要证据，不要自评分）</li>
+            <li>不做人工审批流</li>
+            <li>不支持多租户 / GitLab / GHES</li>
+            <li>不让 agent 直接写 GitHub</li>
+          </ul>
+        </div>
+      </div>
+      <p>「不做」是设计决策，多数有机械约束：<code>github/</code> 目录没有合并方法，<code>apps/server/test/no-merge.test.ts</code> 扫源码守住。</p>
+    </section>
+
+    <section id="s4">
+      <h2><span class="num">4</span>结构</h2>
+      <div class="figure">
+        <svg viewBox="0 0 660 250" xmlns="http://www.w3.org/2000/svg"
+             font-family="-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif">
+          <defs>
+            <marker id="fa" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#2f6fed"/>
+            </marker>
+            <marker id="fb" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#7e8894"/>
+            </marker>
+          </defs>
+
+          <rect x="4" y="56" width="92" height="132" rx="10" fill="#f2f4f6" stroke="#24292f" stroke-width="1.4"/>
+          <text x="16" y="78" font-size="11.5" font-weight="650" fill="#15181c">GitHub</text>
+          <text x="16" y="95" font-size="8.8" fill="#6b7480">事件源 / 写回终点</text>
+          <text x="16" y="116" font-size="8.2" fill="#818b96" font-family="monospace">issues.*</text>
+          <text x="16" y="130" font-size="8.2" fill="#818b96" font-family="monospace">issue_comment.*</text>
+          <text x="16" y="144" font-size="8.2" fill="#818b96" font-family="monospace">pull_request.*</text>
+          <text x="16" y="168" font-size="8" fill="#9aa3ad">无 merge 能力</text>
+
+          <rect x="126" y="6" width="528" height="238" rx="12" fill="#fbfcfd" stroke="#9aa3ad" stroke-width="1.4"/>
+          <text x="142" y="27" font-size="11.5" font-weight="650" fill="#15181c">pi-issue-bot</text>
+
+          <rect x="142" y="38" width="102" height="112" rx="8" fill="#eef3fe" stroke="#2f6fed"/>
+          <text x="154" y="56" font-size="10.5" font-weight="620" fill="#16337a">http/</text>
+          <text x="154" y="74" font-size="8.6" fill="#3b5b9e">验签 · 去重</text>
+          <text x="154" y="89" font-size="8.6" fill="#3b5b9e">触发判定</text>
+          <text x="154" y="104" font-size="8.6" fill="#3b5b9e">入队</text>
+          <text x="154" y="119" font-size="8.6" fill="#3b5b9e">/api/* · /metrics</text>
+          <text x="154" y="134" font-size="8.6" fill="#3b5b9e">/healthz</text>
+
+          <rect x="264" y="38" width="102" height="112" rx="8" fill="#eff2f5" stroke="#5b6470"/>
+          <text x="276" y="56" font-size="10.5" font-weight="620" fill="#15181c">queue/</text>
+          <text x="276" y="74" font-size="8.6" fill="#5b6470">pg-boss 7 条</text>
+          <text x="276" y="89" font-size="8.6" fill="#5b6470">重试矩阵</text>
+          <text x="276" y="104" font-size="8.6" fill="#5b6470">429 滑动窗口</text>
+          <text x="276" y="119" font-size="8.6" fill="#5b6470">仓库并发闸</text>
+          <text x="276" y="134" font-size="8.6" fill="#5b6470">排队超时取消</text>
+
+          <rect x="386" y="38" width="112" height="112" rx="8" fill="#f3f0fd" stroke="#6b58d6"/>
+          <text x="398" y="56" font-size="10.5" font-weight="620" fill="#322364">worker/</text>
+          <text x="398" y="74" font-size="8.6" fill="#4b3d8a">worktree 检出</text>
+          <text x="398" y="89" font-size="8.6" fill="#4b3d8a">容器 + exec 代理</text>
+          <text x="398" y="104" font-size="8.6" fill="#4b3d8a">turn 驱动</text>
+          <text x="398" y="119" font-size="8.6" fill="#4b3d8a">信封 → 写回</text>
+          <text x="398" y="134" font-size="8.6" fill="#4b3d8a">熔断 · 销毁</text>
+
+          <rect x="518" y="38" width="120" height="112" rx="8" fill="#eaf7f5" stroke="#0b7d70"/>
+          <text x="530" y="56" font-size="10.5" font-weight="620" fill="#0b4f47">panel/</text>
+          <text x="530" y="74" font-size="8.6" fill="#0b6a60">13 条路由</text>
+          <text x="530" y="89" font-size="8.6" fill="#0b6a60">四态 + MSW</text>
+          <text x="530" y="104" font-size="8.6" fill="#0b6a60">10s / 15s / 5s 轮询</text>
+          <text x="530" y="119" font-size="8.6" fill="#0b6a60">工作台 · 成本 · 审计</text>
+          <text x="530" y="134" font-size="8.6" fill="#0b6a60">Issue 会话回放</text>
+
+          <rect x="142" y="176" width="406" height="50" rx="8" fill="#ffffff" stroke="#d3d9df"/>
+          <text x="156" y="195" font-size="10" font-weight="620" fill="#15181c">PostgreSQL 16+ · 27 张表 + pgboss schema</text>
+          <text x="156" y="212" font-size="8.5" fill="#6b7480">tasks · runs · run_events · envelopes · actions · webhook_deliveries · agent_sessions · agent_messages · bot_labels …</text>
+
+          <rect x="392" y="126" width="168" height="42" rx="8" fill="#fdf7ec" stroke="#b45309"/>
+          <text x="404" y="142" font-size="9.6" font-weight="620" fill="#7c3a06">Docker · 一任务一容器</text>
+          <text x="404" y="157" font-size="8.2" fill="#96602a">只读根 · 无凭证 · 命令经 socket</text>
+
+          <path d="M96,108 L124,108" stroke="#7e8894" stroke-width="1.2" marker-end="url(#fb)"/>
+          <path d="M244,92 L262,92" stroke="#2f6fed" stroke-width="1.2" marker-end="url(#fa)"/>
+          <path d="M366,92 L384,92" stroke="#2f6fed" stroke-width="1.2" marker-end="url(#fa)"/>
+          <path d="M490,150 L490,174" stroke="#2f6fed" stroke-width="1.2" marker-end="url(#fa)"/>
+          <path d="M578,150 L578,174" stroke="#7e8894" stroke-width="1.2" marker-end="url(#fb)"/>
+          <path d="M194,150 L194,174" stroke="#7e8894" stroke-width="1.2" marker-end="url(#fb)"/>
+        </svg>
+        <div class="cap">图 1 · 四个部件共用一个进程与一个数据库；橙色是任务容器，容器内没有 GitHub 或模型凭证。</div>
+      </div>
+
+      <h3>4.1 模块</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:110px">目录</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td><code>app/</code></td><td>总装（<code>compose.ts</code>，全量可注入）与配置读取；<code>serve</code> 不迁移，缺表抛 <code>MIGRATIONS_PENDING</code></td></tr>
+            <tr><td><code>http/</code></td><td>唯一对外入口：webhook 九步、<code>/api/*</code>、<code>/healthz</code>、独立 <code>/metrics</code></td></tr>
+            <tr><td><code>config/</code></td><td><code>repos.settings</code> 唯一载体；<code>v21-settings</code> 纯函数、解析失败回默认值而不抛错</td></tr>
+            <tr><td><code>db/</code></td><td>drizzle schema（24 张，无外键）、单一账本迁移、连接池</td></tr>
+            <tr><td><code>queue/</code></td><td><code>definitions.ts</code> 是并发/过期/重试/cron 的唯一事实源；重试矩阵、429 熔断、排队闸门</td></tr>
+            <tr><td><code>jobs/</code></td><td>6 个定时作业；缺依赖跳过并 warn，不抛错</td></tr>
+            <tr><td><code>queries/</code></td><td>面板读模型，全只读，SQL 参数化</td></tr>
+            <tr><td><code>trigger/</code></td><td>触发判定纯函数、提及解析（先蒙代码区）、角色匹配</td></tr>
+            <tr><td><code>workflows/</code></td><td>标签六级归一与打标结论</td></tr>
+            <tr><td><code>agent/</code></td><td>issue 级串行化：<code>agent_messages</code> 即队列，单语句领取</td></tr>
+            <tr><td><code>runtime/</code></td><td>pi-host 监督、turn 驱动、PIN 校验、令牌加密、工具级审批</td></tr>
+            <tr><td><code>worker/</code></td><td>任务主流程（不抛异常，失败进 report）</td></tr>
+            <tr><td><code>sandbox/</code></td><td>容器生命周期与命令通道（<code>docker.ts</code> 是唯一触达 socket 的代码）</td></tr>
+            <tr><td><code>git/</code></td><td>repo 缓存、worktree、写回闸门、push；<code>run-git.ts</code> 是唯一 git 入口</td></tr>
+            <tr><td><code>github/</code></td><td>App 认证、限流头、六类写动作（无 merge）</td></tr>
+            <tr><td><code>writeback/</code></td><td>目标态写回、评论槽位、markup 中和</td></tr>
+            <tr><td><code>skills/</code></td><td>技能注册与装配；输出契约永远是最后一段</td></tr>
+            <tr><td><code>compact/</code></td><td>上下文压缩：双阈值 + 六阶降级，追加式 checkpoint</td></tr>
+            <tr><td><code>degeneracy/</code></td><td>三条熔断：段落重复、低新颖度、工具死循环</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>4.2 依赖方向是 lint 规则</h3>
+      <pre class="code">http/api       → queries → db          <span class="c">// queries 只读，lint 拦 9 个业务目录</span>
+http/webhook   → github, queue         <span class="c">// 只做「验签 → 去重 → 入队」</span>
+worker         → runtime, sandbox, git, envelope, github, degeneracy
+runtime        → racp-client
+worker         ✗→ http
+apps/server    ✗→ apps/panel · apps/panel ✗→ apps/server
+packages/*     ✗→ apps/*
+shared ✗→ contract · contract ✗→ shared / envelope / racp-client</pre>
+      <p><code>queries/</code> 的 zone 只列了 <code>http / worker / runtime / sandbox / git / github / queue / envelope / degeneracy</code> 九个目录——<code>agent/</code> 等其余模块靠约定与评审，不靠 lint。</p>
+    </section>
+
+    <section id="s5">
+      <h2><span class="num">5</span>一次事件</h2>
+      <ol class="steps">
+        <li><b>到达。</b>GitHub 投递到 <code>POST /webhook</code>，raw body 保留。</li>
+        <li><b>验签。</b>失败 401，并落审计。</li>
+        <li><b>投递去重。</b><code>INSERT webhook_deliveries … ON CONFLICT DO NOTHING</code>；<code>rowCount = 0</code> 直接 200 <code>duplicate</code>。</li>
+        <li><b>项目解析。</b>找 <code>repos</code> 行、校验 <code>installation_id</code>；未知仓库也落审计。</li>
+        <li><b>判定。</b>仓库开关 → 事件开关 → 附加条件 → 评论四闸门 → 内容去重 → 日配额；跳过就写 <code>decision_reason</code> 并 200。</li>
+        <li><b>落任务。</b><code>INSERT tasks</code>，<code>command / actor_login / queued_at</code> 写死。</li>
+        <li><b>入队。</b><code>boss.send('run-task', {taskId}, {singletonKey: taskId, retryLimit: 0})</code>。</li>
+        <li><b>ack。</b>打 <code>eyes</code> reaction（失败只 warn）后立刻 200。</li>
+        <li><b>领取。</b>过全局并发（3）与仓库并发闸（默认 2）→ <code>beginRun()</code>。</li>
+        <li><b>准备。</b>worktree 检出 → 起容器 → 起 exec 代理 → 等 pi-host ready。</li>
+        <li><b>执行。</b><code>project/register</code> → <code>session/create</code> → <code>events/subscribe{after}</code> → <code>turn/start</code>；事件先过三条熔断。</li>
+        <li><b>取结论。</b><code>workspace/diff</code> → 找信封 → zod 校验 → 写 <code>envelopes</code>（不合规也入库）。</li>
+        <li><b>写回。</b>dry-run 只算不写；正式执行逐条动作，遇失败即停不回滚。</li>
+        <li><b>收尾。</b>判定结局 → 销毁容器（先 inspect 采 OOM）→ 记用量 → 终态 reaction → 关 run。</li>
+      </ol>
+      <p>同一 issue 的后续事件不走新 task 乱序：进 <code>agent_messages</code>，<code>claimNextForIssue()</code> 用 <code>FOR UPDATE SKIP LOCKED</code> 保证一个 issue 同时只有一条在跑。</p>
+    </section>
+
+    <section id="s6">
+      <h2><span class="num">6</span>数据</h2>
+      <p>27 张表（drizzle 定义 24 张 + 迁移建的 <code>skills</code> / <code>skill_versions</code> / <code>skills_audit</code>），12 个迁移，无外键，时间列一律 <code>timestamptz</code>。</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:110px">分组</th><th style="width:270px">表</th><th>记住什么</th></tr></thead>
+          <tbody>
+            <tr><td>投递与仓库</td><td><code>webhook_deliveries</code> <code>repos</code> <code>issue_fingerprints</code> <code>quota_counters</code></td><td>投递一行一 <code>delivery_id</code>（幂等主点），并记 <code>decision_reason</code>；<code>repos</code> 是配置唯一载体</td></tr>
+            <tr><td>任务与执行</td><td><code>tasks</code> <code>runs</code> <code>run_events</code> <code>envelopes</code> <code>actions</code></td><td>请求 / 单次尝试 / 过程 / 结论 / 写回结果；<code>actions.reverted_at</code> 支撑改回统计</td></tr>
+            <tr><td>issue 会话</td><td><code>agent_sessions</code> <code>agent_messages</code> <code>agent_denials</code> <code>agent_compactions</code> <code>comment_slots</code></td><td>会话状态、消息（同时是队列）、拒绝回复去重、压缩 checkpoint、评论槽位</td></tr>
+            <tr><td>标签与反馈</td><td><code>bot_labels</code> <code>label_decisions</code> <code>issue_states</code> <code>issue_feedback</code> <code>degeneracy_hits</code></td><td>打过哪些标（撤标是置位不是删除）、每轮 desired vs applied、reaction 台账、熔断记录</td></tr>
+            <tr><td>技能</td><td><code>skills</code> <code>skill_versions</code> <code>skills_audit</code></td><td>磁盘先写 <code>&lt;dataDir&gt;/skills/&lt;id&gt;/&lt;version&gt;/</code>，库后写三行</td></tr>
+            <tr><td>成本与聚合</td><td><code>usage_costs</code> <code>metrics_daily</code></td><td>token 与 USD 明细；日聚合幂等 UPSERT 全量覆盖</td></tr>
+            <tr><td>凭证与运行标记</td><td><code>host_credentials</code> <code>panel_sessions</code> <code>runtime_flags</code></td><td>设备令牌 AES-256-GCM 加密；面板会话；429 熔断/暂停标记</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li>迁移只生成不套用：只有一本账 <code>schema_migrations</code>，已应用文件 sha256 变了就拒绝启动。</li>
+        <li><code>serve</code> 不建表：缺表抛 <code>MIGRATIONS_PENDING</code>。</li>
+        <li>保留期清理先确认该日已聚合进 <code>metrics_daily</code> 再删；<code>actions</code> 与 <code>metrics_daily</code> 永久保留。</li>
+      </ul>
+    </section>
+
+    <section id="s7">
+      <h2><span class="num">7</span>配置</h2>
+      <h3>7.1 项目级：<code>repos.settings</code></h3>
+      <p>仓库配置只有一个载体（<code>.github/pi-bot.yml</code> 已退役，解析函数无生产调用者）。默认值来自契约 <code>repoSettingsSchema.parse({})</code>；<code>PI_BOT_DEFAULT_SETTINGS</code> 只在建行时 seed 一次。</p>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:170px">段</th><th>内容</th></tr></thead>
+          <tbody>
+            <tr><td><code>enabled</code> / <code>dry_run</code></td><td>仓库总开关与写入开关</td></tr>
+            <tr><td><code>triggers.events</code></td><td>五个事件各一档 <code>on | conditional | off</code> + 模板 + 附加条件；评论另有四闸门</td></tr>
+            <tr><td><code>labels</code></td><td>词表、1:N 映射、白名单、互斥组、上限、<code>meaning</code> / <code>managed</code> / <code>retired</code></td></tr>
+            <tr><td><code>limits</code></td><td><code>concurrency_per_repo</code>（1–8，默认 2）、<code>queue_wait_minutes</code>、<code>max_comments_per_hour</code>、<code>max_actions_per_run</code>、<code>max_task_minutes</code></td></tr>
+            <tr><td><code>agent</code></td><td><code>managers</code>、技能绑定、<code>project_prompt</code>、<code>system_prompt</code>、动作开关（默认全 false）</td></tr>
+            <tr><td><code>agent.limits</code></td><td><code>daily_quota</code>（默认 100）、<code>turn_timeout_minutes</code>（1–30，默认 20）、<code>data_retention_days</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>三条硬规则：写库前必校验（非法不写，保留 last-known-good）；<code>archived_at</code> 非空按 <code>enabled=false</code>；解析失败回默认值并给 <code>ok:false</code>，不抛错。</p>
+
+      <h3>7.2 部署级：环境变量</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:130px">组</th><th>变量</th></tr></thead>
+          <tbody>
+            <tr><td>接入</td><td><code>PI_BOT_HTTP_HOST/PORT</code>、<code>PI_BOT_METRICS_HOST/PORT</code>、<code>PI_BOT_WEBHOOK_SECRET</code>、<code>PI_BOT_LOG_LEVEL</code></td></tr>
+            <tr><td>数据库</td><td><code>PI_BOT_PG_DSN</code>（别名 <code>PI_BOT_DATABASE_URL</code>）、<code>PI_BOT_MIGRATIONS_DIR</code></td></tr>
+            <tr><td>模型</td><td><code>PI_BOT_MODEL_BASE_URL</code> / <code>_NAME</code> / <code>_API_KEY</code>（别名 <code>OPENAI_*</code>、<code>DEEPSEEK_*</code>）</td></tr>
+            <tr><td>pi-host</td><td><code>PI_BOT_HOST_BUNDLE_DIR</code>、<code>PI_BOT_HOST_DATA_DIR</code>、<code>PI_BOT_HOST_TOKEN</code></td></tr>
+            <tr><td>沙箱</td><td><code>PI_BOT_WORKER_IMAGE</code>、<code>PI_BOT_SANDBOX_NETWORK</code>、<code>PI_BOT_JOB_ROOT</code>、<code>PI_BOT_CACHE_ROOT</code>、<code>PI_BOT_DOCKER_SOCKET</code></td></tr>
+            <tr><td>GitHub</td><td><code>PI_BOT_GITHUB_APP_ID</code>、<code>PI_BOT_GITHUB_APP_PRIVATE_KEY_PATH</code>、<code>PI_BOT_GITHUB_INSTALLATION_ID</code>、<code>PI_BOT_MENTION</code></td></tr>
+            <tr><td>行为</td><td><code>PI_BOT_DRY_RUN</code>（默认 true）、<code>PI_BOT_ALLOW_PUSH_BRANCH</code>、<code>PI_BOT_DEFAULT_SETTINGS</code></td></tr>
+            <tr><td>面板</td><td><code>PI_BOT_PANEL_AUTH</code>、<code>PI_BOT_PANEL_WRITE</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>全量见 <code>deploy/env.example</code>；代码里是 <code>app/config.ts</code> 的 <code>APP_ENV_KEYS</code> / <code>APP_DEFAULTS</code>。</p>
+
+      <h3>7.3 模板占位符</h3>
+      <p><code>prompt/render.ts</code> 只做字面替换 <code>{{a.b}}</code>：不隐式删行，未知占位符原样保留并收集到 <code>unknown</code>；<code>{{repo.issues}}</code> 惰性求值（仅 open、排除 PR、上限 200、5 分钟缓存）。所有插入的外部文本都经围栏中和后才进提示词。</p>
+    </section>
+
+    <section id="s8">
+      <h2><span class="num">8</span>失败与重试</h2>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:200px">failure class</th><th style="width:90px">优先级</th><th>处理</th></tr></thead>
+          <tbody>
+            <tr><td><code>timeout</code> / <code>interrupt</code> / <code>degenerate-output</code></td><td>1</td><td>不重试；超时先 <code>turn/interrupt</code></td></tr>
+            <tr><td><code>sandbox-oom</code></td><td>2</td><td>不重试，必须先于 exitCode 判定</td></tr>
+            <tr><td><code>sandbox-crash</code></td><td>3</td><td>pg-boss retry 1 次</td></tr>
+            <tr><td><code>rate-limit</code></td><td>4</td><td>不用 retryLimit，用 <code>startAfter</code>（最多 4 次尝试）+ 两级窗口熔断（仓库 3 次/10 分钟，全局 5 次/15 分钟）</td></tr>
+            <tr><td><code>github-api</code>（5xx）</td><td>4</td><td>retryLimit 3 / 30s / 退避</td></tr>
+            <tr><td><code>auth</code> / <code>parse</code> / <code>model</code></td><td>4</td><td>不重试</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>worker 不自己比较优先级，一律交给 <code>pickHighestPrioritySignal()</code>。命令级超时不是失败信号，只记在 <code>failure_detail.commandTimeouts</code>。</p>
+    </section>
+
+    <section id="s9">
+      <h2><span class="num">9</span>边界与不变式</h2>
+      <h3>9.1 五条边界</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:150px">边界</th><th>约束与落点</th></tr></thead>
+          <tbody>
+            <tr><td>凭证</td><td>模型 key 与 GitHub token 只在宿主进程；pi-host 拿模型配置；容器内无凭证（<code>app/model-env.ts</code>、<code>sandbox/hostconfig.ts</code>、<code>exec-proxy</code> 不透传 env）</td></tr>
+            <tr><td>命令通道</td><td><code>sandbox-bash</code> → <code>exec-client.mjs</code> → <code>exec-proxy</code> → <code>docker exec</code>；帧只接受 <code>{argv,cwd,clientPid}</code>；找不到 socket 退 2，绝不回落宿主</td></tr>
+            <tr><td>容器</td><td>只读根、<code>CapDrop: ALL</code>、<code>no-new-privileges</code>、uid 1001、tmpfs、<code>AutoRemove: false</code>（要先 inspect 读 OOM）；内存分档 2 / 4 GiB</td></tr>
+            <tr><td>网络</td><td><code>deploy/nftables.conf</code> 禁私网与云元数据、禁横向；<b>只写不跑</b>，需在目标机 apply 后用 <code>doctor canary-network</code> 复验</td></tr>
+            <tr><td>写回</td><td>推送集 = <code>declared ∩ actual</code>；受保护路径或 <code>.pi-bot/</code> 命中即整次失败；<code>run-git.ts</code> 每次检查 <code>--force</code> / <code>--mirror</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>9.2 十条不变式</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:44px">#</th><th style="width:240px">不变式</th><th>破坏后果</th></tr></thead>
+          <tbody>
+            <tr><td>I1</td><td>代码里不存在 merge 能力</td><td>能力存在就会被调用</td></tr>
+            <tr><td>I2</td><td><code>PI_BOT_DRY_RUN</code> 默认 true</td><td>安全变成「需要记得」</td></tr>
+            <tr><td>I3</td><td>dry-run 零副作用（不写 <code>actions</code>）</td><td>污染审计与改回统计</td></tr>
+            <tr><td>I4</td><td>标签只撤自己打过的</td><td>撤掉人打的标签</td></tr>
+            <tr><td>I5</td><td>评论按槽位覆盖</td><td>刷屏</td></tr>
+            <tr><td>I6</td><td>幂等三层且不靠内存</td><td>重投重复执行</td></tr>
+            <tr><td>I7</td><td>会话状态只有 <code>active</code> / <code>idle</code></td><td>关单后无法重开复用</td></tr>
+            <tr><td>I8</td><td>PIN 校验不放松</td><td>bundle 可被替换</td></tr>
+            <tr><td>I9</td><td>令牌加密存储，解密失败必须抛</td><td>静默当成「没有令牌」</td></tr>
+            <tr><td>I10</td><td>外部文本永远是数据</td><td>提示词注入改变工具权限</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>已知弱点：<code>approval-policy.ts</code> 的 worktree 判断是字面路径前缀比较（符号链接靠 host-core 兜底），shell 判据是正则。改这里要连带改测试。</p>
+    </section>
+
+    <section id="s10">
+      <h2><span class="num">10</span>现状与缺口</h2>
+      <h3>10.1 阻塞真实环境验收</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:210px">项</th><th>缺什么</th></tr></thead>
+          <tbody>
+            <tr><td>pi-host bundle</td><td>未 vendored：PIN 校验、实机握手、命令三条路径、单 host 并发矩阵都只能在拿到 bundle 后验</td></tr>
+            <tr><td><code>racp.schema.json</code></td><td>未 vendored：事件形状靠多形状容忍，对不上只会在运行时报错</td></tr>
+            <tr><td>GitHub App</td><td>未装：零副作用只在假 client 上验过</td></tr>
+            <tr><td>nftables</td><td>只写不跑，开发机 <code>doctor canary-network</code> 为 fail</td></tr>
+            <tr><td>面板鉴权</td><td>OAuth 未接，<code>isOrgMember</code> 未实现</td></tr>
+            <tr><td><code>pi-worker:python312</code></td><td>镜像待补，现只有 node22 / pnpm-node22</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>10.2 能力缺口（代码里的 TODO / 占位）</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:240px">位置</th><th>缺口</th></tr></thead>
+          <tbody>
+            <tr><td><code>skills/workspace.ts</code></td><td>未接线：RACP 无 workspace 写入通道，技能只经提示词投递</td></tr>
+            <tr><td><code>compact/</code></td><td>只能观测 host 报的 compaction 事件，不能主动压缩</td></tr>
+            <tr><td><code>github/octokit.ts</code></td><td>评论拉取未分页，只取前 100 条</td></tr>
+            <tr><td><code>github/executor.ts</code></td><td><code>push_branch</code> 只产出计划，临时 index 流程未接</td></tr>
+            <tr><td><code>agent/dispatcher.ts</code></td><td>缺 <code>(repo, issue) WHERE status='running'</code> 部分唯一索引，靠并发 1 缓解</td></tr>
+            <tr><td><code>queries/overview|system</code></td><td>doctor 未落库（<code>not-run</code>）、<code>version.app</code> 恒 <code>0.0.0</code>、host 状态 <code>unknown</code></td></tr>
+            <tr><td><code>queries/audit.ts</code></td><td><code>actor.association</code> 恒 null（<code>tasks</code> 缺列）</td></tr>
+            <tr><td><code>queries/tasks.ts</code></td><td><code>diff</code> 无数据源，只能 <code>available:false</code></td></tr>
+            <tr><td><code>queries/costs.ts</code></td><td><code>pricingCoverage</code> 是近似值</td></tr>
+            <tr><td><code>skills/store.ts</code></td><td>改 description 不回写磁盘 frontmatter</td></tr>
+            <tr><td><code>config/yaml.ts</code></td><td>已无生产调用者</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>10.3 工程债</h3>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:220px">项</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>无 CI、无覆盖率门禁</td><td>门禁是本机三条命令</td></tr>
+            <tr><td><code>pnpm test:all</code> 漏面板</td><td>根 include 无 <code>.test.tsx</code>，面板 17 个 <code>.tsx</code> 不会跑</td></tr>
+            <tr><td>PG 依赖未统一</td><td>25 个文件硬依赖真库且不 skip；DSN 变量三个名字并存</td></tr>
+            <tr><td>OpenAPI 生成链断裂</td><td>存在自指 <code>$ref</code>，<code>openapi-typescript</code> 生成失败，面板手写查询类型</td></tr>
+            <tr><td>包依赖未声明</td><td>多处用相对路径跨包 import，未写 workspace 依赖</td></tr>
+            <tr><td>夹具与用例同文件</td><td><code>test/git-fixture.test.ts</code> 既是夹具又含用例</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="s11">
+      <h2><span class="num">11</span>术语</h2>
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:170px">词</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>投递 / delivery</td><td>一次 webhook 投递，<code>webhook_deliveries</code> 一行，幂等第一层</td></tr>
+            <tr><td>任务 / task</td><td>一次要做的事，<code>tasks</code> 一行；<code>source ∈ webhook|command|cron|agent</code></td></tr>
+            <tr><td>运行 / run</td><td>任务的一次尝试，<code>runs</code> 一行，九步 <code>TASK_STEPS</code></td></tr>
+            <tr><td>信封 / envelope</td><td>模型产出的结构化结论：verdict + actions + usage</td></tr>
+            <tr><td>动作 / action</td><td>写回意图：comment / label / create_issue / push_branch / open_pr / close_issue 等</td></tr>
+            <tr><td>目标态写回</td><td>动作给「应该是什么」，由平台算 add / remove</td></tr>
+            <tr><td>槽位 / slot</td><td>评论的逻辑位置，<code>(repo, issue, slot)</code> 唯一</td></tr>
+            <tr><td>会话 / session</td><td>一个 issue 一条，<code>active</code> 或 <code>idle</code></td></tr>
+            <tr><td>退化 / degeneracy</td><td>段落重复、低新颖度、工具死循环；命中即中断不重试</td></tr>
+            <tr><td>RACP</td><td>pi-host 的 JSON-RPC over WebSocket 协议，本项目只用 18 个 operation</td></tr>
+            <tr><td>PIN</td><td>bundle 清单：版本、wsPath、子协议、每个文件 sha256</td></tr>
+            <tr><td>技能 / skill</td><td>一段可复用作业说明，放 <code>.github/pi-bot/skills/**/*.md</code> 或由面板上传</td></tr>
+            <tr><td>dry-run</td><td>只算不写，默认开启</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <footer>
+        <span>pi-issue-bot · 项目说明</span>
+        <span><a class="ref" href="../README.md">回 README</a> · <a class="ref" href="quickstart.html">快速开始</a> · <a class="ref" href="testing-standards.html">测试规范</a></span>
+      </footer>
+    </section>
+  </main>
+</div>
+
+<script src="assets/doc.js"></script>
+</body>
+</html>
