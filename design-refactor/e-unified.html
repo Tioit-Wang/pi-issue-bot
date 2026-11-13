@@ -3243,9 +3243,9 @@
       'placeholder="在这里回复。发送后会作为评论写回 issue，agent 的回复也会同步到 issue 里。"></textarea>' +
       '<button class="btn primary" type="button" disabled ' +
       'title="预览：需要 POST /api/issues/:owner/:name/:number/messages（写接口未实现）">发送</button></div>' +
-      '<div class="note">预览态：发送按钮没接后端。落地需要一个新接口 ' +
-      '<code>POST /api/issues/:owner/:name/:number/messages</code> —— 代发评论 + 落 ' +
-      '<code>agent_messages</code> + 直接入队；见 <code>docs/panel-ui-versions.html</code> 的 v0.5。</div>' +
+      '<div class="note">预览态：发送按钮没接后端。本版不做发送（需求正文 <code>FR-7.5</code> / <code>Q-9</code>）；' +
+      '要真的发，得先有 <code>POST /api/issues/:owner/:name/:number/messages</code> —— 代发评论 + 落 ' +
+      '<code>agent_messages</code> + 直接入队。</div>' +
       '</div></div>';
   }
 

@@ -152,7 +152,7 @@
   <h1>面板 UI 改版需求</h1>
   <p class="lede">从「五个全局页 + 只读详情」收敛成「三个项目页 + 一条会话流」。版本递进，每版能单独验收。</p>
   <p class="meta">
-    状态：v0.1–v0.5 已在原型 <code>design-refactor/e-unified.html</code> 里做出来；v0.6 只有规格，没有实现。
+ 状态：v0.1–v0.5 已在原型 <code>design-refactor/e-unified.html</code> 里做出来；产品口径以 <code>docs/requirements.html</code> §5.7 / §6.8 / §6.9 为准。
     视觉规范见 <code>design-refactor/assets/base.css</code>；对话语义对齐 <code>docs/requirements.html</code> §5.6。
   </p>
 
@@ -239,7 +239,7 @@
     <li><strong>输入区</strong>：身份 chip（<code>@dana（你的账号）</code> 或 <code>bot</code>）+「会 @ 上 agent」+ 预览态禁用发送按钮。</li>
   </ol>
   <div class="box no"><b>本版明确不做：</b>发送。输入框只出 UI，按钮 <code>disabled</code>，<code>title</code> 写明缺
-    <code>POST /api/issues/:owner/:name/:number/messages</code>。原因见 v0.6。</div>
+<code>POST /api/issues/:owner/:name/:number/messages</code>。本版明确不做，见需求正文 <code>FR-7.5</code> 与 <code>Q-9</code>。</div>
   <h3>验收</h3>
   <ul>
     <li>1440×900 下，一条有 3 轮的 issue 首屏能看到：标题行、原文卡（收起）、系统提示词（收起）、
@@ -278,49 +278,14 @@
   <div class="box"><b>与项目级的关系：</b>全局是默认值；<code>设置 → 执行</code> 那行改成「默认模型：继承全局（claude-x）>」，
     点开才覆盖。两处都能直接选模型，一定打架。</div>
 
-  <!-- v0.6 -->
-  <h2><span class="ver">v0.6</span>面板发送（未实现，只有规格） <span class="state">· 需新接口</span></h2>
-  <p>目标：在会话流底部回复，<strong>这条回复同步到 issue 评论</strong>，agent 的回复也回到这里。
-    现在没有任何写接口能承载它——<code>http/api/</code> 下 12 条只读 GET + 10 条配置类写
-    （repo settings、skills），评论必须回 GitHub 提，再由 <code>issue_comment.created</code> + <code>@别名</code> 回流。
-    所以这一版要先加接口，再加 UI 的 <code>disabled</code> 开关。</p>
-
-  <h3>接口草案</h3>
-<pre>POST /api/issues/:owner/:name/:number/messages
-Header: X-Pi-Bot-CSRF: 1        // 与技能写面同一套 writeGuard
-Body:   { "body": "…", "wake": true }
-200:    { "commentId": 1952884, "messageId": "am_7f3c1a", "queued": true }
-409:    { "error": "writeback-disabled" }   // 该仓库写回闸门关闭
-403:    { "error": "forbidden" }            // CSRF / Origin / PI_BOT_PANEL_WRITE=off</pre>
-  <h3>服务端要做的事（顺序不能换）</h3>
-  <ol>
-    <li>契约：<code>packages/contract/src/api.ts</code> 加请求/响应 schema；<code>schemas.ts</code> 注册表只许加名字。</li>
-    <li>写入：用面板配置的身份（个人 PAT 优先，否则 bot）在 issue 上<strong>代发一条评论</strong>，正文末尾按需追加 <code>@别名</code>。</li>
-    <li>落库：同一事务里往 <code>agent_messages</code> 插一条（<code>kind: 'panel'</code>，<code>comment_body</code> = 正文），
-        并把 <code>actorLogin</code> 记成发起的操作者。</li>
-    <li>入队：<code>wake: true</code> 时立刻入队；不等 webhook 回流（自己发的评论不一定回给自己，回流不可靠）。</li>
-    <li>错误：新增错误码要同时动契约 <code>ErrorCode</code>、<code>http/errors.ts</code> 映射、面板 <code>describeError</code>。</li>
-  </ol>
-  <h3>安全</h3>
+  <h2>与需求正文的关系</h2>
   <ul>
-    <li>走 <code>writeGuard</code>：<code>X-Pi-Bot-CSRF: 1</code> + Origin 校验 + <code>PI_BOT_PANEL_WRITE=off</code> 时 403。</li>
-    <li>正文必须当<strong>外部文本</strong>处理：进提示词前经 <code>skills/prompt.ts</code> 的围栏与蒙版，不许拼接指令。</li>
-    <li>个人令牌只在宿主进程解密使用；容器内只看得到围栏后的文本。</li>
-  </ul>
-  <h3>验收</h3>
-  <ul>
-    <li>面板里发一句 → issue 上出现一条评论（署名正确）→ 会话流里出现对应 human 行（<code>via 面板</code> 标记）→
-        一轮结束后出现 agent 回答与写回行，且 issue 评论被同一 slot 覆盖而不是新增。</li>
-    <li>未配置个人令牌时署名是 bot；配置了但不能用（scope 不足）时，发送按钮上方给出明确失败原因，而不是静默成功。</li>
-    <li><code>dry-run</code> 打开时：只写本地 <code>actions</code> 记录，issue 上不出现评论，会话流里的 human 行标 <code>dry-run</code>。</li>
-  </ul>
-
-  <h2>原型与本文件的关系</h2>
-  <ul>
+    <li><strong>需求正文</strong>：<code>docs/requirements.html</code> §5.7（面板：导航与页面）、§6.8（供应商与模型角色）、
+        §6.9（面板身份）、§10 AC-26…AC-33。那是唯一的产品口径；本文件只记录设计稿的版本演进，与正文冲突时以正文为准。</li>
     <li>原型：<code>design-refactor/e-unified.html</code>（单文件、无请求、按钮不假装成功）。</li>
-    <li>本文件：<code>docs/panel-ui-versions.html</code>。版本号只增不改；已经实现的行为改动要写进对应版本，不新开版本。</li>
+    <li>版本号只增不改；已经实现的行为改动写进对应版本，不新开版本。</li>
     <li>已知原型债：<code>ISSUES</code> 数组里还留着上一版的 <code>dx</code> / <code>evidence</code> / <code>msgs</code> 字段（已不被渲染使用），
-        搬进 panel 时要删；会话内容在 <code>DETAILS</code> 里，字段名对齐 <code>agent_messages</code> 与 §5.6 示例。</li>
+        搬进 panel 时要删；会话内容在 <code>DETAILS</code> 里，字段名对齐 <code>agent_messages</code> 与正文 §5.6 示例。</li>
   </ul>
 
   <footer>

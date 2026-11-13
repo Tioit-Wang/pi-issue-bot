@@ -1402,6 +1402,41 @@ https://github.com/org/repo/issues/1950
         </div>
       </details>
 
+
+      <!-- 5.7 -->
+      <h3 id="s5-7">5.7 面板：导航与页面</h3>
+
+      <div class="req rule" id="fr-7-1">
+        <div class="hd"><span class="id">FR-7.1</span><span class="ttl">三层结构，每层一个入口</span><span class="pri">P0</span></div>
+        <p>面板只有三层：<b>项目上下文</b>（左上角切换，含「全部项目」）、<b>项目级导航</b>（Issue / 设置 / 技能，放在 dock）、<b>全局</b>（dock 最右的「系统」打开模态框）。不设总览、成本、质量、审计、系统五个独立页面。</p>
+        <div class="note"><b>理由：</b>五个全局页一天只被打开几次，却常驻吃掉约 15% 宽度；全局页每多一个，项目级那三件事就更难找一次。</div>
+      </div>
+
+      <div class="req rule" id="fr-7-2">
+        <div class="hd"><span class="id">FR-7.2</span><span class="ttl">删掉的页面，信息必须有去处</span><span class="pri">P0</span></div>
+        <p>顶栏状态带回答「此刻什么状态」：待处理、运行中、失败、p95 四个数字，加一个降级 chip。系统健康（doctor 各项、运行时开关、连接、只读常量）进「系统」模态框第一屏。单次成本以 token 数与单价出现在会话流里；被改回与审计事件落进写回行。</p>
+        <div class="note"><b>硬约束：</b>找不到去处就不许删。日后若发现某项仍被高频查看，先往状态带加数字，再考虑加回页面——顺序反过来成本高得多。</div>
+      </div>
+
+      <div class="req rule" id="fr-7-3">
+        <div class="hd"><span class="id">FR-7.3</span><span class="ttl">Issue 页是会话流，不是分区卡片</span><span class="pri">P0</span></div>
+        <p>自上而下：常驻一行标题（编号、标题、状态、<code>⋯</code> 动作菜单）→ <b>issue 原文折叠卡</b>（默认收起，只露标题与「原文 · 作者 · N 条评论」；展开才是作者、时间、标签、正文）→ <b>系统提示词</b>（居中、可折叠，内容就是系统通道下发的那段 <b>markdown 文本原文</b>）→ 消息流 → 输入区。</p>
+        <p>消息流内：<b>人类 / 触发的输入在右</b>，带触发来源 chip 与事件元信息（如 <code>issues.opened · #318 · 2026-05-31T08:24:11Z</code>）；<b>agent 在左</b>，无卡片，只有行、回答、三层工具（轮 → 组 → 单次调用，成功/失败可见）、默认收起的 <code>verdict</code>/<code>actions</code> JSON；<b>平台写回</b>居中成行（<code>✓ 写回 标签 + 评论 slot=format-review · 2/2 成功</code>），失败换红。</p>
+        <div class="note"><b>与 <a class="ref" href="#s5-6">5.6 记录与查询</a> 的分工：</b>5.6 规定「必须落库什么」，本节规定「落到界面上长什么样」。评论只出现在消息流里，不重复出现在原文卡里。设计稿：<code>design-refactor/e-unified.html</code>，逐版说明：<code>docs/panel-ui-versions.html</code>。</div>
+      </div>
+
+      <div class="req rule" id="fr-7-4">
+        <div class="hd"><span class="id">FR-7.4</span><span class="ttl">三个左栏画法一致</span><span class="pri">P1</span></div>
+        <p>Issue 队列、设置分区、技能列表同宽（320px，窄屏统一降 300）、同款头部（30px 小标 + 计数）、行高 28、选中态统一为「左侧 3px 强调条 + 浅强调底」。</p>
+        <div class="note"><b>理由：</b>三栏职责都是「一列可选条目」；画法不一致只增加重新辨认的成本，不带来任何信息。</div>
+      </div>
+
+      <div class="req rule" id="fr-7-5">
+        <div class="hd"><span class="id">FR-7.5</span><span class="ttl">缺写接口的动作不许假装成功</span><span class="pri">P0</span></div>
+        <p>面板上没有对应写接口的动作（重跑、标记人工、暂停全部、面板内发消息）只画禁用按钮，并在 <code>title</code> 里写明缺哪个接口。</p>
+        <div class="note"><b>本版范围：</b>面板内发送消息<b>不做</b>（见 <a class="ref" href="#q-9">Q-9</a>）。会话流底部输入区只呈现形态，发送按钮为禁用态。</div>
+      </div>
+
     </section>
 
     <!-- ================= 6 ================= -->
@@ -1702,6 +1737,41 @@ https://github.com/org/repo/issues/1950
         </table>
       </div>
       <div class="note"><b>为什么不设平台级限额：</b>不同仓库的负载差异很大，用一个全局值卡所有项目只会让轻的浪费、重的排队。平台只在部署层面给出总量级约束（见 <a class="ref" href="#s9">9 非功能需求</a>），不做业务限流。</div>
+
+      <!-- 6.8 -->
+      <h3 id="s6-8">6.8 供应商与模型角色（全局）</h3>
+
+      <div class="req rule" id="cfg-8-1">
+        <div class="hd"><span class="id">CFG-8.1</span><span class="ttl">供应商一条一行</span><span class="pri">P0</span></div>
+        <p>每个供应商记录：名称、base URL、key（界面只显示掩码与「已存 / 未配置」）、连通性（状态点 + 延迟，可手动测试）、该家可用的 model 列表。OpenAI 兼容的自建端点按同一行填写，不另设表单。</p>
+        <div class="note"><b>安全：</b>key 加密存储，只在宿主进程解密使用，<b>不进容器</b>；解密失败必须报错，不许静默当成「未配置」。</div>
+      </div>
+
+      <div class="req rule" id="cfg-8-2">
+        <div class="hd"><span class="id">CFG-8.2</span><span class="ttl">模型角色四档，各自带单价</span><span class="pri">P0</span></div>
+        <p>四个角色各绑定「供应商 + 模型」：<code>agent</code>（执行）、<code>format</code>（快速，格式检查与短分类）、<code>classify</code>（分类判定）、兜底（主模型 429 或超时后降级）。每档显示输入 / 输出单价。</p>
+        <div class="note"><b>为什么单价必须在这里：</b>成本页已随面板改版删除，单价是界面上唯一能解释「这次为什么花了 $0.112」的依据。</div>
+      </div>
+
+      <div class="req rule" id="cfg-8-3">
+        <div class="hd"><span class="id">CFG-8.3</span><span class="ttl">全局给默认值，项目可覆盖</span><span class="pri">P1</span></div>
+        <p>模型角色在全局配置；项目级「执行」里显示「继承全局（模型名）」，点开才允许覆盖。两处不并列摆放可直接选择的模型下拉。</p>
+      </div>
+
+      <!-- 6.9 -->
+      <h3 id="s6-9">6.9 面板身份（GitHub 令牌）</h3>
+
+      <div class="req rule" id="cfg-9-1">
+        <div class="hd"><span class="id">CFG-9.1</span><span class="ttl">默认 bot，可切换为个人账号</span><span class="pri">P1</span></div>
+        <p>未配置个人令牌时，面板的一切写回以 bot 身份署名；配置了个人 PAT 后，以该用户身份提交评论，需要 <code>issues: write</code> 权限。</p>
+        <div class="note"><b>取法：</b>手动填 PAT，不做 OAuth device flow（要注册 OAuth App 并多一个换发端点，收益不抵成本）；提供「检查权限」校验 scope 与过期时间。</div>
+      </div>
+
+      <div class="req rule" id="cfg-9-2">
+        <div class="hd"><span class="id">CFG-9.2</span><span class="ttl">令牌不可用时必须说清楚</span><span class="pri">P0</span></div>
+        <p>令牌缺失、scope 不足或已过期时，写回失败原因要显式呈现，并退回 bot 身份；不得静默成功，也不得静默失败。</p>
+      </div>
+
     </section>
 
     <!-- ================= 7 ================= -->
@@ -1801,6 +1871,14 @@ https://github.com/org/repo/issues/1950
                 <li id="ac-24"><span class="box"></span><span class="id">AC-24</span><span>同一会话压缩两次后，模型仍能复述第一轮确定的目标与硬约束（验证摘要没有丢关键信息）。</span></li>
         <li id="ac-25"><span class="box"></span><span class="id">AC-25</span><span>压缩发生后，后台能看到压缩记录（前后 token、是否兜底、第几代），且原始对话一条不少。</span></li>
 <li id="ac-23"><span class="box"></span><span class="id">AC-23</span><span>issue 关闭后沙箱被回收，重新打开并触发时复用原会话：历史上下文仍在，沙箱自动重建。</span></li>
+        <li id="ac-26"><span class="box"></span><span class="id">AC-26</span><span>面板的项目级导航只有 Issue / 设置 / 技能三项，全局只有一个「系统」入口；总览、成本、质量、审计、系统五个页面在路由表里不存在。</span></li>
+        <li id="ac-27"><span class="box"></span><span class="id">AC-27</span><span>打开任一 issue，首屏自上而下是：标题行、收起的原文卡、收起的系统提示词、第一条人类输入；不需要滚到第二屏才知道它卡在哪。</span></li>
+        <li id="ac-28"><span class="box"></span><span class="id">AC-28</span><span>展开原文卡能看到作者、时间、标签与正文；同一条评论不会同时出现在原文卡与会话流里（会话流中只出现一次）。</span></li>
+        <li id="ac-29"><span class="box"></span><span class="id">AC-29</span><span>展开系统提示词，看到的是完整 markdown 原文（含 <code># 角色</code>、<code>## 硬约束</code> 等标题），不是分层表格或摘要。</span></li>
+        <li id="ac-30"><span class="box"></span><span class="id">AC-30</span><span>agent 的一轮里，工具调用可展开到「轮 → 组 → 单次调用」，失败的那一次有可见的失败标记；<code>verdict</code>/<code>actions</code> 默认收起。</span></li>
+        <li id="ac-31"><span class="box"></span><span class="id">AC-31</span><span>三个左栏（Issue 队列 / 设置分区 / 技能列表）宽度一致、选中态一致；只有一个位置（<code>⋯</code> 或 dock）能触发页面切换以外的动作。</span></li>
+        <li id="ac-32"><span class="box"></span><span class="id">AC-32</span><span>全局设置里能看到每个供应商的 base URL、key 掩码、连通性与可用 model；四档模型角色各显示输入 / 输出单价；项目页显示「继承全局」而非并列的模型下拉。</span></li>
+        <li id="ac-33"><span class="box"></span><span class="id">AC-33</span><span>所有缺少后端接口的动作（重跑、标记人工、面板内发送）都是禁用态，<code>title</code> 写明缺失的接口名；界面上没有任何「已完成」的假提示。</span></li>
       </ul>
     </section>
 
@@ -1848,6 +1926,24 @@ https://github.com/org/repo/issues/1950
         <div class="hd"><span class="id">Q-6</span><span class="ttl">一条模板能不能挂多个技能 · 已定</span></div>
         <p><b>已定：</b>一个事件对应一个提示词；具体触发什么处理不由平台控制。平台不维护技能注册表，只执行产出的四类动作（<a class="ref" href="#fr-5-1">FR-5.1 平台不决定处理内容</a> / <a class="ref" href="#fr-5-3">FR-5.3 产出契约：四类动作</a>）。</p>
         <div class="note"><b>推论：</b>多技能串行、阶段间结果传递这类复杂度交给提示词与执行侧自行处理，平台不介入。</div>
+      </div>
+
+      <div class="req" id="q-7">
+        <div class="hd"><span class="id">Q-7</span><span class="ttl">面板只留三个项目页，删掉五个全局页 · 已定</span></div>
+        <p><b>已定：</b>项目级导航只有 Issue / 设置 / 技能；全局只剩 dock 最右一个「系统」模态框。总览、成本、质量、审计、系统五个页面取消，信息分别进顶栏状态带、会话流与模态框（<a class="ref" href="#fr-7-2">FR-7.2</a>）。</p>
+        <div class="note"><b>理由：</b>面板的高频动作是「处理某一条卡住的 issue」，不是「看报表」。全局页常驻吃掉宽度，却不承担高频动作。</div>
+      </div>
+
+      <div class="req" id="q-8">
+        <div class="hd"><span class="id">Q-8</span><span class="ttl">Issue 页做成会话流，不做分区卡片 · 已定</span></div>
+        <p><b>已定：</b>issue 详情是一条完整会话：原文折叠卡默认收起、系统提示词按 markdown 原文居中折叠、人类输入在右带事件元信息、agent 在左无卡片、工具调用三层折叠、平台写回居中断行（<a class="ref" href="#fr-7-3">FR-7.3</a>）。</p>
+        <div class="note"><b>理由：</b>「证据」「为什么停在这里」这类摘要卡是人替模型做的归纳，模型一改结论就过期；原始会话不会过期。</div>
+      </div>
+
+      <div class="req" id="q-9">
+        <div class="hd"><span class="id">Q-9</span><span class="ttl">面板内直接发消息 · 本版不做</span></div>
+        <p><b>不做：</b>本版不提供「在面板里回复并同步到 issue」。输入区只呈现形态，发送按钮为禁用态（<a class="ref" href="#fr-7-5">FR-7.5</a>）。现有 HTTP 写面只有配置类与技能类，「代发评论 + 落 agent 消息 + 直接入队」需要新接口，另立需求。</p>
+        <div class="note"><b>理由：</b>写路径牵涉身份（bot / 个人令牌）、CSRF 与 Origin 校验、外部文本围栏三件事，混在 UI 改版里做会把风险埋进一次纯视觉变更。</div>
       </div>
     </section>
 

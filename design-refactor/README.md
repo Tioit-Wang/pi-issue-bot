@@ -101,7 +101,9 @@ E 的内部分层：`<style>` 里按 ①外壳 ②dock ③视图容器 ④Issue 
 4. **发送框只出 UI**：按钮 `disabled`，`title` 写明缺 `POST /api/issues/:owner/:name/:number/messages`；
    本期不做发送。
 
-需求文档（按版本递进 v0.1 → v0.6）：`docs/panel-ui-versions.html`。
+需求正文（产品口径）：`docs/requirements.html` §5.7（面板：导航与页面）、§6.8（供应商与模型角色）、
+§6.9（面板身份），验收见 §10 的 AC-26…AC-33。设计稿的版本递进（v0.1 → v0.5）在
+`docs/panel-ui-versions.html`；两者冲突时以需求正文为准。
 
 已知原型债：`e-unified.html` 的 `ISSUES` 数组里还留着上一版的 `dx` / `evidence` / `msgs` 字段，
 已经不被渲染使用（会话内容在 `DETAILS` 里），搬进 `apps/panel` 时删掉。
