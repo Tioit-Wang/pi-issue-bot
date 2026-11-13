@@ -5,7 +5,7 @@ import { repoIssuePath } from '../../lib/repo-route.ts';
 import { Badge, StatusDot } from '../ui/badge.tsx';
 import { TONE_BORDER, TONE_TEXT } from '../ui/status.ts';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '../ui/table.tsx';
-import { readLabelDecision, readReactionState, readRunCost } from './contract-extras.ts';
+import { readReactionState, readRunCost } from './contract-extras.ts';
 import { ReactionChip } from './reaction-chip.tsx';
 import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE, presentStatus, shortRepo } from './status.ts';
 
@@ -129,8 +129,6 @@ function IssueRow({
   const status = presentStatus(item, now);
   const time = formatTimeCell(item.lastActivityAt);
   const reaction = readReactionState(item);
-  const decision = readLabelDecision(item);
-  const blocked = decision?.blocked[0] ?? null;
   const extraLabels = item.labels.length > 3 ? item.labels.length - 3 : 0;
 
   return (
@@ -198,15 +196,6 @@ function IssueRow({
               </Badge>
             ))}
             {extraLabels === 0 ? null : <span className="text-2xs text-faint">{`+${String(extraLabels)}`}</span>}
-            {blocked === null ? null : (
-              <Badge
-                tone="warn"
-                title={`打标被拦：${blocked.reason}（${String(blocked.count)} 次）`}
-                data-testid="issue-row-blocked"
-              >
-                {`打标被拦${blocked.count > 1 ? ` · ${String(blocked.count)}` : ''}`}
-              </Badge>
-            )}
           </span>
         )}
       </TableCell>

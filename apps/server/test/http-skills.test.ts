@@ -89,8 +89,8 @@ describe('/api/skills（HTTP 层）', () => {
     // 播种：项目第一次打开技能页就有一份可编辑副本
     expect(body.skills.map((item) => item.name).sort()).toEqual([
       '/issue-analysis',
-      '/issue-format',
       '/label-triage',
+      '/proposal-analysis',
     ]);
     expect(body.skills.every((item) => item.scope === 'repo' && item.repo === 'o/n')).toBe(true);
     expect(body.skills.every((item) => item.overriddenBy === null)).toBe(true);

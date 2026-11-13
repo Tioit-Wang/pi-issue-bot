@@ -29,7 +29,7 @@ afterAll(async () => {
 
 describe('默认技能（每项目至少三个）', () => {
   it('三个默认技能名固定，且都能取到正文', () => {
-    expect([...DEFAULT_PROJECT_SKILL_NAMES]).toEqual(['/issue-format', '/label-triage', '/issue-analysis']);
+    expect([...DEFAULT_PROJECT_SKILL_NAMES]).toEqual(['/proposal-analysis', '/label-triage', '/issue-analysis']);
     for (const name of DEFAULT_PROJECT_SKILL_NAMES) {
       expect(builtinSkillText(name)).not.toBeNull();
     }
@@ -65,25 +65,25 @@ describe('运行目录物化（每个 issue 独立目录）', () => {
 
     const result = await materializeWorkspaceSkills({ workspaceRoot: workspace, files });
 
-    expect(result.names).toEqual(['/issue-format', '/label-triage', '/issue-analysis']);
+    expect(result.names).toEqual(['/proposal-analysis', '/label-triage', '/issue-analysis']);
     expect(result.dir).toBe(nodePath.join(workspace, WORKSPACE_SKILLS_DIR));
     const dirs = (await readdir(result.dir)).sort();
-    expect(dirs).toEqual(['issue-analysis', 'issue-format', 'label-triage']);
-    const body = await readFile(nodePath.join(result.dir, 'issue-format', 'SKILL.md'), 'utf8');
-    expect(body).toContain('name: issue-format');
+    expect(dirs).toEqual(['issue-analysis', 'label-triage', 'proposal-analysis']);
+    const body = await readFile(nodePath.join(result.dir, 'proposal-analysis', 'SKILL.md'), 'utf8');
+    expect(body).toContain('name: proposal-analysis');
   });
 
   it('清理后整目录消失，不影响另一个任务的目录', async () => {
     const a = nodePath.join(root, 'job-b');
     const b = nodePath.join(root, 'job-c');
-    const files = [{ path: 'x/SKILL.md', text: builtinSkillText('/issue-format') ?? '' }];
+    const files = [{ path: 'x/SKILL.md', text: builtinSkillText('/proposal-analysis') ?? '' }];
     await materializeWorkspaceSkills({ workspaceRoot: a, files });
     await materializeWorkspaceSkills({ workspaceRoot: b, files });
 
     expect(await removeWorkspaceSkills({ workspaceRoot: a })).toBe(true);
     expect(await readdir(a).catch(() => [])).not.toContain(WORKSPACE_SKILLS_DIR);
     // 另一个任务的目录仍在（不共享路径）
-    expect(await readdir(nodePath.join(b, WORKSPACE_SKILLS_DIR))).toEqual(['issue-format']);
+    expect(await readdir(nodePath.join(b, WORKSPACE_SKILLS_DIR))).toEqual(['proposal-analysis']);
   });
 
   it('再次物化会先清空上一次的残留（重试不会读到已删技能）', async () => {
@@ -91,15 +91,15 @@ describe('运行目录物化（每个 issue 独立目录）', () => {
     await materializeWorkspaceSkills({
       workspaceRoot: workspace,
       files: [
-        { path: 'a/SKILL.md', text: builtinSkillText('/issue-format') ?? '' },
+        { path: 'a/SKILL.md', text: builtinSkillText('/proposal-analysis') ?? '' },
         { path: 'b/SKILL.md', text: builtinSkillText('/label-triage') ?? '' },
       ],
     });
     const second = await materializeWorkspaceSkills({
       workspaceRoot: workspace,
-      files: [{ path: 'a/SKILL.md', text: builtinSkillText('/issue-format') ?? '' }],
+      files: [{ path: 'a/SKILL.md', text: builtinSkillText('/proposal-analysis') ?? '' }],
     });
-    expect(second.names).toEqual(['/issue-format']);
-    expect((await readdir(second.dir)).sort()).toEqual(['issue-format']);
+    expect(second.names).toEqual(['/proposal-analysis']);
+    expect((await readdir(second.dir)).sort()).toEqual(['proposal-analysis']);
   });
 });

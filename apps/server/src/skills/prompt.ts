@@ -16,8 +16,20 @@
  * 明确**不**做的事：不做语义层过滤（例如删掉「忽略以上指令」这类句子）。语义过滤永远漏，
  * 且会让人以为防住了。这里的立场是：正文只是数据，它被包在一个它无法破坏的结构里。
  */
-import { SKILL_NAME_RE, SKILL_OUTPUT_INTENTS } from '../../../../packages/contract/src/index.ts';
-import type { LabelVocabularyEntry, SkillOutput } from '../../../../packages/contract/src/index.ts';
+import {
+  ISSUE_TOOLS,
+  ISSUE_TOOL_GROUPS,
+  ISSUE_TOOL_USAGE_NOTES,
+  SKILL_NAME_RE,
+  SKILL_OUTPUT_INTENTS,
+  issueToolAvailability,
+} from '../../../../packages/contract/src/index.ts';
+import type {
+  IssueToolGroup,
+  IssueToolSpec,
+  LabelVocabularyEntry,
+  SkillOutput,
+} from '../../../../packages/contract/src/index.ts';
 import type { SkillDefinition } from './types.ts';
 
 /** 各类不可信输入的字符上限。数字是刻意的保守值：既够判定，又不至于把上下文吃掉。 */
@@ -260,24 +272,103 @@ function oneLine(raw: string, maxChars: number): string {
  * 为什么放在提示词里而不是技能正文里：工具清单由运行时决定（宿主给什么、技能声明允许什么），
  * 技能正文是**静态文本**，写死清单会在换了运行环境后变成谎话。技能只负责「本场景怎么用这几个
  * 工具」，清单本身由这里按 `allowed-tools` 过滤生成。
+ *
+ * 工具名不再手写在下面：宿主文件工具与 issue 工具集都从契约取（`HOST_FILE_TOOLS` /
+ * `ISSUE_TOOLS`）。手写一份的后果是加了个工具文档里没有、或文档里有却调不到——
+ * 而这两件事在 v2.1 都真发生过（`mcp__*` 曾出现在提示词里但通道未实现）。
  */
-const TOOL_CATALOG: Readonly<Record<string, string>> = Object.freeze({
+const HOST_TOOL_LINES: Readonly<Record<string, string>> = Object.freeze({
   Read: '- `Read(file_path="<路径>")` —— 读一个已知路径的文件。看实现、配置、issue 模板、文档时用。',
   Glob: '- `Glob(pattern="**/*.test.ts")` —— 按通配符列文件。不确定路径在哪时先用它定位，再用 Read。',
   Grep: '- `Grep(pattern="<正则>", path="<目录>")` —— 按内容搜。从报错文案 / 界面文案 / 接口路径反查代码位置时用。',
-  Bash: '- `Bash(command="<命令>")` —— 在仓库根执行命令（`git`、包管理器脚本）。看 diff、看历史、跑相关测试时用。',
+  Bash: '- `Bash(command="<命令>")` —— 在仓库根执行命令（`git`、包管理器脚本、跑测试）。**不得用来做 issue 操作**（`gh issue` / `gh api` 会被审批拒绝）。',
   Write: '- `Write(file_path="<路径>", content="<文本>")` —— 新建文件。仅当 `outputs` 含 `pr` 时才允许改代码。',
   Edit: '- `Edit(file_path="<路径>")` —— 改一处已存在的文件。仅当 `outputs` 含 `pr` 时才允许改代码。',
 });
 
+/** issue 工具集的分组小标题（与 `ISSUE_TOOL_GROUPS` 的读法对齐，但用中文给人看）。 */
+const ISSUE_GROUP_TITLES: Readonly<Record<IssueToolGroup, string>> = Object.freeze({
+  read: '读（issue / 评论 / 时间线）',
+  search: '检索',
+  write: '写（评论 / 回复 / 表情 / 标签 / 状态）',
+  meta: '关联与元数据',
+});
+
+/** 一条 issue 工具的调用形状：`IssueGet(number=123)`。 */
+function issueToolSignature(tool: IssueToolSpec): string {
+  const params = [...tool.required, ...(tool.optional ?? []).map((name) => `${name}?`)];
+  return `${tool.name}(${params.join(', ')})`;
+}
+
+/**
+ * issue 工具清单 + 使用规范 + 通道状态。
+ *
+ * 抽成独立函数是因为它有**两个入口**：
+ *  - `renderToolCatalog()`：技能声明了什么就渲染什么（`## 可用工具` 的子段）；
+ *  - `renderIssueCapabilityCatalog()`：**没有命中技能**的任务也要知道平台能做什么 ——
+ *    `agent:mention` / `agent:event` 的提示词原本对 issue 能力只字未提，模型只能靠猜。
+ *
+ * 分组渲染的理由：19 条平铺会让模型读不出「哪条属于哪个阶段」，而它要做的决定
+ * 恰恰是「现在这一步该用哪个」。
+ */
+function issueToolSectionLines(tools: readonly IssueToolSpec[], heading: string): string[] {
+  const lines: string[] = [heading, ''];
+  for (const group of ISSUE_TOOL_GROUPS) {
+    const groupTools = tools.filter((tool) => tool.group === group);
+    if (groupTools.length === 0) continue;
+    lines.push(`**${ISSUE_GROUP_TITLES[group]}**`, '');
+    for (const tool of groupTools) {
+      lines.push(`- \`${issueToolSignature(tool)}\` —— ${tool.description}`);
+    }
+    lines.push('');
+  }
+  /*
+    使用规范（`ISSUE_TOOL_USAGE_NOTES`，与工具名同属契约事实源）：清单只解决「有哪些」，
+    这一段解决「该用哪个、参数从哪来」。少了它，模型会把回复评论写成 IssueCommentCreate
+    手抄引用块，或者把「重复」用一句话描述掉而不去用它已有的 IssueLink。
+  */
+  lines.push('**使用规范**', '');
+  for (const note of ISSUE_TOOL_USAGE_NOTES) {
+    lines.push(`- ${note}`);
+  }
+  lines.push('');
+  /*
+    措辞按执行通道的真实状态选（`issueToolAvailability()`）：
+    通道没通时**不能**说「你可以调用 IssueGet」——那是当前链路里不存在的能力，
+    模型照做只会失败并回报「工具加载不到」（`agent/message.ts` 记着 issue #26 的实测）。
+  */
+  lines.push(
+    issueToolAvailability() === 'callable'
+      ? '这些工具已由平台注册到本次会话，直接按上面的形状调用。'
+      : '这些能力由**平台代你执行**：按上面的语义把要做什么写清楚（哪个 issue、哪条评论、改哪些标签），平台负责落库与写回。',
+    '',
+    '硬约定：issue 的读与写**一律**走上面这些工具；`Bash` 里出现 `gh issue` / `gh api` / 直接请求 `api.github.com` 会被审批直接拒绝。',
+  );
+  return lines;
+}
 export function renderToolCatalog(tools: readonly string[]): string {
   const lines = ['## 可用工具（本技能声明的上限；矩阵外一律 deny）', ''];
+
+  const hostLines: string[] = [];
   for (const tool of tools) {
-    const line = TOOL_CATALOG[tool];
-    if (line !== undefined) {
-      lines.push(line);
-    }
+    const line = HOST_TOOL_LINES[tool];
+    if (line !== undefined) hostLines.push(line);
   }
+  lines.push(...hostLines);
+
+  const allowedIssueTools = ISSUE_TOOLS.filter((tool) =>
+    tools.some((name) => name.toLowerCase() === tool.name.toLowerCase()),
+  );
+  if (allowedIssueTools.length > 0) {
+    if (hostLines.length > 0) lines.push('');
+    lines.push(
+      ...issueToolSectionLines(
+        allowedIssueTools,
+        '### issue 操作（issue 全生命周期；**唯一入口**，不要用 Bash 里的 gh / GitHub API）',
+      ),
+    );
+  }
+
   lines.push(
     '',
     '用法约定：',
@@ -286,6 +377,31 @@ export function renderToolCatalog(tools: readonly string[]): string {
     '- 工具失败（路径不存在、命令不可用、无网络）就写明失败原因，不要用「应该」补齐。',
   );
   return lines.join('\n');
+}
+
+/**
+ * 平台对 issue 的**全部能力**（不按技能过滤）。
+ *
+ * 为什么需要它：`agent:mention` / `agent:event` 这类任务经常**没有命中任何技能**，
+ * 而 `renderToolCatalog()` 只在技能声明了 Issue* 工具时才会渲染那一段 —— 结果是模型
+ * 对「平台能贴表情、能回复评论」一无所知，只能说一句泛泛的结论。
+ *
+ * 与 `## 可用工具` 的区别（也是它敢不按技能过滤的理由）：审批矩阵对 `Issue*` 工具
+ * **不按技能开关**（`runtime/approval-policy.ts` 用 `isIssueTool()` 一律放行），
+ * 真正的两道闸是项目动作开关与写回闸门。所以把这份清单发给任何一轮都是准确的能力描述，
+ * 不会像宿主的 `Read` / `Bash` 那样出现「技能没声明却被告知可用」。
+ */
+export function renderIssueCapabilityCatalog(): string {
+  return [
+    '## issue 操作能力（平台代执行；不随技能开关）',
+    '',
+    '本轮没有命中技能：下面是平台对 issue 的全部能力。`actions` 里要做什么，就按这些语义写。',
+    '',
+    ...issueToolSectionLines(
+      ISSUE_TOOLS,
+      '### issue 操作（issue 全生命周期；**唯一入口**，不要用 Bash 里的 gh / GitHub API）',
+    ),
+  ].join('\n');
 }
 
 /**

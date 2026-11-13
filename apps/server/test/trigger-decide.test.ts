@@ -412,6 +412,32 @@ describe('三层去重与日配额（在闸门之后判）', () => {
     });
     expect(decision).toEqual({ triggered: false, event: 'issues.opened', reason: 'repo-disabled' });
   });
+
+  it('验签失败优先于仓库可用性 → signature-invalid（不再误标 repo-disabled）', () => {
+    /*
+      实测缺陷（issue #30）：401 的投递被记成 `repo-disabled`，而 `repos.enabled = true`，
+      排查时先去查仓库开关。验签失败必须单独成 reason，且排在仓库可用性之前——
+      因为这条投递压根没被信任，讨论「仓库开不开」没有意义。
+    */
+    const decision = decideEvent({
+      event: 'issues.opened',
+      action: 'opened',
+      settings: {},
+      repoDisabled: true,
+      signatureInvalid: true,
+    });
+    expect(decision).toEqual({ triggered: false, event: 'issues.opened', reason: 'signature-invalid' });
+  });
+
+  it('只给 signatureInvalid 时也判 signature-invalid（401 路径不依赖仓库状态）', () => {
+    const decision = decideEvent({
+      event: 'issue_comment.created',
+      action: 'created',
+      settings: {},
+      signatureInvalid: true,
+    });
+    expect(decision.reason).toBe('signature-invalid');
+  });
 });
 
 describe('模板取值：项目配置优先，空/空白回退内置默认', () => {

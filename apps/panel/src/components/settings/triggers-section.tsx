@@ -14,54 +14,67 @@ import { useState } from 'react';
 import { DEFAULT_TRIGGER_ALIASES } from '../../../../../packages/contract/src/index.ts';
 import { Alert, AlertDescription } from '../ui/alert.tsx';
 import { Badge } from '../ui/badge.tsx';
-import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
 import { ChipEditor, TextAreaField } from './form.tsx';
-import { SaveBar } from './save-bar.tsx';
-import { countChangedPaths } from './settings-chrome.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
 import { acceptAlias, previewTrigger, resolveAliasesFor } from './trigger-preview.ts';
 
 const PREVIEW_SAMPLE = '@issuebot /issue-triage 17 --deep';
 
-export function TriggersSection({ state }: SettingsSectionProps) {
+/**
+ * 别名 + 命中预览（原「触发」分区的全部内容）。
+ *
+ * 在事件绑定设置页里它是**折叠区**：这一页的高度要留给提示词编辑区（需求 3/4），
+ * 常驻展开会把编辑区压到只剩两三行。折叠时只占一行，展开后仍按内容高度排，
+ * 由外层 `main` 滚动——它不需要参与「编辑区内部滚」那条链。
+ */
+export function TriggerAdvanced({ state }: SettingsSectionProps) {
   const { draft, readOnly } = state;
   const triggers = draft.triggers;
   const effectiveAliases = resolveAliasesFor(triggers);
   const [previewBody, setPreviewBody] = useState(PREVIEW_SAMPLE);
-  const changed = countChangedPaths(state.base, draft).length;
-
-  // v0.3：`triggers` 只剩 `aliases`，没有「触发人名单」这一条可阻塞的校验。
-  const blockedReason = null;
+  const [open, setOpen] = useState(false);
 
   const patchTriggers = (patch: (current: typeof triggers) => typeof triggers): void => {
     state.update((current) => ({ ...current, triggers: patch(current.triggers) }));
   };
 
   return (
-    <div className="flex flex-col gap-6" data-testid="settings-triggers">
-      <Section
-        first
-        title="别名"
-        description="大小写不敏感，@ 可写可不写；保存时统一小写并去重"
-      >
-        <div className="flex flex-col gap-3">
+    <details
+      /* 受控：折叠态要能由「有没有未保存改动」这类外部原因打开时不用碰 DOM */
+      open={open}
+      onToggle={(event) => {
+        setOpen(event.currentTarget.open);
+      }}
+      className="shrink-0 rounded-md border border-border"
+      data-testid="settings-triggers"
+    >
+      <summary className="cursor-pointer list-none px-2.5 py-1.5 text-xs text-muted-foreground select-none hover:text-foreground">
+        别名与命中预览
+        <span className="ml-1.5 text-2xs text-faint">
+          （生效别名 {effectiveAliases.length === 0 ? '0 个' : effectiveAliases.map((alias) => `@${alias}`).join(' / ')}）
+        </span>
+      </summary>
+
+      <div className="flex flex-col gap-3 border-t border-border px-2.5 py-2">
+        <div className="flex flex-col gap-2">
           <ChipEditor
             id="triggers-aliases"
             label="额外别名（aliases，1–8 个）"
             values={triggers.aliases ?? []}
             onChange={(next) => {
               // 空数组在契约里非法（min 1）：清空 = 回落到「只用部署默认」
-              patchTriggers((current) => (next.length === 0 ? { ...current, aliases: undefined } : { ...current, aliases: next }));
+              patchTriggers((current) =>
+                next.length === 0 ? { ...current, aliases: undefined } : { ...current, aliases: next },
+              );
             }}
             accept={(raw) => acceptAlias(raw, triggers.aliases ?? [])}
             placeholder="@issuebot"
-            hint="写 @IssueBot 会存成 issuebot"
+            hint="大小写不敏感，@ 可写可不写；保存时统一小写并去重"
             disabled={readOnly}
             disabledReason="仓库已归档：只读"
             emptyText="（没有额外别名，只用部署默认）"
           />
-
 
           <div className="rounded-md bg-muted px-2.5 py-2">
             <p className="text-2xs text-faint">生效别名</p>
@@ -81,12 +94,7 @@ export function TriggersSection({ state }: SettingsSectionProps) {
             </p>
           </div>
         </div>
-      </Section>
 
-      <Section
-        title="命中预览"
-        description="跑的是上方草稿，不必先保存"
-      >
         <div className="flex flex-col gap-2" data-testid="triggers-preview">
           <TextAreaField
             id="triggers-preview-body"
@@ -96,29 +104,12 @@ export function TriggersSection({ state }: SettingsSectionProps) {
             rows={5}
             mono
             placeholder="例如：@issuebot /issue-triage 17"
-            hint="围栏代码块（```）与行内代码（`）里的 @ 不算触发；粘贴原文即可，不需要去掉代码。"
+            hint="围栏代码块（```）与行内代码（`）里的 @ 不算触发。"
           />
           <PreviewResult body={previewBody} triggers={triggers} />
-          <p className="text-2xs leading-relaxed text-faint">
-            预览不校验触发人名单（这里没有「谁在说话」），也不代表命令门禁 / 每小时配额放行。
-          </p>
         </div>
-      </Section>
-
-      <SaveBar
-        saveLabel="保存触发设置"
-        dirty={state.dirty}
-        changed={changed}
-        status={state.status}
-        failure={state.failure}
-        readOnly={readOnly}
-        readOnlyReason="仓库已归档：只读"
-        blockedReason={blockedReason}
-        onSave={state.save}
-        onReset={state.reset}
-        testId="settings-triggers"
-      />
-    </div>
+      </div>
+    </details>
   );
 }
 

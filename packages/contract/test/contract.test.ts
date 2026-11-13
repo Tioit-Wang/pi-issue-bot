@@ -220,12 +220,8 @@ describe('8 个 GET 的响应 schema', () => {
   it('/api/system', () => {
     expect(systemResponseSchema.safeParse(baseSystem()).success).toBe(true);
     const bad = baseSystem();
-    expect(
-      systemResponseSchema.safeParse({
-        ...bad,
-        skills: [{ ...bad.skills[0], enabled: false, disabledReason: null }],
-      }).success,
-    ).toBe(true);
+    // `skills` 已从 /api/system 移除（技能只属于项目）：多带这个键应当被 strict 拒掉
+    expect(systemResponseSchema.safeParse({ ...bad, skills: [] }).success).toBe(false);
     expect(systemResponseSchema.safeParse({ ...bad, protocol: { wsPath: '/v1/racp/ws' } }).success).toBe(false);
   });
 
@@ -327,7 +323,7 @@ describe('多仓库改造后的契约（W3-H）', () => {
     expect(saveRepoSettingsRequestSchema.safeParse({}).success).toBe(false);
   });
 
-  it('/api/issues 的新字段：reactionState / labelDecisions / feedback 与详情侧 pendingFeedback', () => {
+  it('/api/issues 的新字段：reactionState / feedback 与详情侧 pendingFeedback', () => {
     const feedbackEvent = {
       stage: 'succeeded',
       content: 'rocket',
@@ -355,13 +351,6 @@ describe('多仓库改造后的契约（W3-H）', () => {
       outcomes: { succeeded: 1 },
       lastPreview: '结论',
       reactionState: feedbackEvent,
-      labelDecisions: {
-        lastAt: '2026-06-02T00:01:00Z',
-        desired: ['bug', 'needs-info'],
-        applied: ['bug'],
-        reason: 'needs-info 被词表拦住',
-        blocked: [{ reason: 'not-in-vocabulary', count: 1 }],
-      },
       feedback: [{ ...feedbackEvent, stage: 'received', content: 'eyes' }, feedbackEvent],
     };
     const list = { generatedAt: '2026-06-02T00:02:00Z', issues: [issue], hasMore: false, nextCursor: null };
@@ -547,22 +536,11 @@ function baseSystem() {
         configError: null,
       },
     ],
-    skills: [
-      {
-        name: '/issue-triage',
-        source: 'builtin',
-        enabled: false,
-        disabledReason: 'skill_invalid',
-        outputs: ['comment', 'labels'],
-        timeoutMs: 1_200_000,
-      },
-    ],
   };
 }
 
 /**
  * 技能只能是项目级：`scope` 这个维度从 API 面上消失（只剩 `'repo'` 一个取值）。
- *
  * 为什么把这几条钉在契约层：面板与服务端都从这里取 schema，任何一处「把 scope 加回来」的
  * 改动都会先在契约测试里红掉，而不是等到某个人在面板上发现多了一个「全局」选项。
  */

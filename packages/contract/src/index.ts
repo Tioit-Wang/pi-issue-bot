@@ -12,6 +12,7 @@
  * - `trigger.ts`      触发别名 / 蒙版 / 命令解析（纯函数，webhook 与面板共用）
  * - `settings-v21.ts` v2.1 配置段（事件开关 / 模板 / 评论闸门 / 角色 / 执行限额 / 标签目录）
  * - `skill-mentions.ts` 技能命中（`/名字`，纯函数；webhook 与面板预览共用）
+ * - `issue-tools.ts`   执行侧工具面（移除清单 / 保留清单 / issue 工具集 / shell 约束）
  * 使用方：`apps/server/src/{http,queries,config,skills}` 与 `apps/panel`（后者只取类型）。
  * 硬约束：本包不得 import `apps/*` 或其它 workspace 包（lint 的 `no-restricted-paths` 强制）。
  */
@@ -21,6 +22,7 @@ export * from './api.ts';
 export * from './repo-config.ts';
 export * from './trigger.ts';
 export * from './settings-v21.ts';
+export * from './issue-tools.ts';
 export * from './skill-mentions.ts';
 export * from './skills.ts';
 export * from './schemas.ts';

@@ -1,13 +1,11 @@
 /**
- * Issue 详情（W2-F）：**「结果去哪了」**的六个区块 + 四态。
+ * Issue 会话详情：**只展示会话本身**（按需求文档 §5 的「完整对话」demo）。
  *
- * 这一页的核心不是「好看」，是**别把信息说错**，所以断言都盯着诚实性：
- *  - `actions.external_ref IS NULL`（没有评论）时正文仍要显示，并标「未发布到 GitHub」；
- *  - 标签理由来自 `labelDecisions.reason`，被拦原因来自 `labelDecisions.blocked`；
- *  - 「缺哪些信息」是 `reason` 的切分结果，不是另编一份；
- *  - 重跑按钮**必须 disabled**（写接口没落地），并且旁边写清原因。
+ * 断言盯着两件事：
+ *  - 结构：人类轮是气泡、机器人轮是「轮 → 组 → 工具」三层折叠；
+ *  - 去掉了过时的产出视图：结论正文 / 标签与理由 / 缺哪些信息 / reaction 台账 / 重跑按钮。
  *
- * 数据自带（`server.use`），不依赖 W3-H 正在改的 fixture。
+ * 数据自带（`server.use`），不依赖共享 fixture。
  */
 import { screen, within } from '@testing-library/react';
 import { HttpResponse, delay, http } from 'msw';
@@ -38,9 +36,7 @@ function makeTurn(input: {
   role: IssueTurn['role'];
   at: string;
   text?: string | null;
-  commentId?: string | null;
   commentUrl?: string | null;
-  labels?: string[];
   status?: IssueTurn['status'];
   failureClass?: IssueTurn['failureClass'];
   taskId?: string | null;
@@ -54,9 +50,9 @@ function makeTurn(input: {
     at: input.at,
     channel: input.channel ?? null,
     text: input.text ?? null,
-    commentId: input.commentId ?? null,
+    commentId: null,
     commentUrl: input.commentUrl ?? null,
-    labels: input.labels ?? [],
+    labels: [],
     status: input.status ?? 'succeeded',
     failureClass: input.failureClass ?? null,
     taskId: input.taskId ?? null,
@@ -66,11 +62,24 @@ function makeTurn(input: {
   };
 }
 
-/** 完整会话：人类提问 + 机器人结论（无评论 = external_ref 为空）+ 一轮失败。 */
-function session(options: { published?: boolean; botText?: string | null } = {}): IssueSessionResponse {
-  const published = options.published ?? false;
-  // `botText: null` 是「这一轮没有正文」的合法用例，不能被 ?? 吃掉
-  const botText = 'botText' in options ? options.botText : '结论：把 socket 放到 RuntimeDirectory，别放 /tmp。';
+/** 一轮机器人：带两个工具调用 + 一段输出。 */
+function botTurn(text: string | null = '结论：把 socket 放到 RuntimeDirectory，别放 /tmp。'): IssueTurn {
+  return makeTurn({
+    id: 'run:1',
+    role: 'bot',
+    at: AT,
+    text,
+    status: text === null ? 'failed' : 'succeeded',
+    failureClass: text === null ? 'timeout' : null,
+    taskId: 't-17-1',
+    toolCalls: [
+      { name: 'Bash', summary: 'Get-ChildItem -Force', at: AT, ok: true },
+      { name: 'Read', summary: '.github/ISSUE_TEMPLATE/bug_report.md', at: AT, ok: false },
+    ],
+  });
+}
+
+function session(bot = botTurn()): IssueSessionResponse {
   return {
     generatedAt: AT,
     issue: {
@@ -81,50 +90,12 @@ function session(options: { published?: boolean; botText?: string | null } = {})
       url: 'https://github.com/acme/widgets/issues/17',
       state: 'open',
       stateStale: false,
-      labels: ['bug', 'needs-info'],
+      labels: ['bug'],
       participants: ['alice', 'pi-issue-bot[bot]'],
-      reactionState: {
-        stage: 'succeeded',
-        content: 'rocket',
-        appliedAt: AT,
-        at: AT,
-        commentId: published ? '410002' : null,
-      },
+      reactionState: { stage: 'succeeded', content: 'rocket', appliedAt: AT, at: AT, commentId: '410002' },
       pendingFeedback: [],
     },
-    turns: [
-      makeTurn({ id: 'task:1', role: 'human', at: AT, text: '这个 EACCES 是什么原因？', channel: 'mention', taskId: 't-17-1' }),
-      makeTurn({
-        id: 'run:1',
-        role: 'bot',
-        at: AT,
-        text: botText,
-        status: botText === null ? 'failed' : 'succeeded',
-        failureClass: botText === null ? 'timeout' : null,
-        labels: ['bug'],
-        taskId: 't-17-1',
-        commentId: published ? '410002' : null,
-        commentUrl: published ? 'https://github.com/acme/widgets/issues/17#issuecomment-410002' : null,
-      }),
-    ],
-  };
-}
-
-/** `labelDecisions` 挂在 `issue` 上（契约位置），由读取器兜住。 */
-function sessionWithLabels(data: IssueSessionResponse): IssueSessionResponse {
-  return {
-    ...data,
-    issue: {
-      ...data.issue,
-      // 契约里 `IssueSummary` 没有 `labelDecisions`：这里模拟后端后续把它放进来
-      ...({ labelDecisions: {
-        lastAt: AT,
-        desired: ['bug', 'needs-info', 'priority:high'],
-        applied: ['bug', 'needs-info'],
-        reason: '缺少复现步骤；没有说明部署方式',
-        blocked: [{ reason: '词表外标签 priority:high', count: 2 }],
-      } } as object),
-    },
+    turns: [makeTurn({ id: 'task:1', role: 'human', at: AT, text: '这个 EACCES 是什么原因？', channel: 'mention' }), bot],
   };
 }
 
@@ -148,71 +119,85 @@ function renderDetail(route = '/repos/acme__widgets/issues/issue/17') {
   );
 }
 
-describe('Issue 详情：关键区块', () => {
-  it('结论正文 / 标签与理由 / reaction / 缺哪些信息 / run 时间线 / 重跑 六块都在', async () => {
-    serveSession(sessionWithLabels(session()));
+describe('Issue 会话详情：结构与内容', () => {
+  it('会话栏给出轮次统计，人类轮是气泡、机器人轮给出工具与输出', async () => {
+    serveSession(session());
     renderDetail();
 
     const content = await screen.findByTestId('issue-detail-content');
     expect(screen.getByRole('heading', { level: 1 }).textContent ?? '').toContain('issue#17');
 
-    // ① 结论正文：没有评论 ⇒ 正文照常显示 + 明确标注「未发布到 GitHub」
-    const result = within(content).getByTestId('issue-detail-result');
-    expect(result.textContent).toContain('RuntimeDirectory');
-    expect(screen.getByTestId('issue-detail-result-unpublished')).toBeTruthy();
-    // 「为什么没发布」不再占正文行：挂在徽章的 title 上（hover 与读屏都可达）
-    expect(screen.getByTestId('issue-detail-result-unpublished').getAttribute('title') ?? '').toContain(
-      '没有对应评论',
-    );
+    // 会话栏：轮次 / 人类 / 机器人
+    const head = within(content).getByTestId('issue-detail-session-header');
+    expect(head.textContent).toContain('轮次');
+    expect(head.textContent).toContain('2');
+    expect(head.textContent).toContain('人类');
+    expect(head.textContent).toContain('机器人');
 
-    // ② 标签与理由：reason + 被拦原因（含次数）
-    const labels = within(content).getByTestId('issue-detail-label-decision');
-    expect(labels.textContent).toContain('bug');
-    expect(within(labels).getByTestId('issue-detail-labels-reason').textContent).toContain('缺少复现步骤');
-    expect(within(labels).getByTestId('issue-detail-labels-blocked').textContent).toContain('词表外标签');
-    expect(labels.textContent).toContain('priority:high');
+    // 人类轮：正文照原样显示（右对齐气泡里）
+    const human = within(content).getByTestId('issue-detail-turn-human');
+    expect(human.textContent).toContain('EACCES');
 
-    // ③ reaction：最新终态 + 台账为空时的说明
-    // reaction：头部徽章给出最新终态（右侧台账在 dry-run / 空台账时是一条说明）
-    expect(screen.getByTestId('issue-detail-header').textContent).toContain('rocket');
-
-    // ④ 缺哪些信息：来自 reason 的切分（两条）
-    const missing = within(content).getByTestId('issue-detail-missing');
-    const items = within(missing).getAllByRole('listitem').map((item) => item.textContent ?? '');
-    expect(items).toHaveLength(2);
-    expect(items[0]).toContain('缺少复现步骤');
-    expect(items[1]).toContain('没有说明部署方式');
-
-    // ⑤ run 时间线：两轮各一行，任务列可点
-    const timeline = within(content).getByTestId('issue-detail-timeline');
-    expect(within(timeline).getAllByRole('listitem')).toHaveLength(2);
-    expect(within(timeline).getAllByRole('link').map((link) => link.textContent)).toContain('t-17-1');
-
-    // ⑥ 重跑：禁用 + 写明原因（不假装可点）
-    const button = within(content).getByTestId('issue-detail-rerun-button') as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    expect(button.getAttribute('title') ?? '').toContain('POST /api/tasks/:id/rerun');
-    expect(within(content).getByTestId('issue-detail-rerun').textContent).toContain('写接口未就绪');
+    // 机器人轮：轮标题写「运行完成 / 耗时 / N 个工具」
+    const bot = within(content).getByTestId('issue-detail-turn-bot');
+    expect(bot.textContent).toContain('运行完成');
+    expect(bot.textContent).toContain('2 个工具');
+    // 输出块
+    expect(bot.textContent).toContain('RuntimeDirectory');
   });
 
-  it('有评论的轮次：不标「未发布」，给 GitHub 链接', async () => {
-    serveSession(session({ published: true }));
+  it('工具调用默认收起，点开后逐条列出（三层里的第三层）', async () => {
+    serveSession(session());
     renderDetail();
 
     const content = await screen.findByTestId('issue-detail-content');
-    const result = within(content).getByTestId('issue-detail-result');
-    expect(screen.getByTestId('issue-detail-result-unpublished').textContent).toContain('已发布评论');
-    expect(within(result).getByRole('link', { name: '在 GitHub 看这条评论' })).toBeTruthy();
+    const bot = within(content).getByTestId('issue-detail-turn-bot');
+    const toggle = within(bot).getByTestId('issue-detail-tools-toggle') as HTMLButtonElement;
+
+    // 收起时没有工具列表
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(within(bot).queryByTestId('issue-detail-tool-calls')).toBeNull();
+
+    toggle.click();
+
+    const tools = await within(bot).findByTestId('issue-detail-tool-calls');
+    expect(tools.textContent).toContain('Bash');
+    expect(tools.textContent).toContain('Get-ChildItem');
+    expect(tools.textContent).toContain('Read');
+    // 失败次数在组标题里如实写出来
+    expect(tools.textContent).toContain('1 次失败');
   });
 
-  it('没有机器人正文：结论区块如实说明（不编一段结论）', async () => {
-    serveSession(session({ botText: null }));
+  it('机器人这一轮没有正文时如实说明，不编结论', async () => {
+    serveSession(session(botTurn(null)));
     renderDetail();
 
     const content = await screen.findByTestId('issue-detail-content');
-    const result = within(content).getByTestId('issue-detail-result');
-    expect(result.textContent).toContain('没有正文');
-    expect(result.textContent).toContain('timeout');
+    const bot = within(content).getByTestId('issue-detail-turn-bot');
+    // 没有输出块（`输出` 标签不出现），但有失败分类
+    expect(bot.textContent).not.toContain('输出');
+    expect(bot.textContent).toContain('timeout');
+  });
+
+  it('已移除的产出视图不再渲染（结论正文 / 标签与理由 / 缺哪些信息 / reaction 台账 / 重跑）', async () => {
+    serveSession(session());
+    renderDetail();
+
+    const content = await screen.findByTestId('issue-detail-content');
+    for (const removed of [
+      'issue-detail-result',
+      'issue-detail-label-decision',
+      'issue-detail-missing',
+      'issue-detail-reaction',
+      'issue-detail-rerun-button',
+      'issue-detail-cost',
+      'issue-detail-timeline',
+    ]) {
+      expect(within(content).queryByTestId(removed)).toBeNull();
+    }
+    expect(content.textContent ?? '').not.toContain('结论正文');
+    expect(content.textContent ?? '').not.toContain('缺哪些信息');
+    expect(content.textContent ?? '').not.toContain('标签与理由');
   });
 
   it('仓库上下文：面包屑给出「全部项目 / acme/widgets / Issue 中心 / issue#17」', async () => {
@@ -228,7 +213,7 @@ describe('Issue 详情：关键区块', () => {
   });
 });
 
-describe('Issue 详情：四态', () => {
+describe('Issue 会话详情：四态', () => {
   it('loading / error / 空（404）/ content', async () => {
     // loading
     server.use(

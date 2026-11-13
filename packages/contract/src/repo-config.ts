@@ -167,9 +167,9 @@ export const agentConfigSchema = z
      * 存储与目录 id 都这么存）。以前默认值是 `format-check` —— 一个谁都没有的技能名，
      * 于是每个新 issue 都在指示模型「先加载 format-check」，模型只能回报「加载不到」（issue #26）。
      */
-    on_opened: z.string().min(1).max(64).nullable().default('issue-format'),
+    on_opened: z.string().min(1).max(64).nullable().default('proposal-analysis'),
     /** `issues.edited` 要加载的技能 id；`null` = 不投递。 */
-    on_edited: z.string().min(1).max(64).nullable().default('issue-format'),
+    on_edited: z.string().min(1).max(64).nullable().default('proposal-analysis'),
     /** 格式检查通过后是否自动打标签（默认关：v0.3「默认只产出评论」）。 */
     auto_label_after_format_pass: z.boolean().default(false),
     /** 项目级补充提示词（取代 v1.5 的 `prompt_versions` 版本表）。@deprecated v2.1 用 `system_prompt`。 */

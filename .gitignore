@@ -21,6 +21,24 @@ data/
 .env.*
 !.env.example
 
+# 本地 GitHub App 凭据（App ID / 私钥 / webhook secret / host token / 模型 key）
+#
+# 为什么用「整目录忽略 + 白名单放行一份 README」而不是逐个列文件名：
+# 逐个列的写法只挡得住今天这四个名字，明天多一个 `*.pem`、一个 `*-token.txt`
+# 就会静默入库；整盘忽略是唯一能闭合的写法。README 只是给后来人看的说明，
+# 它本身不含任何密钥，所以用 `!` 单独放行。
+# 为什么是 `/.secrets/*` 而不是 `/.secrets/`：整目录忽略（带尾斜杠）会让 Git
+# **无法再放行里面任何文件**（父目录被排除后，`!` 规则不生效）。用 `/*` 只忽略
+# 直属子项，才能把不含密钥的 README 单独放行。
+/.secrets/*
+!/.secrets/README.md
+
+# 任何位置的私钥文件与本地 env 变体（兜底，防「放到别处」）
+*.pem
+*.key
+*.p12
+*.pfx
+
 # editor / OS
 .DS_Store
 Thumbs.db

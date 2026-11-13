@@ -13,6 +13,10 @@
  * 顺序错了会产生误导性的留痕原因：例如开关关着却记成 `not-mentioned`，
  * 运维会跑去改关键词（真正的病因是开关）。
  */
+import {
+  DEFAULT_EVENT_TEMPLATES as CONTRACT_DEFAULT_EVENT_TEMPLATES,
+  defaultEventTemplate as contractDefaultEventTemplate,
+} from '../../../../packages/contract/src/index.ts';
 import type { EventKey } from '../../../../packages/contract/src/index.ts';
 import { resolveCommentConfig, resolveCommentGates, resolveEventTrigger } from '../config/v21-settings.ts';
 import { findLegalMention } from './mention.ts';
@@ -35,7 +39,16 @@ export type SkippedReason =
   | 'pr-ignored'
   | 'content-duplicate'
   | 'daily-quota'
-  | 'repo-disabled';
+  | 'repo-disabled'
+  /**
+   * 验签失败（401）。
+   *
+   * 为什么必须与 `repo-disabled` 分开：两条路径都「不入队」，但病因完全不同——
+   * 前者是仓库真的被停用，后者是 webhook secret 对不上（配置问题）。
+   * 混成一个 reason 的后果是实测踩过的：issue #30 明明被 401 拒了，
+   * 审计里写着 `repo-disabled`，而 `repos.enabled` 是 `true`，排查时白绕一圈。
+   */
+  | 'signature-invalid';
 
 export type TriggeredDecision = {
   readonly triggered: true;
@@ -60,98 +73,19 @@ export type PullRequestDecision = {
   readonly reason: 'pr-ignored';
 };
 
-/* ── 2. 内置默认模板（四段结构：技能触发词 / #编号 / 链接 / 正文） ────────────── */
+/* ── 2. 内置默认模板（已下沉到契约） ──────────────────────────────────────── */
 
 /**
- * 内置默认模板（FR-2.2 / FR-4.1）。
+ * 内置默认模板：**定义已下沉到契约**（`packages/contract/src/settings-v21.ts`）。
  *
- * 四段顺序固定，一个都不能少：
- *  1. **技能触发词**（`/issue-format` 这类命令词）——技能路由的唯一依据；
- *  2. **issue 锚点** `#{{issue.number}}`——日志与评论里人能对照；
- *  3. **链接** `{{issue.url}}`——agent 自取详情、评论、标签的入口；
- *  4. **正文快照**——保证判定依据是事件发生时的版本（链接可能已指向改后的版本）。
- *
- * 为什么内置模板也走占位符而不是直接拼字符串：项目配置的模板与内置模板必须由**同一个**
- * 渲染器处理（FR-2.3 的「一次遍历、未知保留」才能也覆盖内置模板）。
+ * 面板要把同一份填进输入框、服务端用它渲染，两处各写一份就会出现「看到 A、实际发 B」；
+ * 这里只做再导出。四段顺序（技能触发词 / `#编号` / 链接 / 正文快照）由契约保证。
  */
-export const DEFAULT_EVENT_TEMPLATES: Readonly<Record<EventKey, string>> = Object.freeze({
-  'issues.opened': [
-    '/issue-format',
-    '',
-    '#{{issue.number}} {{issue.url}}',
-    '',
-    '作者：{{issue.author}}',
-    '标题：{{issue.title}}',
-    '当前标签：{{issue.labels}}',
-    '',
-    '正文快照：',
-    '```',
-    '{{issue.content}}',
-    '```',
-  ].join('\n'),
-  'issues.edited': [
-    '/issue-format',
-    '',
-    '#{{issue.number}} {{issue.url}}',
-    '',
-    '作者：{{issue.author}}',
-    '标题：{{issue.title}}',
-    '当前标签：{{issue.labels}}',
-    '',
-    '这是修改后的正文快照（只改了标题或标签时不会触发本事件）：',
-    '```',
-    '{{issue.content}}',
-    '```',
-  ].join('\n'),
-  'issues.labeled': [
-    '/label-triage',
-    '',
-    '#{{issue.number}} {{issue.url}}',
-    '',
-    '标题：{{issue.title}}',
-    '当前标签：{{issue.labels}}',
-    '',
-    '正文快照：',
-    '```',
-    '{{issue.content}}',
-    '```',
-  ].join('\n'),
-  'issues.closed': [
-    '/issue-analysis',
-    '',
-    '#{{issue.number}} {{issue.url}}',
-    '',
-    '标题：{{issue.title}}',
-    '当前标签：{{issue.labels}}',
-    '',
-    'issue 已关闭，请做一次收尾复盘：',
-    '```',
-    '{{issue.content}}',
-    '```',
-  ].join('\n'),
-  'issue_comment.created': [
-    '/issue-analysis',
-    '',
-    '#{{issue.number}} {{issue.url}}',
-    '',
-    '{{comment.author}} 在 {{repo}} 的这条 issue 下提到了你：',
-    '```',
-    '{{comment.body}}',
-    '```',
-    '',
-    'issue 标题：{{issue.title}}',
-    '当前标签：{{issue.labels}}',
-    '',
-    'issue 正文快照：',
-    '```',
-    '{{issue.content}}',
-    '```',
-  ].join('\n'),
-});
+export const DEFAULT_EVENT_TEMPLATES: Readonly<Record<EventKey, string>> = CONTRACT_DEFAULT_EVENT_TEMPLATES;
 
 /** 取某事件的内置默认模板（面板「恢复默认模板」与测试共用）。 */
 export function getDefaultEventTemplate(event: EventKey): string {
-  return DEFAULT_EVENT_TEMPLATES[event];
+  return contractDefaultEventTemplate(event);
 }
 
 /* ── 3. 判定入参 ───────────────────────────────────────────────────────────── */
@@ -185,6 +119,8 @@ export type DecideEventInput = {
   readonly dailyQuotaExceeded?: boolean | undefined;
   /** 仓库不可用（配置非法 / 已停用 / 无权访问） */
   readonly repoDisabled?: boolean | undefined;
+  /** 验签失败（401）：与 `repoDisabled` 分开记，病因是 secret 对不上而非仓库停用 */
+  readonly signatureInvalid?: boolean | undefined;
 };
 
 /* ── 4. 判定 ──────────────────────────────────────────────────────────────── */
@@ -272,6 +208,14 @@ function checkCommentGates(input: DecideEventInput): SkippedDecision | null {
  */
 export function decideEvent(input: DecideEventInput): TriggerDecision {
   const { event } = input;
+
+  /*
+    ⓪ 验签失败（401）排在仓库可用性之前：这条投递压根没被信任，
+    病因是「secret 对不上」，记成 `repo-disabled` 会让人去查仓库开关（实测踩过）。
+  */
+  if (input.signatureInvalid === true) {
+    return skip(event, 'signature-invalid');
+  }
 
   // ① 仓库可用性：配置非法 / 已停用 / 无权访问时，后面所有判定都没有意义。
   if (input.repoDisabled === true) {

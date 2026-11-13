@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 describe('/system', () => {
-  it('正常态：版本与协议 / doctor 分组 / 队列 / 保留期 / 能力', async () => {
+  it('正常态：版本与协议 / doctor 分组 / 队列 / 保留期', async () => {
     renderWithProviders(<SystemPage />, { route: '/system' });
 
     expect(await screen.findByTestId('system-content')).toBeTruthy();
@@ -73,10 +73,9 @@ describe('/system', () => {
     // 保留期：天数是对计数值调用 formatCount
     expect(screen.getByText(/webhook 90 天/)).toBeTruthy();
 
-    // 能力：被禁用的也要出现（contract-skill §3）
-    expect(screen.getByText('能力（skills）')).toBeTruthy();
-    expect(screen.getByText('/review-pr')).toBeTruthy();
-    expect(screen.getByText('skill_invalid')).toBeTruthy();
+    // 技能只属于项目：系统页不再有「能力（skills）」这一段
+    expect(screen.queryByText('能力（skills）')).toBeNull();
+    expect(screen.queryByText('/review-pr')).toBeNull();
   });
 
   it('降级条件：逐条展开（熔断 / PIN / doctor）', async () => {

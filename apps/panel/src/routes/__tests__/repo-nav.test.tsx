@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 两级导航 + 仓库切换器 + 当前仓库工作台（W1-C 的骨架行为）。
  *
  * 用 `AppRoutes`（生产同一份路由表）渲染，因为要断言的正是「外壳 + 路由」一起工作的效果：
@@ -239,14 +239,14 @@ describe('/repos/:repo 工作台', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: '设置 · 通用' })).toBeTruthy();
     const nav = screen.getByRole('navigation', { name: '设置分区' });
-    for (const label of ['通用', '触发', '标签', '限额']) {
-      expect(within(nav).getByRole('link', { name: label })).toBeTruthy();
+    for (const label of ['通用', '事件绑定', '标签', '执行']) {
+      expect(within(nav).getByRole('link', { name: new RegExp(label, 'u') })).toBeTruthy();
     }
 
     // 设置来自 MSW 的 `/api/repos/:owner/:name/settings`（W3-H 的 mock），等它到再断言控件
     const section = await screen.findByTestId('repo-settings-section');
     expect(within(section).getByTestId('settings-general-repo').textContent).toBe('acme/widgets');
     expect(within(section).getByRole('switch', { name: '接受事件（enabled）' })).toBeTruthy();
-    expect(within(section).getByRole('switch', { name: '干跑（dry_run）' })).toBeTruthy();
+    expect(within(section).getByRole('switch', { name: '写回 GitHub' })).toBeTruthy();
   });
 });

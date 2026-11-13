@@ -495,6 +495,24 @@ export function taskSourceOf(input: {
  *    （`docs/req-issue-agent.md` §5「默认只产出评论」）；
  *  - `webhook` / `cron`（自动通道）→ 零评论（§0.4 的不变量）。
  */
+/**
+ * 提示词里那两版「示例正文」：模型偶尔把示例原样抄进 `actions[].body`，
+ * 于是 issue 上出现一句没有信息量的话（`与第一段一致的说明（可省略这条动作）`）。
+ * 这种评论一律不写回 —— 宁可这轮没有评论，也不要往 issue 上贴占位句。
+ */
+const PLACEHOLDER_COMMENT_BODIES: readonly string[] = Object.freeze([
+  '与第一段一致的说明（可省略这条动作）',
+  '此处放【第一段】的完整正文；照抄本示例会被丢弃',
+]);
+
+/** 评论正文是否只是提示词示例 / 空串（空正文同样不写回）。 */
+export function isPlaceholderCommentBody(body: string | undefined): boolean {
+  if (body === undefined) {
+    return true;
+  }
+  const trimmed = body.trim();
+  return trimmed === '' || PLACEHOLDER_COMMENT_BODIES.some((item) => trimmed.includes(item));
+}
 export function isWriteBackAllowed(input: {
   readonly intent: string;
   readonly source: WritebackTaskSource;
@@ -563,6 +581,19 @@ export async function executeActions(input: ExecuteActionsInput): Promise<Execut
       continue;
     }
 
+
+    // 占位句 / 空正文不写回：模型偶尔把提示词里的示例原样抄进 `actions.body`，
+    // 那种评论在 issue 上等于什么都没说（#36、#3、#7 都复现过）。
+    if (action.intent === 'comment' && isPlaceholderCommentBody(action.body)) {
+      outcomes.push({
+        intent: 'comment',
+        status: 'skipped',
+        target,
+        externalRef: null,
+        reason: '评论正文是提示词示例占位句或空串，已丢弃（避免往 issue 上贴无信息量的评论）',
+      });
+      continue;
+    }
 
     let writeActions: WriteAction[];
     try {

@@ -13,41 +13,22 @@
  * 2. **重复占位符全部替换**：正则的 `replace` 逐个回调，不做「只替第一次」的 short-circuit；
  * 3. **未知原样保留**并收集到 `unknown`（调用方记配置告警）：`{{issue.foo}}` 发出去还是那样。
  */
-
 /* ── 1. 占位符清单（§6.3） ─────────────────────────────────────────────────── */
 
-/**
- * 12 个正式占位符（§6.3 的表格，一格一个）。
- *
- * 顺序照需求表格排（issue 族 → repo → actor/event → comment），
- * 让「面板能选哪些占位符」与需求文档逐行对得上；这里只是**清单**，
- * 取值仍在 `resolvePlaceholder()` 的 switch 里，两边由单测绑定（数量 + 逐个可渲染）。
+/*
+ * 清单本身住在契约里（`PROMPT_PLACEHOLDERS`）：面板要在模板框下方渲染「点一下插入」
+ * 的快捷按钮，服务端要按同一份渲染。这里只做再导出，**不再另抄一份**——
+ * 抄一份的后果是面板按钮插进去的是未知占位符，而两边各自的单测都是绿的。
+ * 取值仍在下面 `resolvePlaceholder()` 的 switch 里，两边由单测绑定
+ * （`prompt-render.test.ts` 断言 12 个名字逐个可渲染）。
  */
-export const PLACEHOLDER_NAMES = [
-  'issue.author',
-  'issue.number',
-  'issue.url',
-  'issue.content',
-  'issue.labels',
-  'issue.title',
-  'repo.issues',
-  'comment.author',
-  'comment.body',
-  'repo',
-  'actor',
-  'event.action',
-] as const satisfies readonly string[];
-
-export type PlaceholderName = (typeof PLACEHOLDER_NAMES)[number];
-
-/**
- * 「这个名字是不是正式占位符」的判断视图。
- *
- * 为什么不直接 `PLACEHOLDER_NAMES.includes(name)`：上面的元组是**字面量类型**，
- * `includes()` 的参数被收窄成那 12 个字面量的联合，传一个普通 `string` 会编译不过。
- * 面板做「未知占位符高亮」时拿到的是普通字符串，所以给一份 `ReadonlySet<string>`。
- */
-export const PLACEHOLDER_NAME_SET: ReadonlySet<string> = new Set(PLACEHOLDER_NAMES);
+export {
+  PLACEHOLDER_NAMES,
+  PLACEHOLDER_NAME_SET,
+  PROMPT_PLACEHOLDERS,
+  type PlaceholderName,
+  type PromptPlaceholder,
+} from '../../../../packages/contract/src/index.ts';
 
 /** 一次渲染要用的 issue 快照（事件发生时的版本，§6.3「快照」条）。 */
 export type RenderIssue = {

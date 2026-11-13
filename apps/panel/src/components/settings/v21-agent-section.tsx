@@ -1,25 +1,25 @@
 /**
- * v2.1「执行与限额」分区（`docs/v21-contract.md` §1 / §6.7 / FR-5.3）。
+ * 「执行」分区（`docs/v21-contract.md` §1 / §6.7 / FR-5.3）。
  *
- * 这一屏是**执行侧**的旋钮，不属于「什么事件叫我」（那是「事件与模板」），也不属于
- * v0.3 的 `limits`（每小时的评论上限、单任务墙钟上限那一套）——两套限额并存，各有各的
- * 作用域：`agent.limits` 是「一次会话怎么跑」，`limits` 是「流水线跑多快」。
+ * 这一屏是**执行侧**的旋钮，合并了两套限额：
+ *  - `agent.limits`：一次会话怎么跑（并发 / 日配额 / 单轮超时 / 保留期）；
+ *  - `limits`：任务本身跑多快（每小时评论上限 / 单次动作上限 / 单任务墙钟 / 仓库级并发 / 排队闸门）。
+ * 两套以前分在两个分区，数字互相看不全；现在同屏，且每项只写一句「超了会怎样」。
  *
  * 三个契约细节决定了这里的形状：
  * 1. `system_prompt` 在契约里存了两处（`agent.system_prompt` 与 `agent.limits.system_prompt`），
- *    服务端的 `resolveAgentExecution()` 按「前者非空则优先，否则读后者」裁决。面板**两边一起写**：
- *    只写一处会出现「清空后旧的 `limits.system_prompt` 又被读回来」这种最难查的错。
+ *    服务端按「前者非空则优先」裁决。面板**两边一起写**，否则「清空」会被旧值绕回去。
  * 2. 后三类动作（建 issue / 开 PR / 关 issue）同样存两处，服务端按**或**裁决。同理两边一起写。
- * 3. 数值范围（并发 1–8、日配额 1–1000、单轮 1–30 分钟、保留 1–365 天）写死在契约 schema 里；
- *    越界的值只会在运行时变成事故，所以这里直接禁用保存并说明是哪一项越界。
+ * 3. 数值范围写死在契约 schema 里；越界只会在运行时变成事故，所以这里直接禁用保存。
  */
+import { useState } from 'react';
 import type { AgentActions, RepoSettings } from '../../../../../packages/contract/src/index.ts';
-import { SYSTEM_PROMPT_MAX_CHARS } from '../../../../../packages/contract/src/index.ts';
+import { SaveBar } from './save-bar.tsx';
+import { DEFAULT_SYSTEM_PROMPT, MODEL_NAME_RE, SYSTEM_PROMPT_MAX_CHARS } from '../../../../../packages/contract/src/index.ts';
 import { Alert, AlertDescription } from '../ui/alert.tsx';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
-import { NumberField, SwitchField, TextAreaField } from './form.tsx';
-import { SaveBar } from './save-bar.tsx';
+import { NumberField, SwitchField, TextAreaField, TextField } from './form.tsx';
 import { countChangedPaths } from './settings-chrome.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
 
@@ -64,6 +64,51 @@ const LIMIT_FIELDS: ReadonlyArray<{
   },
 ];
 
+
+/** v0.3 `limits` 的五个数字（并入「执行」分区，字段名保持契约原样）。 */
+const LEGACY_LIMIT_FIELDS: ReadonlyArray<{
+  key: keyof RepoSettings['limits'];
+  label: string;
+  min: number;
+  max: number;
+  hint: string;
+}> = [
+  {
+    key: 'max_comments_per_hour',
+    label: '每小时评论上限（1–200）',
+    min: 1,
+    max: 200,
+    hint: '超了本仓库这一小时不再发评论。',
+  },
+  {
+    key: 'max_actions_per_run',
+    label: '单次运行动作上限（1–8）',
+    min: 1,
+    max: 8,
+    hint: '一封信封里最多执行几个动作（打标/评论/reaction 合计）。',
+  },
+  {
+    key: 'max_task_minutes',
+    label: '单任务上限（1–30 分钟）',
+    min: 1,
+    max: 30,
+    hint: '超时按失败收尾（confused reaction + 审计记 timeout）。',
+  },
+  {
+    key: 'concurrency_per_repo',
+    label: '仓库级并发（1–8）',
+    min: 1,
+    max: 8,
+    hint: '同时跑几个本仓库的任务。',
+  },
+  {
+    key: 'queue_wait_minutes',
+    label: '排队闸门（1–120 分钟）',
+    min: 1,
+    max: 120,
+    hint: '排队超过这个时长就取消（任务记为 cancelled_queue，不发评论）。',
+  },
+];
 /** 三类写回动作：默认全关，每个开关旁写清「会改变仓库里什么可见状态」。 */
 const ACTION_FIELDS: ReadonlyArray<{ key: keyof AgentActions; label: string; risk: string }> = [
   {
@@ -165,39 +210,11 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
 
   return (
     <div className="flex flex-col gap-6" data-testid="settings-execution">
-      <Section
-        first
-        title="系统提示词"
-        description="常驻角色设定：每次调用都带、不参与压缩；留空 = 用内置默认"
-      >
-        <div className="flex flex-col gap-2">
-          <TextAreaField
-            id="v21-agent-system-prompt"
-            label="项目级系统提示词"
-            value={agent.system_prompt}
-            rows={8}
-            placeholder="留空 = 用内置默认"
-            onChange={setSystemPrompt}
-            error={promptTooLong ? `超过 ${String(SYSTEM_PROMPT_MAX_CHARS)} 字符` : null}
-            hint="写「这个仓库的规矩」（技术栈、命令、评审口径），不要写单次任务的指令——那属于事件模板。"
-            disabled={readOnly}
-            disabledReason="仓库已归档：只读"
-            footer={
-              <p
-                className={cn('text-2xs tabular', promptTooLong ? 'text-danger-fg' : 'text-faint')}
-                data-testid="v21-agent-system-prompt-count"
-              >
-                {String(agent.system_prompt.length)} / {String(SYSTEM_PROMPT_MAX_CHARS)} 字符
-              </p>
-            }
-          />
-          <p className="text-2xs leading-relaxed text-faint">
-            它不参与上下文压缩：写太长会让每一轮都变贵，也会挤掉真正要看的 issue 正文。
-          </p>
-        </div>
+      <Section first title="系统提示词">
+        <SystemPromptField stored={agent.system_prompt} readOnly={readOnly} onChange={setSystemPrompt} />
       </Section>
 
-      <Section title="执行限额" description="超限时的行为都写在提示里；数值越界服务端会拒收">
+      <Section title="执行限额">
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2">
           {LIMIT_FIELDS.map((field) => (
             <NumberField
@@ -218,6 +235,48 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
               disabledReason="仓库已归档：只读"
             />
           ))}
+          {/*
+            v0.3 的 `limits`（评论上限 / 动作上限 / 任务墙钟 / 仓库并发 / 排队闸门）与默认模型
+            并入本分区：它们与上面的 `agent.limits` 都是「跑起来会掐断任务」的数字，
+            分两页只会让人来回对照。字段名仍是契约原样，不做改名。
+          */}
+          {LEGACY_LIMIT_FIELDS.map((field) => (
+            <NumberField
+              key={field.key}
+              id={`limits-${field.key}`}
+              label={field.label}
+              value={draft.limits[field.key]}
+              min={field.min}
+              max={field.max}
+              hint={field.hint}
+              onChange={(next) => {
+                if (next === undefined) return;
+                state.update((current) => ({ ...current, limits: { ...current.limits, [field.key]: next } }));
+              }}
+              disabled={readOnly}
+              disabledReason="仓库已归档：只读"
+            />
+          ))}
+        </div>
+        <div className="mt-3 max-w-md">
+          <TextField
+            id="limits-model"
+            label="默认模型（provider/model，可留空）"
+            mono
+            value={draft.model ?? ''}
+            placeholder="anthropic/claude-sonnet-4"
+            onChange={(next) => {
+              state.update((current) => ({ ...current, model: next.trim() === '' ? undefined : next.trim() }));
+            }}
+            error={
+              draft.model !== undefined && !MODEL_NAME_RE.test(draft.model)
+                ? '形式必须是 provider/model（小写）'
+                : null
+            }
+            hint="留空 = 用部署默认模型；技能可在 frontmatter 里覆盖。"
+            disabled={readOnly}
+            disabledReason="仓库已归档：只读"
+          />
         </div>
       </Section>
 
@@ -250,9 +309,8 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
 
           <Alert tone="warn" data-testid="v21-execution-actions-note">
             <AlertDescription>
-              这三个开关会改变仓库的可见状态（多出 issue / 分支 / 被关闭的单）。干跑仓库
-              （dry_run=true）下它们仍会被跳过，但开关本身照常保存；真正上线前建议先只开
-              「建 issue」做灰度，确认产出质量再开另外两项。
+              这三个开关会改变仓库的可见状态（多出 issue / 分支 / 被关闭的单）。关闭「写回 GitHub」时
+              它们仍会被跳过；上线前建议先只开「建 issue」做灰度。
             </AlertDescription>
           </Alert>
         </div>
@@ -272,5 +330,59 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
         testId="settings-execution"
       />
     </div>
+  );
+}
+
+/**
+ * 系统提示词输入框：**未自定义时显示内置默认值**，但保留用户正在编辑的内容。
+ *
+ * 与事件模板同一个坑：直接受控在 `stored || 默认值` 上时，清空会被立刻填回来。
+ */
+function SystemPromptField({
+  stored,
+  readOnly,
+  onChange,
+}: {
+  stored: string;
+  readOnly: boolean;
+  onChange: (next: string) => void;
+}) {
+  const fallback = DEFAULT_SYSTEM_PROMPT;
+  const external = stored.trim() === '' ? fallback : stored;
+  const [text, setText] = useState(external);
+  const [seen, setSeen] = useState(external);
+  // 同 TemplateField：清空（→ '' → 显示默认）不能被自己的回写立刻填回来
+  const equivalent = text.trim() === '' || text === fallback ? fallback : text;
+  if (seen !== external) {
+    setSeen(external);
+    if (external !== equivalent) setText(external);
+  }
+
+  const tooLong = text.length > SYSTEM_PROMPT_MAX_CHARS;
+  return (
+    <TextAreaField
+      id="v21-agent-system-prompt"
+      label="项目级系统提示词"
+      value={text}
+      rows={8}
+      placeholder="留空 = 用内置默认"
+      onChange={(next) => {
+        setText(next);
+        // 与内置默认逐字相同 = 「没自定义」，写回空串（服务端据此回落默认）
+        onChange(next === DEFAULT_SYSTEM_PROMPT ? '' : next);
+      }}
+      error={tooLong ? `超过 ${String(SYSTEM_PROMPT_MAX_CHARS)} 字符` : null}
+      hint="写这个仓库的规矩（技术栈、命令、评审口径）；每次调用都带、不参与压缩。"
+      disabled={readOnly}
+      disabledReason="仓库已归档：只读"
+      footer={
+        <p
+          className={cn('text-2xs tabular', tooLong ? 'text-danger-fg' : 'text-faint')}
+          data-testid="v21-agent-system-prompt-count"
+        >
+          {String(text.length)} / {String(SYSTEM_PROMPT_MAX_CHARS)} 字符
+        </p>
+      }
+    />
   );
 }

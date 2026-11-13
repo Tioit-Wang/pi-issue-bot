@@ -33,7 +33,7 @@ describe('部署默认 settings（PI_BOT_DEFAULT_SETTINGS）', () => {
     expect(DEFAULT_REPO_SETTINGS.version).toBe(1);
     expect(DEFAULT_REPO_SETTINGS.limits.concurrency_per_repo).toBe(2);
     expect(DEFAULT_REPO_SETTINGS.labels.max_per_issue).toBe(6);
-    expect(DEFAULT_REPO_SETTINGS.agent.on_opened).toBe('issue-format');
+    expect(DEFAULT_REPO_SETTINGS.agent.on_opened).toBe('proposal-analysis');
   });
 
   it('内联 JSON：在默认值上覆写（未写的键仍有默认值）', () => {

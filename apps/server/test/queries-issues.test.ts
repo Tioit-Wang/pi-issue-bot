@@ -355,7 +355,7 @@ describe('queries/issues（真库）', () => {
     expect(response.nextCursor).toBeNull();
   });
 
-  it('列表/会话的新字段：reactionState 取最新终态、labelDecisions 按 blocked_reason 聚合', async () => {
+  it('列表/会话的新字段：reactionState 取最新终态（打标判定摘要已随产出视图移除）', async () => {
     // `issue_feedback`：入队 eyes → 成功 rocket（旧）→ 失败 confused（最新）；再补一条没落地的
     await db.sql(
       `insert into issue_feedback (repo, target_kind, target_number, stage, content, anchor, applied_at, created_at)
@@ -365,6 +365,7 @@ describe('queries/issues（真库）', () => {
          ('acme/widgets', 'issue', 7, 'failed',    'confused', 'k2', '2026-06-01T04:35:00Z', '2026-06-01T04:35:00Z'),
          ('acme/widgets', 'issue', 7, 'received',  'eyes',     'k3', null,                   '2026-06-01T04:36:00Z')`,
     );
+    // label_decisions 仍在写（写回侧的事实表），但接口不再暴露「打标判定摘要」：
     await db.sql(
       `insert into label_decisions (repo, target_number, judgement_hash, desired, applied, blocked_reason, reason, created_at)
        values
@@ -393,19 +394,12 @@ describe('queries/issues（真库）', () => {
       'failed',
       'received',
     ]);
-    // 最近一轮判定 + 被拦原因计数
-    expect(item?.labelDecisions).toMatchObject({
-      lastAt: '2026-06-01T04:00:00.000Z',
-      desired: ['bug'],
-      applied: ['bug'],
-      reason: '本轮到齐',
-      blocked: [{ reason: 'not-in-vocabulary', count: 1 }],
-    });
+    // 打标判定摘要已从契约移除：接口不再返回该字段（库表仍在，供写回与审计使用）
+    expect('labelDecisions' in (item ?? {})).toBe(false);
 
-    // 没有反馈/判定数据的 issue：两个字段都是 null / 空数组（不是缺字段）
+    // 没有反馈数据的 issue：reactionState 为 null、feedback 为空数组（不是缺字段）
     const other = list.issues.find((issue) => issue.repo === 'acme/widgets' && issue.number === 9);
     expect(other?.reactionState).toBeNull();
-    expect(other?.labelDecisions).toBeNull();
     expect(other?.feedback).toEqual([]);
 
     // 详情：reactionState 同源；pendingFeedback 只含 `applied_at is null` 的那条

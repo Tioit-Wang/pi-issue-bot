@@ -299,7 +299,6 @@ describe('queries/system（真库）', () => {
       transcriptDays: 90,
       metricsForever: true,
     });
-    expect(response.skills).toEqual([]);
 
     // 队列：内部队列（__pgboss__*）不展示，配置来自 pgboss.queue
     const runTask = response.queue.find((queue) => queue.name === 'run-task');

@@ -29,6 +29,9 @@ const REPO_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 const DEFAULT_CLONE_TIMEOUT_MS = 600_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 300_000;
+/** fetch 重试的默认次数与退避基数（链路抖动时一次失败就判整条任务失败代价太高）。 */
+const DEFAULT_FETCH_ATTEMPTS = 4;
+const DEFAULT_FETCH_RETRY_DELAY_MS = 1_000;
 
 export interface RepoCacheOptions {
   /** 缓存根目录（生产是宿主机上的一个目录；测试用临时目录）。 */
@@ -38,6 +41,10 @@ export interface RepoCacheOptions {
   readonly logger?: Logger | undefined;
   readonly cloneTimeoutMs?: number;
   readonly fetchTimeoutMs?: number;
+  /** fetch 失败时的重试次数（默认 3：链路抖动重发通常就好）。 */
+  readonly fetchAttempts?: number;
+  /** 重试退避基数：第 n 次重试等 `n * 该值` 毫秒（默认 1000，单测传 0）。 */
+  readonly fetchRetryDelayMs?: number;
 }
 
 /** 一份缓存仓库。`created` 区分「这次真的 clone 了」与「复用了已有的」。 */
@@ -117,11 +124,23 @@ export class RepoCache {
    *
    * 复用时只做 `fetch`（`--prune` 清掉远端已删的分支）：
    * 「缓存永远不 checkout，所以 fetch 不会踩任何人的工作树」是这个类的不变式。
+   *
+   * **fetch 失败不立刻判死**（2026-11-12 实测：本机到 github 的出口会整段不可用，
+   * 而缓存里的 main 仍是上次同步时的完整历史）：拉不到最新不等于缓存不可用，
+   * 这里只记 warn，让调用方照常建工作树；若真的缺了要用的 ref/sha，
+   * 后续 `resolveSha()` 会明确报「解析不到」，错误信息比「fetch 失败」更贴近事实。
    */
   async ensureCache(input: { repo: string; remoteUrl: string }): Promise<CacheRepo> {
     const dir = this.cacheDirFor(input.repo);
     if (await this.isRepo(dir)) {
-      await this.fetch(dir);
+      try {
+        await this.fetch(dir);
+      } catch (error) {
+        this.#options.logger?.warn(
+          { repo: input.repo, dir, err: error instanceof Error ? error.message : String(error) },
+          '拉取远端失败，改用缓存里的既有历史继续（可能不是最新）',
+        );
+      }
       return { repo: input.repo, dir, created: false };
     }
 
@@ -147,16 +166,40 @@ export class RepoCache {
     return { repo: input.repo, dir, created: true };
   }
 
-  /** 拉取全部远端分支引用（不含 tag，省一次对象遍历）。 */
+  /**
+   * 拉取全部远端分支引用（不含 tag，省一次对象遍历）。
+   *
+   * **带有限重试**：链路抖动（`Could not connect to server` / TLS eof）一次 fetch 失败就会让整条
+   * 任务判成 `sandbox-crash`，而重发一次通常就好了（2026-11-12 实测：约 1/5 成功）。
+   * 只重试可恢复的传输失败，次数与间隔都可注入，便于单测。
+   */
   async fetch(cacheDir: string): Promise<void> {
-    await this.#options.runGit(
-      ['fetch', '--prune', '--no-tags', '--quiet', 'origin', '+refs/heads/*:refs/remotes/origin/*'],
-      {
-        cwd: cacheDir,
-        code: 'GIT_FETCH_FAILED',
-        timeoutMs: this.#fetchTimeoutMs,
-      },
-    );
+    const attempts = Math.max(1, this.#options.fetchAttempts ?? DEFAULT_FETCH_ATTEMPTS);
+    const delayMs = this.#options.fetchRetryDelayMs ?? DEFAULT_FETCH_RETRY_DELAY_MS;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await this.#options.runGit(
+          ['fetch', '--prune', '--no-tags', '--quiet', 'origin', '+refs/heads/*:refs/remotes/origin/*'],
+          {
+            cwd: cacheDir,
+            code: 'GIT_FETCH_FAILED',
+            timeoutMs: this.#fetchTimeoutMs,
+          },
+        );
+        return;
+      } catch (error) {
+        if (attempt >= attempts) {
+          throw error;
+        }
+        this.#options.logger?.warn(
+          { attempt, attempts, err: error instanceof Error ? error.message : String(error) },
+          'fetch 失败，退避后重试',
+        );
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, delayMs * attempt).unref?.();
+        });
+      }
+    }
   }
 
   /** 把 ref/sha 解析成完整 commit sha；解析不到返回 null（不抛）。 */

@@ -12,7 +12,7 @@
  * 开关、分段控件的选中态用 `bg-card` + 细边框，与左栏导航的选中态同一套读法。
  * 动效只保留 `transition-colors`（状态色变化），没有位移/缩放，`motion-reduce` 下无需额外分支。
  */
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from '../../lib/utils.ts';
 
 /** 输入控件的基础类：与 `components/ui/select.tsx` 的 12px 密度对齐（设置页比列表更密）。 */
@@ -184,7 +184,24 @@ export function NumberField({
   );
 }
 
-/** 真 `<textarea>`（等宽可选），行数由调用方给，避免每处手写 rows。 */
+/** 一个「点一下插入到光标处」的片段（模板占位符）。 */
+export type TextAreaToken = {
+  /** 插入到文本里的名字（不带花括号），如 `issue.title`。 */
+  readonly name: string;
+  /** 悬浮说明：这些名字本身看不出含义，得有一句人话。 */
+  readonly description?: string;
+};
+
+/**
+ * 真 `<textarea>`（等宽可选），行数由调用方给，避免每处手写 rows。
+ *
+ * `tokens` 是一排快捷插入按钮（模板占位符用）：点击后在**光标处**插入 `{{name}}`
+ * 并把光标挪到插入文本之后，可以连续点。为什么不是「追加到末尾」：
+ * 改模板时人是在句子中间补占位符的，追加到末尾等于每次都要手工搬位置。
+ * 为什么不用 `document.execCommand('insertText')`：它已被废弃，在受控 textarea 上
+ * 还会和 React 的 value 覆盖打架；这里改成「自己算出新字符串 → 交给 onChange」，
+ * 光标位置在提交后由 effect 恢复（受控值要等 React 提交完才落到 DOM 上）。
+ */
 export function TextAreaField({
   id,
   label,
@@ -197,6 +214,8 @@ export function TextAreaField({
   mono = false,
   disabled = false,
   disabledReason,
+  tokens,
+  fill = false,
   footer,
 }: {
   id: string;
@@ -210,12 +229,48 @@ export function TextAreaField({
   mono?: boolean;
   disabled?: boolean;
   disabledReason?: string;
+  /** 快捷插入按钮（模板占位符）。不给就不渲染这一排。 */
+  tokens?: readonly TextAreaToken[] | undefined;
+  /**
+   * 撑满父容器的高度（父级必须是 flex 纵向且给了高度）。
+   *
+   * 用在「编辑区占满剩余空间、内容多了只在框内滚动」的场景：不撑满的话，
+   * textarea 的 rows 固定，页面本身会出现滚动条，而需求要求整页不滚。
+   */
+  fill?: boolean;
   footer?: ReactNode;
 }) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  /** 插入后要落到的光标位置；`null` = 没有待恢复的位置。 */
+  const [caret, setCaret] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (caret === null) return;
+    const element = ref.current;
+    setCaret(null);
+    if (element === null) return;
+    element.focus();
+    element.setSelectionRange(caret, caret);
+  }, [caret]);
+
+  const insertToken = (name: string): void => {
+    const element = ref.current;
+    const token = `{{${name}}}`;
+    /*
+      未聚焦过（`selectionStart === null`）时插到末尾：
+      那是「还没动过这个框」的情形，末尾就是人接下来要写的地方。
+    */
+    const start = element?.selectionStart ?? value.length;
+    const end = element?.selectionEnd ?? value.length;
+    onChange(`${value.slice(0, start)}${token}${value.slice(end)}`);
+    setCaret(start + token.length);
+  };
+
   return (
-    <Field id={id} label={label} hint={hint} error={error}>
+    <Field id={id} label={label} hint={hint} error={error} className={fill ? 'min-h-0 flex-1' : undefined}>
       <textarea
         id={id}
+        ref={ref}
         rows={rows}
         value={value}
         placeholder={placeholder}
@@ -231,8 +286,48 @@ export function TextAreaField({
           controlClass,
           'h-auto resize-y py-1.5 leading-relaxed break-words',
           mono && 'font-mono text-xs',
+          /*
+            `fill` 时高度由 flex 决定（`min-h-0` + `flex-1`），且**框内自己滚**：
+            这是「整页不出现滚动条、只有编辑区滚」的落点。
+            `resize-none` 是因为拖拽改变高度会把上面的约束打回原形。
+          */
+          fill && 'min-h-[6rem] flex-1 resize-none overflow-y-auto',
         )}
       />
+      {tokens === undefined || tokens.length === 0 ? null : (
+        <div
+          className="flex flex-wrap items-center gap-1"
+          data-testid={`${id}-tokens`}
+          role="group"
+          aria-label="快捷插入占位符"
+        >
+          <span className="text-2xs text-faint">插入占位符</span>
+          {tokens.map((token) => (
+            <button
+              key={token.name}
+              type="button"
+              disabled={disabled}
+              title={disabled ? disabledReason : (token.description ?? token.name)}
+              aria-label={`插入占位符 ${token.name}`}
+              /* 按下时不抢焦点：否则 textarea 的选区在点击生效前就被清掉了。 */
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => {
+                insertToken(token.name);
+              }}
+              className={cn(
+                'rounded-full border border-border bg-card px-1.5 py-px font-mono text-2xs text-muted-foreground',
+                'transition-colors hover:border-brand hover:text-foreground',
+                'focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+                'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:text-muted-foreground',
+              )}
+            >
+              {`{{${token.name}}}`}
+            </button>
+          ))}
+        </div>
+      )}
       {footer}
     </Field>
   );

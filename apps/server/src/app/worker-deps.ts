@@ -32,6 +32,7 @@ import type { AgentsMdResult } from '../skills/agents-md.ts';
 import { assemblePrompt } from '../skills/assemble.ts';
 import {
   fenceUntrusted,
+  renderIssueCapabilityCatalog,
   renderLabelVocabulary,
   renderSkillCatalog,
   renderSkillPrompt,
@@ -327,13 +328,15 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
     `    "labels": [${exampleLabel === undefined ? '' : JSON.stringify(exampleLabel)}],`,
     '    "evidence": [{ "rule": "repro-steps", "quote": "引用的原文片段", "passed": true }]',
     '  },',
-    '  "actions": [{ "intent": "comment", "body": "与第一段一致的说明（可省略这条动作）" }],',
+    '  "actions": [{ "intent": "comment", "body": "（此处放【第一段】的完整正文；照抄本示例会被丢弃）" }],',
     '  "usage": { "inputTokens": 0, "outputTokens": 0, "costUsd": 0 }',
     '}',
     '```',
     '- `verdict.kind` 只能是 "issue" 或 "pr"；',
     '- `verdict.labels` 只能填「**项目标签**」一节里列出的标签名，没有把握就留空数组；',
     '- `actions` 里只允许 `comment`（本命令的 outputs 只含 comment 与 label）。',
+    '- 若本轮**确实不需要写任何东西**（例如 issue 已经合规、作者无需补充），`actions` 给空数组 `[]`：',
+    '  不要为了凑格式编一条评论，更不要把上面的示例正文抄进 `body`（会被判退化丢弃）。',
     '',
     renderLabelVocabulary(vocabulary),
   ].join('\n');
@@ -948,15 +951,21 @@ export function createPromptEnricher(options: PromptEnricherOptions): PromptEnri
       // 模型只能自己编技能名（实测编出 `format-check`）并去翻已退役的 `.github/pi-bot.yml`。
       projectPrompt:
         skill === undefined
-          ? renderSkillCatalog(
-              availableSkills
-                .filter((item) => item.enabled)
-                .map((item) => ({
-                  name: item.name,
-                  description: registry.resolve(item.name)?.frontmatter.description ?? '',
-                }))
-                .filter((item) => item.description !== ''),
-            )
+          ? [
+              renderSkillCatalog(
+                availableSkills
+                  .filter((item) => item.enabled)
+                  .map((item) => ({
+                    name: item.name,
+                    description: registry.resolve(item.name)?.frontmatter.description ?? '',
+                  }))
+                  .filter((item) => item.description !== ''),
+              ),
+              // 没有技能时把「平台对 issue 的全部能力」一并发过去。
+              // 技能层被跳过时，模型对贴表情 / 回复评论 / 建立关联只字不提，
+              // 只能给一句泛泛的结论 —— 而审批矩阵对这些工具本来就不按技能开关。
+              renderIssueCapabilityCatalog(),
+            ].join('\n\n')
           : '',
       agentsMd,
       skill:

@@ -14,7 +14,6 @@ import type { SettingsSectionKey } from '../../layout/nav.ts';
 import { StatusDot } from '../ui/badge.tsx';
 import { cn } from '../../lib/utils.ts';
 import { formatCount, formatRelativeTime } from '../../lib/format.ts';
-import { resolveAliasesFor } from './trigger-preview.ts';
 
 /* ── 草稿摘要 ─────────────────────────────────────────────────────────────── */
 
@@ -49,38 +48,27 @@ export function countChangedPaths(base: unknown, draft: unknown): string[] {
 export function sectionSummary(section: SettingsSectionKey, draft: RepoSettings): string {
   switch (section) {
     case 'general':
-      return `${draft.enabled ? '启用' : '停用'} · ${draft.dry_run ? '干跑' : '真写'}`;
+      return `${draft.enabled ? '启用' : '停用'} · ${draft.dry_run ? '干跑' : '写回 GitHub'}`;
     case 'events': {
       const events = Object.values(draft.triggers.events);
       const on = events.filter((event) => event.enabled === 'on').length;
       const conditional = events.filter((event) => event.enabled === 'conditional').length;
-      return `直接 ${formatCount(on)} · 条件 ${formatCount(conditional)}`;
+      return `直接 ${formatCount(on)} · 条件 ${formatCount(conditional)} · 关键词 ${formatCount(draft.comment.mentions.length)}`;
     }
-    case 'comment':
-      return `关键词 ${formatCount(draft.comment.mentions.length)} · 角色 ${formatCount(draft.comment.roles.length)}`;
-    case 'catalog': {
+    case 'labels': {
       const entries = draft.labels.vocabulary;
-      // 参与自动对齐 = active + managed + 有 meaning（与 v2.1 分区的口径一致）
+      // 参与自动对齐 = active + managed + 有 meaning（与标签分区的口径一致）
       const aligned = entries.filter(
         (entry) => entry.status !== 'retired' && entry.managed !== false && (entry.meaning ?? '').trim() !== '',
       ).length;
-      return `目录 ${formatCount(entries.length)} · 参与对齐 ${formatCount(aligned)}`;
+      const mapped = Object.keys(draft.labels.map).length;
+      return `词表 ${formatCount(entries.length)} · 参与对齐 ${formatCount(aligned)} · 映射 ${formatCount(mapped)}`;
     }
     case 'execution': {
       const actions = draft.agent.actions;
       const enabled = [actions.create_issue, actions.open_pr, actions.close_issue].filter(Boolean).length;
       return `并发 ${formatCount(draft.agent.limits.concurrency)} · 日配额 ${formatCount(draft.agent.limits.daily_quota)} · 动作 ${formatCount(enabled)}/3`;
     }
-    case 'triggers': {
-      const aliases = resolveAliasesFor(draft.triggers);
-      return `${formatCount(aliases.length)} 个别名 · 管理员 ${formatCount(draft.agent.managers.length)} 人`;
-    }
-    case 'labels': {
-      const mapped = Object.keys(draft.labels.map).length;
-      return `词表 ${formatCount(draft.labels.vocabulary.length)} · 映射 ${formatCount(mapped)} 条`;
-    }
-    case 'limits':
-      return `评论 ${formatCount(draft.limits.max_comments_per_hour)}/h · 任务 ${formatCount(draft.limits.max_task_minutes)}m`;
   }
 }
 

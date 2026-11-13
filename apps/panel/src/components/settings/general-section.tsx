@@ -64,12 +64,12 @@ export function GeneralSection({ state }: SettingsSectionProps) {
         </div>
       </Section>
 
-      <Section title="启停与干跑">
+      <Section title="启停">
         <div className="flex flex-col divide-y divide-border">
           <SwitchField
             id="general-enabled"
             label="接受事件（enabled）"
-            description="关掉后该仓库的任何 webhook 事件都不处理：不建任务、不打标、不评论。仓库行保留。"
+            description="开启后本仓库的 webhook 事件会进入处理；关闭后一律不处理（仓库行保留）。"
             checked={draft.enabled}
             onChange={(next) => {
               state.update((current) => ({ ...current, enabled: next }));
@@ -77,13 +77,18 @@ export function GeneralSection({ state }: SettingsSectionProps) {
             disabled={readOnly}
             disabledReason="仓库已归档：只读"
           />
+          {/*
+            需求：所有开关统一「开启即生效」。
+            `dry_run` 是反义字段（true = 不写 GitHub），直接做成开关会出现「关掉才是真写」，
+            所以这里用 `checked = !dry_run`，写入时取反，界面语义与其它开关一致。
+          */}
           <SwitchField
-            id="general-dry-run"
-            label="干跑（dry_run）"
-            description="干跑：不产生任何 GitHub 写动作（连 reaction 都不打），只产出信封与审计。关掉 = 真写 GitHub。"
-            checked={draft.dry_run}
+            id="general-write-github"
+            label="写回 GitHub"
+            description="开启后评论 / 标签 / reaction 会真的发到 GitHub；关闭时只产出信封与审计（干跑）。"
+            checked={!draft.dry_run}
             onChange={(next) => {
-              state.update((current) => ({ ...current, dry_run: next }));
+              state.update((current) => ({ ...current, dry_run: !next }));
             }}
             disabled={readOnly}
             disabledReason="仓库已归档：只读"

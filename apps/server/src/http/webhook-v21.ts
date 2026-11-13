@@ -11,6 +11,7 @@
  * 只做「按冻结契约调用 + 把结果落到库/事件流」这一层装配。
  */
 import type { EventKey, WebhookAcceptedResponse, ErrorBody } from '../../../../packages/contract/src/index.ts';
+import { maskCodeRegions } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import {
   readV21Settings,
@@ -108,6 +109,7 @@ export function v21DecisionInputOf(input: {
   readonly repoDisabled?: boolean | undefined;
   readonly contentDuplicate?: boolean | undefined;
   readonly dailyQuotaExceeded?: boolean | undefined;
+  readonly signatureInvalid?: boolean | undefined;
 }): DecideEventInput | null {
   const key = v21EventKeyOf(input.event, input.action);
   if (key === null || key === 'pull_request.*') {
@@ -144,6 +146,7 @@ export function v21DecisionInputOf(input: {
     ...(input.repoDisabled === undefined ? {} : { repoDisabled: input.repoDisabled }),
     ...(input.contentDuplicate === undefined ? {} : { contentDuplicate: input.contentDuplicate }),
     ...(input.dailyQuotaExceeded === undefined ? {} : { dailyQuotaExceeded: input.dailyQuotaExceeded }),
+    ...(input.signatureInvalid === undefined ? {} : { signatureInvalid: input.signatureInvalid }),
   };
 }
 
@@ -156,6 +159,7 @@ export function decideV21Delivery(input: {
   readonly repoDisabled?: boolean | undefined;
   readonly contentDuplicate?: boolean | undefined;
   readonly dailyQuotaExceeded?: boolean | undefined;
+  readonly signatureInvalid?: boolean | undefined;
 }): TriggerDecision | null {
   const key = v21EventKeyOf(input.event, input.action);
   if (key === 'pull_request.*') {
@@ -380,6 +384,33 @@ export function v21SkillIdsOf(text: string): readonly string[] {
   return id === '' ? [] : [id];
 }
 
+/** 评论正文里的技能词：`/` 前是行首或空白，id 只含小写字母数字短横（与 skill-mentions 同口径）。 */
+const COMMENT_SKILL_TOKEN = /(?:^|\s)\/([a-z][a-z0-9-]{1,30})(?=$|[\s.,;:!?，。；：！？、)）\]】])/u;
+
+/**
+ * 取评论正文里第一个技能词（不带前导 `/`）；代码块与行内代码里的不算（引用不是调用）。
+ *
+ * 为什么不用契约里的 `findSkillMentions()`：那个函数要求传入当前技能目录做精确匹配，
+ * 而 webhook 层没有技能库依赖；这里的调用方随后会把 id 交给 worker，
+ * 由注册表判定「有没有这个技能」（找不到时按普通文本处理，不报错）。
+ */
+export function explicitSkillOfComment(body: string | undefined): string | null {
+  if (body === undefined || body.trim() === '') {
+    return null;
+  }
+  const matched = COMMENT_SKILL_TOKEN.exec(maskCodeRegions(body));
+  return matched?.[1] ?? null;
+}
+
+/** 把渲染结果的首行技能词换成 `/<id>`；首行不是技能词时另起一行前置。 */
+export function withSkillFirstLine(text: string, id: string): string {
+  const [first, ...rest] = text.split('\n');
+  if (first !== undefined && /^\/[a-z][a-z0-9-]{1,30}$/u.test(first.trim())) {
+    return [`/${id}`, ...rest].join('\n');
+  }
+  return [`/${id}`, text].join('\n');
+}
+
 /** 一条 v2 消息的构建结果。 */
 export type V21MessageBuild = {
   readonly template: string;
@@ -455,11 +486,15 @@ export async function buildV21AgentMessage(input: {
     input.deps.onUnknownPlaceholders?.(warning);
   }
 
+  // 评论里点名的技能优先：`issue_comment.created` 的默认模板首行写死了 `/issue-analysis`，
+  // 于是「@机器人 /bug-analysis」永远跑通用分析（2026-11-12 实测）。这里把首行换成用户点名的那个。
+  const explicitSkill =
+    input.event === 'issue_comment.created' ? explicitSkillOfComment(ctx.comment?.body) : null;
   return {
     template,
-    text: rendered.text,
+    text: explicitSkill === null ? rendered.text : withSkillFirstLine(rendered.text, explicitSkill),
     unknown: rendered.unknown,
-    skillIds: v21SkillIdsOf(rendered.text),
+    skillIds: explicitSkill === null ? v21SkillIdsOf(rendered.text) : [explicitSkill],
   };
 }
 

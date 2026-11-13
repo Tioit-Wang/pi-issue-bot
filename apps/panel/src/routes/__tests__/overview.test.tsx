@@ -69,7 +69,6 @@ function issueRow(overrides: Partial<IssueListItem>): IssueListItem {
     outcomes: { succeeded: 1 },
     lastPreview: '机器人结论',
     reactionState: null,
-    labelDecisions: null,
     feedback: [],
     ...overrides,
   };

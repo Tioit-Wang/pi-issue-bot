@@ -994,14 +994,21 @@ export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Pro
 
   let decision = trace.decision;
   if (decision === null && trace.payload !== null) {
-    // 内层在读到 `repos.settings` 之前就返回了（暂停 / 未知仓库 / 安装事件 / 验签失败…）。
-    // 这些投递仍然要留痕，且病因是「仓库不可用」，不能含糊记成一个别的 reason。
+    /*
+      内层在读到 `repos.settings` 之前就返回了（暂停 / 未知仓库 / 安装事件 / 验签失败…）。
+      这些投递仍然要留痕，但**病因必须分开记**：
+       - 验签失败是「secret 对不上」，与仓库开不开无关；
+       - 其余是「仓库不可用」（禁用 / 未登记 / 配置非法）。
+      实测教训（issue #30）：401 被记成 `repo-disabled`，而 `repos.enabled = true`，
+      排查时先去查仓库开关，白绕一圈。这里按 401 单独记 `signature-invalid`。
+    */
     decision = decideV21Delivery({
       event: input.event,
       action: trace.action,
       payload: trace.payload,
       settings: null,
       repoDisabled: true,
+      ...(result.status === 401 ? { signatureInvalid: true } : {}),
     });
   }
   if (decision !== null) {

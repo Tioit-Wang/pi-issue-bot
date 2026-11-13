@@ -11,7 +11,7 @@ import { scenarioResponse } from './shared.ts';
  * - `version.host === null`（pi-host 未协商）⇒ 面板显示 `—`，不假装正常；
  * - `host.status === 'unknown'` ⇒ 面板显示「未知」（这是页面里**唯一**的「未知」，四态测试按它断言）；
  * - `doctor.status === 'fail'` + 一条 `warn` + 一条 `skip` ⇒ 逐项列表的三种样式都能看；
- * - `repos` 里一条 `configValid: false`；`skills` 里一条被禁用（`disabledReason`）；
+ * - `repos` 里一条 `configValid: false`；
  * - `flags` 带 `rate_limit_pause` ⇒ 全局降级横幅（`DegradedBanner`）与页面内「降级条件」都成立。
  */
 
@@ -88,32 +88,6 @@ export function systemMock(): SystemResponse {
         lastActivityAt: null,
         configValid: false,
         configError: 'outputs 越界',
-      },
-    ],
-    skills: [
-      {
-        name: '/review-pr',
-        source: 'builtin',
-        enabled: true,
-        disabledReason: null,
-        outputs: ['comment', 'labels'],
-        timeoutMs: 1_800_000,
-      },
-      {
-        name: 'auto:triage',
-        source: 'repo',
-        enabled: true,
-        disabledReason: null,
-        outputs: ['labels', 'issue'],
-        timeoutMs: 900_000,
-      },
-      {
-        name: 'auto:compliance',
-        source: 'repo',
-        enabled: false,
-        disabledReason: 'skill_invalid',
-        outputs: ['comment'],
-        timeoutMs: 1_800_000,
       },
     ],
   };

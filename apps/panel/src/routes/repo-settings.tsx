@@ -21,11 +21,7 @@ import { PageHeader } from '../components/PageHeader.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
 import { GeneralSection } from '../components/settings/general-section.tsx';
 import { LabelsSection } from '../components/settings/labels-section.tsx';
-import { LimitsSection } from '../components/settings/limits-section.tsx';
-import { TriggersSection } from '../components/settings/triggers-section.tsx';
 import { V21AgentSection } from '../components/settings/v21-agent-section.tsx';
-import { V21CatalogSection } from '../components/settings/v21-catalog-section.tsx';
-import { V21CommentSection } from '../components/settings/v21-comment-section.tsx';
 import { V21EventsSection } from '../components/settings/v21-events-section.tsx';
 import type { SettingsSectionProps } from '../components/settings/section-props.ts';
 import { IssueList } from '../components/settings/save-bar.tsx';
@@ -34,21 +30,19 @@ import { useRepoStatus } from '../components/settings/use-repo-status.ts';
 import { useRestoreDefaults, useSettingsDraft } from '../components/settings/use-settings-draft.ts';
 import { DEFAULT_REPO_SETTINGS } from '../../../../packages/contract/src/index.ts';
 import { repoSettingsPath, repoWorkspacePath, useRepoRoute } from '../lib/repo-route.ts';
-import { isSettingsSectionKey, SETTINGS_SECTIONS, type SettingsSectionKey } from '../layout/nav.ts';
+import { cn } from '../lib/utils.ts';
+import { normalizeSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '../layout/nav.ts';
 import { NotFoundPage } from './not-found.tsx';
 
-/** 分区 key → 组件（顺序与左栏一致，不另建映射表）。 */
+/** 分区 key → 组件（四项，与左栏一致）。 */
 const SECTION_COMPONENTS: Record<SettingsSectionKey, (props: SettingsSectionProps) => React.ReactElement> = {
   general: GeneralSection,
   events: V21EventsSection,
-  comment: V21CommentSection,
   labels: LabelsSection,
-  catalog: V21CatalogSection,
   execution: V21AgentSection,
-  triggers: TriggersSection,
-  limits: LimitsSection,
 };
 
+/** 分区 key → 中文标签（面包屑与标题用）。 */
 function sectionLabel(section: SettingsSectionKey): string {
   return SETTINGS_SECTIONS.find((item) => item.key === section)?.label ?? section;
 }
@@ -62,7 +56,7 @@ function sectionLabel(section: SettingsSectionKey): string {
 function sectionFromHash(hash: string): SettingsSectionKey | null {
   const text = hash.startsWith('#') ? hash.slice(1) : hash;
   const head = text.split('/')[0] ?? '';
-  return isSettingsSectionKey(head) ? head : null;
+  return normalizeSettingsSection(head);
 }
 
 export function RepoSettingsPage() {
@@ -71,11 +65,13 @@ export function RepoSettingsPage() {
   const section = params['section'];
 
   if (repo === null) return <NotFoundPage />;
-  // `/repos/:repo/settings` 没有分区时落到 general（与左栏「设置」一致的入口）
   if (section === undefined) return <Navigate replace to={repoSettingsPath(repo, 'general')} />;
-  if (!isSettingsSectionKey(section)) return <NotFoundPage />;
+  // 旧分区 key（comment / catalog / triggers / limits）跳转到合并后的分区，老书签不 404
+  const resolved = normalizeSettingsSection(section);
+  if (resolved === null) return <NotFoundPage />;
+  if (resolved !== section) return <Navigate replace to={repoSettingsPath(repo, resolved)} />;
 
-  return <SettingsBody repo={repo} section={section} />;
+  return <SettingsBody repo={repo} section={resolved} />;
 }
 
 function SettingsBody({ repo, section }: { repo: string; section: SettingsSectionKey }) {
@@ -145,8 +141,15 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
     href: repoSettingsPath(repo, item.key),
   }));
 
+  /*
+    只有「事件绑定设置」分区锁高度（它要求整页无滚动条、只有编辑区内部滚动）；
+    其它分区内容长，仍按正常文档流由 `main` 滚。用条件类而不是给所有分区加 `h-full`——
+    后者会让「标签 / 执行」这类长表单被裁掉且无法滚动。
+  */
+  const fillHeight = section === 'events';
+
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className={cn('flex min-w-0 flex-col gap-3', fillHeight && 'h-full min-h-0')}>
       <Breadcrumb
         testId="repo-breadcrumb"
         items={[
@@ -190,12 +193,22 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
         }
       />
 
-      <div className="grid min-w-0 gap-4 lg:grid-cols-[13rem_minmax(0,1fr)] lg:items-start lg:gap-6">
+      {/*
+        grid 这一层必须参与高度链（`flex-1 min-h-0` + `items-start` 换成 `items-stretch`）：
+        它本来是「行高由内容决定」的网格，子项拿到的是 auto 高度，于是下面所有 `flex-1`
+        都算不出剩余空间——表现就是「编辑区不会随窗口变大」，这条链必须一路通到底。
+      */}
+      <div
+        className={cn(
+          'grid min-w-0 gap-4 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-6',
+          fillHeight ? 'min-h-0 flex-1 lg:items-stretch' : 'lg:items-start',
+        )}
+      >
         <div className="min-w-0 lg:sticky lg:top-14">
           <SettingsNav items={navItems} current={section} dirty={dirty} onNavigate={guardNavigate} />
         </div>
 
-        <div className="flex min-w-0 flex-col gap-3">
+        <div className={cn('flex min-w-0 flex-col gap-3', fillHeight && 'min-h-0 flex-1')}>
           {pendingSection === null ? null : (
             <Alert tone="warn" data-testid="repo-settings-dirty-guard">
               <AlertTitle>当前分区有未保存的改动</AlertTitle>
@@ -234,6 +247,7 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
             isLoading={result.kind === 'loading'}
             error={result.kind === 'error' ? result.error : null}
             isEmpty={false}
+            fill={fillHeight}
             testId="repo-settings"
             skeleton={
               <div className="flex flex-col gap-3">
@@ -253,7 +267,7 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
                 }}
               />
             ) : result.kind === 'ready' ? (
-              <div data-testid="repo-settings-section">
+              <div className={cn(fillHeight && 'flex min-h-0 flex-1 flex-col')} data-testid="repo-settings-section">
                 <Section state={result.state} onDirtyChange={setSectionDirty} onNavigate={guardSectionLink} />
               </div>
             ) : null}

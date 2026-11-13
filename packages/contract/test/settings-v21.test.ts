@@ -16,6 +16,9 @@ import {
   EVENT_KEYS,
   LOGIN_RE,
   MEMBER_LOGIN_RE,
+  PLACEHOLDER_NAMES,
+  PLACEHOLDER_NAME_SET,
+  PROMPT_PLACEHOLDERS,
   SYSTEM_PROMPT_MAX_CHARS,
   V21_DEFAULTS,
   V21_DEFAULT_AGENT_EXECUTION,
@@ -330,6 +333,43 @@ describe('向后兼容：v0.3 的老配置照样解析', () => {
     expect(shape.comment).toEqual(V21_DEFAULT_COMMENT);
     expect(shape.triggers.events['issues.closed'].enabled).toBe('off');
     expect(shape.agent.limits.concurrency).toBe(2);
+  });
+});
+
+describe('占位符清单（FR-2.3 / §6.3）：面板的快捷按钮与服务端渲染共用一份', () => {
+  it('正好 12 个，且逐个都有一句中文说明', () => {
+    expect(PROMPT_PLACEHOLDERS).toHaveLength(12);
+    for (const placeholder of PROMPT_PLACEHOLDERS) {
+      // 按钮上只显示 {{名字}}，含义全靠这句：空说明等于让人猜
+      expect(placeholder.description.length, placeholder.name).toBeGreaterThan(0);
+    }
+  });
+
+  it('名字与需求表格逐项一致，没有重复', () => {
+    expect(PROMPT_PLACEHOLDERS.map((entry) => entry.name)).toEqual([
+      'issue.author',
+      'issue.number',
+      'issue.url',
+      'issue.content',
+      'issue.labels',
+      'issue.title',
+      'repo.issues',
+      'comment.author',
+      'comment.body',
+      'repo',
+      'actor',
+      'event.action',
+    ]);
+    expect(PLACEHOLDER_NAMES).toEqual(PROMPT_PLACEHOLDERS.map((entry) => entry.name));
+    expect(new Set(PLACEHOLDER_NAMES).size).toBe(12);
+  });
+
+  it('判断视图认得这 12 个，且不认别的（拼错要能判出来）', () => {
+    for (const name of PLACEHOLDER_NAMES) {
+      expect(PLACEHOLDER_NAME_SET.has(name), name).toBe(true);
+    }
+    expect(PLACEHOLDER_NAME_SET.has('issue.foo')).toBe(false);
+    expect(PLACEHOLDER_NAME_SET.size).toBe(12);
   });
 });
 

@@ -70,6 +70,32 @@ describe('createPromptEnricher：技能真的进了提示词', () => {
     expect(prompt).toContain('只能从上面这份清单里选');
   });
 
+  it('没有点名技能 → 同时注入「issue 操作能力」（表情 / 回复 / 关联都在里面）', async () => {
+    /*
+      技能层的 catalog 只渲染「技能声明过的」工具，而内置技能目前只声明宿主工具 ——
+      于是 agent:mention / agent:event 这类没有技能的轮次，模型对平台能贴表情、
+      能回复评论一无所知。这条钉住「没有技能也要拿到能力清单」。
+    */
+    const prompt = await enricher('这个 issue 帮我看看')({
+      worktreeDir: tmpdir(),
+      basePrompt: 'BASE-PROMPT',
+      command: 'agent:event',
+    });
+    expect(prompt).toContain('## issue 操作能力');
+    expect(prompt).toContain('IssueCommentReply(number, comment_id, body)');
+    expect(prompt).toContain('IssueReactionAdd(content, target?, comment_id?)');
+    expect(prompt).toContain('**使用规范**');
+
+    // 命中技能时不重复发：那时清单由技能的 allowed-tools 决定
+    const withSkill = await enricher('归类一下')({
+      worktreeDir: tmpdir(),
+      basePrompt: 'BASE-PROMPT',
+      command: 'agent:mention',
+      skillIds: ['label-triage'],
+    });
+    expect(withSkill).not.toContain('## issue 操作能力');
+  });
+
   it('点名了未加载的技能 → 退回目录，不注入不存在的技能', async () => {
     const prompt = await enricher('/format-check 帮忙看下')({
       worktreeDir: tmpdir(),

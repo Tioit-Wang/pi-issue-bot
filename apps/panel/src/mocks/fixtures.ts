@@ -391,7 +391,6 @@ export function systemFixture(): SystemResponse {
         configError: 'outputs 越界：pr 但没有 paths',
       },
     ],
-    skills: [],
   };
 }
 
@@ -402,6 +401,5 @@ export function systemEmptyFixture(): SystemResponse {
     queue: [],
     flags: [],
     repos: [],
-    skills: [],
   };
 }

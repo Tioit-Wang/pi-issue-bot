@@ -8,7 +8,6 @@
  *    `useLocation().search`，断言「筛选进了 URL（刷新不丢）」。
  *
  * 数据全部由本文件自带（`server.use` 覆盖 `/api/issues` 与 `/api/repos`）：
- * 契约正在被 W3-H 改（`reactionState` / `labelDecisions` 刚落地），
  * 用别人正在动的 fixture 会让「筛选错了」和「fixture 改了」看起来一样。
  */
 import { screen, waitFor, within } from '@testing-library/react';
@@ -68,7 +67,6 @@ type RowInput = {
   outcomes?: IssueListItem['outcomes'];
   lastPreview?: string | null;
   reactionState?: IssueListItem['reactionState'];
-  labelDecisions?: IssueListItem['labelDecisions'];
 };
 
 /** 一行列表数据（只写关心的字段，其余按契约给默认值）。 */
@@ -94,7 +92,6 @@ function makeRow(input: RowInput): IssueListItem {
     outcomes: input.outcomes ?? { succeeded: 1 },
     lastPreview: input.lastPreview ?? '机器人这一轮的结论',
     reactionState: input.reactionState ?? null,
-    labelDecisions: input.labelDecisions ?? null,
     feedback: [],
   };
 }
@@ -113,13 +110,6 @@ const ROWS: IssueListItem[] = [
       appliedAt: minutesAgo(28),
       at: minutesAgo(28),
       commentId: null,
-    },
-    labelDecisions: {
-      lastAt: minutesAgo(29),
-      desired: ['bug', 'needs-info', 'priority:high'],
-      applied: ['bug', 'needs-info'],
-      reason: '缺少复现步骤；没有说明版本',
-      blocked: [{ reason: '词表外标签 priority:high', count: 1 }],
     },
   }),
   makeRow({ number: 42, title: 'CI 在 Node 22 上偶发超时', state: 'closed', labels: ['needs-info'], minutesAgo: 120 }),
@@ -209,8 +199,6 @@ describe('Issue 中心：表格', () => {
     expect(row.textContent).toContain('bug');
     expect(row.textContent).toContain('待人回答');
     expect(row.textContent).toContain('rocket');
-    // 打标被拦：来自 labelDecisions.blocked
-    expect(row.textContent).toContain('打标被拦');
 
     // 首屏：limit=10、不带 cursor
     const listUrl = requests.find((url) => url.includes('/api/issues?'));

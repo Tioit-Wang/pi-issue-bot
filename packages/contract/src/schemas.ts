@@ -13,7 +13,6 @@ import {
   costsQuerySchema,
   costsResponseSchema,
   issueFeedbackEventSchema,
-  issueLabelDecisionSummarySchema,
   issueSessionParamsSchema,
   issueSessionResponseSchema,
   issuesListResponseSchema,
@@ -55,7 +54,6 @@ export const responseSchemas = {
   IssueSessionResponse: issueSessionResponseSchema,
   /** 无感反馈与打标判定的两个子形状（W3-H：面板统计/详情要用，单列出来便于引用）。 */
   IssueFeedbackEvent: issueFeedbackEventSchema,
-  IssueLabelDecisionSummary: issueLabelDecisionSummarySchema,
   /** 仓库配置（`repos.settings` 的 jsonb 形状）与它的子段：面板要展示字段说明，一并发布。 */
   RepoSettings: repoSettingsSchema,
   RepoLabels: labelsConfigSchema,

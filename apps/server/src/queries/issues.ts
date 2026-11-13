@@ -114,13 +114,6 @@ type IssueRow = {
   human_preview: string | null;
   /** `issue_feedback` 的时间线（升序，最多 20 条；元素是 jsonb_build_object 的产物）。 */
   feedback: unknown;
-  /** `label_decisions` 摘要：最近一行的 desired / applied / reason + 被拦原因计数。 */
-  label_last_at: Date | null;
-  label_desired: unknown;
-  label_applied: unknown;
-  label_reason: string | null;
-  label_blocked: unknown;
-  label_rows: number | string | null;
 };
 
 /**
@@ -200,13 +193,7 @@ agg as (
     ) as awaiting_reply,
     bp.body as bot_preview,
     hp.body as human_preview,
-    fbt.events as feedback,
-    ld.last_at as label_last_at,
-    ld.desired as label_desired,
-    ld.applied as label_applied,
-    ld.reason as label_reason,
-    ld.blocked as label_blocked,
-    ld.row_count as label_rows
+    fbt.events as feedback
   from base b
   left join lateral (
     select
@@ -322,31 +309,6 @@ agg as (
       limit 20
     ) s
   ) fbt on true
-  /*
-   * 打标判定摘要（label_decisions）：最近一行的 desired/applied/reason（当天可读的结论）
-   * + 被拦原因计数（blocked_reason 聚合，数量降序，最多 20 条）。
-   */
-  left join lateral (
-    select
-      max(d.created_at) as last_at,
-      (array_agg(d.desired order by d.created_at desc, d.id desc))[1] as desired,
-      (array_agg(d.applied order by d.created_at desc, d.id desc))[1] as applied,
-      (array_agg(d.reason order by d.created_at desc, d.id desc))[1] as reason,
-      count(*) as row_count,
-      (
-        select jsonb_object_agg(k.blocked_reason, k.n)
-        from (
-          select d2.blocked_reason, count(*) as n
-          from label_decisions d2
-          where d2.repo = b.repo and d2.target_number = b.number and d2.blocked_reason is not null
-          group by d2.blocked_reason
-          order by count(*) desc, d2.blocked_reason asc
-          limit 20
-        ) k
-      ) as blocked
-    from label_decisions d
-    where d.repo = b.repo and d.target_number = b.number
-  ) ld on true
 )`;
 }
 
@@ -412,23 +374,6 @@ function reactionStateOf(timeline: readonly IssueFeedbackEvent[]): IssueFeedback
     if (event !== undefined && event.stage !== 'received') return event;
   }
   return null;
-}
-
-/** `label_decisions` 的聚合列 → 契约的 `IssueLabelDecisionSummary`；一行都没有时返回 `null`。 */
-function labelDecisionSummaryOf(row: IssueRow): IssueListItem['labelDecisions'] {
-  if (intOf(row.label_rows) === 0) return null;
-  const blocked = recordOf(row.label_blocked);
-  const entries = Object.entries(blocked)
-    .map(([reason, count]) => ({ reason: reason.slice(0, 120), count: intOf(count) }))
-    .filter((entry) => entry.reason !== '' && entry.count > 0)
-    .slice(0, 20);
-  return {
-    lastAt: isoOrNull(row.label_last_at),
-    desired: labelsOf(arrayOf(row.label_desired).filter((value): value is string => typeof value === 'string')),
-    applied: labelsOf(arrayOf(row.label_applied).filter((value): value is string => typeof value === 'string')),
-    reason: oneLine(row.label_reason, 500),
-    blocked: entries,
-  };
 }
 
 /** 正文/摘要压成一行并截断（列表预览与工具摘要共用）。 */
@@ -499,7 +444,6 @@ function toListItem(row: IssueRow): IssueListItem {
     awaitingReply: row.awaiting_reply === true,
     lastPreview: oneLine(row.bot_preview, PREVIEW_CHARS) ?? oneLine(row.human_preview, PREVIEW_CHARS),
     reactionState: reactionStateOf(feedback),
-    labelDecisions: labelDecisionSummaryOf(row),
     feedback,
   };
 }

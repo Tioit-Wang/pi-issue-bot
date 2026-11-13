@@ -34,9 +34,15 @@ export function AppLayout() {
   const toggleVisible = mode !== 'wide';
 
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
-      {/* 键盘用户第一站：跳过导航直达主内容 */}
-      <a
+    /*
+  高度锁在视口内：外壳不滚，`main` 自己滚。
+  为什么改（原来是 `min-h-screen` + 整页滚动）：事件绑定设置页要求「整页无滚动条、
+  只有提示词编辑区内部滚动」，这只有当**外壳高度确定**时才能用 `h-full + min-h-0`
+  把高度一路传给编辑区。副作用是其它页面行为不变——它们本来就在 `main` 里滚。
+*/
+<div className="flex h-dvh overflow-hidden bg-background text-foreground">
+  {/* 键盘用户第一站：跳过导航直达主内容 */}
+  <a
         href="#main-content"
         className={cn(
           'sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-2 focus-visible:left-2 focus-visible:z-50',
@@ -67,7 +73,7 @@ export function AppLayout() {
         }}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur">
           {toggleVisible ? (
             <button
@@ -117,7 +123,15 @@ export function AppLayout() {
 
         <DegradedBanner />
 
-        <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 px-3 py-4 md:px-6 md:py-5">
+        {/*
+          唯一滚动容器：`flex-1 min-h-0 overflow-y-auto`。
+          页面若想「自己不滚、内部某块滚」（事件绑定设置页），就用 `h-full min-h-0` 接住这个高度。
+        */}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 md:px-6 md:py-5"
+        >
           <Outlet />
         </main>
       </div>

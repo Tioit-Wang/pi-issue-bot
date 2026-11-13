@@ -325,39 +325,9 @@ function SystemContent({ data, repoFilter }: { data: SystemResponse; repoFilter:
           </ul>
         </Section>
 
-        <Section title="能力（skills）" description="outputs = 允许的写回类型；超时已截断到 30 分钟上限">
-          {data.skills.length === 0 ? (
-            <p className="text-xs text-muted-foreground">还没有加载任何技能（skills/ 目录为空）。</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>技能</TableHead>
-                  <TableHead>来源</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>outputs</TableHead>
-                  <TableHead className="text-right">超时</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.skills.map((skill) => (
-                  <TableRow key={skill.name}>
-                    <TableCell className="font-mono text-xs">{skill.name}</TableCell>
-                    <TableCell className="font-mono text-2xs text-muted-foreground">{skill.source}</TableCell>
-                    <TableCell className="text-xs">
-                      <Badge tone={skill.enabled ? 'success' : 'danger'}>
-                        {skill.enabled ? '已启用' : (skill.disabledReason ?? '已禁用')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-2xs text-muted-foreground">{skill.outputs.join(' · ')}</TableCell>
-                    <TableCell className="tabular text-right text-xs">{formatDuration(skill.timeoutMs)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-          <p className="mt-1 text-2xs text-faint">生成于 {formatTimeCell(data.generatedAt).text}（{formatTimeCell(data.generatedAt).title}）</p>
-        </Section>
+        <p className="mt-1 text-2xs text-faint">
+          生成于 {formatTimeCell(data.generatedAt).text}（{formatTimeCell(data.generatedAt).title}）
+        </p>
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_REPO_SETTINGS,
+  ISSUE_TOOL_NAMES,
   SKILL_ALLOWED_TOOLS,
   SKILL_OUTPUT_INTENTS,
   SKILL_RESERVED_NAMES,
@@ -391,7 +392,16 @@ describe('技能 frontmatter（contract-skill.md 逐字段）', () => {
   });
 
   it('allowed-tools / outputs 都是非空枚举，且工具枚举与审批矩阵同源', () => {
-    expect(SKILL_ALLOWED_TOOLS).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
+    // 宿主六件：文件读写 + 命令（issue 工具集接在后面，下面单独断言）
+    expect(SKILL_ALLOWED_TOOLS.slice(0, 6)).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']);
+    // issue 工具集全部可声明：少一个就意味着「技能能声明」与「审批放行」分叉
+    for (const name of ISSUE_TOOL_NAMES) {
+      expect(SKILL_ALLOWED_TOOLS).toContain(name);
+    }
+    // 被移除的工具不在枚举里：写进 frontmatter 会在加载期整份被拒
+    for (const removed of ['new_context', 'Task', 'TodoWrite', 'mcp__github__create_issue', 'plugin_pi_todo_todo_manage']) {
+      expect(SKILL_ALLOWED_TOOLS).not.toContain(removed);
+    }
     expect(skillFrontmatterSchema.safeParse({ ...minimal, 'allowed-tools': [] }).success).toBe(false);
     expect(skillFrontmatterSchema.safeParse({ ...minimal, outputs: [] }).success).toBe(false);
     expect(skillFrontmatterSchema.safeParse({ ...minimal, 'allowed-tools': ['read'] }).success).toBe(false);

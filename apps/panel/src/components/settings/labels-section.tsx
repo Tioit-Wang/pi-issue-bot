@@ -14,7 +14,7 @@ import { Badge } from '../ui/badge.tsx';
 import { Select } from '../ui/select.tsx';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
-import { ChipEditor, NumberField, TextField } from './form.tsx';
+import { ChipEditor, NumberField, SwitchField, TextField } from './form.tsx';
 import { SaveBar } from './save-bar.tsx';
 import { countChangedPaths } from './settings-chrome.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
@@ -22,7 +22,7 @@ const COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/u;
 
 /** 词表行的列宽（表头与行共用一份，避免 drift）：name / 角色 / meaning / color / description / group / 操作。 */
 const VOCAB_GRID =
-  'md:grid-cols-[minmax(0,1.1fr)_6rem_minmax(0,1.4fr)_5.5rem_minmax(0,1.2fr)_5.5rem_auto]';
+  'md:grid-cols-[minmax(0,1fr)_5.5rem_minmax(0,1.2fr)_5rem_minmax(0,1fr)_5rem_5.5rem_5.5rem_auto]';
 
 /** 角色下拉：`role` 是流程分叉依据（契约必填），面板给中文标签，值仍是契约枚举。 */
 const ROLE_OPTIONS: readonly { value: LabelRole; label: string }[] = [
@@ -159,6 +159,8 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                 <span>color</span>
                 <span>description</span>
                 <span>group</span>
+                <span>自动对齐</span>
+                <span>status</span>
                 <span />
               </div>
               {labels.vocabulary.map((entry, index) => (
@@ -264,6 +266,46 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                     disabled={readOnly}
                     disabledReason="仓库已归档：只读"
                   />
+                  {/*
+                    目标态字段（v2.1）：`managed` 与 `status` 决定这个标签是否进入自动对齐。
+                    关掉 managed = 不删不加，完全由人管；retired = GitHub 上已删除。
+                  */}
+                  <div className="flex items-end pb-4 md:items-center md:pb-0">
+                    <SwitchField
+                      id={`labels-vocab-managed-${String(index)}`}
+                      label="自动对齐"
+                      checked={entry.managed !== false}
+                      onChange={(next) => {
+                        updateVocabulary(index, { managed: next });
+                      }}
+                      disabled={readOnly}
+                      disabledReason="仓库已归档：只读"
+                    />
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <label
+                      htmlFor={`labels-vocab-status-${String(index)}`}
+                      className="text-xs font-medium text-muted-foreground"
+                    >
+                      status
+                    </label>
+                    <Select
+                      id={`labels-vocab-status-${String(index)}`}
+                      options={[
+                        { value: 'active', label: 'active' },
+                        { value: 'retired', label: 'retired' },
+                      ]}
+                      placeholder={null}
+                      value={entry.status ?? 'active'}
+                      disabled={readOnly}
+                      title={readOnly ? '仓库已归档：只读' : 'retired = GitHub 上已删除，不再进入目标态'}
+                      aria-label={`第 ${String(index + 1)} 行的 status`}
+                      onChange={(event) => {
+                        updateVocabulary(index, { status: event.target.value === 'retired' ? 'retired' : 'active' });
+                      }}
+                      className="h-[var(--control-sm)]"
+                    />
+                  </div>
                   <div className="flex items-end pb-4 md:items-center md:pb-0">
                     <button
                       type="button"

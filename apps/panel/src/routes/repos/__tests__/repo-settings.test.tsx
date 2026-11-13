@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 仓库设置页的验收用例（D2-b 重做信息组织后的版本）。
  *
  * 这一版盯的是「一屏看清」的四件事 + 原有逻辑不回退：
@@ -78,29 +78,28 @@ function recordSettingsPut(): SaveRepoSettingsRequest[] {
 }
 
 describe('设置页 · 骨架', () => {
-  it('4 个分区都能打开，导航每项都有一句现状摘要', async () => {
+  it('四个分区都能打开，导航每项都有一句现状摘要', async () => {
     const user = userEvent.setup();
     renderAt('/repos/acme__widgets/settings/general');
 
     expect(await screen.findByRole('heading', { level: 1, name: '设置 · 通用' })).toBeTruthy();
     expect(await screen.findByTestId('settings-general')).toBeTruthy();
 
-    // 摘要来自草稿：acme/widgets 的样本是「启用 · 真写」，触发面默认 1 个别名
-    expect(screen.getByTestId('repo-settings-tab-general').textContent).toContain('启用 · 真写');
-    expect(screen.getByTestId('repo-settings-tab-triggers').textContent).toContain('个别名');
-    expect(screen.getByTestId('repo-settings-tab-limits').textContent).toContain('评论 10/h');
+    // 摘要来自草稿：acme/widgets 的样本是「启用 · 写回 GitHub」
+    expect(screen.getByTestId('repo-settings-tab-general').textContent).toContain('启用 · 写回 GitHub');
+    expect(screen.getByTestId('repo-settings-tab-events').textContent).toContain('关键词');
+    expect(screen.getByTestId('repo-settings-tab-labels').textContent).toContain('词表');
+    expect(screen.getByTestId('repo-settings-tab-execution').textContent).toContain('并发');
 
-    await user.click(screen.getByTestId('repo-settings-tab-triggers'));
-    expect(await screen.findByRole('heading', { level: 1, name: '设置 · 触发' })).toBeTruthy();
-    expect(await screen.findByTestId('settings-triggers')).toBeTruthy();
+    await user.click(screen.getByTestId('repo-settings-tab-events'));
+    expect(await screen.findByRole('heading', { level: 1, name: '设置 · 事件绑定' })).toBeTruthy();
+    expect(await screen.findByTestId('settings-events')).toBeTruthy();
 
     await user.click(screen.getByTestId('repo-settings-tab-labels'));
     expect(await screen.findByTestId('settings-labels')).toBeTruthy();
 
-    await user.click(screen.getByTestId('repo-settings-tab-limits'));
-    expect(await screen.findByTestId('settings-limits')).toBeTruthy();
-
-
+    await user.click(screen.getByTestId('repo-settings-tab-execution'));
+    expect(await screen.findByTestId('settings-execution')).toBeTruthy();
   });
 
   it('顶部状态条：仓库名 + 启用 / 真写 / 配置合法 + 最后一次保存', async () => {
@@ -125,24 +124,24 @@ describe('设置页 · 骨架', () => {
     expect(screen.getByTestId('settings-general-savebar')).toBeTruthy();
     expect(screen.getByTestId('settings-general-changed').textContent).toContain('改了 1 项');
 
-    await user.click(screen.getByTestId('repo-settings-tab-triggers'));
+    await user.click(screen.getByTestId('repo-settings-tab-events'));
     const guard = await screen.findByTestId('repo-settings-dirty-guard');
     expect(guard.textContent).toContain('有未保存的改动');
 
     await user.click(screen.getByTestId('repo-settings-dirty-stay'));
     expect(screen.getByRole('heading', { level: 1, name: '设置 · 通用' })).toBeTruthy();
 
-    await user.click(screen.getByTestId('repo-settings-tab-triggers'));
+    await user.click(screen.getByTestId('repo-settings-tab-events'));
     await user.click(await screen.findByTestId('repo-settings-dirty-discard'));
-    expect(await screen.findByRole('heading', { level: 1, name: '设置 · 触发' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: '设置 · 事件绑定' })).toBeTruthy();
   });
 });
 
-describe('设置页 · triggers', () => {
+describe('设置页 · 触发（已并入事件分区）', () => {
   it('保存 payload：别名小写化 + 去重（整份 settings）', async () => {
     const user = userEvent.setup();
     const calls = recordSettingsPut();
-    renderAt('/repos/acme__widgets/settings/triggers');
+    renderAt('/repos/acme__widgets/settings/events');
 
     const aliasInput = await screen.findByLabelText('额外别名（aliases，1–8 个）');
     await user.type(aliasInput, '@IssueBotX');
@@ -156,7 +155,7 @@ describe('设置页 · triggers', () => {
     await user.keyboard('{Enter}');
     expect(await screen.findByText(/已经在列表里/u)).toBeTruthy();
 
-    await user.click(screen.getByTestId('settings-triggers-save'));
+    await user.click(screen.getByTestId('settings-events-save'));
     await waitFor(() => {
       expect(calls).toHaveLength(1);
     });
@@ -166,8 +165,6 @@ describe('设置页 · triggers', () => {
     expect(saved?.triggers.aliases).toEqual(['issuebot', 'issuebotx']);
     expect(saved?.version).toBe(1);
     expect(saved?.limits.max_comments_per_hour).toBe(10);
-    // v0.3：triggers 只剩 aliases，prompt / commands / create_issue 三段已删。
-    // on_opened 与契约默认值一致（issue #26）
     expect(saved?.agent.on_opened).toBe('issue-format');
   });
 

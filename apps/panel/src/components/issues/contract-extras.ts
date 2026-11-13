@@ -1,23 +1,13 @@
 /**
- * Issue 中心 / 详情页要用的**反馈与打标字段读取器**。
+ * Issue 中心 / 详情页要用的**反馈字段读取器**。
  *
- * 这些字段由 W3-H 加进 `packages/contract/src/api.ts`（并联进行中），契约里是：
+ * 契约里是 `IssueListItem.reactionState / feedback` 与 `IssueSummary.reactionState / pendingFeedback`。
+ * 页面既要**现在**能跑，也要在字段缺失（旧响应 / dry-run 没台账）时**不炸**，所以这里做一层
+ * 运行时宽容读取：字段缺失与值为 null 在展示层同义（显示 `—`）。
  *
- * - `IssueListItem.reactionState: IssueFeedbackEvent | null`
- * - `IssueListItem.labelDecisions: IssueLabelDecisionSummary | null`
- * - `IssueListItem.feedback: IssueFeedbackEvent[]`
- * - `IssueSummary.reactionState / pendingFeedback`（详情页头部）
- *
- * 为什么不直接在页面里写 `item.reactionState?.content`：查询层刚刚落地、mock 还在补，
- * 页面既要**现在**能跑，也要在字段缺失（旧响应 / 形状漂移 / dry-run 没台账）时**不炸**。
- * 所以这里做一层运行时宽容读取，并且**同时认新旧两种拼写**（`labelDecisions` / `labelDecision`、
- * `feedback` / `pendingFeedback` / `feedbackTimeline`）——前端不需要跟着后端改一次名就改一遍页面。
- *
- * 约定（与 `lib/repos.ts` 的 `normalizeRepoList` 同一套：宽容 + 保守）：
- * 「字段缺失」与「值为 null」在展示层**同义**（显示 `—`）：面板无法区分
- * 「后端说不适用」与「后端还没实现」，这里不假装知道。
+ * 打标判定摘要（`label_decisions`：结论理由 / 缺哪些信息）已随「结论正文 / 标签与理由」区块
+ * 一起移除——详情页只展示会话本身，不再复述那套已过时的产出视图。
  */
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
@@ -36,16 +26,6 @@ function asFiniteNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function asStringList(value: unknown, max: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const list: string[] = [];
-  for (const item of value.slice(0, max)) {
-    const text = asString(item);
-    if (text !== null && !list.includes(text)) list.push(text);
-  }
-  return list;
 }
 
 /* ── reaction 状态（`issue_feedback` 的最新终态） ───────────────────────────── */
@@ -110,87 +90,6 @@ export function readFeedbackTimeline(source: unknown): FeedbackEntry[] {
   return [];
 }
 
-/* ── 标签判定（`bot_labels.reason` + `label_decisions`） ────────────────────── */
-
-export type BlockedReason = { reason: string; count: number };
-
-export type LabelDecisionView = {
-  /** 最近一次判定的时刻（`label_decisions.created_at`）；没判定过为 `null`。 */
-  lastAt: string | null;
-  /** 为什么打这些标（面向人的一句话）。 */
-  reason: string | null;
-  /** 想要打但没打上的（`desired` − `applied`）。 */
-  blockedLabels: string[];
-  /** 被拦原因（按 `blocked_reason` 聚合，数量降序）。 */
-  blocked: BlockedReason[];
-  /** 「缺哪些信息」清单（来自 `reason` 的切分；见 `missingInfoFromReason`）。 */
-  missing: string[];
-};
-
-/**
- * `reason` → 「缺哪些信息」清单。
- *
- * 判定依据写在提示词里（`docs/impl-multi-repo.md` §0.3：合规缺失项由提示词控制，
- * 明细只落 `label_decisions.reason`），所以这里是**纯展示层切分**，不猜语义：
- * 先按行切，单行再按 `；`/`;` 切，去掉行首的项目符号与编号，最多 12 条。
- */
-export function missingInfoFromReason(reason: string | null): string[] {
-  if (reason === null) return [];
-  const lines = reason
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== '');
-  const parts = lines.length > 1 ? lines : (lines[0] ?? '').split(/[；;]/);
-
-  const items: string[] = [];
-  for (const part of parts) {
-    const cleaned = part.replace(/^\s*(?:[-*·]|\d+[.)、])\s*/, '').trim();
-    if (cleaned !== '' && !items.includes(cleaned)) items.push(cleaned);
-  }
-  return items.slice(0, 12);
-}
-
-function toBlockedList(value: unknown): BlockedReason[] {
-  if (!Array.isArray(value)) return [];
-  const list: BlockedReason[] = [];
-  for (const item of value.slice(0, 20)) {
-    const record = asRecord(item);
-    const reason = asString(record?.['reason']);
-    if (record === null || reason === null) continue;
-    list.push({ reason, count: asFiniteNumber(record['count']) ?? 1 });
-  }
-  return list;
-}
-
-/**
- * 读打标判定摘要。
- *
- * 契约位置：列表行 `labelDecisions`（复数，`IssueLabelDecisionSummary`）。
- * 同时容忍 `labelDecision`（单数，早期接口草稿）与 `{ issue: { ... } }` 嵌套。
- */
-export function readLabelDecision(source: unknown): LabelDecisionView | null {
-  const raw = pick(source, 'labelDecisions') ?? pick(source, 'labelDecision');
-  const record = asRecord(raw);
-  if (record === null) return null;
-
-  const reason = asString(record['reason']);
-  const desired = asStringList(record['desired'], 50);
-  const applied = asStringList(record['applied'], 50);
-  const blocked = toBlockedList(record['blocked']);
-  const blockedLabels = desired.filter((label) => !applied.includes(label));
-
-  // 结构化 `missing` 优先（后端若给），否则从 reason 切分；再不行退回被拦原因
-  const explicit = asStringList(record['missing'], 12);
-  const missing =
-    explicit.length > 0
-      ? explicit
-      : missingInfoFromReason(reason).length > 0
-        ? missingInfoFromReason(reason)
-        : blocked.map((item) => item.reason);
-
-  if (reason === null && blocked.length === 0 && missing.length === 0 && desired.length === 0) return null;
-  return { lastAt: asString(record['lastAt']), reason, blockedLabels, blocked, missing };
-}
 
 /* ── 每次 run 的耗时与成本 ───────────────────────────────────────────────── */
 

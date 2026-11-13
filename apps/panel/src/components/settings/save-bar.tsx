@@ -85,10 +85,15 @@ export function SaveBar({
             ? '与服务端不一致'
             : '与服务端一致';
 
+  /*
+    负外边距（原来的 `-mx-2`）是给「内容有左右内边距」的页面用的，让分隔线贴齐视口边缘；
+    但在事件绑定设置页它会比容器宽 8px，配合 `overflow-y:auto` 的 `main` 就是一条横向
+    滚动条——与「整页不得出现滚动条」直接冲突。所以这里不再用负外边距。
+  */
   return (
     <div
       data-testid={`${testId}-savebar`}
-      className="sticky bottom-0 z-10 -mx-2 mt-1 flex flex-col gap-1.5 border-t border-border bg-background/95 px-2 pt-2 pb-2 backdrop-blur"
+      className="sticky bottom-0 z-10 mt-1 flex min-w-0 flex-col gap-1.5 border-t border-border bg-background/95 pt-2 pb-2 backdrop-blur"
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
         <Button

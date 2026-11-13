@@ -60,29 +60,45 @@ export function repoNavPath(repo: string, key: RepoNavKey): string {
 }
 
 /**
- * 设置分区（`docs/impl-multi-repo.md` §4 W3-I；提示词分区已随 v0.3 退役）。
+ * 设置分区（v2.1 整合版，**四项**）。
  *
- * v2.1 新增四区（`docs/v21-contract.md` §1），**旧四区全部保留**：
- * - `events` / `comment` / `catalog` / `execution` 是 v2.1 的配置面（事件开关与模板、评论触发、
- *   标签目录、执行限额）；
- * - `triggers` / `labels` / `limits` 是 v0.3 的存量配置面，删掉会让老配置失去编辑入口。
- *
- * 顺序 = 阅读顺序（不是字母序）：通用 → 新的事件面 → 旧的别名/词表/限额。
- * 新的在前是因为它们决定「什么事件会进来」，旧的在后是因为它们只影响「进来之后怎么跑」。
+ * 合并原则：同一个问题只留一个入口。
+ * - 「通用」：仓库启停与写回；
+ * - 「事件绑定」：五个事件的开关 + 提示词模板 + 评论闸门 + 提及关键词 + 角色清单
+ *   （原来的「事件与模板」+「评论触发」+「触发」三项，原「事件与提示词」一名已弃用）；
+ * - 「标签」：词表 + 判定映射 + 目标态字段（原「标签」+「标签目录 v2.1」）；
+ * - 「执行」：系统提示词 + 两套限额 + 写回动作开关 + 默认模型
+ *   （原「执行与限额」+「限额」）。
  */
 export const SETTINGS_SECTIONS = [
   { key: 'general', label: '通用' },
-  { key: 'events', label: '事件与模板' },
-  { key: 'comment', label: '评论触发' },
+  { key: 'events', label: '事件绑定' },
   { key: 'labels', label: '标签' },
-  { key: 'catalog', label: '标签目录 v2.1' },
-  { key: 'execution', label: '执行与限额' },
-  { key: 'triggers', label: '触发' },
-  { key: 'limits', label: '限额' },
+  { key: 'execution', label: '执行' },
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]['key'];
 
+/**
+ * 旧分区 key → 新分区 key。
+ *
+ * 老书签 / 文档里的 `settings/comment`、`settings/catalog`、`settings/triggers`、`settings/limits`
+ * 仍然要能打开（而不是 404）：它们的内容都已经并进上面四项，按这张表跳过去。
+ */
+export const LEGACY_SETTINGS_SECTIONS: Readonly<Record<string, SettingsSectionKey>> = {
+  comment: 'events',
+  triggers: 'events',
+  catalog: 'labels',
+  limits: 'execution',
+};
+
 export function isSettingsSectionKey(value: string | undefined): value is SettingsSectionKey {
   return SETTINGS_SECTIONS.some((section) => section.key === value);
+}
+
+/** 旧 key 归一（新 key 原样返回；认不出的返回 `null`）。 */
+export function normalizeSettingsSection(value: string | undefined): SettingsSectionKey | null {
+  if (value === undefined) return null;
+  if (isSettingsSectionKey(value)) return value;
+  return LEGACY_SETTINGS_SECTIONS[value] ?? null;
 }

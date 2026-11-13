@@ -40,6 +40,13 @@ export type AsyncSectionProps = {
   onRetry?: () => void;
   testId?: string;
   className?: string;
+  /**
+   * 撑满父容器（父级必须是 flex 纵向且给了高度）。
+   *
+   * 三个包裹层（外层柱、状态 pill 行、content 层）都要参与高度链，
+   * 少一层就会在中间断掉：子元素拿到的高度是 auto，`flex-1` 无从计算。
+   */
+  fill?: boolean;
   children: ReactNode;
 };
 
@@ -107,6 +114,7 @@ export function AsyncSection({
   onRetry,
   testId,
   className,
+  fill = false,
   children,
 }: AsyncSectionProps) {
   const browserOffline = useBrowserOffline();
@@ -213,9 +221,12 @@ export function AsyncSection({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-2">
+    <div className={cn('flex min-w-0 flex-col gap-2', fill && 'min-h-0 flex-1')}>
       {pill}
-      <div data-testid={testId === undefined ? 'content' : `${testId}-content`} className={cn('min-w-0', className)}>
+      <div
+        data-testid={testId === undefined ? 'content' : `${testId}-content`}
+        className={cn('min-w-0', fill && 'flex min-h-0 flex-1 flex-col', className)}
+      >
         {children}
       </div>
     </div>

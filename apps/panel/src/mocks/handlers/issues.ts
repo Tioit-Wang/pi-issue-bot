@@ -53,7 +53,6 @@ type ListSeed = Omit<
   | 'lastActorKind'
   | 'awaitingReply'
   | 'reactionState'
-  | 'labelDecisions'
   | 'feedback'
   // 固定流水线状态：样本默认「没有状态行」（`null`），单测要覆盖时显式给
 > &
@@ -67,7 +66,6 @@ type ListSeed = Omit<
       | 'lastActorKind'
       | 'awaitingReply'
       | 'reactionState'
-      | 'labelDecisions'
       | 'feedback'
     >
   >;
@@ -99,7 +97,6 @@ function finalizeList(seed: ListSeed): IssueListItem {
     feedback,
     // `reactionState` 默认从时间线推（显式给了就用显式的，方便测试单独改一处）
     reactionState: seed.reactionState ?? reactionStateOf(feedback),
-    labelDecisions: seed.labelDecisions ?? null,
   };
 }
 
@@ -282,17 +279,6 @@ function storyEacces(now: number): IssueRecord {
         { stage: 'received', content: 'eyes', appliedAt: at(38), at: at(38), commentId: '410020' },
         { stage: 'failed', content: 'confused', appliedAt: at(32), at: at(32), commentId: '410020' },
       ],
-      // 打标判定摘要：想要的比打上的多一个（`flaky-test` 不在词表）
-      labelDecisions: {
-        lastAt: at(34),
-        desired: ['bug', 'flaky-test', 'needs-info'],
-        applied: ['bug', 'needs-info'],
-        reason: 'flaky-test 不在词表，按 warn 策略跳过（不发评论催人）',
-        blocked: [
-          { reason: 'not-in-vocabulary', count: 2 },
-          { reason: 'max_per_issue', count: 1 },
-        ],
-      },
       /*
        * 固定流水线：三段都走完，等 `@`（`agent/ready`）。
        * 有 `sessionId` 与 `sessionTurns`（阶段 2 复用会话），并且 `staleAt` 非空

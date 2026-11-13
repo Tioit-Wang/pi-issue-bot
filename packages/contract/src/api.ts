@@ -712,8 +712,13 @@ export const systemResponseSchema = timestamped({
         .strict(),
     )
     .max(32),
+  /**
+   * 仓库行。
+   *
+   * **没有 `skills` 字段**：技能只属于项目（`/api/skills?repo=…`），平台级技能清单已移除，
+   * 系统页也不再展示「全局技能」。
+   */
   repos: z.array(systemRepoSchema).max(200),
-  skills: z.array(skillSummarySchema).max(64),
 })
   .strict()
   .meta({ id: 'SystemResponse' });
@@ -899,30 +904,6 @@ export const issueFeedbackEventSchema = z
   .meta({ id: 'IssueFeedbackEvent' });
 export type IssueFeedbackEvent = z.infer<typeof issueFeedbackEventSchema>;
 
-/**
- * 打标判定的摘要（`label_decisions`）。
- *
- * 契约里的 `labels` 是**已经落地的标签**；这里补的是「想要什么、为什么没打上」：
- * `desired` 与 `applied` 的差集就是被拦下的部分，`blocked` 按 `blocked_reason` 聚合。
- */
-export const issueLabelDecisionSummarySchema = z
-  .object({
-    /** 最近一次判定的时刻；从没判定过为 `null`。 */
-    lastAt: isoDateTimeSchema.nullable(),
-    /** 最近一次「想要打」的标签（词表过滤 → 1:N 展开 → 互斥组 → 上限之后）。 */
-    desired: z.array(labelNameSchema).max(50),
-    /** 最近一次真正打上的标签。 */
-    applied: z.array(labelNameSchema).max(50),
-    /** 最近一次面向人的一句话理由（面板直接展示）。 */
-    reason: z.string().max(500).nullable(),
-    /** 被拦原因计数（按 `blocked_reason` 聚合，数量降序，最多 20 条）。 */
-    blocked: z
-      .array(z.object({ reason: z.string().min(1).max(120), count: countSchema }).strict())
-      .max(20),
-  })
-  .strict()
-  .meta({ id: 'IssueLabelDecisionSummary' });
-export type IssueLabelDecisionSummary = z.infer<typeof issueLabelDecisionSummarySchema>;
 
 export const issueToolCallSchema = z
   .object({
@@ -1033,8 +1014,6 @@ export const issueListItemSchema = z
      * 没跑完 / 从没打过 reaction（dry-run）为 `null`。
      */
     reactionState: issueFeedbackEventSchema.nullable(),
-    /** 最近一轮打标的判定摘要；从没判定过为 `null`。 */
-    labelDecisions: issueLabelDecisionSummarySchema.nullable(),
     /** 反馈时间线（升序，最多 20 条；含 `received` 与各终态）。 */
     feedback: z.array(issueFeedbackEventSchema).max(20),
   })

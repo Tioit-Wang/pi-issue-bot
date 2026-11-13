@@ -1131,37 +1131,59 @@
       </div>
 
       <h4 id="tools">执行侧可用工具</h4>
-      <p>执行侧基于 pi SDK，工具分三层：<b>SDK 自带</b>、<b>平台补的只读能力</b>、<b>平台有意不提供的写能力</b>。</p>
+      <p>工具面分三段：<b>宿主文件工具</b>、<b>宿主命令工具</b>、<b>issue 工具集</b>。前两段是「看代码、改代码、跑测试」的通用能力，第三段是 issue 操作的<b>唯一入口</b>。清单的唯一事实源是契约 <code>packages/contract/src/issue-tools.ts</code>，审批矩阵、技能 <code>allowed-tools</code> 枚举、提示词里的工具目录、本表全部从它派生。</p>
 
       <div class="tbl">
         <table>
           <thead><tr><th style="width:104px">类别</th><th style="width:214px">工具</th><th style="width:82px">来源</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td>文件</td><td><code>Read</code> <code>Write</code> <code>Edit</code> <code>Glob</code> <code>Grep</code></td><td>pi SDK</td><td>读写工作区内的代码与文档；路径限制在工作树内</td></tr>
-            <tr><td>执行</td><td><code>Bash</code></td><td>pi SDK</td><td>命令执行；输出有上限，超出部分落文件并留截断标记</td></tr>
-            <tr><td>计划</td><td><code>TodoWrite</code></td><td>pi SDK</td><td>长任务拆步与进度记录，不改变仓库状态</td></tr>
-            <tr><td>委派</td><td><code>Task</code></td><td>pi SDK</td><td>派生只读子代理并行调研；不共享主会话上下文</td></tr>
-            <tr><td>上下文</td><td><code>new_context</code></td><td>pi SDK</td><td>模型主动要求换窗口，触发压缩而非换会话</td></tr>
-            <tr><td>扩展</td><td><code>mcp__*</code> · <code>plugin_*</code></td><td>插件</td><td>需白名单，默认关闭</td></tr>
-            <tr><td>平台只读</td><td><code>IssueGet</code></td><td>我方实现</td><td>读单条 issue 的正文、评论与时间线，用于判断上下文</td></tr>
-            <tr><td>平台只读</td><td><code>IssueSearch</code></td><td>我方实现</td><td>按关键词 / 标签检索，补 <code>{{repo.issues}}</code> 只有标题索引的不足</td></tr>
+            <tr><td>执行</td><td><code>Bash</code></td><td>pi SDK</td><td>跑测试、构建、<code>git</code>。<b>不得用来做 issue 操作</b>：命令里出现 <code>gh issue</code> / <code>gh pr</code> / <code>gh api</code> / <code>gh search</code> / 直接请求 <code>api.github.com</code> 时，审批策略一律 deny 并留审计</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><b>issue 工具集（16 个，覆盖 issue 全生命周期）</b>。按环节划分，每个环节都有专用工具，因此处理 issue 不需要、也不允许退回 shell：</p>
+
+      <div class="tbl">
+        <table>
+          <thead><tr><th style="width:96px">环节</th><th style="width:250px">工具</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="4">读</td><td><code>IssueGet</code></td><td>单条 issue 的完整快照：标题、正文、状态、作者、标签、指派人、里程碑、关联项</td></tr>
+            <tr><td><code>IssueList</code></td><td>按状态 / 标签 / 指派人 / 里程碑列出 issue（分页），用于横向对比同类问题</td></tr>
+            <tr><td><code>IssueCommentsList</code></td><td>某个 issue 的评论（分页，含作者、时间、正文）</td></tr>
+            <tr><td><code>IssueTimeline</code></td><td>时间线：标签变更、状态变更、指派、引用与交叉链接</td></tr>
+            <tr><td>检索</td><td><code>IssueSearch</code></td><td>按关键词 / 标签 / 状态检索，返回带命中的摘要（补 <code>{{repo.issues}}</code> 只有标题索引的不足）</td></tr>
+            <tr><td rowspan="2">建与改</td><td><code>IssueCreate</code></td><td>新建 issue：标题、正文、标签、指派人；受项目动作开关与配额约束</td></tr>
+            <tr><td><code>IssueUpdate</code></td><td>改标题 / 正文 / 指派人 / 里程碑（不含标签与状态，两者各有专用工具）</td></tr>
+            <tr><td rowspan="2">状态</td><td><code>IssueClose</code></td><td>关闭 issue，可带 <code>state_reason</code>；受项目动作开关约束</td></tr>
+            <tr><td><code>IssueReopen</code></td><td>重新打开</td></tr>
+            <tr><td rowspan="3">评论</td><td><code>IssueCommentCreate</code></td><td>发一条评论；走槽位覆盖与去重标记，重复调用不会发两条一样的评论</td></tr>
+            <tr><td><code>IssueCommentUpdate</code></td><td>改<b>我们自己发过</b>的评论；人写的评论会被拒绝</td></tr>
+            <tr><td><code>IssueCommentDelete</code></td><td>删<b>我们自己发过</b>的评论</td></tr>
+            <tr><td rowspan="3">标签</td><td><code>IssueLabelAdd</code></td><td>加标签；只能加项目标签目录里的名字</td></tr>
+            <tr><td><code>IssueLabelRemove</code></td><td>移除标签；含义为空的目录标签不参与自动对齐，不会被移除</td></tr>
+            <tr><td><code>IssueLabelSet</code></td><td>目标态：把标签设成指定集合，平台与实际标签做 diff（多的删、少的加）</td></tr>
+            <tr><td>关联</td><td><code>IssueLink</code></td><td>声明 issue 间关联（duplicate / blocks / relates），写成带标记的关联评论</td></tr>
           </tbody>
         </table>
       </div>
 
       <div class="callout warn">
-        <span class="k">不提供的</span>
-        <p><b>评论、打标、关闭、开 PR 这类写操作，一律不作为工具开放。</b>它们只能通过产出契约（<a class="ref" href="#fr-5-3">FR-5.3 产出契约：四类动作</a>）表达，由平台执行。</p>
+        <span class="k">已移除</span>
+        <p><b><code>mcp__*</code> · <code>plugin_*</code> · <code>new_context</code> · <code>Task</code> · <code>TodoWrite</code> 不再开放。</b>前三族的名字由插件与 MCP server 动态产生，按<b>前缀</b>匹配（逐个列举永远列不全，漏掉的那个就是后门）；后三个是 SDK 自带能力，移除理由逐个写清了：<code>new_context</code> 让模型自己挑压缩时机会把长任务切成互不相连的碎片，<code>Task</code> 派生的子代理既不进 <code>run_events</code> 也不进审计，<code>TodoWrite</code> 的计划会和 <code>agent_messages</code> 里的实际执行分叉。它们也不在技能 <code>allowed-tools</code> 枚举里——写进去会在加载期整份被拒。</p>
       </div>
 
-      <p>三条理由，都不是洁癖：</p>
-      <ul>
-        <li><b>绕开治理</b>：agent 自己发评论就跳过了槽位覆盖、内容去重、写回闸门与审计，重复评论和误删标签会立刻出现。</li>
-        <li><b>无法幂等</b>：模型重试一次就可能发两条一样的评论；目标态交给平台做 diff，天然幂等。</li>
-        <li><b>权限外溢</b>：给 GitHub 凭证等于把仓库写权限交给执行环境，而执行环境跑的是模型生成的命令。</li>
-      </ul>
+      <div class="callout warn">
+        <span class="k">写操作仍然只有一条路</span>
+        <p><b>提供写类工具不等于 agent 自己发 HTTP。</b>这些工具产出的仍是产出契约里的标准动作（<code>comment</code> / <code>label</code> / <code>create_issue</code> / <code>push_branch</code>），由平台执行、过写回闸门与项目动作开关、每步进审计。工具只是把「要做什么」说清楚，不是绕过治理的旁路。</p>
+        <p>三条理由（与上一版相同，仍然成立）：<b>绕开治理</b>——自己发评论会跳过槽位覆盖、去重与写回闸门；<b>无法幂等</b>——模型重试一次就可能发两条一样的评论，而目标态交给平台做 diff 天然幂等；<b>权限外溢</b>——给 GitHub 凭证等于把仓库写权限交给执行环境。读操作则可以给，但要满足两条：<b>走平台代理</b>（用平台自己的 App 凭证，token 不进沙箱）、<b>只读且可审计</b>（每次调用记入工具记录）。</p>
+      </div>
 
-      <p>读操作则可以给，但要满足两条：<b>走平台代理</b>（用平台自己的 App 凭证，token 不进沙箱）、<b>只读且可审计</b>（每次调用记入工具记录）。</p>
+      <div class="callout">
+        <span class="k">当前的落地状态</span>
+        <p>把自定义工具<b>注入</b> host 需要 RACP 的 <code>tools/advertise</code> + tool relay，而该通道尚未实现（Host 侧 <code>toolRelay: false</code>，见 <code>docs/tech-plan.md</code> §4.4；本仓 <code>racp-client</code> 的 operation 白名单也明确不含它）。所以现在这 16 个工具以<b>「平台代执行」</b>的形式生效：模型按上面的语义描述要做什么，平台负责落库与写回；提示词据此措辞，<b>不会</b>宣称模型可以直接调用工具名——那在当前链路里是不存在的能力（issue #26 的实测症状就是「工具加载不到」）。契约里的 <code>EXECUTE_CHANNEL_AVAILABLE</code> 标记这件事，通道打通后改它一个常量即可切换措辞。</p>
+      </div>
 
       <!-- 5.6 -->
       <h3 id="s5-6">5.6 记录与查询</h3>

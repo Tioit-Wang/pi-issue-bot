@@ -21,7 +21,6 @@
  * - `version.host` / `hostPinned` / `host`：RACP 握手信息由 `runtime/` 持有，查询层拿不到（B6）。
  *   `host.status` 返回 `unknown`、`sessions: 0`——面板据此显示「未知」而不是「正常」。
  * - `doctor`：doctor 产物未落库（W3-L），返回 `not-run`。
- * - `skills`：技能清单由 `skills/` 在启动期解析（W4-M），当前没有可读的表，返回空数组。
  */
 import { CONTRACT_VERSION } from '../../../../packages/contract/src/index.ts';
 import { listRepos } from '../config/repo-config.ts';
@@ -148,7 +147,6 @@ export async function querySystem(
     retention: { ...RETENTION },
     flags: flagRows.map((row) => ({ key: row.key, value: row.value, until: isoOrNull(row.until) })),
     repos,
-    skills: [],
   };
 }
 

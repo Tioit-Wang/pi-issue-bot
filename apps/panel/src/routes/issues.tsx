@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { AsyncSection } from '../components/AsyncSection.tsx';
 import { IssueTable, issueKey } from '../components/issues/issue-table.tsx';
 import { ReactionChip } from '../components/issues/reaction-chip.tsx';
-import { readLabelDecision, readReactionState } from '../components/issues/contract-extras.ts';
+import { readReactionState } from '../components/issues/contract-extras.ts';
 import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE, presentStatus } from '../components/issues/status.ts';
 import { Toolbar } from '../components/Toolbar.tsx';
 import { Badge, StatusDot } from '../components/ui/badge.tsx';
@@ -696,7 +696,6 @@ function IssuePreviewBody({
   const now = Date.now();
   const status = presentStatus(item, now);
   const reaction = readReactionState(item);
-  const decision = readLabelDecision(item);
   const issue = session.data?.issue ?? null;
   const turns = session.data?.turns ?? [];
 
@@ -755,13 +754,6 @@ function IssuePreviewBody({
               title={item.lastReplyAt === null ? 'dry-run 仓库不写 actions 行，这个值会是空的（≠ 没回过）' : undefined}
             />
           </dl>
-
-          {decision?.reason === null || decision === null ? null : (
-            <p className="min-w-0 break-words text-muted-foreground">
-              <span className="text-faint">打标理由：</span>
-              {decision.reason}
-            </p>
-          )}
 
           {issue === null ? null : (
             <p className="min-w-0 break-words text-muted-foreground">

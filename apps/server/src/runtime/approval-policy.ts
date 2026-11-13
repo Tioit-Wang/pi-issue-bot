@@ -7,24 +7,39 @@
  * 所以本文件是**纯函数**：输入（工具名 + 入参 + worktree 根）→ 输出（决策 + 理由 + 审计条目），
  * 不碰 fs、不碰时钟（时钟可注入），面板与单测拿到的判定完全一致。
  *
- * §4.6 的策略表逐条落地：
+ * 策略表逐条落地（v2.1 已完成 issue 工具化的改造）：
  *
  * | 工具 | 决策 | 理由 |
  * |---|---|---|
  * | `Read` `Glob` `Grep` | allow | 只读，路径已由 host-core 限制在 session root |
- * | `Bash` | allow | 已进容器，容器无凭证、cap-drop、只读根 fs |
+ * | `Bash` | allow，**但命令不许做 issue 操作** | 已进容器；`gh issue` / `gh api` 这类会被 deny |
  * | `Write` `Edit` | 仅当目标路径在 worktree 内 | 越界写入一律 deny |
- * | 其它（网络抓取、任意 exec 桥、MCP 工具…） | deny | MVP 不需要，拒绝即最小权限 |
+ * | issue 工具集（`IssueGet` … `IssueLink`） | 读类 allow，写类由平台执行 | issue 操作的唯一入口 |
+ * | `mcp__*` `plugin_*` `new_context` `Task` `TodoWrite` | deny | v2.1 明确移除的能力 |
+ * | 其它（网络抓取、任意 exec 桥…） | deny | MVP 不需要，拒绝即最小权限 |
  * | `input/request`（agent 反问） | 应答「无法提供，按现有信息继续」 | 无人可问，但不能让 agent 挂起 |
+ *
+ * 为什么「issue 操作不许走 shell」要在审批层拦：工具名层面只能决定「给不给 `Bash`」，
+ * 给不了「`Bash` 只能跑测试」。`gh` 是把 issue 操作搬出治理链路的最短路径——它跳过槽位覆盖、
+ * 去重、写回闸门与审计。判据在契约 `findShellIssueViolation()`，这里只负责调用与记审计，
+ * 因为它必须与 `docs/requirements.html` 的表格、面板展示的清单同源。
  *
  * 边界写清（这条策略兜不住的部分）：路径包含关系只能做**字面归一化**比较
  * （`path.resolve` 之后的前缀比较），查不了符号链接与 NTFS reparse point。
  * 真正的强约束在 host-core（`PATH_OUTSIDE_WORKSPACE`），这里是第二道；
  * 一个 `ln -s /etc` 再 `Write` 过去的写法能骗过本函数，但骗不过 host-core 的 session root 限制。
+ * 同理，shell 判据是对命令文本的正则匹配：`$(echo gh) issue` 这类拼接能绕过——
+ * 但那条路已经在容器里、无 GitHub 凭证，写不回去任何东西。
  */
 
 import { resolve, sep } from 'node:path';
 
+import {
+  findShellIssueViolation,
+  isIssueTool,
+  isRemovedTool,
+  ISSUE_WRITE_TOOL_NAMES,
+} from '../../../../packages/contract/src/index.ts';
 import { previewRedacted } from './deps.ts';
 
 /** `input/request` 的固定应答（§4.6 表最后一行，字面量要稳定，审计要能 grep）。 */
@@ -50,13 +65,19 @@ export const APPROVAL_RULES = {
   writeInsideWorktree: 'write-inside-worktree',
   writeOutsideWorktree: 'write-outside-worktree',
   writeNoTarget: 'write-without-target',
+  /** issue 工具：读类放行 / 写类交给平台执行后过写回闸门。 */
+  issueToolRead: 'issue-tool-read',
+  issueToolWrite: 'issue-tool-write',
+  /** `Bash` 命令里出现 issue 操作（`gh issue` / `gh api` / 直接打 api.github.com）。 */
+  shellIssueOperation: 'shell-issue-operation',
+  /** 已被本版移除的工具（`mcp__*` / `plugin_*` / `new_context` / `Task` / `TodoWrite`）。 */
+  removedTool: 'removed-tool',
   unknownTool: 'unknown-tool',
   inputUnavailable: 'input-unavailable',
 } as const;
+/** 一条审计条目（面板「审计」页与 `actions.audit` 的来源）。 */
 
 export type ApprovalRule = (typeof APPROVAL_RULES)[keyof typeof APPROVAL_RULES];
-
-/** 一条审计条目（面板「审计」页与 `actions.audit` 的来源）。 */
 export interface ApprovalAudit {
   /** ISO 时间（注入时钟，测试可固定）。 */
   readonly at: string;
@@ -199,12 +220,56 @@ export function decideApproval(params: DecideApprovalParams): ApprovalDecision {
     },
   });
 
+  /*
+    移除的工具排在最前面判定：它们必须**无论命令长什么样**都被拒。
+    放到「未知工具」兜底里也行，但那样审计里的 rule 会写成 `unknown-tool`，
+    面板上就看不出「这是本版主动移除的」还是「拼错了」，排查时会白绕一圈。
+  */
+  if (isRemovedTool(tool)) {
+    return audit(
+      'deny',
+      APPROVAL_RULES.removedTool,
+      `工具 ${tool} 已在本版移除（MCP / 插件 / 子代理 / 计划 / 换窗口都不在执行侧开放）；issue 操作请用 Issue* 工具集`,
+    );
+  }
+
   if (isMember(normalized, READ_ONLY_TOOLS)) {
     return audit('allow', APPROVAL_RULES.readOnly, '只读工具：路径已由 host-core 限制在 session root 内');
   }
 
   if (isMember(normalized, SANDBOXED_TOOLS)) {
+    /*
+      命令放行前先扫一遍：issue 操作只能走 Issue* 工具。
+      不扫的话，`gh issue comment` 会把写操作搬出写回闸门、槽位覆盖与审计——
+      那正是「agent 不得通过 bash 执行 issue 操作」这条约束要拦的东西。
+    */
+    const command = typeof input['command'] === 'string' ? input['command'] : '';
+    const violation = findShellIssueViolation(command);
+    if (violation !== undefined) {
+      return audit(
+        'deny',
+        APPROVAL_RULES.shellIssueOperation,
+        `命令里有 issue 操作「${violation}」：issue 读写必须走 Issue* 工具集，不能用 shell（gh / GitHub API 都算）`,
+      );
+    }
     return audit('allow', APPROVAL_RULES.sandboxed, '命令经 PI_DESKTOP_BASH shim 进容器执行（无凭证/cap-drop/只读根 fs）');
+  }
+
+  /*
+    issue 工具集：读类直接放行，写类**也放行但只是「让平台去执行」**。
+    为什么写类不在这一层拦：这一层判定的是「agent 能不能调这个工具」，
+    而写操作真正的两道闸（项目动作开关、写回闸门）在 `writeback/` 里，
+    它们需要 issue 的当前状态与项目配置，这里拿不到，硬拦只会拦错。
+  */
+  if (isIssueTool(tool)) {
+    const isWrite = ISSUE_WRITE_TOOL_NAMES.some((name) => name.toLowerCase() === normalized);
+    return isWrite
+      ? audit(
+          'allow',
+          APPROVAL_RULES.issueToolWrite,
+          'issue 写工具：参数由平台转成标准动作信封，仍要过项目动作开关与写回闸门',
+        )
+      : audit('allow', APPROVAL_RULES.issueToolRead, 'issue 读工具：只读，平台用自身 App 凭证代理，token 不进沙箱');
   }
 
   if (isMember(normalized, WRITE_TOOLS)) {

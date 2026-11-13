@@ -366,8 +366,8 @@ describe('v2.1 webhook 集成（判定留痕 / 模板渲染 / 惰性接线）', 
 
     expect(body['action']).toBe('enqueued');
     const text = c.messageBodies[0] ?? '';
-    expect(text.indexOf('/issue-format')).toBeGreaterThanOrEqual(0);
-    expect(text.indexOf('#7')).toBeGreaterThan(text.indexOf('/issue-format'));
+    expect(text.indexOf('/proposal-analysis')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('#7')).toBeGreaterThan(text.indexOf('/proposal-analysis'));
     expect(text.indexOf(ISSUE_URL)).toBeGreaterThan(text.indexOf('#7'));
     expect(text.indexOf('正文快照：')).toBeGreaterThan(text.indexOf(ISSUE_URL));
     expect(text).toContain('当前标签：缺陷');
@@ -396,7 +396,8 @@ describe('v2.1 webhook 集成（判定留痕 / 模板渲染 / 惰性接线）', 
       expect(decision?.triggered, item.name).toBe(true);
       if (decision !== null && decision.triggered) {
         expect(v21TemplateOf(item.settings, 'issues.opened'), item.name).toBe(decision.template);
-        expect(decision.template.startsWith('/issue-format'), item.name).toBe(true);
+      const expectedSkill = item.name === '内置默认模板' ? '/proposal-analysis' : '/issue-format';
+      expect(decision.template.startsWith(expectedSkill), item.name).toBe(true);
         expect(decision.template.includes('{{issue.url}}'), item.name).toBe(true);
       }
     }

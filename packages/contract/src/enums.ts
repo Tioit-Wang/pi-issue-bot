@@ -12,6 +12,13 @@
  */
 import { z } from 'zod';
 
+/*
+  `issue-tools.ts` 不回头 import 本文件（它只依赖自己的常量），
+  所以 `enums → issue-tools` 是单向依赖，模块求值顺序没有环。
+  这样「技能能声明哪些工具」与「审批放行哪些工具」永远是同一份清单。
+*/
+import { ISSUE_TOOL_NAMES } from './issue-tools.ts';
+
 // ── 任务状态（tasks.status）───────────────────────────────────────────────────────────────
 //
 // 为什么没有 `skipped`：幂等命中时**根本不会建任务**（`tasks.idempotency_key` 唯一），
@@ -210,6 +217,25 @@ export const SKILL_OUTPUT_INTENTS: Readonly<Record<SkillOutput, readonly ActionI
   pr: ['push_branch'],
 };
 
-/** 技能的允许工具枚举（技术方案 §4.6 的审批矩阵同源；枚举外工具在加载期整份拒绝）。 */
-export const SKILL_ALLOWED_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'] as const;
+/**
+ * 执行侧的实际工具面（技术方案 §4.6 的审批矩阵同源；枚举外工具在加载期整份拒绝）。
+ *
+ * 三段组成：
+ * 1. 宿主文件工具（`Read` / `Write` / `Edit` / `Glob` / `Grep`）——看代码、改代码；
+ * 2. 宿主命令工具（`Bash`）——跑测试与构建，但**不得做 issue 操作**（审批策略里拦 `gh`）；
+ * 3. issue 工具集（`ISSUE_TOOL_NAMES`，19 个）——issue 全生命周期的唯一入口。
+ *
+ * 刻意**不含** `mcp__*` / `plugin_*` / `new_context` / `Task` / `TodoWrite`：
+ * 它们是本版明确移除的能力，枚举里没有就写不进技能 frontmatter，加载期整份拒绝，
+ * 也就不会出现「技能声明了却永远调不到」。
+ */
+export const SKILL_ALLOWED_TOOLS = [
+  'Read',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'Bash',
+  ...ISSUE_TOOL_NAMES,
+] as const;
 export type SkillAllowedTool = (typeof SKILL_ALLOWED_TOOLS)[number];

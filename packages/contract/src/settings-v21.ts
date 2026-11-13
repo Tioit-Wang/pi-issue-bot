@@ -403,3 +403,170 @@ export function findDuplicateRoleNames(comment: Pick<CommentConfig, 'roles'>): r
   }
   return duplicates;
 }
+
+/* ── 9. 占位符清单（FR-2.3 / §6.3） ─────────────────────────────────────────── */
+
+/**
+ * 模板里能写的 12 个占位符，带一句人话说明。
+ *
+ * 为什么放在契约里：面板要在模板输入框下方渲染「点一下插入」的快捷按钮，
+ * 服务端要按同一份清单渲染。各写一份就会出现「面板给的按钮点下去是未知占位符」——
+ * 用户看不出哪里错，只会觉得模板不生效。渲染实现仍在 `apps/server/src/prompt/render.ts`，
+ * 两边由单测绑定（`PLACEHOLDER_NAMES` 数量 + 逐个可渲染）。
+ *
+ * 顺序照 `docs/requirements.html` §6.3 的表格排（issue 族 → repo → actor/event → comment），
+ * 面板上按钮的排列顺序就是这条顺序。
+ */
+export const PROMPT_PLACEHOLDERS = [
+  { name: 'issue.author', description: '发起 issue 的人的 GitHub 账号' },
+  { name: 'issue.number', description: 'issue 编号（不带 #）' },
+  { name: 'issue.url', description: 'issue 链接' },
+  { name: 'issue.content', description: 'issue 正文快照' },
+  { name: 'issue.labels', description: '当前标签，逗号分隔（空集为空串）' },
+  { name: 'issue.title', description: 'issue 标题' },
+  { name: 'repo.issues', description: '仓库现有 issue 索引（会多跑一次请求，按需用）' },
+  { name: 'comment.author', description: '评论作者；非评论事件为空串' },
+  { name: 'comment.body', description: '评论正文；非评论事件为空串' },
+  { name: 'repo', description: '仓库全名 owner/name' },
+  { name: 'actor', description: '触发这次事件的账号' },
+  { name: 'event.action', description: '本次事件的动作（opened / edited / labeled / closed / created）' },
+] as const satisfies readonly { readonly name: string; readonly description: string }[];
+
+export type PromptPlaceholder = (typeof PROMPT_PLACEHOLDERS)[number];
+
+/** 占位符名（不含 `{{ }}`），顺序同 `PROMPT_PLACEHOLDERS`。 */
+export type PlaceholderName = PromptPlaceholder['name'];
+
+/**
+ * 只要名字的清单（服务端渲染与面板按钮共用）。
+ *
+ * 类型是 `readonly PlaceholderName[]` 而不是 `string[]`：调用方拿到的名字可以直接
+ * 与模板里的占位符比对，不会出现「拼错也编译过」。
+ */
+export const PLACEHOLDER_NAMES: readonly PlaceholderName[] = PROMPT_PLACEHOLDERS.map((entry) => entry.name);
+
+/**
+ * 「这个名字是不是正式占位符」的判断视图。
+ *
+ * 为什么不直接 `PLACEHOLDER_NAMES.includes(name)`：上面是**字面量类型**的数组，
+ * `includes()` 的参数被收窄成那 12 个字面量的联合，传一个普通 `string` 会编译不过。
+ * 面板做「未知占位符提示」时拿到的是普通字符串，所以给一份 `ReadonlySet<string>`。
+ */
+export const PLACEHOLDER_NAME_SET: ReadonlySet<string> = new Set<string>(PLACEHOLDER_NAMES);
+
+/** 拼成模板里实际要写的 token：`placeholderToken('repo')` → `{{repo}}`。 */
+export function placeholderToken(name: string): string {
+  return `{{${name}}}`;
+}
+
+/* ── 10. 内置默认内容（事件模板 / 系统提示词） ─────────────────────────────── */
+
+/**
+ * 五个事件的**内置默认模板**（FR-2.2 / FR-4.1）。
+ *
+ * 为什么放在契约里：面板要把默认模板**填进输入框**（未自定义时自动填充），
+ * 服务端要用同一份去渲染。两处各写一份，改一处就会「面板看到 A、实际发 B」。
+ * 渲染仍由服务端的 `prompt/render.ts` 做（占位符一次遍历、未知保留）。
+ *
+ * 四段顺序固定：技能触发词 → issue 锚点 `#编号` → 链接 → 正文快照。
+ */
+export const DEFAULT_EVENT_TEMPLATES: Readonly<Record<EventKey, string>> = Object.freeze({
+  'issues.opened': [
+    '/proposal-analysis',
+    '',
+    '分析当前issue：① 先判类型（bug / 需求 / 无关 / 滥用）② bug 看现象能否定位，需求按最小 RFC 看能否决策 ③ 一条评论 + 一个标签',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '作者：{{issue.author}}',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    '正文快照：',
+    '```',
+    '{{issue.content}}',
+    '```',
+  ].join('\n'),
+  'issues.edited': [
+    '/proposal-analysis',
+    '',
+    '分析当前issue（正文刚被编辑过，请基于最新正文判断）：① 先判类型（bug / 需求 / 无关 / 滥用）② 需求按最小 RFC 看能否决策 ③ 一条评论 + 一个标签',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '作者：{{issue.author}}',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    '这是修改后的正文快照（只改了标题或标签时不会触发本事件）：',
+    '```',
+    '{{issue.content}}',
+    '```',
+  ].join('\n'),
+  'issues.labeled': [
+    '/label-triage',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    '正文快照：',
+    '```',
+    '{{issue.content}}',
+    '```',
+  ].join('\n'),
+  'issues.closed': [
+    '/issue-analysis',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    'issue 已关闭，请做一次收尾复盘：',
+    '```',
+    '{{issue.content}}',
+    '```',
+  ].join('\n'),
+  'issue_comment.created': [
+    '/issue-analysis',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '{{comment.author}} 在 {{repo}} 的这条 issue 下提到了你：',
+    '```',
+    '{{comment.body}}',
+    '```',
+    '',
+    'issue 标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    'issue 正文快照：',
+    '```',
+    '{{issue.content}}',
+    '```',
+  ].join('\n'),
+});
+
+/** 取某事件的内置默认模板（面板「恢复默认」与服务端渲染共用）。 */
+export function defaultEventTemplate(event: EventKey): string {
+  return DEFAULT_EVENT_TEMPLATES[event];
+}
+
+/**
+ * 内置默认**系统提示词**（§6.7）：项目里 `agent.system_prompt` 为空串时用它。
+ *
+ * 放契约的理由同事件模板：面板要在输入框里显示「现在到底带的什么」，服务端要用同一份下发。
+ */
+export const DEFAULT_SYSTEM_PROMPT = [
+  '你是这个仓库的 issue 助手。',
+  '',
+  '职责：',
+  '- 按仓库约定检查 issue 的信息是否足够，并说清还缺什么',
+  '- 结论要有依据：引用文件、行号、日志或可复现步骤',
+  '',
+  '边界：',
+  '- 不合并 PR、不直接改代码',
+  '- 标签只用项目标签目录里的名字',
+  '- 产出按平台约定的结构给出（verdict / evidence / actions）',
+].join('\n');

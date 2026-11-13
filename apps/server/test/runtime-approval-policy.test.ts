@@ -108,6 +108,57 @@ describe('其它工具：deny（最小权限）', () => {
   });
 });
 
+describe('v2.1 工具面：移除项 / issue 工具集 / shell 约束', () => {
+  it('被移除的工具一律 deny，且 rule 说得清是「主动移除」', () => {
+    for (const tool of ['new_context', 'Task', 'TodoWrite', 'mcp__github__create_issue', 'plugin_pi_todo_todo_manage']) {
+      const result = decide(tool);
+      expect(result.decision, tool).toBe('deny');
+      expect(result.audit.rule, tool).toBe(APPROVAL_RULES.removedTool);
+      expect(result.reason, tool).toContain('已在本版移除');
+    }
+  });
+
+  it('issue 读工具 allow，写工具也 allow（真正的闸在 writeback，不在这里）', () => {
+    for (const tool of ['IssueGet', 'IssueList', 'IssueSearch', 'IssueTimeline', 'IssueCommentsList']) {
+      const result = decide(tool, { number: 1 });
+      expect(result.decision, tool).toBe('allow');
+      expect(result.audit.rule, tool).toBe(APPROVAL_RULES.issueToolRead);
+    }
+    for (const tool of ['IssueCommentCreate', 'IssueLabelSet', 'IssueClose', 'IssueCreate']) {
+      const result = decide(tool, { number: 1 });
+      expect(result.decision, tool).toBe('allow');
+      expect(result.audit.rule, tool).toBe(APPROVAL_RULES.issueToolWrite);
+      // 理由要点明「还要过项目开关与写回闸门」，否则读审计的人会以为 allow 就是放行到底
+      expect(result.reason, tool).toContain('写回闸门');
+    }
+  });
+
+  it('Bash 里做 issue 操作 → deny，理由点名该用 Issue* 工具', () => {
+    for (const command of ['gh issue view 1', 'gh issue comment 1 --body hi', 'gh api repos/a/b/issues', 'gh pr create --fill']) {
+      const result = decide('Bash', { command });
+      expect(result.decision, command).toBe('deny');
+      expect(result.audit.rule, command).toBe(APPROVAL_RULES.shellIssueOperation);
+      expect(result.reason, command).toContain('Issue*');
+    }
+  });
+
+  it('直接打 GitHub API 也 deny（换掉 gh 不是绕过办法）', () => {
+    const result = decide('Bash', {
+      command: "curl -X POST https://api.github.com/repos/a/b/issues/1/comments -d '{}'",
+    });
+    expect(result.decision).toBe('deny');
+    expect(result.audit.rule).toBe(APPROVAL_RULES.shellIssueOperation);
+  });
+
+  it('跑测试 / 看 diff 仍然 allow（约束只管 issue 操作）', () => {
+    for (const command of ['pnpm test', 'pnpm -r typecheck', 'git diff HEAD~1', 'gh auth status']) {
+      const result = decide('Bash', { command });
+      expect(result.decision, command).toBe('allow');
+      expect(result.audit.rule, command).toBe(APPROVAL_RULES.sandboxed);
+    }
+  });
+});
+
 describe('input/request：固定应答', () => {
   it('每个问题回「无法提供，按现有信息继续」，并留审计', () => {
     const result = answerInputRequest({

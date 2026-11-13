@@ -166,60 +166,75 @@ issue 描述了可观察的异常行为，但还没有人能稳定重现。目�
 `;
 
 /**
- * `/issue-format`：issue 信息完整性判断（项目默认技能之一）。
+ * `/proposal-analysis`：issue 打开 / 正文被编辑后的「提议分析」（取代原 `/issue-format`）。
  *
- * 判定口径的来源顺序：仓库里的 issue 模板 → `CONTRIBUTING`/`docs` 里的规范 → 技能里的默认四条。
- * 这是「事实从仓库里取，方法在技能里」的直接体现：换一个仓库，模板换了，判定标准就跟着换。
+ * 为什么不再做「格式检查」：模板字段是给人的提示，不是准入门槛。判合格的唯一标准是
+ * 「这条内容能不能被读懂并处理」——`rt`/`如题`/`闪退`/`win11` 这类口语必须按语义等价理解。
+ *
+ * 正文刻意写短（≤2.5KB）：装配预算 12k 字符，超了会**从后往前丢**，第一个被丢的就是技能正文
+ * （2026-11-12 实测：技能体 4.7KB 时整段被丢，模型退化成自由发挥）。
  */
-const ISSUE_FORMAT = `---
-name: issue-format
-description: 判断一条 issue 的信息是否足够让人动手（复现步骤、期望与实际、版本环境），逐条指出缺什么、如何补；适用于新 issue 刚创建、或作者说「已补充信息」需要复核的场景。
+const PROPOSAL_ANALYSIS = `---
+name: proposal-analysis
+description: issue 打开或正文被编辑后自动做的「提议分析」：先判这条内容属于 bug、需求、无关还是滥用，再按类型给出下一步——bug 看现象能否定位，需求按「最小 RFC」看能否决策，无关内容告知不该开在这里，滥用只做处置；适用于 open / edited 的自动入口。
 allowed-tools: [Read, Glob, Grep]
 timeout: 5m
-outputs: [comment]
+outputs: [comment, labels]
 metadata:
   category: triage
 ---
 
-## 何时用
-
-issue 需要「能不能开工」的判断：要么刚建，要么作者刚补过信息。不做分类、不打标签（那是 \`/label-triage\` 的事）。
-
 ## 工具用法（本技能允许的工具）
 
-- \`Glob(pattern=".github/ISSUE_TEMPLATE/*")\` —— 先看本仓库有没有 issue 模板；有就以模板字段为判定清单。
-- \`Read(file_path=".github/ISSUE_TEMPLATE/<文件>")\` —— 读模板，把必填字段抄成清单（字段名照抄，别改写）。
-- \`Grep(pattern="issue|Issue", path="CONTRIBUTING.md")\` —— 没有模板时看贡献指南里的 issue 规范。
-- \`Glob(pattern="docs/**/*.md")\` + \`Read\` —— 再找不到才用本技能末尾的默认四条。
-- issue 正文本身**不用工具取**：它已经在 \`## 任务上下文\` 的「issue 标题 / issue 正文」两段里。
+- \`Grep(pattern="<正文里的界面文案|模块名|接口路径>", path=".")\` —— 确认「是不是本项目的真实问题」。
+- \`Read(file_path="AGENTS.md")\` / \`Read(file_path="README.md")\` —— 判断这条内容是否属于本项目的讨论范围。
 
-## 步骤
+## 只判语义，不判格式
 
-1. 按上面的顺序找判定清单：模板 → 贡献指南 → 默认四条。**把你实际用的是哪一份写进评论**（例如「依据 .github/ISSUE_TEMPLATE/bug_report.yml」）。
-2. 逐项对照正文，每项给一个结论：有 / 缺 / 有但不可用（例如「复现步骤只有一句『点一下就坏了』」）。
-3. 每项都要**引用原文片段**；正文里没有就写「正文未提及」。
-4. 缺项要给**可直接照做的补法**（「补上：应用版本 + 浏览器版本」），不要写「请补充完整信息」。
+用户不用按模板写，能被读懂就算合格：\`rt\`/\`如题\` = 见标题；\`闪退\`/\`卡死\`/\`点了没反应\` = 实际行为；\`win11\`/\`mac 14\` = 系统环境。缺日志、缺截图、缺分步复现都**不是**打回理由。
 
-## 默认判定四条（仅当仓库里找不到模板与规范时使用）
+## 先判类型（落到标签）
 
-1. **复现步骤**：能照着做的步骤序列（从哪个入口、点什么、用什么数据）。
-2. **期望 vs 实际**：期望发生什么、实际发生了什么，两者能对上。
-3. **版本环境**：应用版本，加操作系统或浏览器版本（至少一项能定位到具体构建）。
-4. 可选：日志、堆栈、截图、录屏。
+- **bug**：行为与预期不符 → \`bug\`
+- **需求 / 提案**：想要新能力或改变现有行为 → \`enhancement\`
+- **无关**：与项目无关的闲聊、广告、投票、问别的项目 → \`invalid\`
+- **滥用**：人身攻击、辱骂、挑衅 → \`abuse\`
+
+## 需求类：最小 RFC（够决策即可，不要求作者写全）
+
+1. **Summary**：一句话说清改变谁的什么行为
+2. **动机**：什么问题、为什么现在做、不做会怎样
+3. **Goals / Non-goals**：明确**不做什么**（否则范围必然蔓延）
+4. **备选**：至少 1 个被否掉的方案与理由
+5. **风险与回滚**：最坏情况、出问题怎么退
+6. **验收**：≤3 条可测标准
+7. **待决议**：谁决定什么（≤3 条）
+
+缺项**由你给默认建议**（「若无人反对就按 X 做」）；只有「连目标都说不清」才要求作者补充一句。
+
+## 提案质量的三个反例
+
+- 只写「打算怎么实现」、没有取舍与备选 → 没有决策价值，补一条备选
+- 没有 Non-goals → 范围会一直长，先划出「本次不做」
+- 没有回滚路径 → 不可上线，先说明开关与退路
+
+## 处置
+
+1. **读得懂** → 类型 + 引用原文依据 + 一句下一步；需求附「RFC 缺口 + 默认建议」
+2. **读不懂** → 点名缺哪几项、每项怎么补（「补一句：在哪个界面、点了什么、看到什么」）
+3. **无关** → 说明这里只讨论 bug / 需求 / 提案，并给一句「改成提案怎么写」的示范
+4. **滥用** → 一句「已按滥用处理」+ \`abuse\` 标签，**不复述攻击性原文**，只描述性质
 
 ## 输出
 
-- 只发**一条**评论：先结论（合规 / 不合规），再逐条列 \`字段名 → 结论 → 证据/补法\`。
-- \`actions\` 里只给一条 comment 动作，形状见 \`## 输出契约\`。
-- 缺信息时**不打标签**（缺项本身不构成缺陷）；合规时也不要为了「表示看过」发明标签。
+- 一条评论（≤10 行）+ 一个 label 动作：\`{"intent":"label","add":["<标签名>"],"remove":[]}\`。
+- 标签只用 \`## 项目标签\` 里的；互斥组只打一个；用与作者相同的语言。
 
 ## 边界与不要做
 
 - ${NO_INVENTED_FACTS}
-- 只有标题、正文为空 → 直接不合规，列出「全部字段缺失」而不是让对方「补全所有信息」。
-- 模板存在但读不懂（字段是空的、格式损坏）→ 退回默认四条，并在评论里说明模板不可用。
-- 仓库里若还留着 \`.github/pi-bot.yml\`（旧版平台配置，**已退役**），它**不是**必填信息的规范，
-  不要拿它当判定依据、也不要在评论里引用它；以 issue 模板 / \`CONTRIBUTING\` / \`docs\` 为准。
+- 不把 bug 套进 RFC 结构（bug 只看现象、预期、影响面）。
+- 不改代码、不提 PR、不关闭 issue（关闭由维护者按 \`abuse\` 标签处理）。
 `;
 
 /**
@@ -290,7 +305,7 @@ metadata:
 
 ## 何时用
 
-issue 需要「从现象走到可动手的下一步」：根因在哪、影响谁、先验证什么。要复现步骤用 \`/issue-repro\`，要判断信息是否够用 \`/issue-format\`。
+issue 需要「从现象走到可动手的下一步」：根因在哪、影响谁、先验证什么。要复现步骤用 \`/issue-repro\`，要判「这条内容值不值得处理」用 \`/proposal-analysis\`。
 
 ## 工具用法（本技能允许的工具）
 
@@ -320,6 +335,101 @@ issue 需要「从现象走到可动手的下一步」：根因在哪、影响�
 - 搜不到就写「未定位到」+ 试过的搜索词，不要编造代码位置。
 `;
 
+﻿/**
+﻿ * `/req-analysis`：需求类 issue 分析（相对 `/issue-analysis` 的分工：那边问「根因在哪」，
+ * 这边问「要改成什么样、改哪里、算不算做完」）。
+﻿ *
+﻿ * 与 `/label-triage` 的边界写进「何时用」：那边只归类，这边只出方案。
+﻿ */
+﻿const REQ_ANALYSIS = `---
+name: req-analysis
+description: 把一条需求 issue 变成可动手的方案：复述目标、指出仓库里现有的相关实现、列改动面与可测的验收标准，并点出必须澄清的歧义；适用于「想做什么已经说了、但不知道要改哪里、怎样算做完」的需求类 issue。
+allowed-tools: [Read, Glob, Grep, Bash]
+timeout: 20m
+outputs: [comment]
+metadata:
+  category: analysis
+---
+
+## 何时用
+
+需求类 issue（想要新能力、或要改变现有行为）。缺陷用 \`/bug-analysis\`；开 issue 时的类型判定与准入用 \`/proposal-analysis\`；归类打标用 \`/label-triage\`。
+
+## 工具用法（本技能允许的工具）
+
+- \`Grep(pattern="<正文里的模块名|接口路径|界面文案>", path=".")\` —— 需求常提到现有概念，先在仓库里证实它存在、在哪一层。
+- \`Glob(pattern="apps/**/*")\` / \`Glob(pattern="packages/**/*")\` —— 按目录结构找相关模块；不确定归属时先 Glob 再 Read，别猜文件名。
+- \`Read(file_path="<路径>")\` —— 只读你准备引用的那几处实现和它的测试，别通读全仓。
+- \`Bash(command="git log --oneline -10 -- <路径>")\` —— 这块最近在动什么，决定是「新增」还是「改造」。
+
+## 步骤
+
+1. **复述**：一句话说清这条需求要改变谁的什么行为；说不清就写「目标不明确」，并给出你认为的两种理解。
+2. **现状**：仓库里最相关的实现（\`文件:行\`）、现有测试、是否已有部分能力。找不到就写「未定位到」+ 用过的搜索词。
+3. **改动面**：要动哪些模块 / 契约 / 数据结构；有没有兼容性或迁移影响（改了会破坏哪个已有调用方）。
+4. **歧义与待确认**：最多 3 条，每条给一个**默认建议**（「若无人反对就按 X 做」），不要只提问不给主张。
+5. **验收标准**：3–5 条可测、能判断「做完没做完」的标准，尽量写成「输入 → 期望结果」。
+
+## 输出
+
+- 一条评论：目标一句话 → 现状（\`文件:行\`）→ 改动面 → 待确认（带默认建议）→ 验收标准。
+- 25 行以内；能用列表就别写长段落。
+
+## 边界与不要做
+
+- ${FILE_LINE_RULE}
+- 不写代码、不提 PR、不打标签：需要改动时写清范围，由人确认。
+- 不把需求当缺陷：没有「行为与预期不符」的证据就不要列根因假设。
+- 不给排期与人力承诺。
+- ${NO_INVENTED_FACTS}
+`;
+
+/**
+ * `/bug-analysis`：缺陷类 issue 分析（相对 `/issue-repro` 的分工：那边只回答能不能重现，
+ * 这边要给出根因假设、影响面与下一步验证动作）。
+ */
+const BUG_ANALYSIS = `---
+name: bug-analysis
+description: 分析一条缺陷 issue 的根因假设、影响面与下一步验证动作，结论必须指到具体代码位置并说清证据强弱；适用于「已经能描述异常现象、但不知道是哪段代码、该先验证什么」的缺陷类 issue。
+allowed-tools: [Read, Glob, Grep, Bash]
+timeout: 20m
+outputs: [comment]
+metadata:
+  category: analysis
+---
+
+## 何时用
+
+缺陷类 issue（行为与预期不符）。要方案的需求用 \`/req-analysis\`；只要回答「能不能重现」用 \`/issue-repro\`；开 issue 时的类型判定与准入用 \`/proposal-analysis\`。
+
+## 工具用法（本技能允许的工具）
+
+- \`Grep(pattern="<报错文案|接口路径|界面文案>", path=".")\` —— 用正文原文逐字搜，这是定位第一步，不要按文件名猜。
+- \`Glob(pattern="**/*.test.*")\` —— 找最接近的现有测试，看它为什么不覆盖这个场景。
+- \`Read(file_path="<路径>")\` —— 读命中处与它的调用方，确认数据从哪来、到哪去。
+- \`Bash(command="git log --oneline -10 -- <路径>")\` —— 怀疑是近期回归时查这段历史。
+
+## 步骤
+
+1. **现象**：把正文里的「期望 vs 实际」抄成两行；只有一边就写明缺哪一边。
+2. **定位**：用原文 Grep，落到 \`文件:行\`；写清你实际用过的搜索词。
+3. **假设**：最多 3 条根因，按可能性排序；每条附 \`文件:行\` 与支持它的证据，证据不足的标「推测」。
+4. **影响面**：受影响的用户路径、数据结构、是否有兼容性 / 迁移影响。
+5. **下一步验证**：能在本仓库跑的命令（\`Bash(command="pnpm --filter <包名> test -t '<关键字>'")\`，只跑相关不全量），或需要作者补的一条关键信息。
+
+## 输出
+
+- 一条评论：结论 → 依据（\`文件:行\`）→ 影响面 → 下一步验证；每条都要能被别人复核。
+- 没把握写「未验证」并说明缺什么；搜不到写「未定位到」+ 试过的搜索词。
+
+## 边界与不要做
+
+- ${FILE_LINE_RULE}
+- 不改代码、不推分支、不打标签；需要改动时在评论里写清范围，由人确认。
+- 不把猜来的模块名写进判定依据；不要为了「看起来完整」编造堆栈或代码位置。
+- ${NO_INVENTED_FACTS}
+`;
+
 /**
  * 内置技能清单。顺序不影响加载结果（注册表按名排序输出），只为可读。
  *
@@ -330,9 +440,12 @@ export const BUILTIN_SKILL_FILES: readonly SkillFile[] = Object.freeze([
   { path: 'skills/builtin/issue-triage/SKILL.md', text: ISSUE_TRIAGE },
   { path: 'skills/builtin/issue-repro/SKILL.md', text: ISSUE_REPRO },
   // 每个项目都该有的三个基线技能（需求：issue 格式判断 / 打标 / issue 分析）
-  { path: 'skills/builtin/issue-format/SKILL.md', text: ISSUE_FORMAT },
+  { path: 'skills/builtin/proposal-analysis/SKILL.md', text: PROPOSAL_ANALYSIS },
   { path: 'skills/builtin/label-triage/SKILL.md', text: LABEL_TRIAGE },
   { path: 'skills/builtin/issue-analysis/SKILL.md', text: ISSUE_ANALYSIS },
+  // 需求 / 缺陷两个专用分析技能：与上面「通用分析」并存，靠 description 区分适用场景
+  { path: 'skills/builtin/req-analysis/SKILL.md', text: REQ_ANALYSIS },
+  { path: 'skills/builtin/bug-analysis/SKILL.md', text: BUG_ANALYSIS },
 ]);
 
 /** 内置技能名（归一化后）。用于「面板里至少应该有这几条」的断言与文档。 */
@@ -340,9 +453,11 @@ export const BUILTIN_SKILL_NAMES: readonly string[] = Object.freeze([
   '/review-pr',
   '/issue-triage',
   '/issue-repro',
-  '/issue-format',
+  '/proposal-analysis',
   '/label-triage',
   '/issue-analysis',
+  '/req-analysis',
+  '/bug-analysis',
 ]);
 
 /**
@@ -352,7 +467,7 @@ export const BUILTIN_SKILL_NAMES: readonly string[] = Object.freeze([
  * 这三个是其中的子集 —— 项目级技能页要保证它们一定存在（缺失时按内置正文播种一份可编辑的副本）。
  */
 export const DEFAULT_PROJECT_SKILL_NAMES: readonly string[] = Object.freeze([
-  '/issue-format',
+  '/proposal-analysis',
   '/label-triage',
   '/issue-analysis',
 ]);
