@@ -3,9 +3,9 @@
  *
  * ```
  * 1 project/register { path: <worktree> }            → projectId（已注册直接复用）
- * 2 session/create { projectId, permissionMode:'ask', mode:'agent' }  → sessionId
+ * 2 session/create { projectId, permissionMode:'ask', mode:'agent', systemPrompt? } → sessionId
  * 3 events/subscribe { sessionId, after: 0 }         → 游标从 0 开始
- * 4 turn/start { sessionId, input:{ messageId, text: <prompt> } }     → turnId
+ * 4 turn/start { sessionId, input:{ messageId, text: <任务提示词> } }   → turnId
  * 5 事件循环：approval/request → §4.6 策略；input/request → 固定应答；turn 终态 → 退出
  * 6 workspace/diff                                    → 与信封一起入库
  * 7 session/archive                                   → 任务结束立即归档
@@ -105,6 +105,14 @@ export interface TurnDriverOps {
       readonly title?: string;
       readonly mode?: SessionMode;
       readonly permissionMode?: PermissionMode;
+      /**
+       * 会话级 system 提示词（身份 + 工作方式）。
+       *
+       * 由 `driveTurn` **只在新建会话时**传（见 `TurnDriverParams.systemPrompt`）。
+       * 老 Host 不认识这个字段时应忽略它：丢掉只是回到「身份写在任务提示词里」的旧行为，
+       * 不应该让整条 `session/create` 判成参数非法。
+       */
+      readonly systemPrompt?: string;
     },
     options?: RequestOptions,
   ): Promise<{ readonly id: string }>;
@@ -196,8 +204,21 @@ export interface TurnDriverParams {
   readonly ops: TurnDriverOps;
   /** 本任务的 worktree 根（`project/register` 的 path，也是审批策略的判定基准）。 */
   readonly worktreeRoot: string;
-  /** 拼好的提示词（技能模板 + 仓库配置 + 任务上下文，由上层负责拼）。 */
+  /**
+   * **任务提示词**（这次要做什么 + 约束 + 输出契约，由上层负责拼）。
+   *
+   * 身份/工作方式**不在这里**：它走 `systemPrompt`（system 通道）。两者分开是因为
+   * 前者每轮都变、后者跨轮次恒定，而 `session/create` 正好只有一次。
+   */
   readonly prompt: string;
+  /**
+   * 会话级 system 提示词（`skills/prompt.ts::AGENT_IDENTITY_PROMPT` 或仓库配置里那份）。
+   *
+   * **只在新建会话时生效**：`session/attach` 分支不传（会话已存在，身份由创建那一刻决定，
+   * 再传一次等于给同一条会话两个身份来源）。所以 `persistent` 复用的轮次里这个参数是**无用的**，
+   * 传了也不会报错 —— 让调用方每轮统一传，比让调用方判断「这一轮会不会新建」更不容易错。
+   */
+  readonly systemPrompt?: string;
   /**
    * 会话计划（缺省 `ephemeral` = 现有行为：create → run → archive）。
    *
@@ -358,6 +379,11 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
               projectId,
               permissionMode: 'ask',
               mode: 'agent',
+              // 身份说明走 system 通道，**只在这一分支**（新建会话）带；
+              // `session/attach` 上面那条路径不带，原因见 `TurnDriverParams.systemPrompt`。
+              ...(params.systemPrompt === undefined || params.systemPrompt === ''
+                ? {}
+                : { systemPrompt: params.systemPrompt }),
               ...(params.title === undefined ? {} : { title: params.title }),
             },
             requestOptions,

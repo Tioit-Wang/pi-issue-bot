@@ -31,9 +31,9 @@ import type { Logger } from '../../../../packages/shared/src/index.ts';
 import { DEFAULT_TRIGGER_ALIASES, resolveTriggerAliases } from '../../../../packages/contract/src/index.ts';
 import type { SqlExecutor } from '../db/index.ts';
 import { closePool, createPool } from '../db/index.ts';
-import { readRepoPolicy } from '../config/index.ts';
+import { readRepoPolicy, resolveAgentExecution } from '../config/index.ts';
 import { resolveGithubAuth } from './github-auth.ts';
-import { createGithubWriteApi } from '../github/index.ts';
+import { createGithubWriteApi, createGithubIssueEditApi, createGithubIssueReadApi } from '../github/index.ts';
 import type { GithubClient, GithubReactionApi, GithubWriteApi } from '../github/index.ts';
 import type { LabelCatalogPort } from '../workflows/ports.ts';
 import { RepoCache, createExecFileRunGit, createRepoWorktreePort } from '../git/index.ts';
@@ -83,6 +83,9 @@ import { createQueries } from '../queries/index.ts';
 import { createHostUsageReader } from '../cost/index.ts';
 import type { Queries } from '../queries/index.ts';
 import { HostSupervisor, createNodeHostSpawn, resolveBundleCommand } from '../runtime/index.ts';
+// 只读工具轮的执行器（`runtime/issue-read-tools.ts`）：`runtime/index.ts` 还没转出它，
+// 直接引实现文件 —— 与 `worker/run-task.ts` 的引法一致，避免两个入口各引一种路径。
+import { createIssueReadExecutor } from '../runtime/issue-read-tools.ts';
 import type { SandboxDocker } from '../sandbox/index.ts';
 import { createSupervisorHostPort, timeoutMsForCommand } from '../worker/index.ts';
 // 直接引 run-task.ts：`worker/index.ts` 的便利包装把 deps 钉成了旧 `TaskRunnerDeps`，
@@ -107,6 +110,7 @@ import {
   createWorkflowReactionPort,
   createV21Compactor,
   createV21CompactionStore,
+  createV21TargetContextPort,
   readTaskRow,
 } from './worker-deps.ts';
 import type { TaskJobRow, WorkerPorts } from './worker-deps.ts';
@@ -134,7 +138,6 @@ import type {
   SessionEventKey,
   SessionTransition,
 } from '../agent/session-state.ts';
-import { createV21TargetContextPort } from './worker-deps.ts';
 import { createRepoIssuesProvider } from '../prompt/repo-issues.ts';
 
 /* ── 队列的最小接口（结构可替换）────────────────────────────────────────────── */
@@ -795,6 +798,17 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
   const labelCatalog: LabelCatalogPort | undefined =
     overrides.labelCatalog ??
     (baseGithubClient === null ? undefined : createGithubLabelCatalog(baseGithubClient));
+  // issue 编辑面（写类 issue 工具：改 / 关 / 重开 / 改删评论 / 关联）：
+  // 与写面、标签目录共用同一个 App 客户端。没有客户端时保持 undefined，
+  // 那些动作在调用点失败并点名缺 `issueEdit.*`（不用它们的部署一切照旧）。
+  const v21IssueEdit =
+    baseGithubClient === null ? undefined : createGithubIssueEditApi(baseGithubClient);
+  // issue 只读面（5 个读工具：IssueGet / IssueList / IssueCommentsList / IssueTimeline /
+  // IssueSearch）：与写面、编辑面共用同一个 App 客户端。没有客户端时保持 undefined ——
+  // 于是 `readTools` 不注入，产出的 `tool_calls` 会被当成 `actions: []` 的空产出，
+  // 与「读工具轮还没接线」时逐字节一致（不读也就不会误报「读不到」）。
+  const v21IssueRead =
+    baseGithubClient === null ? undefined : createGithubIssueReadApi(baseGithubClient);
   // `workflows/` 的 reaction 端口（缺信息时打 `confused`）：与终态反馈共用同一个写面。
   const workflowReactions = feedback === null ? undefined : createWorkflowReactionPort(feedback.reactions);
 
@@ -823,6 +837,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     write: ports.github,
     settings: async (repo) => (await readRepoPolicy(pool, repo)).settings ?? null,
     ...(feedback === null ? {} : { reactions: v21ReactionsOf(feedback.reactions) }),
+    ...(v21IssueEdit === undefined ? {} : { issueEdit: v21IssueEdit }),
     ...(baseGithubClient === null
       ? {}
       : { openPullRequest: createV21OpenPullRequest(baseGithubClient.request) }),
@@ -832,12 +847,21 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
   const v21RunnerHooks = {
     execute: async (
       text: string,
-      ctx: { readonly repo: string; readonly issueNumber: number; readonly dryRun: boolean },
+      ctx: {
+        readonly repo: string;
+        readonly issueNumber: number;
+        readonly dryRun: boolean;
+        readonly allowedMentions?: readonly string[] | undefined;
+      },
     ) => {
       // `label` 目标态需要「当前标签」与「我们打过的标签」；两者都从 bot_labels 台账读，
       // 读失败退化为空集（执行器会按「只加不删」处理，比用过期数据删标签安全）。
       const currentLabels = await readAppliedLabels(pool, ctx.repo, ctx.issueNumber).catch(() => []);
-      const outcome = await v21Executor(text, { ...ctx, currentLabels, botLabels: currentLabels });
+      const outcome = await v21Executor(text, {
+        ...ctx,
+        currentLabels,
+        botLabels: currentLabels,
+      });
       return {
         handled: outcome.handled,
         valid: outcome.valid,
@@ -1375,7 +1399,22 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
           v21: {
             ...v21RunnerHooks,
             settings: policy.settings,
+            // 系统提示词（身份 + 工作方式，§6.7）：走 system 通道，进 `session/create` 而**不进**
+            // 任务提示词。裁决只在 `resolveAgentExecution()` 里做一次（配置值优先、空则内置默认），
+            // 这里既不写 `??` 也不写默认文案 —— 三处默认值必然会在某处不同步。
+            systemPrompt: resolveAgentExecution(policy.settings).system_prompt,
             ...(feedback === null ? {} : { reactions: v21ReactionsOf(feedback.reactions) }),
+            ...(v21IssueEdit === undefined ? {} : { issueEdit: v21IssueEdit }),
+            // 只读工具轮（v2.3）：执行器**每轮任务建一次**，因为 `repo` 必须由平台绑死 ——
+            // 模型的 `tool_calls` 里没有 `repo`（也不该让它自己写仓库全名，写错就是读到别的
+            // 仓库）。与 `issueEdit` 同一条注入路径：`baseGithubClient` → 读面 → 执行器。
+            ...(v21IssueRead === undefined
+              ? {}
+              : {
+                  readTools: {
+                    executor: createIssueReadExecutor(v21IssueRead, {}, { repo: row.repo }),
+                  },
+                }),
             ...(baseGithubClient === null
               ? {}
               : { openPullRequest: createV21OpenPullRequest(baseGithubClient.request) }),

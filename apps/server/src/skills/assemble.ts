@@ -27,17 +27,20 @@
  *
  * ## 预算与截断
  *
- * 总预算默认 12000 字符（`budgetChars` 可覆盖，统计的是**整条 prompt**）。超预算时**从后往前**丢：
- * 先丢最远的就近 AGENTS.md，再丢 P1（项目约定），再丢技能正文，根 AGENTS.md 最后丢。
+ * 总预算默认 12000 字符（`budgetChars` 可覆盖，统计的是**整条 prompt**）。超预算时**只丢两层**：
+ * 先丢 P1（项目约定=上下文），再丢技能正文。
+ *
+ * **系统提示词（head）与 AGENTS.md 不可被裁**，这是硬约束：
+ *  - `head` / `tail` 从来不在丢弃清单里（V18）：系统提示词与输出契约丢了，任务语义就变了；
+ *  - AGENTS.md 是**仓库所有者写给人看的约定**（构建方式、禁改路径、提交规范）。丢掉它不会
+ *    让任务"变小"，只会让 agent 去违反它 —— 那比上下文不够严重得多。所以预算不够时，
+ *    宁可让技能正文与项目提示词先消失，也不动 AGENTS.md。
  * 丢弃的单位是**整段**（围栏块 + 分节标题），绝不切字符 —— 半个 `<<<PI-BOT:UNTRUSTED:…>>>`
  * 或半个 ``` 围栏比没有更危险。每次丢弃都留一条可见标记并记进 `stats.truncated`，
  * 所以「预算不够」永远不会静默。
  *
  * 为什么 P1 在技能之前丢：P1 是项目背景/领域知识/语气，丢了任务仍然正确；
  * 技能正文是命令语义，丢了命令行为就错了。
- *
- * 保存期还有一道**预演**（`prompt/budget.ts`）：面板保存 P1 时先算「还能占多少」，存不下直接拒绝，
- * 所以运行期这条兜底路径通常只对「别的层后来长大了」生效。
  *
  * 纯函数：无 I/O、无副作用、不读时钟。
  */
@@ -108,7 +111,10 @@ export interface AssembleStageLayer {
   readonly name: string;
   /** 这一层现在的字符数（已被丢弃时为 0，丢弃标记不算进层字符数）。 */
   readonly chars: number;
-  /** 能否因超预算被整段丢弃。`head` / `tail` 永远 `false`（§4.4 / V18）。 */
+  /**
+   * 能否因超预算被整段丢弃。`head` / `tail`（系统提示词与输出契约）与 AGENTS.md 层
+   * 永远 `false`（§4.4 / V18 + 「AGENTS.md 不可裁」）；只有 P1 与技能正文会是 `true`。
+   */
   readonly droppable: boolean;
   /** 这一层是否已被预算整段丢弃。 */
   readonly dropped: boolean;
@@ -123,7 +129,10 @@ export interface AssemblePromptStats {
   /** 技能层（含分节标题与丢弃标记）的字符数。 */
   readonly skillChars: number;
   readonly totalChars: number;
-  /** 因预算被整段丢弃的东西（`nearby:<path>` / `project` / `skill:<name>` / `root`）。 */
+  /**
+   * 因预算被整段丢弃的层名。只剩两种：`project` / `skill:<name>` ——
+   * AGENTS.md（`root` / `nearby:<path>`）**永不出现**：它不可裁。
+   */
   readonly truncated: readonly string[];
 }
 
@@ -317,7 +326,7 @@ type AssembleCore = {
  * 两处「有意的差别」：
  *  1. 阶段模式下 `stats.baseChars` = 阶段系统提示词 + 输出契约，而不是 `basePrompt` 的长度
  *     —— `agent` 提示词写多长就直接扣掉 P1 多少额度（R6 / V18）。
- *  2. 丢层顺序与依据完全不变：就近 AGENTS → P1 → 技能 → 根 AGENTS，`head` / `tail` 永不丢。
+ *  2. 丢层顺序：**P1 → 技能正文**。AGENTS.md 与 `head` / `tail` 永不丢（见文件头的预算段）。
  */
 function assembleCore(input: AssemblePromptInput): AssembleCore {
   const base = input.basePrompt;
@@ -413,21 +422,6 @@ function assembleCore(input: AssemblePromptInput): AssembleCore {
     return parts.join('\n\n');
   };
 
-  /** 一次「整段丢弃」：把第 `index` 个 AGENTS 段换成同位置的丢弃标记。 */
-  const dropAgents = (index: number): string | null => {
-    const entry = agentsEntries[index];
-    if (entry === undefined || entry.kind === 'dropped') {
-      return null;
-    }
-    const code = entry.kind === 'root' ? 'root' : `nearby:${entry.section.path}`;
-    agentsEntries[index] = {
-      kind: 'dropped',
-      title: entryTitle(entry),
-      chars: entry.section.text.length,
-    };
-    return code;
-  };
-
   const dropSkill = (): string | null => {
     if (skillSlot === null || skillSlot.kind === 'dropped') {
       return null;
@@ -446,29 +440,20 @@ function assembleCore(input: AssemblePromptInput): AssembleCore {
     return code;
   };
 
-  // 从后往前丢的顺序：最远的就近段 → … → 最近的 → P1 → 技能 → 根。
-  // P1 排在技能之前：P1 是背景/语气，技能正文是命令语义（丢了命令就错了）。
-  // `head` / `tail`（阶段系统提示词与输出契约）**不在**这个列表里 —— 它们永不被丢弃（V18）。
+  // 丢弃顺序：**只丢 P1（上下文）与技能正文**，P1 在技能之前（背景/语气 vs 命令语义）。
+  //
+  // 三样东西**不在**这个列表里，这是刻意的：
+  //  - `head` / `tail`：系统提示词与输出契约。丢了它们任务语义就变了（V18）；
+  //  - AGENTS.md（根与就近）：仓库所有者写下的约定（构建方式、禁改路径、提交规范）。
+  //    「预算不够」时先砍技能与项目上下文，绝不砍它 —— 让 agent 违反仓库约定比少给一段
+  //    背景严重得多（早年的实现把根 AGENTS.md 也放进丢弃清单，等于超预算时先把规矩丢掉）。
+  // 于是 `stats.truncated` 里只剩 `project` / `skill:<name>` 两种层名。
   const removals: { readonly run: () => string | null }[] = [];
-  for (let index = agentsEntries.length - 1; index >= 0; index -= 1) {
-    if (agentsEntries[index]?.kind !== 'nearby') {
-      continue;
-    }
-    const target = index;
-    removals.push({ run: () => dropAgents(target) });
-  }
   if (projectSlot !== null) {
     removals.push({ run: dropProject });
   }
   if (skillSlot !== null) {
     removals.push({ run: dropSkill });
-  }
-  for (let index = 0; index < agentsEntries.length; index += 1) {
-    if (agentsEntries[index]?.kind !== 'root') {
-      continue;
-    }
-    const target = index;
-    removals.push({ run: () => dropAgents(target) });
   }
 
   const truncated: string[] = [];
@@ -507,7 +492,9 @@ function assembleCore(input: AssemblePromptInput): AssembleCore {
     layers.push({
       name: agentsNames[index] ?? 'agents',
       chars: entry.kind === 'dropped' ? 0 : entry.section.text.length,
-      droppable: true,
+      // AGENTS.md **永远不可裁**（根与就近都是）：预算不够时先丢 P1 与技能正文。
+      // 面板的「最终 prompt 预览」按 `droppable` 给人看哪层可能消失，这里必须说实话。
+      droppable: false,
       dropped: entry.kind === 'dropped',
     });
   });
@@ -551,7 +538,8 @@ export function assemblePrompt(input: AssemblePromptInput): AssemblePromptResult
  * 层序预览：各层字符数 + 是否可丢弃 + 是否已被丢（面板的「最终 prompt 预览」与测试共用）。
  *
  * 跑的是**同一个** `assembleCore()`，所以预览里的层序、字符数、丢弃项与最终文本永远一致
- * （各写一份拼接逻辑正是这类偏差的来源）。`head` / `tail` 恒为 `droppable: false`（V18）。
+ * （各写一份拼接逻辑正是这类偏差的来源）。`head` / `tail` 与 AGENTS.md 层恒为
+ * `droppable: false`（V18 + AGENTS.md 不可裁）。
  */
 export function stageLayers(input: AssemblePromptInput): readonly AssembleStageLayer[] {
   return assembleCore(input).layers;

@@ -290,9 +290,13 @@ export interface TaskPromptInput {
 }
 
 /**
- * 拼提示词的**骨架**。
+ * 拼**任务提示词**的骨架：这次要做什么 → 约束 → 两段式输出要求（人话 + 唯一 json 信封）→
+ * **项目标签词表**。
  *
- * 三件事：身份与命令 → 两段式输出要求（人话 + 唯一 json 信封）→ **项目标签词表**。
+ * 这里**只放这一轮变的东西**：身份与工作方式已搬到 system 通道
+ * （`skills/prompt.ts::AGENT_IDENTITY_PROMPT`，由 `session/create` 带上）。为什么搬：
+ * 身份跨轮次恒定而任务提示词每轮都变；混在一起会让「模型每轮重新认出自己」变成一个
+ * 隐含前提，也让装配层丢层时说不清丢的是哪一条（见 `skills/assemble.ts` 的预算段）。
  *
  * 标签这一段的由来（W2-E）：旧版在提示词里写死了一串示范标签
  * （`bug / feature / question / docs / needs-info / area/db`），于是每个仓库都被教成
@@ -304,7 +308,7 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
   const vocabulary = input.settings?.labels.vocabulary ?? [];
   const exampleLabel = vocabulary[0]?.name;
   return [
-    `你是 pi-bot，正在处理 ${input.repo} 的 ${target}。`,
+    `这次要做的事：处理 ${input.repo} 的 ${target}。`,
     `命令：${input.command}`,
     input.dryRun ? '本轮是 dry-run：只做判断，不要做任何写操作。' : '本轮可以做写操作（受输出白名单约束）。',
     '',
@@ -343,10 +347,13 @@ export function buildTaskPrompt(input: TaskPromptInput): string {
 }
 
 /**
- * 自由问答（`@bot 你的问题`）的提示词：**只允许产出 comment**。
+ * 自由问答（`@bot 你的问题`）的任务提示词：**只允许产出 comment**。
  *
  * 与 `buildTaskPrompt` 的区别：没有「打标签」这个诉求，所以 `verdict.labels` 恒为空，
  * 问题正文来自触发评论（编码在 `tasks.command` 里，见 `http/webhook.ts::decodeFreeQuestion`）。
+ *
+ * 同样**不含身份说明**：`你是 pi-bot…` 那句已归到 system 通道
+ * （`skills/prompt.ts::AGENT_IDENTITY_PROMPT`），这里只留「这次要答什么 + 约束 + 输出契约」。
  */
 export function buildAnswerPrompt(input: {
   readonly repo: string;
@@ -355,7 +362,7 @@ export function buildAnswerPrompt(input: {
   readonly question: string;
 }): string {
   return [
-    `你是 pi-bot，正在 ${input.repo} 的 ${input.targetKind} #${String(input.targetNumber)} 上回答提问。`,
+    `这次要做的事：在 ${input.repo} 的 ${input.targetKind} #${String(input.targetNumber)} 上回答提问。`,
     '',
     '提问原文（用户 @ 你时写的）：',
     '```text',

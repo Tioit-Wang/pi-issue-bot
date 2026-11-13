@@ -250,7 +250,7 @@ describe('会话复用：一个 issue 一个持久会话', () => {
     expect(host.calls.filter((call) => call.method === 'session/attach').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('agent 任务的提示词里带「这一条消息」（原话），系统段仍是 `buildTaskPrompt`', async () => {
+  it('agent 任务的提示词里带「这一条消息」（原话），任务段仍是 `buildTaskPrompt`', async () => {
     await postMention('@pi-bot 帮我看看格式', { commentId: 4101 });
     const task = (await tasks())[0];
     await app.executeTask({ taskId: String(task?.['id']) });
@@ -260,8 +260,10 @@ describe('会话复用：一个 issue 一个持久会话', () => {
     expect(text).toContain('## 这一条消息');
     expect(text).toContain('帮我看看格式');
     expect(text).not.toContain('@pi-bot');
-    // 系统段还在（`buildTaskPrompt` 的身份行与输出契约）
-    expect(text).toContain('你是 pi-bot');
+    // 任务提示词只剩「这次要做什么 + 约束 + 输出契约」：
+    // 身份说明已搬到 system 通道（`session/create` 的 `systemPrompt`），这里不该再出现。
+    expect(text).toContain('这次要做的事：处理');
+    expect(text).not.toContain('你是 pi-bot');
     expect(text).toContain('```json');
   });
 });

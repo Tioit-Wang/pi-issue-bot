@@ -222,6 +222,69 @@ export type GithubReactionApi = {
   removeReaction(input: ReactionTarget & { readonly reactionId: number }): Promise<void>;
 };
 
+/**
+ * 一条 issue 评论的**详情**（v2.2 的 `reply_to` / `update_comment` / `delete_comment` 要用）。
+ *
+ * 与 `IssueComment` 的差别只有 `authorLogin`：槽位判定只看 id + body，
+ * 而「回复谁」「这条评论是不是我写的」必须先知道作者是谁。
+ */
+export type IssueCommentDetail = {
+  readonly id: number;
+  /** 作者 login；GitHub 只在极少见的情况下给不出（幽灵用户），此时是 `null`。 */
+  readonly authorLogin: string | null;
+  readonly body: string | null;
+};
+
+/**
+ * issue 编辑面的窄接口（`docs/plan-issue-tools.md` 的写类工具）。
+ *
+ * 为什么**不**往 `GithubWriteApi` 里加方法：那个接口已被多处测试的假实现钉住，
+ * 加方法会让与「改标题 / 重开 / 关联」无关的测试一起改签名（收益为零）。
+ * 与 `GithubReactionApi` 同一个套路：独立能力、独立注入、缺了只在用到时失败。
+ *
+ * 端点口径（都是 REST 原生能力，不发明参数）：
+ *  - 改 / 关 / 开：`PATCH /repos/{owner}/{repo}/issues/{issue_number}`
+ *    （`state` + `state_reason` 是关闭/重开的唯一方式；REST 的 PATCH 没有 `duplicate_issue_id`）；
+ *  - 评论详情 / 删除：`/repos/{owner}/{repo}/issues/comments/{comment_id}`；
+ *  - 结构化关联：`sub_issues` 与 `dependencies/blocked_by` 要的是 issue 的**数字 id**
+ *    （不是 number），所以有 `getIssueId()` 这一步。
+ */
+export type GithubIssueEditApi = {
+  updateIssue(input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly title?: string | undefined;
+    readonly body?: string | undefined;
+    readonly assignees?: readonly string[] | undefined;
+    /** `null` = 清空里程碑（GitHub 的 PATCH 用 `milestone: null` 表达）。 */
+    readonly milestone?: number | null | undefined;
+  }): Promise<{ readonly updatedAt: string }>;
+  getIssueUpdatedAt(input: { readonly repo: string; readonly issueNumber: number }): Promise<string>;
+  reopenIssue(input: { readonly repo: string; readonly issueNumber: number }): Promise<void>;
+  closeIssueWithReason(input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly reason: 'completed' | 'not_planned' | 'duplicate';
+    readonly duplicateOf?: number | undefined;
+  }): Promise<void>;
+  getIssueComment(input: { readonly repo: string; readonly commentId: number }): Promise<IssueCommentDetail>;
+  deleteIssueComment(input: { readonly repo: string; readonly commentId: number }): Promise<void>;
+  /** issue 的**数字 id**（sub_issues / dependencies 端点要 id，不是 number）。 */
+  getIssueId(input: { readonly repo: string; readonly issueNumber: number }): Promise<number>;
+  /** 编号是否存在（用于校验正文里的 `#123`）。404 → false，其它错误照抛。 */
+  issueExists(input: { readonly repo: string; readonly issueNumber: number }): Promise<boolean>;
+  addBlockedBy(input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly blockedByIssueId: number;
+  }): Promise<void>;
+  addSubIssue(input: {
+    readonly repo: string;
+    readonly parentNumber: number;
+    readonly subIssueId: number;
+  }): Promise<void>;
+};
+
 /** `owner/name` 形式的仓库标识。 */
 export type RepoRef = {
   readonly owner: string;
@@ -248,3 +311,91 @@ export function splitRepo(fullName: string): RepoRef {
   }
   return { owner, repo };
 }
+/*
+ * ── 读面：5 个只读工具的返回类型（`IssueGet` / `IssueList` / `IssueCommentsList`
+ *    / `IssueTimeline` / `IssueSearch`）────────────────────────────────────────
+ *
+ * 为什么单独一组类型而不是复用 `IssueSnapshot` / `IssueComment`：
+ *  - 写面只关心「够不够判断幂等」（id + body），读面要给人/给模型看（作者、指派人、
+ *    里程碑、时间、是不是 PR）。硬塞进写面的类型会让写执行器的假实现跟着改签名。
+ *  - 读面**不产生副作用**，配额与错误处理都和写面不同（读 404 = 可能没权限，
+ *    写 404 = 目标没了），所以接口也分开（见 `GithubIssueReadApi`）。
+ */
+
+/** 单个 issue 的读快照（`IssueGet` 用；比写面的 `IssueSnapshot` 多指派人/里程碑/时间）。 */
+export type IssueDetail = {
+  readonly number: number;
+  readonly title: string;
+  readonly body: string;
+  readonly state: string;
+  readonly labels: readonly string[];
+  readonly authorLogin: string | null;
+  readonly assignees: readonly string[];
+  readonly milestone: string | null;
+  readonly updatedAt: string;
+  readonly createdAt: string;
+  readonly isPullRequest: boolean;
+};
+
+/** 列表/检索里的一条（`IssueList` / `IssueSearch` 共用）。 */
+export type IssueListItem = {
+  readonly number: number;
+  readonly title: string;
+  readonly state: string;
+  readonly labels: readonly string[];
+  readonly updatedAt: string;
+  readonly isPullRequest: boolean;
+};
+
+/** 时间线的一条（`IssueTimeline` 用；只保留人能读的一句话）。 */
+export type TimelineEntry = {
+  /** GitHub 的 `event` 原文（`labeled` / `closed` / `cross-referenced` …）；缺失时是 `unknown`。 */
+  readonly kind: string;
+  readonly actorLogin: string | null;
+  readonly createdAt: string;
+  /** 压成一句话的摘要（标签名 / 状态 / 指派人 / 引用的编号 / 评论正文前 120 字）。 */
+  readonly summary: string;
+};
+
+/** 分页结果：`nextCursor` 为 `null` 表示没有下一页。cursor 是不透明字符串（见 octokit 实现）。 */
+export type IssuePage<T> = { readonly items: readonly T[]; readonly nextCursor: string | null };
+
+/**
+ * issue 的**只读**能力（与 `GithubIssueEditApi` / `GithubWriteApi` 分开：读不产生副作用，
+ * 配额也不同）。
+ *
+ * 为什么另开一个接口而不是往 `GithubWriteApi` 里加方法：读工具轮（`tool_calls`）是
+ * 独立通道，它失败只该回一段错误文本给模型，绝不参与写回闸门；接口分开之后
+ * 「谁会被只读轮调到」在类型层面就是封闭的 5 个方法。
+ */
+export type GithubIssueReadApi = {
+  getIssueDetail(input: { readonly repo: string; readonly issueNumber: number }): Promise<IssueDetail>;
+  listIssues(input: {
+    readonly repo: string;
+    readonly state?: 'open' | 'closed' | 'all' | undefined;
+    readonly labels?: readonly string[] | undefined;
+    readonly assignee?: string | undefined;
+    readonly milestone?: string | undefined;
+    readonly cursor?: string | null | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<IssuePage<IssueListItem>>;
+  listIssueComments(input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly cursor?: string | null | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<IssuePage<IssueCommentDetail>>;
+  getIssueTimeline(input: {
+    readonly repo: string;
+    readonly issueNumber: number;
+    readonly cursor?: string | null | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<IssuePage<TimelineEntry>>;
+  searchIssues(input: {
+    readonly repo: string;
+    readonly query: string;
+    readonly labels?: readonly string[] | undefined;
+    readonly state?: 'open' | 'closed' | 'all' | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<{ readonly items: readonly IssueListItem[]; readonly total: number }>;
+};

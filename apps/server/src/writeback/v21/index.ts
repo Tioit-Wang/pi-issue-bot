@@ -10,4 +10,5 @@
  */
 export * from './labels.ts';
 export * from './comments.ts';
+export * from './markup.ts';
 export * from './execute.ts';

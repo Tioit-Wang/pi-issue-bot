@@ -6,8 +6,8 @@
  *     传了空的 P1 也一样（P1 这个特性不能改变任何既有提示词）。
  *  2. **层序固定**：P1 → AGENTS.md → 技能，`basePrompt` 的输出契约仍在最后一段；
  *     P1 插在 head 之后、AGENTS.md 之前（`docs/plan-multi-repo.md` §7）。
- *  3. **预算截断从后往前、整段丢弃**：先丢最远的就近 AGENTS.md，再丢 P1，再丢技能，根最后丢；
- *     围栏/哨兵永远不会被切成半截（按整段丢，不切字符）。
+ *  3. **预算不够时只丢 P1 与技能正文，且整段丢**：系统提示词（head）与 AGENTS.md **永不裁** ——
+ *     宁可少一段背景，也不让 agent 去违反仓库约定；围栏/哨兵永远不会被切成半截。
  *  4. **保存期预演**（`prompt/budget.ts`）与**面板预览**（`prompt/preview.ts`）用的是同一套口径与
  *     同一个装配函数——否则「保存时说放得下、运行期被丢」这类偏差查不出来。
  *
@@ -19,9 +19,9 @@ import type { AgentsMdSection } from '../src/skills/agents-md.ts';
 import { ASSEMBLE_HEADINGS, assemblePrompt, splitBasePrompt } from '../src/skills/assemble.ts';
 import { UNTRUSTED_SENTINEL } from '../src/skills/prompt.ts';
 
-/** 与 `buildTaskPrompt` / `buildAnswerPrompt` 同构的基座提示词（头部 + 输出契约）。 */
+/** 与 `buildTaskPrompt` / `buildAnswerPrompt` 同构的基座提示词（任务行 + 约束 + 输出契约）。 */
 const BASE = [
-  '你是 pi-bot，正在处理 octo/demo 的 issue #7。',
+  '这次要做的事：处理 octo/demo 的 issue #7。',
   '命令：/issue-triage',
   '本轮是 dry-run：只做判断，不要做任何写操作。',
   '',
@@ -124,29 +124,29 @@ describe('assemblePrompt', () => {
     expect(sentinelCount(result.prompt)).toBe(2);
   });
 
-  it('超预算：从后往前丢（最远就近 → 更近就近 → 技能 → 根），每步都留标记', () => {
+  it('超预算：只丢 P1 与技能正文，AGENTS.md（根 + 就近）一段都不丢', () => {
     const result = assemblePrompt({
       basePrompt: BASE,
+      projectPrompt: '这个仓库是一个 Go 写的调度器。',
       agentsMd: {
         root: section('AGENTS.md', '根约定'),
         nearby: [section('a/AGENTS.md', '近的约定'), section('a/b/AGENTS.md', '远的约定')],
         skipped: [],
       },
       skill: { name: '/issue-triage', promptText: '技能正文……' },
-      // 1 字符预算：必然把能丢的全丢掉
+      // 1 字符预算：必然把**能丢的**全丢掉
       budgetChars: 1,
     });
 
-    expect(result.stats.truncated).toEqual([
-      'nearby:a/b/AGENTS.md',
-      'nearby:a/AGENTS.md',
-      'skill:/issue-triage',
-      'root',
-    ]);
-    // 丢弃后不能剩下半个围栏（整段丢，不切字符）
-    expect(sentinelCount(result.prompt)).toBe(0);
-    // 每一条丢弃都留了可见标记
-    expect(result.prompt.split('已按总预算丢弃').length - 1).toBe(4);
+    // 只有两种层会被丢：项目上下文（P1）与技能正文
+    expect(result.stats.truncated).toEqual(['project', 'skill:/issue-triage']);
+    // AGENTS.md 三段围栏原样保留（整段不丢、不切字符）：3 段 × 开/关 = 6 个哨兵
+    expect(sentinelCount(result.prompt)).toBe(6);
+    expect(result.prompt).toContain('根约定');
+    expect(result.prompt).toContain('近的约定');
+    expect(result.prompt).toContain('远的约定');
+    // 每一条丢弃都留了可见标记（P1 + 技能 = 2 条）
+    expect(result.prompt.split('已按总预算丢弃').length - 1).toBe(2);
     // 基座提示词本身仍然完整：头部在最前、输出契约在最后
     expect(result.prompt.startsWith(splitBasePrompt(BASE).head)).toBe(true);
     expect(result.prompt.slice(result.prompt.indexOf(CONTRACT_MARKER))).toBe(
@@ -154,7 +154,7 @@ describe('assemblePrompt', () => {
     );
   });
 
-  it('略超预算：只丢最远的那一段，围栏完整的段原样保留', () => {
+  it('略超预算：先丢技能正文，AGENTS.md 的段一段都不丢', () => {
     const agentsMd = {
       root: section('AGENTS.md', '根约定'),
       nearby: [section('a/AGENTS.md', '近的约定'), section('a/b/AGENTS.md', '远的约定')],
@@ -169,12 +169,14 @@ describe('assemblePrompt', () => {
       budgetChars: full.stats.totalChars - 1,
     });
 
-    expect(trimmed.stats.truncated).toEqual(['nearby:a/b/AGENTS.md']);
-    expect(trimmed.prompt).not.toContain('远的约定');
-    // 近的那段仍然完整（开 + 关两个哨兵），根也还在
+    // 预算只差 1 个字符也要先牺牲技能正文 —— AGENTS.md 不在丢弃清单里
+    expect(trimmed.stats.truncated).toEqual(['skill:/issue-triage']);
+    expect(trimmed.prompt).toContain('技能正文未进上下文');
+    expect(trimmed.prompt).toContain('远的约定');
     expect(trimmed.prompt).toContain('近的约定');
     expect(trimmed.prompt).toContain('根约定');
-    expect(sentinelCount(trimmed.prompt)).toBe(4);
+    // 三段围栏（开 + 关）× 3 = 6 个哨兵，一个都不能少
+    expect(sentinelCount(trimmed.prompt)).toBe(6);
   });
 
   it('技能的 promptText 原样进入技能层（含它自己的围栏）', () => {
@@ -268,7 +270,7 @@ describe('assemblePrompt · P1 项目人格层（projectPrompt）', () => {
     expect(result.stats.promptChars).toBeGreaterThan(0);
   });
 
-  it('超预算：P1 在技能之前被整段丢弃，并留下可见标记', () => {
+  it('超预算：P1 先于技能被整段丢弃，两者都留可见标记', () => {
     const result = assemblePrompt({
       basePrompt: BASE,
       projectPrompt: P1,
@@ -282,10 +284,14 @@ describe('assemblePrompt · P1 项目人格层（projectPrompt）', () => {
       budgetChars: 1,
     });
 
-    // 丢弃顺序：就近 → P1 → 技能 → 根
-    expect(result.stats.truncated).toEqual(['nearby:a/AGENTS.md', 'project', 'skill:/issue-triage', 'root']);
+    // 丢弃顺序：P1 → 技能。AGENTS.md 不在这个清单里（它不可裁）
+    expect(result.stats.truncated).toEqual(['project', 'skill:/issue-triage']);
     expect(result.prompt).not.toContain(P1);
     expect(result.prompt).toContain('项目提示词未进上下文');
+    // AGENTS.md 原样保留：两段围栏都在
+    expect(result.prompt).toContain('根约定');
+    expect(result.prompt).toContain('近的约定');
+    expect(sentinelCount(result.prompt)).toBe(4);
     // 基座本身仍完整：head 在最前、输出契约在最后
     expect(result.prompt.startsWith(splitBasePrompt(BASE).head)).toBe(true);
     expect(result.prompt.slice(result.prompt.indexOf(CONTRACT_MARKER))).toBe(

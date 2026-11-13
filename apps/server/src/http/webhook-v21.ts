@@ -615,6 +615,13 @@ export type V21ExecuteContext = {
   readonly currentLabels?: readonly string[] | undefined;
   /** 我们历史上打过的标签（删除时记 owner） */
   readonly botLabels?: readonly string[] | undefined;
+  /**
+   * 允许被 `@` 到的 login（issue 作者 + 本轮触发人）。
+   *
+   * 执行器的提及中和用它：不在清单里的 `@` 会被插零宽空格。不给 = 谁都不许 @
+   * （`comment` 的回复目标作者由执行器自己追加，不受这里影响）。
+   */
+  readonly allowedMentions?: readonly string[] | undefined;
 };
 
 /** 一次分流的结果。`handled=false` = 不是 v2 产出，调用方回落旧的 4-intent 信封。 */
@@ -639,12 +646,15 @@ export function createV21Executor(options: {
   readonly settings: (repo: string) => Promise<unknown>;
   readonly reactions?: V21PortSources['reactions'];
   readonly openPullRequest?: V21PortSources['openPullRequest'];
+  /** issue 编辑面（改 / 关 / 重开 / 改删评论 / 关联）；不给时那些动作在调用点失败。 */
+  readonly issueEdit?: V21PortSources['issueEdit'];
   readonly now?: (() => number) | undefined;
 }): V21Executor {
   const api = createV21PortFromGithub({
     write: options.write,
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.openPullRequest === undefined ? {} : { openPullRequest: options.openPullRequest }),
+    ...(options.issueEdit === undefined ? {} : { issueEdit: options.issueEdit }),
   });
 
   return async (text, ctx) => {
@@ -677,6 +687,7 @@ export function createV21Executor(options: {
       catalog,
       maxPerIssue: settings.labels.max_per_issue,
       api,
+      ...(ctx.allowedMentions === undefined ? {} : { allowedMentions: ctx.allowedMentions }),
       ...(options.now === undefined ? {} : { now: options.now }),
     });
     const errors: readonly OutputV21Issue[] = result.errors.map((error) => ({

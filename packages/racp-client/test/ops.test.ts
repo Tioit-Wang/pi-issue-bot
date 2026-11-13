@@ -153,6 +153,34 @@ describe('ops：context 与结果形状', () => {
     }
   });
 
+  it('session/create 透传 systemPrompt（身份说明走 system 通道）', async () => {
+    const host = await MockHost.start();
+    try {
+      const { ops } = await connected(host);
+      await ops.sessionCreate({ projectId: 'project-1', systemPrompt: '你是 pi-bot（身份说明）' });
+
+      const create = host.requests.find((request) => request.method === 'session/create');
+      // 既不能丢（那样身份说明就到不了 Host），也不能改名（Host 只认这一个键）
+      expect((create?.params as Record<string, unknown>).systemPrompt).toBe('你是 pi-bot（身份说明）');
+      expect((create?.params as Record<string, unknown>).projectId).toBe('project-1');
+    } finally {
+      await host.close();
+    }
+  });
+
+  it('session/create 的 systemPrompt 为空串时不发（空串没有任何语义）', async () => {
+    const host = await MockHost.start();
+    try {
+      const { ops } = await connected(host);
+      await ops.sessionCreate({ projectId: 'project-1', systemPrompt: '' });
+
+      const create = host.requests.find((request) => request.method === 'session/create');
+      expect(create?.params).not.toHaveProperty('systemPrompt');
+    } finally {
+      await host.close();
+    }
+  });
+
   it('session/create 返回扁平 Session 或 {session} 两种形状都接受', async () => {
     const host = await MockHost.start({
       handlers: { 'session/create': () => ({ id: 'flat', sessionLike: true }) },

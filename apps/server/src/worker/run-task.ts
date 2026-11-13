@@ -27,7 +27,7 @@ import { decideRetry, pickHighestPrioritySignal } from '../queue/index.ts';
 import { estimateDeepSeekCostUsd } from '../cost/index.ts';
 import type { FailureClass, FailureSignal } from '../queue/index.ts';
 import { DEFAULT_TURN_TIMEOUT_MS, REVIEW_PR_TURN_TIMEOUT_MS, driveTurn } from '../runtime/turn-driver.ts';
-import type { TurnDriveResult, TurnDriverOps } from '../runtime/turn-driver.ts';
+import type { SessionPlan, TurnDriveResult, TurnDriverOps } from '../runtime/turn-driver.ts';
 import {
   buildContainerCreateOptions,
   classifyDestroyedState,
@@ -85,6 +85,18 @@ import type {
 import type { CatalogEntry } from '../writeback/v21/labels.ts';
 import { readV21Settings, resolveAgentExecution, resolveManagedCatalog } from '../config/v21-settings.ts';
 import type { CompactionRecordInput, CompactStore } from '../compact/engine.ts';
+// ── 只读工具轮（v2.3 `docs/plan-issue-tools.md` §3 B）────────────────────────
+// 为什么直接 import `runtime/` 的这两个文件：worker 从不自己实现「怎么跑一轮」
+// （那是 `turn-driver.ts` 的职责），而「读几条 / 读多少轮 / 结果怎么进提示词」是纯逻辑、
+// 没有 IO，所以它住在 `runtime/` 且由 worker 在事件流上串起来。
+import {
+  canRunToolRound,
+  createToolLoopState,
+  renderBudgetExhaustedNotice,
+  renderToolResultsSection,
+  recordToolRound,
+} from '../runtime/issue-tool-loop.ts';
+import type { IssueReadExecutor, IssueReadResult } from '../runtime/issue-read-tools.ts';
 
 /* ── v2.1 运行时的可选注入（WS6-B）────────────────────────────────────────── */
 
@@ -123,10 +135,44 @@ export interface V21RuntimeConfig {
         readonly repo: string;
         readonly issueNumber: number;
         readonly dryRun: boolean;
+        /**
+         * 允许被 `@` 到的 login（issue 作者 + 本轮触发人）。装配层的执行器用它做
+         * 提及中和；不给 = 谁都不许 @（最保守的一侧）。
+         */
+        readonly allowedMentions?: readonly string[] | undefined;
       }) => Promise<V21RunExecution>)
     | undefined;
   /** reaction 写面（已由装配层把 `GithubReactionApi` 收窄成端口形状）。 */
   readonly reactions?: V21PortSources['reactions'];
+  /**
+   * issue 编辑面（改 / 关 / 重开 / 改删评论 / 关联）。
+   *
+   * 与 `reactions` 同一层注入：装配层用 `createGithubIssueEditApi(client)` 造出来，
+   * 没有 App 客户端时保持 `undefined` —— 用到那些动作的那一条会在调用点失败并点名缺什么。
+   */
+  readonly issueEdit?: V21PortSources['issueEdit'];
+  /**
+   * 只读工具轮（v2.3）的执行器：模型交 `tool_calls` 时 worker 用它真的去读 GitHub。
+   *
+   * 与 `issueEdit` 同一层注入：装配层用
+   * `createIssueReadExecutor(createGithubIssueReadApi(client), {}, { repo })` 造出来 ——
+   * `repo` 必须由平台绑死，模型的 `tool_calls` 里没有它，也不该让它自己写仓库全名。
+   *
+   * **不注入 = 老行为**：`tool_calls` 被当成 `actions: []` 的空产出，一条只读调用都不跑，
+   * 于是「装配层还没接读面」的部署与接线前逐字节一致。
+   */
+  readonly readTools?: { readonly executor: IssueReadExecutor } | undefined;
+  /**
+   * 会话级 **system 提示词**（身份 + 工作方式）：配置值或内置默认，由装配层裁决好传进来
+   * （`config/v21-settings.ts::resolveAgentExecution()` 负责「配置优先、空则内置默认」）。
+   *
+   * 为什么走这条注入路径而不是塞进 `input.prompt`：身份跨轮次恒定，任务提示词每轮都变。
+   * 它最终只会进 `session/create`（见 `runtime/turn-driver.ts`），所以**只读工具轮的第 2/3 轮
+   * 复用会话时不会重复发送**，这正是我们要的。
+   *
+   * 不注入 = 老行为：`session/create` 不带该字段，身份说明缺位（老 Host 也不认识它）。
+   */
+  readonly systemPrompt?: string;
   /** 开 PR 的能力（v2.1 之前没有任何路径会开 PR，单独注入）。 */
   readonly openPullRequest?: V21PortSources['openPullRequest'];
   /** 「这个 login 是不是我」的判定（App slug 优先，否则按 `[bot]` 后缀）。 */
@@ -590,6 +636,14 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
   let v21Plan: { readonly text: string; readonly output: OutputV21 } | null = null;
   /** v2 分支是否已经写过 envelopes 行（唯一索引在 run_id 上，绝不能写第二行）。 */
   let v21EnvelopeWritten = false;
+  /**
+   * 最后一轮 turn 的 v2 试探结论。
+   *
+   * 为什么提到这一层（而不是留在 turn 循环里）：第 7 步的信封分流在 `if (worktreeRoot…)`
+   * 之外，它只该读**最后一轮**的结论 —— 循环里每轮都重新 probe 一次 `captured`，
+   * 结束后由这里带走，避免「再 probe 一次」多一处判定。
+   */
+  let lastProbe: V21Probe = { kind: 'not-v21' };
 
   /** 写一行 envelopes；失败只 warn（审计行写不进去不该杀掉整个 run）。 */
   const writeV21Envelope = async (record: EnvelopeRecord): Promise<void> => {
@@ -760,91 +814,312 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
     }
 
     recordStep('turn');
-    try {
-      turnResult = await driveTurn({
-        ops: recordingOps(deps.ops, recordedIds),
-        worktreeRoot,
-        prompt,
-        messageId: `${input.runId}:${attempt}`,
-        timeoutMs,
-        ...(input.parent === undefined ? {} : { parent: input.parent }),
-        events: observedEvents,
-        onEvent: async (event) => {
-          captured.push({ eventId: event.eventId, kind: event.kind, payload: event.payload });
-          // FR-5.6 压缩观测：host 在事件流里报出 `itemType==='compaction'` 时只追加一条
-          // `agent_compactions` 行。这里**不发起压缩** —— RACP 客户端目前没有 session/history
-          // 与 compact 操作，请求前自动压缩还接不上（见最终报告的遗留说明）。
-          // 两条留痕路径二选一，避免同一事件写两行：优先 worker 自己的 `compactionStore`
-          // （由 `createCompactionStore()` 装配），没注入时才走装配层的 `onEvent` 钩子。
-          if (deps.v21 !== undefined) {
-            const context = {
-              kind: event.kind,
-              payload: event.payload,
-              repo: input.repo,
-              issueNumber: input.targetNumber,
-              sessionId: recordedIds.sessionId ?? sessionId ?? '',
+    /**
+     * ── 只读工具轮（v2.3 `docs/plan-issue-tools.md` §3 B）：最多 3 轮 ─────────────
+     *
+     * 一轮 turn 交 `tool_calls` 时**不写回**（契约层已强制「有 tool_calls ⇒ 没有 actions、
+     * 没有 verdict」），worker 把读结果渲染成下一轮的提示词再跑一轮。三条边界都在这里：
+     *  - **任务级 deadline**（§4.7 不能被悄悄放大成 3×20 分钟）：进循环前算一次，
+     *    每轮只把「剩余时间」交给 `driveTurn()`；到点就不再起新一轮；
+     *  - **预算**（`runtime/issue-tool-loop.ts`）：`canRunToolRound()` 说不行就停，并留一条
+     *    `tool.budget-exhausted`（面板要能解释「它为什么停在这」）；
+     *  - **没注入读面**：立刻停（老行为：`tool_calls` 被当成 `actions: []` 的空产出）。
+     *
+     * `captured` **每轮清空**：它是「这一轮的产出候选」。混进上一轮的信封会让第 7 步读到
+     * 过期文本 —— 最后一轮明明是空产出，却被上一轮的 `tool_calls` 顶替成结论。
+     */
+    const readTools = deps.v21?.readTools;
+    /**
+     * 会话级 system 提示词（身份 + 工作方式）：装配层已裁决好（配置值或内置默认）。
+     *
+     * 与 `readTools` 同一条注入路径（`deps.v21`）。它交给 `driveTurn` 之后**只会进
+     * `session/create`**：第 2/3 轮复用的是同一个会话，不会重复发。
+     */
+    const systemPrompt = deps.v21?.systemPrompt;
+    /** 任务级 deadline：`timeoutMs` 是**整个任务**的预算，不是每一轮的。 */
+    const deadlineAt = clock() + timeoutMs;
+    /** 每次只读调用至少要留的时间：低于它连一次完整握手都跑不完，不如不起这一轮。 */
+    const MIN_TOOL_ROUND_TIMEOUT_MS = 30_000;
+    /** 轮次预算（轮数 / 调用次数 / 注入字符）：扣没扣得上全靠 `recordToolRound()`。 */
+    let toolState = createToolLoopState();
+    /** 第 2 轮起真的用过 `persistent` 会话 → 循环结束后由本文件归档（见循环下面那段）。 */
+    let usedPersistentRound = false;
+    /** 本轮要发给宿主的提示词：第 1 轮是装配好的 `prompt`，之后是工具结果段。 */
+    let turnPrompt = prompt;
+    let toolRound = 0;
+
+    for (;;) {
+      toolRound += 1;
+      // 到点就不再起新一轮：已经跑完的那一轮照样进第 7/8 步（结论不该丢）
+      if (toolRound > 1 && clock() >= deadlineAt) {
+        logger.warn({ round: toolRound, timeoutMs }, '只读工具轮：任务级 deadline 已过，不再起新一轮');
+        appendEvent('tool.deadline-exceeded', { round: toolRound, timeoutMs });
+        break;
+      }
+      /**
+       * 会话计划：第 1 轮照原样（缺省 `ephemeral`）；第 2 轮起强制 `persistent` 复用刚建好的
+       * 那个会话。`after` 取上一轮的游标 —— 不带它，`events/subscribe` 会把上一轮的
+       * `tool_calls` 当成这一轮的产出再重放一遍（模型会看到「自己刚说过的话」）。
+       */
+      let sessionPlan: SessionPlan | undefined;
+      if (toolRound === 1) {
+        sessionPlan = input.session;
+      } else {
+        const reuseSessionId = sessionId ?? recordedIds.sessionId;
+        if (reuseSessionId === undefined) {
+          // 没有会话 id 就没有可复用的上下文：再跑一轮只会另起一个新会话（成本翻倍、任务说明丢失）
+          logger.warn({ round: toolRound }, '只读工具轮：拿不到会话 id，无法复用会话，收尾');
+          break;
+        }
+        sessionPlan = {
+          mode: 'persistent',
+          sessionId: reuseSessionId,
+          ...(sessionCursor === null ? {} : { after: sessionCursor }),
+        };
+      }
+
+      /**
+       * 本轮之前的「最后一轮」快照（第 1 轮为 `null`）。
+       *
+       * 为什么需要：第 2 轮起的事件流与第 1 轮**共用同一条 `RacpChannel`**。`app/racp.ts`
+       * 已经按轮分发（`createChannelEventRouter()`：上一轮 `return()` 只结束上一轮，之后
+       * 到达的事件先攒在通道级缓冲里，交给下一次 `events()`），所以正常情况下第 2 轮能读到
+       * 自己的事件。
+       *
+       * 但通道级分流仍有两个不能假装不存在的洞：断线（`router.end()` 之后每一轮都立刻
+       * `done`）、以及 Host 侧订阅没跟上（`events/subscribe` 之后再没有新事件）。这两种情况
+       * 第 2 轮都会是 `terminal==='stream-ended'`、事件数 0，**而不是**任务失败。
+       *
+       * 判据就取「没拿到终态」：回退到上一轮的结论，既不写坏东西，也不会把一份已经判定过的
+       * 产出因为「多跑了一轮」判成失败（接线前同一份产出是 succeeded）。
+       */
+      const beforeRound =
+        toolRound === 1
+          ? null
+          : {
+              terminal,
+              probe: lastProbe,
+              result: turnResult,
+              cursor: sessionCursor,
+              sessionId,
+              turnId,
+              sessionMode,
+              sessionReset,
             };
-            const store = deps.v21.compactionStore;
-            if (store !== undefined) {
-              const record = compactionRecordOfEvent(event.payload, context);
-              if (record !== null) {
+      captured.length = 0;
+      try {
+        turnResult = await driveTurn({
+          ops: recordingOps(deps.ops, recordedIds),
+          worktreeRoot,
+          prompt: turnPrompt,
+          // 身份说明走 system 通道：只在新建会话时生效；不注入 = 老行为。
+          ...(systemPrompt === undefined ? {} : { systemPrompt }),
+          // `messageId` 逐轮唯一：同一个会话里两次 `turn/start` 用同一个 id，Host 侧的去重
+          // 会把第二轮当成重投（第二轮的结果就永远不来了）。
+          messageId:
+            toolRound === 1
+              ? `${input.runId}:${attempt}`
+              : `${input.runId}:${attempt}:r${String(toolRound)}`,
+          // 每轮拿到的是「任务级 deadline 的剩余时间」，不是一份新的 `timeoutMs` ——
+          // 否则 3 轮就等于把 §4.7 的 20 分钟悄悄放大成 60 分钟。
+          // 两头都夹住：下界 `MIN_TOOL_ROUND_TIMEOUT_MS`（低于它连一次握手都跑不完），
+          // 上界 `timeoutMs`（任务自己的预算；把闸配得很短的部署与单测会把 `timeoutMs` 压到
+          // 几十毫秒，下界若压过上界，那就是「配置的闸被实现悄悄改大」，等于闸失效）。
+          timeoutMs: Math.min(timeoutMs, Math.max(MIN_TOOL_ROUND_TIMEOUT_MS, deadlineAt - clock())),
+          ...(input.parent === undefined ? {} : { parent: input.parent }),
+          events: observedEvents,
+          onEvent: async (event) => {
+            captured.push({ eventId: event.eventId, kind: event.kind, payload: event.payload });
+            // FR-5.6 压缩观测：host 在事件流里报出 `itemType==='compaction'` 时只追加一条
+            // `agent_compactions` 行。这里**不发起压缩** —— RACP 客户端目前没有 session/history
+            // 与 compact 操作，请求前自动压缩还接不上（见最终报告的遗留说明）。
+            // 两条留痕路径二选一，避免同一事件写两行：优先 worker 自己的 `compactionStore`
+            // （由 `createCompactionStore()` 装配），没注入时才走装配层的 `onEvent` 钩子。
+            if (deps.v21 !== undefined) {
+              const context = {
+                kind: event.kind,
+                payload: event.payload,
+                repo: input.repo,
+                issueNumber: input.targetNumber,
+                sessionId: recordedIds.sessionId ?? sessionId ?? '',
+              };
+              const store = deps.v21.compactionStore;
+              if (store !== undefined) {
+                const record = compactionRecordOfEvent(event.payload, context);
+                if (record !== null) {
+                  try {
+                    await store.record(record);
+                    appendEvent('compact.recorded', {
+                      sessionId: record.sessionId,
+                      generation: record.generation,
+                      beforeTokens: record.beforeTokens,
+                      afterTokens: record.afterTokens,
+                      summaryChars: record.summaryChars,
+                      fallback: record.fallback,
+                    });
+                  } catch (error) {
+                    logger.warn({ err: String(error) }, '压缩记录落库失败（不影响本轮）');
+                  }
+                }
+              } else if (deps.v21.onEvent !== undefined) {
                 try {
-                  await store.record(record);
-                  appendEvent('compact.recorded', {
-                    sessionId: record.sessionId,
-                    generation: record.generation,
-                    beforeTokens: record.beforeTokens,
-                    afterTokens: record.afterTokens,
-                    summaryChars: record.summaryChars,
-                    fallback: record.fallback,
-                  });
+                  await deps.v21.onEvent(context);
                 } catch (error) {
-                  logger.warn({ err: String(error) }, '压缩记录落库失败（不影响本轮）');
+                  logger.warn({ err: String(error) }, 'v2.1 压缩留痕失败（不影响本轮）');
                 }
               }
-            } else if (deps.v21.onEvent !== undefined) {
-              try {
-                await deps.v21.onEvent(context);
-              } catch (error) {
-                logger.warn({ err: String(error) }, 'v2.1 压缩留痕失败（不影响本轮）');
-              }
             }
-          }
-          // `item.delta` 是正文的**流式增量**（一次 turn 上百条，实机 125 条 / 27 秒）：
-          // 退化检测需要它（走 `captured`，不进库），审计与面板不需要 —— 落库只会让
-          // `run_events` 每轮多出上百行、把真正的事件挤出详情页（上限 500 条）。
-          if (event.kind !== 'item.delta') {
-            appendEvent(event.kind, event.payload);
-          }
-        },
-        onAudit: (audit) => {
-          deps.onAuditEvent?.(audit);
-          appendEvent('approval.audit', audit);
-        },
-        title: `${input.command} ${input.repo}#${String(input.targetNumber)}`,
-        // 会话计划：缺省 `ephemeral`（= 现有行为）；阶段 2 传 `persistent` 复用（§7）
-        ...(input.session === undefined ? {} : { session: input.session }),
-        // light 没有容器/worktree：不采 diff（§10.5）
-        ...(light ? { collectDiff: false } : {}),
-        logger,
-      });
-      terminal = turnResult.terminal;
-      eventCount = turnResult.events;
-      sessionId = turnResult.sessionId;
-      turnId = turnResult.turnId;
-      sessionCursor = turnResult.cursor;
-      sessionReset = turnResult.sessionReset;
-      sessionMode = turnResult.sessionMode;
-    } catch (error) {
-      const signal = signalFromError(error);
-      signals.push(signal);
-      if (isTimeoutError(error)) {
-        logger.warn({ timeoutMs }, '任务级超时：中断并销毁容器（不自动重试）');
-      } else if (isInterruptError(error)) {
-        logger.warn({}, '任务被取消');
+            // `item.delta` 是正文的**流式增量**（一次 turn 上百条，实机 125 条 / 27 秒）：
+            // 退化检测需要它（走 `captured`，不进库），审计与面板不需要 —— 落库只会让
+            // `run_events` 每轮多出上百行、把真正的事件挤出详情页（上限 500 条）。
+            if (event.kind !== 'item.delta') {
+              appendEvent(event.kind, event.payload);
+            }
+          },
+          onAudit: (audit) => {
+            deps.onAuditEvent?.(audit);
+            appendEvent('approval.audit', audit);
+          },
+          title: `${input.command} ${input.repo}#${String(input.targetNumber)}`,
+          // 会话计划：缺省 `ephemeral`（= 现有行为）；阶段 2 传 `persistent` 复用（§7）
+          ...(sessionPlan === undefined ? {} : { session: sessionPlan }),
+          // light 没有容器/worktree：不采 diff（§10.5）
+          ...(light ? { collectDiff: false } : {}),
+          logger,
+        });
+        terminal = turnResult.terminal;
+        // 多轮时 `report.events` 记的是**总**事件数（单轮时与接线前同一个值）
+        eventCount += turnResult.events;
+        sessionId = turnResult.sessionId;
+        turnId = turnResult.turnId;
+        sessionCursor = turnResult.cursor;
+        sessionReset = turnResult.sessionReset;
+        sessionMode = turnResult.sessionMode;
+        // 第 2 轮起：没拿到终态事件 = 这一轮什么都没拿到（见 `beforeRound` 的注释）。
+        // 不写回、不判失败，回退到上一轮的结论再收尾。
+        if (toolRound > 1 && turnResult.terminal === 'stream-ended' && beforeRound !== null) {
+          logger.warn(
+            { round: toolRound, events: turnResult.events },
+            '只读工具轮：本轮没有拿到终态事件（事件流已结束），回退到上一轮的结论',
+          );
+          appendEvent('tool.round-aborted', { round: toolRound, events: turnResult.events });
+          terminal = beforeRound.terminal;
+          lastProbe = beforeRound.probe;
+          turnResult = beforeRound.result;
+          sessionCursor = beforeRound.cursor;
+          sessionId = beforeRound.sessionId;
+          turnId = beforeRound.turnId;
+          sessionMode = beforeRound.sessionMode;
+          sessionReset = beforeRound.sessionReset;
+          break;
+        }
+      } catch (error) {
+        const signal = signalFromError(error);
+        signals.push(signal);
+        if (isTimeoutError(error)) {
+          logger.warn({ timeoutMs }, '任务级超时：中断并销毁容器（不自动重试）');
+        } else if (isInterruptError(error)) {
+          logger.warn({}, '任务被取消');
+        }
+        // session/turn id 由 driveTurn 内部维护，异常路径上我们只能从错误里拿不到；
+        // `runs.session_id` 允许为空（§7.2），面板按 run_events 也能定位。
+        //
+        // 同时把「最后一轮」的痕迹清掉：这一轮没跑完，第 7/8 步就不能拿**上一轮**的产出
+        // 当结论（那一轮交的是 `tool_calls`，一旦被当成最终产出就会写成一条空产出）。
+        turnResult = undefined;
+        terminal = null;
+        lastProbe = { kind: 'not-v21' };
+        break;
       }
-      // session/turn id 由 driveTurn 内部维护，异常路径上我们只能从错误里拿不到；
-      // `runs.session_id` 允许为空（§7.2），面板按 run_events 也能定位。
+
+      // 这一轮的 v2 试探：第 7 步直接用它（`captured` 已按轮清空，不会串轮）
+      lastProbe = taskSource === 'agent' ? probeV21Output(captured) : { kind: 'not-v21' };
+      const calls = lastProbe.kind === 'valid' ? (lastProbe.output.tool_calls ?? []) : [];
+      // 没有 `tool_calls` = 这是**最终轮**：循环结束，第 7/8 步照常用它的产出校验与写回
+      if (calls.length === 0) {
+        break;
+      }
+      // 熔断命中时本轮已被中断：再读也只会喂给一个已经判死的会话（不写回由第 8 步判）
+      if (degeneracyHit !== null) {
+        logger.warn({ round: toolRound }, '只读工具轮：熔断命中，不再起新一轮');
+        break;
+      }
+      if (readTools === undefined) {
+        // 没注入执行器就不知道「怎么读」：按老行为收尾（`tool_calls` 变成 `actions: []` 的空产出）
+        logger.debug(
+          { round: toolRound, calls: calls.length },
+          '未注入只读执行器：tool_calls 不执行，按空产出收尾',
+        );
+        break;
+      }
+      if (!canRunToolRound(toolState, calls.length)) {
+        appendEvent('tool.budget-exhausted', {
+          round: toolRound,
+          calls: calls.map((call) => call.name),
+          budget: toolState,
+        });
+        logger.warn({ round: toolRound, calls: calls.length, state: toolState }, '只读工具预算已用尽');
+        break;
+      }
+
+      // 逐条执行：执行器契约上**不抛**（失败也是一条 `ok:false` 的结果），所以一条读失败
+      // 不会打断这一轮，只会让模型下一轮换个参数再来。
+      const readResults: IssueReadResult[] = [];
+      for (const call of calls) {
+        const result = await readTools.executor({ name: call.name, input: call.input });
+        readResults.push(result);
+        // 审计：读调用**不进 `actions` 表**（它不是写操作），但每一条都要能在 `run_events`
+        // 里查到 —— 面板解释「它到底读了什么」只能靠这一行。
+        appendEvent('issue.tool.read', {
+          name: result.name,
+          ok: result.ok,
+          items: result.items,
+          summary: result.summary,
+          errorCode: result.errorCode ?? null,
+        });
+      }
+      const rendered = renderToolResultsSection({ results: readResults, state: toolState });
+      toolState = recordToolRound(toolState, calls.length, rendered.injectedChars);
+      appendEvent('tool.round', {
+        round: toolRound,
+        calls: calls.map((call) => call.name),
+        clamped: rendered.clamped,
+      });
+      // 下一轮的提示词只有工具结果段：会话是 `persistent`，任务说明还在上下文里。
+      // 渲染退化成空串（连围栏都放不下）时改用「预算已用尽」的收尾指示 ——
+      // 空提示词会让 Host 直接报错，而这一轮已经花掉了。
+      turnPrompt = rendered.text === '' ? renderBudgetExhaustedNotice(toolState) : rendered.text;
+      // 从这一轮起用的是 `persistent` 会话 → 循环结束后按下面的条件收尾（driveTurn 按设计不归档它）
+      usedPersistentRound = true;
+    }
+
+    // ── 只读工具轮的会话收尾 ──────────────────────────────────────────────────
+    //
+    // 第 2 轮起用的是 `persistent` 会话，而 `driveTurn()` **有意不归档**它（那是跨任务的
+    // 会话连续性，§7）；工具轮的这几次复用只是**任务内部**的：不归档就会一直挂在 Host 上
+    // 直到每日清理。
+    //
+    // **但第 1 轮本来就是 `persistent` 时绝不能归档**：那种会话是别人（别的任务）的，
+    // 归档它会把下一个任务的 `session/attach` 打断 → `sessionReset`，等于用一次「清理」
+    // 静默删掉了跨任务的上下文。所以归档要两条同时成立：
+    //   1. 本次任务真的起过工具轮（`usedPersistentRound`）；
+    //   2. 第 1 轮用的不是 `persistent` 会话（`input.session` 缺省或 `ephemeral`）。
+    // 第 1 轮就是 `persistent` 且只跑了一轮时 `usedPersistentRound` 为 `false` → 也不归档，
+    // 那一次由装配层按轮换策略决定。
+    const firstRoundPersistent = input.session?.mode === 'persistent';
+    if (usedPersistentRound && !firstRoundPersistent) {
+      const archiveSessionId = sessionId ?? recordedIds.sessionId;
+      if (archiveSessionId !== undefined) {
+        try {
+          await deps.ops.sessionArchive({ sessionId: archiveSessionId });
+        } catch (error) {
+          // 归档是清理动作，不是判定：失败只 warn（与 turn-driver 的同名处置一致）
+          logger.warn(
+            { sessionId: archiveSessionId, err: error instanceof Error ? error.message : String(error) },
+            '只读工具轮的会话归档失败（不影响任务结论）',
+          );
+        }
+      }
     }
   }
 
@@ -886,7 +1161,11 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
     //  - `not-v21`  → 旧 4-intent 信封 / 纯人话 / 没有产出 → 原样回落 `prepareEnvelope()`。
     // 于是 `command` / `pipeline` 与全部旧单测逐字节零回归，`actions: []` 也是合法 v2 产出
     // （会进 `valid` 分支，只是第 8 步一条都不执行，不视为失败）。
-    const probe: V21Probe = taskSource === 'agent' ? probeV21Output(captured) : { kind: 'not-v21' };
+    //
+    // 这里**不重新 probe `captured`**：`lastProbe` 是「最后一轮」的结论，而 `captured`
+    // 在只读工具轮里是按轮清空的 —— 再 probe 一次只是在重算同一件事，还会在「最后一轮
+    // 抛错」这类边界上和循环里的判定不一致。
+    const probe: V21Probe = lastProbe;
     if (probe.kind === 'valid') {
       v21Handled = true;
       v21Plan = { text: probe.text, output: probe.output };
@@ -1050,9 +1329,15 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
     const catalog: readonly CatalogEntry[] = v21CatalogOf(rawSettings);
 
     const v21Config = deps.v21;
+    // 提及允许清单：本轮触发人（`tasks.actor_login`）。issue 作者这一层拿不到
+    // （`tasks` 行没有该列，为此多发一次 `GET /issues/{n}` 不划算），所以只放触发人；
+    // 空数组 = 谁都不许 @（`comment` 的回复目标作者由执行器自己追加进允许清单）。
+    const allowedMentions: readonly string[] =
+      typeof input.actorLogin === 'string' && input.actorLogin !== '' ? [input.actorLogin] : [];
     const api = createV21PortFromGithub({
       write: v21WritePort(deps.github, deps.ledger),
       ...(v21Config?.reactions === undefined ? {} : { reactions: v21Config.reactions }),
+      ...(v21Config?.issueEdit === undefined ? {} : { issueEdit: v21Config.issueEdit }),
       ...(v21Config?.openPullRequest === undefined ? {} : { openPullRequest: v21Config.openPullRequest }),
       ...(v21Config?.isOwn === undefined ? {} : { isOwn: v21Config.isOwn }),
     });
@@ -1070,6 +1355,7 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
           repo: input.repo,
           issueNumber: input.targetNumber,
           dryRun,
+          allowedMentions,
         });
         result = {
           ok: execution.valid,
@@ -1100,6 +1386,7 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
           catalog,
           maxPerIssue: settings.labels.max_per_issue,
           api,
+          allowedMentions,
           now: clock,
         });
       }

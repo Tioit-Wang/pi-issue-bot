@@ -14,10 +14,10 @@
 | FR-2 事件触发配置 / 占位符 / 评论闸门 | PR 事件处理（收到按未触发留痕） |
 | FR-3 会话协调（常驻、串行、三层幂等） | PR 与 issue 共享上下文 |
 | FR-4 提示词下发（四段结构、首次全量后续增量） | 服务端模板渲染用户可见文案 |
-| FR-5 执行（七类动作、产出校验、标签目标态、槽位、压缩） | 合并 PR、force push |
+| FR-5 执行（动作类型 12 类、产出校验、标签目标态、槽位、压缩） | 合并 PR、force push |
 | FR-6 记录与查询（对话/工具/token/判定原因/压缩记录） | 面板整体视觉改版 |
 
-**兼容策略**：配置以**新增字段**方式扩展（`triggers.events`、`comment`、`agent.system_prompt/limits/actions`、`labels.vocabulary[].managed/status`），旧字段保留但标记 deprecated；旧的 4-intent 信封继续服务 `source='pipeline'|'command'` 路径，新 7-action 契约服务 `source='agent'` 路径。新路径不读旧字段。
+**兼容策略**：配置以**新增字段**方式扩展（`triggers.events`、`comment`、`agent.system_prompt/limits/actions`、`labels.vocabulary[].managed/status`），旧字段保留但标记 deprecated；旧的 4-intent 信封继续服务 `source='pipeline'|'command'` 路径，新的 12-action 契约（v2.0 的 7 类 + v2.2 新增 5 类）服务 `source='agent'` 路径。新路径不读旧字段。
 
 ---
 
@@ -138,27 +138,73 @@ renderTemplate(template: string, ctx: RenderContext):
 
 ```ts
 type OutputV21 = {
-  verdict?: 'pass' | 'fail';      // 纯问答可省
+  verdict?: 'pass' | 'fail';      // 纯问答可省；中间轮不许给（见下）
   evidence?: string[];
-  actions: ActionV21[];
+  actions: ActionV21[];           // 必填数组；中间轮给 []
+  tool_calls?: ToolCallV21[];     // v2.3：中间轮的只读调用，≤ 6 条
 };
 
 type ActionV21 =
   | { type: 'verdict'; payload: { verdict: 'pass'|'fail'; evidence?: string[] } }
   | { type: 'label'; payload: { desired: string[]; clear?: boolean } }
-  | { type: 'comment'; payload: { slot: string; body: string } }
-  | { type: 'reaction'; payload: { op: 'add'|'remove'; content: ReactionContent } }
+  | { type: 'comment'; payload: { slot: string; body: string; reply_to?: number } }
+  | { type: 'reaction'; payload: { op: 'add'|'remove'; content: ReactionContent;
+                                    target?: 'issue'|'comment'; comment_id?: number } }
   | { type: 'create_issue'; payload: { title: string; body?: string; labels?: string[]; fingerprint?: string } }
   | { type: 'open_pr'; payload: { branch: string; title: string; body?: string } }
-  | { type: 'close_issue'; payload: Record<string, never> };
+  | { type: 'close_issue'; payload: { state_reason?: 'completed'|'not_planned'|'duplicate';
+                                      duplicate_of?: number; comment?: string } }
+  | { type: 'reopen_issue'; payload: Record<string, never> }
+  | { type: 'update_issue'; payload: { title?: string; body?: string; assignees?: string[];
+                                       milestone?: number|null; expected_updated_at?: string } }
+  | { type: 'update_comment'; payload: { comment_id: number; body: string } }
+  | { type: 'delete_comment'; payload: { comment_id: number } }
+  | { type: 'link'; payload: { relation: 'duplicate'|'blocks'|'blocked_by'|'parent'|'relates';
+                               target_number: number } };
+
+type ToolCallV21 = {
+  name: 'IssueGet' | 'IssueList' | 'IssueCommentsList' | 'IssueTimeline' | 'IssueSearch';
+  input: Record<string, unknown>;  // 逐工具参数在执行器里校验，形状错误回 bad-input
+};
 ```
+
+**中间轮不变量（v2.3 只读工具轮，`actions` 与 `verdict` 在中间轮必须缺席）**：`tool_calls` 是**中间轮**的产出形状，不是最终产出的一部分。两条不变量由 `semanticIssuesOf()`（`packages/envelope/src/v21.ts:559`，不变量本体在 `:562-582`）强制，违反即**整份拒绝**：
+
+| # | 不变量 | 违反时的错误路径 | 为什么 |
+|---|---|---|---|
+| 1 | 带 `tool_calls` ⇒ 不许带 `actions`（`actions` 仍是必填数组，中间轮给 `[]`） | `/actions` | 写只发生在最终轮。否则模型第一轮就能发评论，绕开「这是最终结论」这层判断 |
+| 2 | 带 `tool_calls` ⇒ 不许给 `verdict` | `/verdict` | 结论只出现在看过数据之后。允许同轮既给 pass/fail 又要读数据，等于允许它先下结论再找证据 |
+
+- **`name` 只接受五个读工具名**：`ISSUE_READ_TOOL_NAMES` = `IssueGet` / `IssueList` / `IssueCommentsList` / `IssueTimeline` / `IssueSearch`（`packages/envelope/src/v21.ts:141-147`，与 `packages/contract/src/issue-tools.ts` 的 read 组逐字一致，等值性由 `apps/server/test/skills-prompt.test.ts` 盯住）。**写工具不能出现在 `tool_calls` 里** —— 写只能走 `actions`。
+- **一份产出最多 6 条**（`MAX_TOOL_CALLS_PER_OUTPUT`，`:152`）；编排层的「单轮 6 次」与此同源。
+- `input` 是开放对象而不是逐工具联合：多给一个参数不该让整份产出被拒。真正的参数校验在执行器（`apps/server/src/runtime/issue-read-tools.ts`），错误以 `bad-input` 回给模型；执行器**永不抛**，失败收成 `ok:false` + 错误码（`bad-input` / `unknown-tool` / `github_error`）。
+- 中间轮的产出**不写回**：读调用的留痕只进 `run_events`（`issue.tool.read` / `tool.round` / `tool.budget-exhausted` / `tool.deadline-exceeded` / `tool.round-aborted`），**不进 `actions`** —— 它不是写操作，混进去会让「自动执行后被改回」的统计变形。
+- 上述通道只对 `tasks.source==='agent'` 生效（见本节开头）；`command` / `pipeline` 任务的产出仍走旧判据，`tool_calls` 会被忽略。
+
+**动作从 7 类扩到 12 类**（v2.2，`packages/envelope/src/v21.ts` 的 `OUTPUT_ACTION_TYPES` 与 `outputActionSchema` 判别联合）。前 7 类逐字保留，新增/扩展的 payload 与前置条件：
+
+| 动作 | payload | 对应工具 | 前置条件 / 语义 |
+|---|---|---|---|
+| `comment`（扩展） | `{ slot, body, reply_to? }` | `IssueCommentCreate`（无 `reply_to`）/ `IssueCommentReply`（有） | `reply_to` 是 comment_id；引用块 + 定向 `@` 由平台渲染，模型不手抄格式 |
+| `reaction`（扩展） | `{ op, content, target?, comment_id? }` | `IssueReactionAdd` / `IssueReactionRemove` | `target` 缺省 `issue`（老产出仍合法）；`target='comment'` 时 `comment_id` 必填 |
+| `close_issue`（扩展） | `{ state_reason?, duplicate_of?, comment? }` | `IssueClose` | 缺省 `not_planned`（与 v2.0 逐字一致）；`duplicate` 必须给 `duplicate_of`；`comment` 写进槽位 `close` |
+| `reopen_issue`（新增） | `{}` | `IssueReopen` | 不受动作开关约束 |
+| `update_issue`（新增） | `{ title?, body?, assignees?, milestone?: number\|null, expected_updated_at? }` | `IssueUpdate` | 四个字段至少给一个；`expected_updated_at` 是乐观锁（issue 的 `PATCH` 没有 `If-Match`，不一致 → `update-conflict`） |
+| `update_comment`（新增） | `{ comment_id, body }` | `IssueCommentUpdate` | 只对本机器人写的评论生效（否则 `comment-not-own`） |
+| `delete_comment`（新增） | `{ comment_id }` | `IssueCommentDelete` | 同上 |
+| `link`（新增） | `{ relation, target_number }` | `IssueLink` | `duplicate` 归 `close_issue` 开关、且与 `close_issue` 共用 `verdict='fail'` 前置条件（见下） |
+
+**`link` 的 `duplicate` 归 `close_issue` 开关**：`relation='duplicate'` 在 GitHub 侧就是「关单（`state_reason=duplicate`）」，所以它受 `agent.actions.close_issue` 约束 —— 判定由契约导出的 `gatedActionOf()`（`packages/envelope/src/v21.ts:78-96`）做，不按 `type` 判：否则 `close_issue=false` 的项目会留一个「换个动作名就能关单」的后门。它与 `close_issue` **共用**同一条前置条件：只在**顶层** `verdict='fail'` 时执行。其余四个 relation 是纯关联，不受 `GATED_ACTION_TYPES` 约束。
+
+**跨字段语义校验**由 `semanticIssuesOf()`（`packages/envelope/src/v21.ts:559`）负责：在形状（zod）合法**之后**再跑一遍，整份拒绝、错误路径精确到字段，覆盖 `reaction` 的 `target`/`comment_id` 组合、`close_issue` 的 `duplicate`/`duplicate_of` 组合、`update_issue` 至少一个字段，以及 v2.3 的工具轮两条不变量（`:562-582`）。**不要**改成 zod 的 `superRefine`：判别联合的成员一旦是 refinement，`discriminatedUnion` 的类型收窄就失效（`action.payload` 退化为 `unknown`）。
 
 校验（必须整份判定，不逐条丢弃）：
 1. 未知 `type` → **拒绝整份产出**，一条都不执行。
 2. 缺必填字段 / 形状不合规 → 拒绝整份，错误定位到字段路径。
 3. `actions` 为空数组合法（只判定不动作）。
 4. 执行按数组顺序，**遇失败即停**；已成功的不回滚，记录中断位置。
-5. 后三类动作需项目级开关打开，否则整份产出在**执行前**拒绝（`action-disabled`）。
+5. `create_issue` / `open_pr` / `close_issue`（以及 `link` 的 `duplicate`）需项目级开关打开，否则整份产出在**执行前**拒绝（`action-disabled`）。
+6. `tool_calls` 与 `actions` / `verdict` 同时出现 → 拒绝整份（中间轮只读，见上文两条不变量）。
 
 ---
 
@@ -210,7 +256,7 @@ type CompactionRecord = {
 |---|---|---|
 | WS1 契约/配置/DB | `packages/contract/src/**`、`apps/server/src/db/schema.ts`、`apps/server/src/config/v21-settings.ts`、`migrations/0011_v21.sql`、`packages/contract/test/**` | 上述类型 + schema + 迁移 + 单测 |
 | WS2 触发/占位符 | `apps/server/src/trigger/**`、`apps/server/src/prompt/render.ts`、`apps/server/src/prompt/repo-issues.ts`、对应 `test/**` | 判定纯函数 + 渲染器 + 缓存 + 单测 |
-| WS3 产出/写回 | `packages/envelope/src/v21*.ts`、`apps/server/src/writeback/**`、`apps/server/src/github/types.ts`、`apps/server/src/github/octokit.ts`、对应 `test/**` | 7 动作 schema + 执行器 + updateIssueComment + 单测 |
+| WS3 产出/写回 | `packages/envelope/src/v21*.ts`、`apps/server/src/writeback/**`、`apps/server/src/github/types.ts`、`apps/server/src/github/octokit.ts`、对应 `test/**` | 12 类动作 schema + 执行器 + updateIssueComment + 单测 |
 | WS4 会话/压缩 | `apps/server/src/compact/**`、`apps/server/src/agent/session*.ts`、对应 `test/**` | 压缩引擎 + 会话状态 + 单测 |
 | WS5 面板 | `apps/panel/src/components/settings/v21-*.tsx`、`apps/panel/src/routes/repo-settings.tsx`、`apps/panel/src/mocks/**` | 配置 UI（事件矩阵/模板/闸门/角色/目录/限额） |
 | WS6 集成 | `apps/server/src/http/webhook.ts`、`apps/server/src/app/compose.ts`、`apps/server/src/worker/**`、`apps/server/src/agent/dispatcher.ts` | 串起 WS1–WS4，端到端用例 |

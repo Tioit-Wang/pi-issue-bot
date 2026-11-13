@@ -19,6 +19,10 @@ import {
   resolveManagedCatalog,
 } from '../src/config/v21-settings.ts';
 
+// 内置默认的身份说明（`resolveAgentExecution()` 在两处都空时回落它）：
+// 断言直接比对常量，避免测试里抄一份文案 —— 抄一份就等于多了一份「身份说明」。
+import { AGENT_IDENTITY_PROMPT } from '../src/skills/prompt.ts';
+
 /** 一份最小合法配置（`agent.managers` 非空 + 词表两角色）：只写关心的字段，其余走默认。 */
 const BASE = {
   agent: { managers: ['alice'] },
@@ -157,9 +161,11 @@ describe('resolveCommentConfig：关键词与角色清单', () => {
 });
 
 describe('resolveAgentExecution：系统提示词与限额', () => {
-  it('默认：内置提示词、并发 2、日配额 100、单轮 20 分钟、三类动作全关、留 90 天', () => {
+  it('默认：内置身份说明、并发 2、日配额 100、单轮 20 分钟、三类动作全关、留 90 天', () => {
     expect(resolveAgentExecution({})).toEqual({
-      system_prompt: '',
+      // 没配 `agent.system_prompt` 时不是空串，而是**内置默认**（`skills/prompt.ts`）：
+      // 这个值会经 `session/create` 的 system 通道真的发出去（以前它硬编码在任务提示词里）。
+      system_prompt: AGENT_IDENTITY_PROMPT,
       concurrency: 2,
       daily_quota: 100,
       turn_timeout_minutes: 20,
@@ -199,12 +205,21 @@ describe('resolveAgentExecution：系统提示词与限额', () => {
     });
     expect(viaTop.system_prompt).toBe('来自 agent 的设定');
 
-    // 空串（默认值）= 用内置，不会盖掉 limits 里的值
+    // 空白（默认值）= 用内置默认，不会盖掉 limits 里的值
     const blank = resolveAgentExecution({
       ...BASE,
       agent: { managers: ['alice'], system_prompt: '   ', limits: { system_prompt: '兜底' } },
     });
     expect(blank.system_prompt).toBe('兜底');
+
+    // 两处都空（含只有空白）→ 回落内置默认，绝不返回空串（空串进 system 通道等于没有身份）
+    expect(resolveAgentExecution({ ...BASE, agent: { managers: ['alice'] } }).system_prompt).toBe(
+      AGENT_IDENTITY_PROMPT,
+    );
+    expect(
+      resolveAgentExecution({ ...BASE, agent: { managers: ['alice'], limits: { system_prompt: '  ' } } })
+        .system_prompt,
+    ).toBe(AGENT_IDENTITY_PROMPT);
   });
 
   it('actions：任一路径打开即视为开启（默认全关）', () => {

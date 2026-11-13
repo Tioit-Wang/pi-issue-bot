@@ -15,6 +15,7 @@ import {
   ISSUE_TOOL_NAMES,
   ISSUE_TOOL_USAGE_NOTES,
 } from '../../../packages/contract/src/index.ts';
+import { OUTPUT_ACTION_TYPES } from '../../../packages/envelope/src/index.ts';
 import { createSkillRegistry } from '../src/skills/registry.ts';
 import {
   fenceUntrusted,
@@ -24,6 +25,7 @@ import {
   renderSkillPrompt,
   renderToolCatalog,
   sanitizeUntrustedText,
+  ISSUE_ACTION_SHAPES,
   UNTRUSTED_SENTINEL,
 } from '../src/skills/prompt.ts';
 import type { SkillPromptContext } from '../src/skills/prompt.ts';
@@ -264,6 +266,33 @@ describe('renderToolCatalog：工具面与契约同源', () => {
     // 顺序契约：规范在清单之后、诚实性措辞之前
     expect(text.indexOf('**使用规范**')).toBeGreaterThan(text.indexOf('**写（评论 / 回复 / 表情 / 标签 / 状态）**'));
     expect(text.indexOf('**使用规范**')).toBeLessThan(text.indexOf('平台代你执行'));
+  });
+
+  it('产出动作词表与信封契约一一对应（12 类，顺序一致）', () => {
+    /*
+      提示词里的动作形状是 `packages/envelope/src/v21.ts` 的**渲染**，不是第二份事实源。
+      这条断言是那道闸：契约加了动作却没进提示词（模型写不出来），或者提示词里多了一个
+      契约不认的动作（整份产出被拒），都会在这里红。
+    */
+    expect(ISSUE_ACTION_SHAPES.map((entry) => entry.action)).toEqual([...OUTPUT_ACTION_TYPES]);
+    for (const entry of ISSUE_ACTION_SHAPES) {
+      expect(entry.shape, entry.action).toContain(`"type":"${entry.action}"`);
+    }
+  });
+
+  it('产出动作段排在清单与使用规范之后、诚实性措辞之前', () => {
+    const text = renderToolCatalog([...ISSUE_TOOL_NAMES]);
+    const actions = text.indexOf('**产出动作（`actions` 数组的写法）**');
+    expect(actions).toBeGreaterThan(text.indexOf('**使用规范**'));
+    expect(actions).toBeLessThan(text.indexOf('平台代你执行'));
+    // 5 个原先「没有落点」的工具，现在在提示词里都有对应动作
+    expect(text).toContain('"type":"update_issue"');
+    expect(text).toContain('"type":"reopen_issue"');
+    expect(text).toContain('"type":"update_comment"');
+    expect(text).toContain('"type":"delete_comment"');
+    expect(text).toContain('"type":"link"');
+    expect(text).toContain('"reply_to"');
+    expect(text).toContain('"comment_id"');
   });
 
   it('没有技能时用能力清单兜底：19 个工具全在里面，且带使用规范', () => {

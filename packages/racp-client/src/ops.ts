@@ -137,6 +137,18 @@ export interface SessionCreateParams {
   readonly title?: string;
   readonly mode?: SessionMode;
   readonly permissionMode?: PermissionMode;
+  /**
+   * 会话级 system 提示词（身份 + 工作方式）。**只在新建会话时带**：身份由创建那一刻决定，
+   * 之后 `session/attach` 复用同一个会话，再传一次既无意义也会让「这条会话的身份」有两个来源。
+   *
+   * 为什么放在 `session/create` 而不是每轮 `turn/start`：它是跨轮次恒定的东西，而
+   * `turn/start` 的 `input.text` 是**这一轮要做什么**。混在一起会让每轮重发一遍恒定内容。
+   *
+   * **兼容前提**：字段名是 camelCase（与本包其他参数一致）。Host 不认识它时应当**忽略**
+   * （不报错、不把整条 `session/create` 判成参数非法）—— 老 Host 没有这个槽位，丢掉它
+   * 就等于回到「身份写在任务提示词里」的旧行为，本轮仍然能跑。
+   */
+  readonly systemPrompt?: string;
 }
 
 export interface EventsSubscribeParams {
@@ -290,6 +302,8 @@ export class RacpOps {
     if (params.title !== undefined) payload.title = params.title;
     if (params.mode !== undefined) payload.mode = params.mode;
     if (params.permissionMode !== undefined) payload.permissionMode = params.permissionMode;
+    // 只在有值时才发：空串没有任何语义，发出去反而让「这条会话到底带没带身份说明」变模糊。
+    if (params.systemPrompt !== undefined && params.systemPrompt !== '') payload.systemPrompt = params.systemPrompt;
 
     const result = await this.#call('session/create', payload, options);
     return extractSession(result, 'session/create');

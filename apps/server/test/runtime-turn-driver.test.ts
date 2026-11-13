@@ -252,6 +252,54 @@ describe('调用顺序（tech-plan §4.3）', () => {
     expect(ops.calls.some((call) => call.method === 'approval/respond')).toBe(false);
     expect(ops.calls.some((call) => call.method === 'input/respond')).toBe(false);
   });
+
+  it('system 提示词只走「新建会话」：attach 复用不传，空串也不发', async () => {
+    const ops = createFakeOps();
+    await driveTurn({
+      ops,
+      worktreeRoot: ROOT,
+      prompt: 'p',
+      systemPrompt: '你是 pi-bot（测试用身份）',
+      messageId: 'm',
+      events: () => stream([event(1, 'turn.completed')]),
+    });
+    const created = ops.calls.find((call) => call.method === 'session/create');
+    // 身份说明进 system 通道（`session/create`），任务提示词那条 `turn/start` 里不该有它
+    expect(created?.params).toMatchObject({ systemPrompt: '你是 pi-bot（测试用身份）' });
+    const started = ops.calls.find((call) => call.method === 'turn/start');
+    expect(started?.params['text']).toBe('p');
+
+    // 会话已存在（persistent + attach 成功）→ 不建会话，也就没有 system 通道可带身份：
+    // 身份由创建那一刻决定，再传一次等于给同一条会话两个身份来源。
+    const reuseOps: TurnDriverOps & { readonly calls: Call[] } = {
+      ...createFakeOps(),
+      sessionAttach: async () => ({ cursor: 7 }),
+    };
+    await driveTurn({
+      ops: reuseOps,
+      worktreeRoot: ROOT,
+      prompt: 'p',
+      systemPrompt: '你不该被发送',
+      messageId: 'm',
+      session: { mode: 'persistent', sessionId: SESSION_ID, after: 7 },
+      events: () => stream([event(1, 'turn.completed')]),
+    });
+    expect(reuseOps.calls.some((call) => call.method === 'session/create')).toBe(false);
+    expect(reuseOps.calls.some((call) => JSON.stringify(call.params).includes('你不该被发送'))).toBe(false);
+
+    // 空串不发：空串进 system 通道等于「这条会话没有身份」，还让 Host 多一条空值记录
+    const blankOps = createFakeOps();
+    await driveTurn({
+      ops: blankOps,
+      worktreeRoot: ROOT,
+      prompt: 'p',
+      systemPrompt: '',
+      messageId: 'm',
+      events: () => stream([event(1, 'turn.completed')]),
+    });
+    const blankCreate = blankOps.calls.find((call) => call.method === 'session/create');
+    expect(blankCreate?.params).not.toHaveProperty('systemPrompt');
+  });
 });
 
 describe('任务级时间闸（tech-plan §4.7）', () => {

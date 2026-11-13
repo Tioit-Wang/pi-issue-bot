@@ -29,6 +29,10 @@ import type {
   LabelStatus,
   RepoSettings,
 } from '../../../../packages/contract/src/index.ts';
+// 内置默认系统提示词住在 `skills/prompt.ts`（身份/工作方式那段文字的唯一一份）。
+// 让 config 反过来依赖 skills 是为了避免出现第二份身份说明：`resolveAgentExecution()` 是
+// 「配置为空 → 用内置默认」这条裁决的唯一落点，默认值必须和提示词通道用的是同一份常量。
+import { AGENT_IDENTITY_PROMPT } from '../skills/prompt.ts';
 
 /* ── 0. 统一的「读一次 settings」 ───────────────────────────────────────────── */
 
@@ -182,8 +186,13 @@ export type ResolvedAgentExecution = AgentExecution & {
  * 取执行侧配置（§6.7）。
  *
  * 两条路径的裁决（配置里同名信息存在两处，见 `repoConfigSchema` 的注释）：
- * - `system_prompt`：`agent.system_prompt` **非空**时优先，否则读 `agent.limits.system_prompt`；
- *   两处都是空串 = 用内置默认。
+ * - `system_prompt`：`agent.system_prompt` **非空**时优先，否则读 `agent.limits.system_prompt`，
+ *   两处都是空串 → 回落到内置默认 `AGENT_IDENTITY_PROMPT`（`skills/prompt.ts`）。
+ *
+ *   为什么要落到内置默认而不是留空串：这个值现在**真的会被用掉**（装配层把它交给
+ *   `session/create` 的 `systemPrompt`）。留空串等于「这个仓库的 agent 没有身份说明」——
+ *   而那本来是一段必须存在的东西（以前它硬编码在任务提示词里）。裁决放在这里而不是装配层，
+ *   是因为「哪条路径优先」已经在这里了，再在别处写一次 `|| 默认` 就会出现两份默认值。
  * - `actions`：任一路径开启即视为开启（三个开关默认全 `false`，所以这条等价于「谁显式开了就开」）。
  *   用「或」而不是「与」：面板写 `agent.actions`，部署/迁移可能只写了 `agent.limits.actions`，
  *   让其中一处失效会变成「配了却没生效」这种最难查的问题。
@@ -193,8 +202,11 @@ export function resolveAgentExecution(settings: unknown): ResolvedAgentExecution
   const agent = read.settings.agent;
   const limits = agent.limits;
   const primaryPrompt = agent.system_prompt.trim();
+  // 二次路径同样要判空：`limits.system_prompt` 允许只有空白，那种值进 system 通道等于没有身份。
+  const secondaryPrompt = limits.system_prompt.trim() === '' ? '' : limits.system_prompt;
+  const configured = primaryPrompt === '' ? secondaryPrompt : agent.system_prompt;
   return {
-    system_prompt: primaryPrompt === '' ? limits.system_prompt : agent.system_prompt,
+    system_prompt: configured === '' ? AGENT_IDENTITY_PROMPT : configured,
     concurrency: limits.concurrency,
     daily_quota: limits.daily_quota,
     turn_timeout_minutes: limits.turn_timeout_minutes,

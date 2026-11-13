@@ -25,7 +25,18 @@ import { z } from 'zod';
 
 /* ── 0. 封闭枚举与阈值（改动即契约变更）──────────────────────────────────── */
 
-/** 七类动作（`docs/v21-contract.md` §4 的 `ActionV21`）。顺序即面板展示顺序。 */
+/**
+ * v2 产出的动作类型（`docs/v21-contract.md` §4 的 `ActionV21`）。顺序即面板展示顺序。
+ *
+ * **前七类**是 v2.0 就冻结的那七类；**后五类**是 v2.2 补的（`docs/plan-issue-tools.md` §5）。
+ * 补的理由是可核对的：issue 工具面 19 个里有 5 个在动作词表里**没有落点** ——
+ * 工具名、入参、使用规范都对，模型也说得出「改标题」「重新打开」「删掉那条评论」，
+ * 但产出里没有任何位置能表达它，平台于是只能当没听见。
+ *
+ * 为什么一工具一动作、而不是加一个通用 `issue_op` + `op` 字段：通用动作会把
+ * 项目开关（`GATED_ACTION_TYPES`）、dry-run、审计、错误码全部退化成
+ * 「payload 里的字符串判断」，闸门与词表就不再一一对应，面板也没法按动作类型分组。
+ */
 export const OUTPUT_ACTION_TYPES = [
   'verdict',
   'label',
@@ -34,6 +45,11 @@ export const OUTPUT_ACTION_TYPES = [
   'create_issue',
   'open_pr',
   'close_issue',
+  'reopen_issue',
+  'update_issue',
+  'update_comment',
+  'delete_comment',
+  'link',
 ] as const;
 
 export type OutputActionType = (typeof OUTPUT_ACTION_TYPES)[number];
@@ -47,6 +63,106 @@ export type OutputActionType = (typeof OUTPUT_ACTION_TYPES)[number];
 export const GATED_ACTION_TYPES = ['create_issue', 'open_pr', 'close_issue'] as const;
 
 export type GatedActionType = (typeof GATED_ACTION_TYPES)[number];
+
+/**
+ * 一条动作实际受哪个项目开关约束（§4 校验第 5 条）。
+ *
+ * 为什么不是「`type` 在 `GATED_ACTION_TYPES` 里」这么一句：`link` 的 `duplicate`
+ * **等价于关闭 issue**（GitHub 侧就是 `state_reason=duplicate` + 关闭）。若只按 `type`
+ * 判，`agent.actions.close_issue=false` 的项目会留一个关单后门 —— 模型换个工具名就能关。
+ * 其余三个 relation（blocks / blocked_by / parent / relates）是纯关联，不受开关约束。
+ *
+ * 放在契约包而不是执行器里：面板要按同一份口径解释「哪个开关管哪些动作」，
+ * 两处各写一遍必然漂移。
+ */
+export function gatedActionOf(action: {
+  readonly type: string;
+  readonly payload?: unknown;
+}): GatedActionType | null {
+  if ((GATED_ACTION_TYPES as readonly string[]).includes(action.type)) {
+    return action.type as GatedActionType;
+  }
+  if (action.type === 'link') {
+    const payload = action.payload;
+    if (
+      typeof payload === 'object' &&
+      payload !== null &&
+      (payload as Record<string, unknown>)['relation'] === 'duplicate'
+    ) {
+      return 'close_issue';
+    }
+  }
+  return null;
+}
+
+/**
+ * reaction 的目标（`IssueReactionAdd` / `IssueReactionRemove` 的 `target`）。
+ *
+ * 缺省 `issue`：老产出（只写 `op` + `content`）继续合法，语义不变。
+ * `comment` 时必须同时给 `comment_id` —— 这条交叉校验放在 `semanticIssuesOf()` 里做，
+ * 不用 zod 的 `superRefine`：`discriminatedUnion` 的成员一旦是 refinement，
+ * 判别联合的类型收窄就失效（`action.payload` 变成 `unknown`）。
+ */
+export const REACTION_TARGETS = ['issue', 'comment'] as const;
+
+export type ReactionTargetKind = (typeof REACTION_TARGETS)[number];
+
+/**
+ * `link` 的关系枚举（`IssueLink` 的 `relation`）。
+ *
+ * 取的是 GitHub **原生结构**能表达的四种 + 一个兜底：
+ *  - `duplicate`：`state_reason=duplicate` 关单，并留一条指向原 issue 的关联评论；
+ *  - `blocks` / `blocked_by`：issue dependencies 端点；
+ *  - `parent`：把当前 issue 挂成目标 issue 的 sub-issue；
+ *  - `relates`：GitHub 没有原生「相关」结构，落到一条带标记的关联评论上。
+ */
+export const LINK_RELATIONS = ['duplicate', 'blocks', 'blocked_by', 'parent', 'relates'] as const;
+
+export type LinkRelation = (typeof LINK_RELATIONS)[number];
+
+/**
+ * `close_issue` 的 `state_reason`。
+ *
+ * GitHub 的原生枚举是四个（completed / not_planned / duplicate / reopened），
+ * `reopened` 是 reopen 动作的产物而不是关闭理由，所以关闭侧只接受前三个。
+ * 缺省 `not_planned`：v2.0 的执行器就是这么写死的（关单即「不打算做」），保留可回归。
+ */
+export const CLOSE_STATE_REASONS = ['completed', 'not_planned', 'duplicate'] as const;
+
+export type CloseStateReason = (typeof CLOSE_STATE_REASONS)[number];
+
+/**
+ * 只读的 issue 工具名（与 `packages/contract/src/issue-tools.ts` 的 read 组逐字一致）。
+ *
+ * 为什么在契约里再写一遍而不是 import contract：两个包都是叶子包、互不依赖
+ * （`packages/*` 不得互相 import 以免成环）。等值性由能同时 import 两个包的测试盯住
+ * （`apps/server/test/skills-prompt.test.ts`）。
+ */
+export const ISSUE_READ_TOOL_NAMES = [
+  'IssueGet',
+  'IssueList',
+  'IssueCommentsList',
+  'IssueTimeline',
+  'IssueSearch',
+] as const;
+
+export type IssueReadToolName = (typeof ISSUE_READ_TOOL_NAMES)[number];
+
+/** 单份产出里最多几条只读调用（与工具轮预算同源：一轮 6 次，够查「评论 + 相似 issue」）。 */
+export const MAX_TOOL_CALLS_PER_OUTPUT = 6;
+
+/**
+ * 一条只读调用。
+ *
+ * `input` 故意是开放对象而不是逐工具的联合：读工具的参数还在长（cursor / limit / labels…），
+ * 写死 schema 会让「参数多给一个」变成整份产出被拒 —— 而这里的失败代价不对等：
+ * 参数错了执行器会回一条结构化错误给模型，模型下一轮就能改；整份拒绝则要白跑一轮。
+ * 真正的参数校验在执行器（`runtime/issue-read-tools.ts`）里做，错误以 `bad-input` 回给模型。
+ */
+export const issueToolCallSchema = z.strictObject({
+  name: z.enum(ISSUE_READ_TOOL_NAMES),
+  input: z.record(z.string(), z.unknown()),
+});
 
 /**
  * GitHub 的 8 种 reaction content。
@@ -147,24 +263,53 @@ export const labelActionSchema = z.strictObject({
   }),
 });
 
+/* ── v2.2 的目标标识：issue 号 / 评论 id / login ────────────────────────────── */
+
+/** 目标 issue 号：正整数，上界防溢出（GitHub 的 issue number 是 int32 量级）。 */
+const targetIssueNumber = z.number().int().positive().max(2_000_000_000);
+
+/** 评论 id：GitHub 的 comment id 是 int64 量级，用安全整数上界。 */
+const targetCommentId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+
+/** 指派人的 login 形状（最长 39，只允许字母数字与连字符 —— GitHub 的账号规则）。 */
+const loginName = z
+  .string()
+  .min(1)
+  .max(39)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9-]*$/u, 'login 只允许字母、数字与连字符');
+
 /**
  * `comment`：写进**槽位**（§5 第二行）。同 issue 同槽位只保留一条，
  * 所以 `slot` 是必填且必须稳定（发布说明、失败说明各占一个槽）。
+ *
+ * v2.2 的 `reply_to`（`IssueCommentReply`）：给的是**被回复评论的 id**。
+ * 平台据此把原评论渲染成引用块并定向 `@` 作者 —— GitHub 的 issue 评论没有 thread，
+ * 「回复」只能这样表达（`docs/plan-issue-tools.md` §2）。渲染在
+ * `writeback/v21/markup.ts` 里做，进正文的只有渲染结果，`reply_to` 本身不落 GitHub。
  */
 export const commentActionSchema = z.strictObject({
   type: z.literal('comment'),
   payload: z.strictObject({
     slot: slotName,
     body: z.string().min(1).max(MAX_V21_COMMENT_BODY),
+    reply_to: targetCommentId.optional(),
   }),
 });
 
-/** `reaction`：幂等的表情反馈（§5 第三行）。`op='remove'` 只删自己打的那条。 */
+/**
+ * `reaction`：幂等的表情反馈（§5 第三行）。`op='remove'` 只删自己打的那条。
+ *
+ * v2.2 的 `target` / `comment_id`（`IssueReactionAdd` / `IssueReactionRemove`）：
+ * 缺省打主贴，`target='comment'` 打某条评论。两个字段都可选，所以老产出继续合法；
+ * 「`target='comment'` 却没给 `comment_id`」由 `semanticIssuesOf()` 判成整份拒绝。
+ */
 export const reactionActionSchema = z.strictObject({
   type: z.literal('reaction'),
   payload: z.strictObject({
     op: z.enum(['add', 'remove']),
     content: z.enum(REACTION_CONTENTS),
+    target: z.enum(REACTION_TARGETS).optional(),
+    comment_id: targetCommentId.optional(),
   }),
 });
 
@@ -193,16 +338,87 @@ export const openPrActionSchema = z.strictObject({
 });
 
 /**
- * `close_issue`：关 issue（§5 第六行）。**没有参数**：关哪个 issue 由执行上下文决定，
- * 关的理由由执行侧固定（`not_planned`）。空对象写成 `strictObject({})`，
- * 多写一个字段就是模型在自创语义，按「形状不合规」整份拒绝。
+ * `close_issue`：关 issue（§5 第六行）。`state_reason` 缺省 `not_planned`（v2.0 的固定值）。
+ *
+ * v2.2 起支持 GitHub 原生的关闭理由与「重复」（`IssueClose`）：
+ *  - `state_reason='duplicate'` **必须**同时给 `duplicate_of`（原 issue 号），
+ *    否则等于关了一个没有指向的单 —— 由 `semanticIssuesOf()` 拒绝；
+ *  - `comment` 是「关闭时附带的一句话」，执行侧把它写进 `close` 槽位，
+ *    与 `comment` 动作共用槽位语义（省掉一条会随触发次数增长的散评论）。
+ *
+ * 仍然只在顶层 `verdict='fail'` 时允许执行（§5 第六行：不采信模型自评）。
  */
 export const closeIssueActionSchema = z.strictObject({
   type: z.literal('close_issue'),
+  payload: z.strictObject({
+    state_reason: z.enum(CLOSE_STATE_REASONS).optional(),
+    duplicate_of: targetIssueNumber.optional(),
+    comment: z.string().min(1).max(MAX_V21_COMMENT_BODY).optional(),
+  }),
+});
+
+/** `reopen_issue`：重新打开（`IssueReopen`，v2.2）。无参数 —— 目标由执行上下文决定。 */
+export const reopenIssueActionSchema = z.strictObject({
+  type: z.literal('reopen_issue'),
   payload: z.strictObject({}),
 });
 
-/** 七类动作的判别联合（`type` 是判别键）。 */
+/**
+ * `update_issue`：改标题 / 正文 / 指派人 / 里程碑（`IssueUpdate`，v2.2）。
+ *
+ * `expected_updated_at` 是**乐观锁**：issue 的 PATCH 没有 `If-Match`，两个人同时改正文
+ * 是静默覆盖。执行侧拿到它就先读一次 `updated_at` 比对，不一致整份失败
+ * （`update-conflict`），让模型重读再决定 —— 这是 GitHub 上唯一可行的并发检测手段。
+ * 不给就等于「我知道可能覆盖，认了」（v2.0 的行为）。
+ */
+export const updateIssueActionSchema = z.strictObject({
+  type: z.literal('update_issue'),
+  payload: z.strictObject({
+    title: z.string().min(1).max(120).optional(),
+    body: z.string().max(MAX_V21_COMMENT_BODY).optional(),
+    assignees: z.array(loginName).max(10).optional(),
+    /** `null` = 清空里程碑（GitHub 的 PATCH 用 `milestone: null` 表达）。 */
+    milestone: z.number().int().positive().max(2_000_000_000).nullable().optional(),
+    expected_updated_at: z.string().min(1).max(64).optional(),
+  }),
+});
+
+/**
+ * `update_comment` / `delete_comment`：改 / 删**我们自己写过**的评论
+ * （`IssueCommentUpdate` / `IssueCommentDelete`，v2.2）。
+ *
+ * 为什么单独成动作而不是给 `comment` 加字段：`comment` 是槽位覆盖（正文由平台重拼、
+ * 标记由平台追加），而这两个动作作用于**已有评论**，语义是「改那条」而不是「写这个槽」。
+ * 合成一个会让「槽位」与「评论 id」两种寻址方式在同一 payload 里互斥，模型必然写错。
+ */
+export const updateCommentActionSchema = z.strictObject({
+  type: z.literal('update_comment'),
+  payload: z.strictObject({
+    comment_id: targetCommentId,
+    body: z.string().min(1).max(MAX_V21_COMMENT_BODY),
+  }),
+});
+
+export const deleteCommentActionSchema = z.strictObject({
+  type: z.literal('delete_comment'),
+  payload: z.strictObject({ comment_id: targetCommentId }),
+});
+
+/**
+ * `link`：与另一个 issue / PR 的结构关系（`IssueLink`，v2.2）。
+ *
+ * `duplicate` **等价于关单**，因此受 `agent.actions.close_issue` 开关约束
+ * （`gatedActionOf()`）；其余 relation 是纯关联，不受开关约束。
+ */
+export const linkActionSchema = z.strictObject({
+  type: z.literal('link'),
+  payload: z.strictObject({
+    relation: z.enum(LINK_RELATIONS),
+    target_number: targetIssueNumber,
+  }),
+});
+
+/** 全部动作的判别联合（`type` 是判别键；前七类 + v2.2 的五类）。 */
 export const outputActionSchema = z.discriminatedUnion('type', [
   verdictActionSchema,
   labelActionSchema,
@@ -211,6 +427,11 @@ export const outputActionSchema = z.discriminatedUnion('type', [
   createIssueActionSchema,
   openPrActionSchema,
   closeIssueActionSchema,
+  reopenIssueActionSchema,
+  updateIssueActionSchema,
+  updateCommentActionSchema,
+  deleteCommentActionSchema,
+  linkActionSchema,
 ]);
 
 /**
@@ -222,6 +443,16 @@ export const outputV21Schema = z.strictObject({
   verdict: verdictValue.optional(),
   evidence: evidenceList.optional(),
   actions: z.array(outputActionSchema).max(MAX_OUTPUT_ACTIONS),
+  /**
+   * v2.3 的只读调用（`docs/plan-issue-tools.md` §3 B 的「只读工具轮」）。
+   *
+   * 语义是**中间轮**：有它就一定没有 `actions`，也不许给 `verdict`（由 `semanticIssuesOf()` 强制）。
+   * 两条理由：
+   *  - 写只发生在最终轮 —— 否则模型第一轮就能发评论，绕过「这是最终结论」这层判断；
+   *  - 结论只出现在看过数据之后 —— 允许同一轮既给 pass/fail 又要读数据，
+   *    等于允许它先下结论再找证据。
+   */
+  tool_calls: z.array(issueToolCallSchema).max(MAX_TOOL_CALLS_PER_OUTPUT).optional(),
 });
 
 /* ── 3. 类型（从 schema 反推，保证「类型 = 校验」永远同步）────────────────── */
@@ -237,6 +468,13 @@ export type ReactionActionV21 = Extract<OutputV21Action, { type: 'reaction' }>;
 export type CreateIssueActionV21 = Extract<OutputV21Action, { type: 'create_issue' }>;
 export type OpenPrActionV21 = Extract<OutputV21Action, { type: 'open_pr' }>;
 export type CloseIssueActionV21 = Extract<OutputV21Action, { type: 'close_issue' }>;
+export type ReopenIssueActionV21 = Extract<OutputV21Action, { type: 'reopen_issue' }>;
+export type UpdateIssueActionV21 = Extract<OutputV21Action, { type: 'update_issue' }>;
+export type UpdateCommentActionV21 = Extract<OutputV21Action, { type: 'update_comment' }>;
+export type DeleteCommentActionV21 = Extract<OutputV21Action, { type: 'delete_comment' }>;
+export type LinkActionV21 = Extract<OutputV21Action, { type: 'link' }>;
+/** 一条只读调用（v2.3；`output.tool_calls` 的元素类型）。 */
+export type IssueToolCallV21 = z.infer<typeof issueToolCallSchema>;
 
 /* ── 4. 校验器 ───────────────────────────────────────────────────────────── */
 
@@ -250,7 +488,7 @@ export type OutputV21Validation =
   | { readonly ok: true; readonly output: OutputV21 }
   | { readonly ok: false; readonly errors: readonly OutputV21Issue[] };
 
-/** 是不是七类之一（导出给执行侧做「运行期再确认一次」用）。 */
+/** 是不是 `OUTPUT_ACTION_TYPES` 里的一类（导出给执行侧做「运行期再确认一次」用）。 */
 export function isOutputActionType(value: unknown): value is OutputActionType {
   return typeof value === 'string' && (OUTPUT_ACTION_TYPES as readonly string[]).includes(value);
 }
@@ -308,9 +546,89 @@ function preflightDiscriminator(value: unknown): OutputV21Issue[] {
 }
 
 /**
+ * 形状合法之后的**语义交叉校验**（同样整份拒绝，路径精确到字段）。
+ *
+ * 为什么不用 zod 的 `superRefine`：判别联合的成员一旦是 refinement，`discriminatedUnion`
+ * 的类型收窄就会失效（`action.payload` 退化成 `unknown`），执行器的 `switch` 也就拿不到
+ * 字段类型 —— 而这里的校验本来就是跨字段的，放在「已解析成类型」之后反而更清楚。
+ *
+ * 三条规则都对应一次真实的失败：给了 `target='comment'` 却没有 `comment_id`（打不出去）、
+ * 关单理由是 `duplicate` 却没有原 issue（关了一个没有指向的单）、
+ * `update_issue` 一个字段都没给（一次什么都不改的 PATCH）。
+ */
+export function semanticIssuesOf(output: OutputV21): OutputV21Issue[] {
+  const issues: OutputV21Issue[] = [];
+
+  /*
+    工具轮的两条不变量（§3 B 的「中间轮禁写」）。它们必须在契约层就成立，
+    不能只靠编排层「看见 tool_calls 就跳过写回」：
+     - 有 tool_calls ⇒ 没有 actions：否则模型第一轮就能发评论，绕开「最终结论」这层判断；
+     - 有 tool_calls ⇒ 没有 verdict：否则它会先给结论再找证据。
+  */
+  const calls = output.tool_calls ?? [];
+  if (calls.length > 0) {
+    if (output.actions.length > 0) {
+      issues.push({
+        path: '/actions',
+        message: '含 tool_calls 的产出不许带 actions：工具轮只读，写只发生在最终轮',
+      });
+    }
+    if (output.verdict !== undefined) {
+      issues.push({
+        path: '/verdict',
+        message: '含 tool_calls 的产出不许给 verdict：结论留给看过数据的最终轮',
+      });
+    }
+  }
+  output.actions.forEach((action, index) => {
+    const at = `/actions/${String(index)}/payload`;
+    switch (action.type) {
+      case 'reaction': {
+        if (action.payload.target === 'comment' && action.payload.comment_id === undefined) {
+          issues.push({
+            path: `${at}/comment_id`,
+            message: 'target=comment 时必须给 comment_id（说明贴哪条评论）',
+          });
+        }
+        break;
+      }
+      case 'close_issue': {
+        if (action.payload.state_reason === 'duplicate' && action.payload.duplicate_of === undefined) {
+          issues.push({
+            path: `${at}/duplicate_of`,
+            message: 'state_reason=duplicate 时必须给 duplicate_of（原 issue 的编号）',
+          });
+        }
+        break;
+      }
+      case 'update_issue': {
+        const payload = action.payload;
+        if (
+          payload.title === undefined &&
+          payload.body === undefined &&
+          payload.assignees === undefined &&
+          payload.milestone === undefined
+        ) {
+          issues.push({
+            path: at,
+            message: '至少给一个要改的字段（title / body / assignees / milestone）',
+          });
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  });
+  return issues;
+}
+
+/**
  * 校验一份已解析的产出。
  *
  * 语义是**整份判定**：`ok: false` 时调用方一条动作都不能执行（§4 校验第 1、2 条）。
+ * 顺序是「判别键 → 形状 → 语义交叉」：前两步的错误更基础，先报出来才不会被
+ * 一堆 `Invalid input` 淹掉。
  */
 export function validateOutputV21(value: unknown): OutputV21Validation {
   const preflight = preflightDiscriminator(value);
@@ -319,14 +637,19 @@ export function validateOutputV21(value: unknown): OutputV21Validation {
   }
 
   const parsed = outputV21Schema.safeParse(value);
-  if (parsed.success) {
-    return { ok: true, output: parsed.data };
+  if (!parsed.success) {
+    const errors = parsed.error.issues.map((issue) => ({
+      path: toPointer(issue.path),
+      message: issue.message,
+    }));
+    return { ok: false, errors: errors.length > 0 ? errors : [{ path: '/', message: '产出不符合 v2 契约' }] };
   }
-  const errors = parsed.error.issues.map((issue) => ({
-    path: toPointer(issue.path),
-    message: issue.message,
-  }));
-  return { ok: false, errors: errors.length > 0 ? errors : [{ path: '/', message: '产出不符合 v2 契约' }] };
+
+  const semantic = semanticIssuesOf(parsed.data);
+  if (semantic.length > 0) {
+    return { ok: false, errors: semantic };
+  }
+  return { ok: true, output: parsed.data };
 }
 
 /**

@@ -35,6 +35,11 @@ const WRITE_METHODS: readonly string[] = [
 type FakePort = {
   readonly port: V21GithubPort;
   readonly calls: string[];
+  /**
+   * 每次调用的**入参**（方法名 + input）：`link` 的四种 relation 之间只差
+   * 「调了哪个方法、传了什么」，reaction 的评论级目标也一样。
+   */
+  readonly records: { readonly method: string; readonly input: Record<string, unknown> }[];
 };
 
 /** 假端口：记方法名；`failMethod` 让指定方法一调用就抛（模拟 GitHub 写失败）。 */
@@ -44,14 +49,30 @@ function createFakePort(
     readonly reactions?: readonly V21ReactionEntry[];
     readonly failMethod?: string | undefined;
     readonly notFoundOnUpdate?: boolean | undefined;
+    /** `getIssueComment` 返回的作者（判 `update_comment` / `delete_comment` 的归属）。 */
+    readonly commentAuthor?: string | null | undefined;
+    /** `getIssueComment` 返回的原正文（`reply_to` 的引用块来源）。 */
+    readonly commentBody?: string | null | undefined;
+    /** `getIssueUpdatedAt` 返回的当前 `updated_at`（乐观锁用例）。 */
+    readonly issueUpdatedAt?: string | undefined;
+    /** 存在的 issue 编号；给了就按它判 `issueExists`，不给 = 一律存在。 */
+    readonly existingIssueNumbers?: readonly number[] | undefined;
   } = {},
 ): FakePort {
   const calls: string[] = [];
-  const record = (method: string): void => {
+  const records: { readonly method: string; readonly input: Record<string, unknown> }[] = [];
+  const record = (method: string, input?: object): void => {
+    if (input !== undefined) {
+      records.push({ method, input: { ...input } });
+    }
     calls.push(method);
     if (options.failMethod === method) {
       throw new Error(`模拟写失败：${method}`);
     }
+  };
+  /** issue 编辑面的统一记录（方法与入参都进 `records`，方法名进 `calls`）。 */
+  const recordEdit = (method: string, input: object): void => {
+    record(method, input);
   };
 
   const port: V21GithubPort = {
@@ -59,11 +80,12 @@ function createFakePort(
       calls.push('listIssueComments');
       return [...(options.comments ?? [])];
     },
-    createIssueComment: async () => {
-      record('createIssueComment');
+    createIssueComment: async (input) => {
+      record('createIssueComment', input);
       return { id: 1001 };
     },
     updateIssueComment: async (input) => {
+      records.push({ method: 'updateIssueComment', input: { ...input } });
       calls.push('updateIssueComment');
       if (options.notFoundOnUpdate === true) {
         // 槽位写回要能认出「原评论被人删了」这种 404 并重建。
@@ -91,20 +113,67 @@ function createFakePort(
       record('openPullRequest');
       return { number: 88 };
     },
-    listReactions: async () => {
-      calls.push('listReactions');
+    listReactions: async (input) => {
+      record('listReactions', input);
       return [...(options.reactions ?? [])];
     },
-    addReaction: async () => {
-      record('addReaction');
+    addReaction: async (input) => {
+      record('addReaction', input);
       return { id: 9 };
     },
     removeReaction: async () => {
       record('removeReaction');
     },
+    issueEdit: {
+      updateIssue: async (input) => {
+        recordEdit('updateIssue', input);
+        return { updatedAt: '2026-05-02T00:00:00Z' };
+      },
+      getIssueUpdatedAt: async (input) => {
+        recordEdit('getIssueUpdatedAt', input);
+        return options.issueUpdatedAt ?? '2026-05-01T00:00:00Z';
+      },
+      reopenIssue: async (input) => {
+        recordEdit('reopenIssue', input);
+      },
+      closeIssueWithReason: async (input) => {
+        recordEdit('closeIssueWithReason', input);
+        // 既有断言用 `closeIssue` 这个名字表示「关闭了 issue」这个写行为；
+        // v2.2 的关闭走 `closeIssueWithReason`（同一个 PATCH + 可选 state_reason），
+        // 所以两个名字都记，既有用例的断言不必改。
+        calls.push('closeIssue');
+      },
+      getIssueComment: async (input) => {
+        recordEdit('getIssueComment', input);
+        return {
+          id: input.commentId,
+          authorLogin: options.commentAuthor === undefined ? 'pi-bot[bot]' : options.commentAuthor,
+          body: options.commentBody === undefined ? '原来的评论正文' : options.commentBody,
+        };
+      },
+      deleteIssueComment: async (input) => {
+        recordEdit('deleteIssueComment', input);
+      },
+      getIssueId: async (input) => {
+        recordEdit('getIssueId', input);
+        return 1000 + input.issueNumber;
+      },
+      issueExists: async (input) => {
+        recordEdit('issueExists', input);
+        return options.existingIssueNumbers === undefined
+          ? true
+          : options.existingIssueNumbers.includes(input.issueNumber);
+      },
+      addBlockedBy: async (input) => {
+        recordEdit('addBlockedBy', input);
+      },
+      addSubIssue: async (input) => {
+        recordEdit('addSubIssue', input);
+      },
+    },
     isOwn: (login) => login === 'pi-bot[bot]',
   };
-  return { port, calls };
+  return { port, calls, records };
 }
 
 /** 用真实校验器过一遍夹具：测试里的产出形状与线上完全一致（不靠 `as any`）。 */
@@ -393,5 +462,403 @@ describe('其余分支：槽位、去重闸门、reaction 归属', () => {
     expect(failed.ok).toBe(false);
     expect(failed.errors[0]?.message).toContain('reaction-not-found');
     expect(noOwn.calls).not.toContain('removeReaction');
+  });
+});
+
+/* ── v2.2 写类工具：动作 →「调了哪个端口方法、传了什么」────────────────────── */
+
+/** 取某方法的全部入参记录。 */
+function inputsOf(records: FakePort['records'], method: string): Record<string, unknown>[] {
+  return records.filter((row) => row.method === method).map((row) => row.input);
+}
+
+describe('reaction：评论级目标', () => {
+  it('target=comment + comment_id → 端口收到 commentId；只给 comment_id 也按评论级处理', async () => {
+    const withTarget = createFakePort();
+    const ok = await executeV21(
+      baseInput(withTarget.port, {
+        output: outputOf({
+          actions: [
+            { type: 'reaction', payload: { op: 'add', content: 'eyes', target: 'comment', comment_id: 555 } },
+          ],
+        }),
+      }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(inputsOf(withTarget.records, 'addReaction')[0]?.['commentId']).toBe(555);
+
+    const idOnly = createFakePort();
+    await executeV21(
+      baseInput(idOnly.port, {
+        output: outputOf({ actions: [{ type: 'reaction', payload: { op: 'add', content: 'eyes', comment_id: 556 } }] }),
+      }),
+    );
+    expect(inputsOf(idOnly.records, 'addReaction')[0]?.['commentId']).toBe(556);
+  });
+
+  it('没给目标时仍然打主贴（不带 commentId，老产出语义不变）', async () => {
+    const fake = createFakePort();
+    await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ actions: [{ type: 'reaction', payload: { op: 'add', content: 'eyes' } }] }),
+      }),
+    );
+    expect(inputsOf(fake.records, 'addReaction')[0]?.['commentId']).toBeUndefined();
+  });
+});
+
+describe('comment：reply_to 渲染 + 提及中和', () => {
+  it('reply_to → 读原评论、逐行引用并只 @ 原评论作者', async () => {
+    const fake = createFakePort({ commentAuthor: 'alice', commentBody: '第一行\n第二行' });
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          actions: [
+            { type: 'comment', payload: { slot: 'result', body: '@alice 和 @bob 都看一下', reply_to: 777 } },
+          ],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(inputsOf(fake.records, 'getIssueComment')[0]?.['commentId']).toBe(777);
+    const body = String(inputsOf(fake.records, 'createIssueComment')[0]?.['body'] ?? '');
+    expect(body).toContain('> **@alice** wrote:');
+    expect(body).toContain('> 第一行');
+    expect(body).toContain('> 第二行');
+    // 允许清单 = 装配层给的 + 被回复评论的作者：原评论作者保持可 @。
+    expect(body).toContain('@alice 和');
+    // 不在允许清单里的提要被插零宽空格（人看不到，GitHub 不再渲染成提及）。
+    expect(body).not.toContain('@bob');
+    expect(body).toContain('@\u200bbob');
+    expect(result.executed[0]?.detail).toContain('已中和');
+  });
+
+  it('allowedMentions 里的 login 不被中和', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        allowedMentions: ['bob'],
+        output: outputOf({
+          actions: [{ type: 'comment', payload: { slot: 'result', body: '你好 @bob，@carol 也看下' } }],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    const body = String(inputsOf(fake.records, 'createIssueComment')[0]?.['body'] ?? '');
+    expect(body).toContain('@bob');
+    expect(body).toContain('@\u200bcarol');
+  });
+});
+
+describe('正文里的 issue 引用校验', () => {
+  it('引用本仓库不存在的编号 → ref-not-found 且整条失败（不写评论）', async () => {
+    const fake = createFakePort({ existingIssueNumbers: [42, 7] });
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ actions: [{ type: 'comment', payload: { slot: 'result', body: '参见 #999' } }] }),
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.message).toContain('ref-not-found');
+    expect(fake.calls).not.toContain('createIssueComment');
+  });
+
+  it('指向其它仓库的引用跳过校验；超过 maxRefsPerBody 直接失败', async () => {
+    const other = createFakePort({ existingIssueNumbers: [] });
+    const ok = await executeV21(
+      baseInput(other.port, {
+        output: outputOf({
+          actions: [{ type: 'comment', payload: { slot: 'result', body: '参见 other/repo#999' } }],
+        }),
+      }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(inputsOf(other.records, 'issueExists')).toEqual([]);
+
+    const many = createFakePort();
+    const failed = await executeV21(
+      baseInput(many.port, {
+        output: outputOf({
+          actions: [{ type: 'comment', payload: { slot: 'result', body: '#1 #2 #3 #4 #5 #6' } }],
+        }),
+      }),
+    );
+    expect(failed.ok).toBe(false);
+    expect(failed.errors[0]?.message).toContain('too-many-refs');
+  });
+
+  it('dry-run 不发 issueExists（预演不产生调用）', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        dryRun: true,
+        output: outputOf({ actions: [{ type: 'comment', payload: { slot: 'result', body: '参见 #777' } }] }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(inputsOf(fake.records, 'issueExists')).toEqual([]);
+  });
+});
+
+describe('close_issue：state_reason 与附带说明', () => {
+  it('state_reason=duplicate + duplicate_of → closeIssueWithReason(duplicate)，且不额外发关联评论', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          verdict: 'fail',
+          actions: [
+            { type: 'close_issue', payload: { state_reason: 'duplicate', duplicate_of: 41, comment: '与 #41 重复' } },
+          ],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(inputsOf(fake.records, 'closeIssueWithReason')[0]).toMatchObject({
+      reason: 'duplicate',
+      duplicateOf: 41,
+    });
+    // 说明评论由 GitHub 层（`buildLinkNote`）发，执行器只写 close 槽位那一条。
+    const created = inputsOf(fake.records, 'createIssueComment');
+    expect(created).toHaveLength(1);
+    expect(String(created[0]?.['body'])).not.toContain('pi-bot:link');
+    expect(result.executed[0]?.detail).toContain('duplicate_of=#41');
+  });
+
+  it('缺省 reason 仍然是 not_planned（v2.0 语义不变）', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ verdict: 'fail', actions: [{ type: 'close_issue', payload: {} }] }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(inputsOf(fake.records, 'closeIssueWithReason')[0]).toMatchObject({ reason: 'not_planned' });
+    expect(inputsOf(fake.records, 'closeIssueWithReason')[0]?.['duplicateOf']).toBeUndefined();
+  });
+});
+
+describe('reopen_issue / update_issue', () => {
+  it('reopen_issue → 调 reopenIssue（当前 issue）', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, { output: outputOf({ actions: [{ type: 'reopen_issue', payload: {} }] }) }),
+    );
+    expect(result.ok).toBe(true);
+    expect(inputsOf(fake.records, 'reopenIssue')[0]).toMatchObject({ repo: 'acme/widgets', issueNumber: 42 });
+  });
+
+  it('expected_updated_at 不匹配 → update-conflict，且不调 updateIssue', async () => {
+    const fake = createFakePort({ issueUpdatedAt: '2026-06-01T00:00:00Z' });
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          actions: [
+            { type: 'update_issue', payload: { title: '新标题', expected_updated_at: '2026-01-01T00:00:00Z' } },
+          ],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.message).toContain('update-conflict');
+    expect(inputsOf(fake.records, 'updateIssue')).toEqual([]);
+  });
+
+  it('乐观锁匹配 → updateIssue 只带给了的字段', async () => {
+    const fake = createFakePort({ issueUpdatedAt: '2026-06-01T00:00:00Z' });
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          actions: [
+            {
+              type: 'update_issue',
+              payload: { title: '新标题', expected_updated_at: '2026-06-01T00:00:00Z' },
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    const input = inputsOf(fake.records, 'updateIssue')[0];
+    expect(input).toMatchObject({ repo: 'acme/widgets', issueNumber: 42, title: '新标题' });
+    // 没给的字段不该出现（否则 PATCH 会拿 undefined 覆盖掉别人的改动）。
+    expect(input === undefined ? null : Object.keys(input).sort()).toEqual(['issueNumber', 'repo', 'title']);
+    expect(result.executed[0]?.detail).toContain('title');
+  });
+});
+
+describe('update_comment / delete_comment：只动自己写的', () => {
+  it('别人的评论 → comment-not-own，且一个写方法都不调', async () => {
+    const fake = createFakePort({ commentAuthor: 'mallory' });
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          actions: [{ type: 'update_comment', payload: { comment_id: 900, body: '改一下' } }],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.message).toContain('comment-not-own');
+    expect(fake.calls).not.toContain('updateIssueComment');
+
+    const del = createFakePort({ commentAuthor: 'mallory' });
+    const deleted = await executeV21(
+      baseInput(del.port, {
+        output: outputOf({ actions: [{ type: 'delete_comment', payload: { comment_id: 900 } }] }),
+      }),
+    );
+    expect(deleted.ok).toBe(false);
+    expect(deleted.errors[0]?.message).toContain('comment-not-own');
+    expect(inputsOf(del.records, 'deleteIssueComment')).toEqual([]);
+  });
+
+  it('自己的评论 → 改写走 updateIssueComment、删除走 deleteIssueComment', async () => {
+    const fake = createFakePort();
+    const updated = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          actions: [{ type: 'update_comment', payload: { comment_id: 900, body: '改一下' } }],
+        }),
+      }),
+    );
+    expect(updated.ok).toBe(true);
+    expect(inputsOf(fake.records, 'updateIssueComment')[0]).toMatchObject({ commentId: 900, body: '改一下' });
+
+    const del = createFakePort();
+    const deleted = await executeV21(
+      baseInput(del.port, {
+        output: outputOf({ actions: [{ type: 'delete_comment', payload: { comment_id: 901 } }] }),
+      }),
+    );
+    expect(deleted.ok).toBe(true);
+    expect(inputsOf(del.records, 'deleteIssueComment')[0]).toMatchObject({ commentId: 901 });
+  });
+});
+
+describe('link：四种 relation 的端口映射', () => {
+  it('relates → 一条带标记的关联评论', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ actions: [{ type: 'link', payload: { relation: 'relates', target_number: 41 } }] }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    const body = String(inputsOf(fake.records, 'createIssueComment')[0]?.['body'] ?? '');
+    expect(body).toContain('#41');
+    expect(body).toContain('pi-bot:link relates');
+  });
+
+  it('duplicate → closeIssueWithReason(duplicate_of)，且不额外发关联评论', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        // `duplicate` 等价于关单，所以它和 `close_issue` 共用同一条前置条件（verdict=fail）。
+        output: outputOf({
+          verdict: 'fail',
+          actions: [{ type: 'link', payload: { relation: 'duplicate', target_number: 41 } }],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(inputsOf(fake.records, 'closeIssueWithReason')[0]).toMatchObject({
+      reason: 'duplicate',
+      duplicateOf: 41,
+    });
+    // 说明评论由 GitHub 层发；执行器再发一条就等于同一个关系出现两次。
+    expect(inputsOf(fake.records, 'createIssueComment')).toEqual([]);
+  });
+
+  it('duplicate 在 verdict 不是 fail 时整条拒绝（不留「换个动作名关单」的后门）', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({
+          verdict: 'pass',
+          actions: [{ type: 'link', payload: { relation: 'duplicate', target_number: 41 } }],
+        }),
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(inputsOf(fake.records, 'closeIssueWithReason')).toEqual([]);
+    expect(result.errors[0]?.message).toContain('close-without-fail');
+  });
+
+  it('blocked_by → addBlockedBy(当前 issue, target 的 id)', async () => {
+    const fake = createFakePort();
+    await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ actions: [{ type: 'link', payload: { relation: 'blocked_by', target_number: 41 } }] }),
+      }),
+    );
+    expect(inputsOf(fake.records, 'addBlockedBy')[0]).toMatchObject({
+      issueNumber: 42,
+      blockedByIssueId: 1041,
+    });
+  });
+
+  it('blocks → 语义反过来：addBlockedBy(target, 当前 issue 的 id)', async () => {
+    const fake = createFakePort();
+    await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ actions: [{ type: 'link', payload: { relation: 'blocks', target_number: 41 } }] }),
+      }),
+    );
+    expect(inputsOf(fake.records, 'addBlockedBy')[0]).toMatchObject({
+      issueNumber: 41,
+      blockedByIssueId: 1042,
+    });
+  });
+
+  it('parent → addSubIssue(parent=target, sub=当前 issue 的 id)', async () => {
+    const fake = createFakePort();
+    await executeV21(
+      baseInput(fake.port, {
+        output: outputOf({ actions: [{ type: 'link', payload: { relation: 'parent', target_number: 41 } }] }),
+      }),
+    );
+    expect(inputsOf(fake.records, 'addSubIssue')[0]).toMatchObject({
+      parentNumber: 41,
+      subIssueId: 1042,
+    });
+  });
+
+  it('duplicate 受 close_issue 开关约束（换个工具名也关不掉单）', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        actionsEnabled: { create_issue: true, open_pr: true, close_issue: false },
+        output: outputOf({ actions: [{ type: 'link', payload: { relation: 'duplicate', target_number: 41 } }] }),
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]?.message).toContain('action-disabled');
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('dry-run → 只给计划，一条写方法都不调', async () => {
+    const fake = createFakePort();
+    const result = await executeV21(
+      baseInput(fake.port, {
+        dryRun: true,
+        output: outputOf({ actions: [{ type: 'link', payload: { relation: 'blocked_by', target_number: 41 } }] }),
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.executed[0]?.detail).toContain('dry-run');
+    expect(fake.calls).toEqual([]);
   });
 });
