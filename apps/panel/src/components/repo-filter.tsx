@@ -1,6 +1,6 @@
 import { useSearchParams } from 'react-router';
 import { useRepoDirectory } from '../lib/repos.ts';
-import { Select } from './ui/select.tsx';
+import { FilterSelect } from './FilterSelect.tsx';
 
 /**
  * 「仓库」筛选下拉（`?repo=owner/name`）——统计页与 Issue 中心共用一个。
@@ -49,19 +49,17 @@ function RepoSelect({
   const items = [...seen].sort().map((repo) => ({ value: repo, label: repo }));
 
   return (
-    <span className="flex items-center gap-1.5" data-testid={testId}>
-      <Select
-        aria-label={label}
+    <span className="inline-flex items-center gap-1.5" data-testid={testId}>
+      <FilterSelect
+        label={label}
         options={items}
-        placeholder={placeholder}
+        allLabel={placeholder}
         value={current}
         disabled={disabled === true}
         className={className}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
+        onChange={onChange}
       />
-      {hint === null || hint === undefined ? null : <span className="text-[11px] text-muted-foreground">{hint}</span>}
+      {hint === null || hint === undefined ? null : <span className="text-xs text-muted-foreground">{hint}</span>}
     </span>
   );
 }

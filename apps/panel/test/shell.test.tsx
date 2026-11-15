@@ -1,30 +1,32 @@
 /**
- * 外壳与设计系统原语的行为测试（D1 交付）。
+ * 外壳（侧栏式 admin）与设计系统原语的行为测试。
  *
  * 覆盖范围刻意选「会让用户卡住」的地方，而不是像素：
+ * - 侧栏三组导航：项目 / 证据 / 全局，当前页 `aria-current="page"`，`[` 折叠；
+ * - 面板面包屑由外壳渲染（一个视图里只有一条）；
  * - ⌘K 命令面板：快捷键打开 / 搜索 / ↑↓ / ↵ 跳转 / Esc 关闭并把焦点还回去；
+ * - ⌘. 去系统页（**导航**，不是模态框）；
  * - 主题切换：三态循环写进 `<html data-theme>` 与 localStorage；
- * - 侧栏开合：窄屏（抽屉）下按钮带 `aria-expanded`，收起后侧栏 `inert`；
+ * - 降级横幅：一行摘要 + 详情抽屉；
  * - `AsyncSection`：错误态的重试 + 折叠技术细节、空态的可行动作、离线 pill；
- * - `Toast`：最多 3 条、可关闭；
- * - `Segmented` / `Field`：`radiogroup` 方向键、`aria-describedby` 绑定。
+ * - `AsyncSection` 之外的提示体系是 `sonner`（官方），本项目不再有自造 toast。
+ *
+ * 不再覆盖 `Dialog` / `Table` / `Field` / `Segmented` / `Toast`：它们要么已是 shadcn 官方产物
+ * （`components/ui/*`，开合与可访问性由上游负责），要么在本轮重构里被官方组件取代
+ * （`Segmented` → `ToggleGroup`、`Toast` → `sonner`），手写实现已删除。
+ * 在这里再测一遍只是把上游的行为抄成第二处真相。
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { toast } from 'sonner';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { setupServer } from 'msw/node';
 import { HttpResponse, http } from 'msw';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
-import { useState } from 'react';
 import { createHandlers } from '../src/mocks/handlers/index.ts';
 import { AppRoutes } from '../src/routes.tsx';
 import { AsyncSection } from '../src/components/AsyncSection.tsx';
-import { Dialog } from '../src/components/ui/dialog.tsx';
-import { Table, TableBody, TableCell, TableRow } from '../src/components/ui/table.tsx';
-import { Field } from '../src/components/ui/field.tsx';
-import { Segmented } from '../src/components/ui/segmented.tsx';
-import { Toaster, clearToasts, pushToast } from '../src/components/ui/toast.tsx';
 import { closeCommandPalette } from '../src/components/CommandPalette.tsx';
 import { THEME_STORAGE_KEY, setThemeMode } from '../src/layout/use-theme.ts';
 
@@ -46,7 +48,7 @@ afterAll(() => {
 afterEach(() => {
   server.resetHandlers();
   closeCommandPalette();
-  clearToasts();
+  toast.dismiss();
   setThemeMode('system');
   vi.restoreAllMocks();
 });
@@ -66,23 +68,84 @@ function renderApp(path = '/'): void {
   );
 }
 
+describe('侧栏（三组导航）', () => {
+  it('项目 / 证据 / 全局三组都在，当前页是 `aria-current="page"`', async () => {
+    renderApp('/repos/acme__widgets/settings/general');
+    await screen.findByTestId('repo-settings-section');
+
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    const project = within(nav).getByTestId('nav-group-project');
+    const evidence = within(nav).getByTestId('nav-group-evidence');
+    const global = within(nav).getByTestId('nav-group-global');
+
+    // 项目组三项按 Issue / 设置 / 技能排（顺序即优先级）
+    expect(within(project).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Issue',
+      '设置',
+      '技能',
+    ]);
+    // 证据组是「运行」：路由 `nav: false`，但侧栏要能找回
+    expect(within(evidence).getByRole('link', { name: '运行' }).getAttribute('href')).toBe(
+      '/repos/acme__widgets/runs',
+    );
+    // 全局组只有系统，且是页面不是浮层
+    expect(within(global).getByRole('link', { name: '系统' }).getAttribute('href')).toBe('/system');
+
+    expect(within(project).getByRole('link', { name: '设置' }).getAttribute('aria-current')).toBe('page');
+    expect(within(project).getByRole('link', { name: 'Issue' }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('`[` 折叠 / 展开侧栏（折叠后侧栏进入 icon 形态）', async () => {
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issue-rail');
+
+    const shell = (): HTMLElement | null => document.querySelector('[data-slot="sidebar"]');
+    expect(shell()?.getAttribute('data-state')).toBe('expanded');
+    expect(document.querySelector('[data-collapsible="icon"]')).toBeNull();
+
+    // `[` 是 window 上的全局快捷键（不挂在某个元素上），所以直接派发到 window
+    fireEvent.keyDown(window, { key: '[' });
+    await waitFor(() => {
+      expect(shell()?.getAttribute('data-state')).toBe('collapsed');
+    });
+    expect(document.querySelector('[data-collapsible="icon"]')).not.toBeNull();
+
+    fireEvent.keyDown(window, { key: '[' });
+    await waitFor(() => {
+      expect(shell()?.getAttribute('data-state')).toBe('expanded');
+    });
+  });
+
+  it('面板面包屑由外壳渲染：全部项目 / 仓库 / 当前页', async () => {
+    renderApp('/repos/acme__widgets/skills');
+    await screen.findByTestId('repo-skills-list');
+
+    const crumb = screen.getByTestId('shell-breadcrumb');
+    expect(crumb.textContent).toContain('全部项目');
+    expect(crumb.textContent).toContain('acme/widgets');
+    expect(crumb.textContent).toContain('技能');
+    // 一个视图里只有一条面包屑
+    expect(screen.getAllByTestId('shell-breadcrumb')).toHaveLength(1);
+  });
+});
+
 describe('命令面板（⌘K）', () => {
-  it('⌘K 打开、搜索「成本」后 ↵ 跳到成本页，Esc 关闭', async () => {
+  it('⌘K 打开、搜索「设置」后 ↵ 跳到设置页，Esc 关闭', async () => {
     const user = userEvent.setup();
-    renderApp('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
 
     await user.keyboard('{Meta>}k{/Meta}');
     const palette = await screen.findByTestId('command-palette');
     const input = within(palette).getByLabelText('搜索页面、仓库与最近 issue');
     expect(document.activeElement).toBe(input);
 
-    await user.type(input, '成本');
+    await user.type(input, '设置');
     const options = within(palette).getAllByRole('option');
-    expect(options[0]?.textContent).toContain('成本');
+    expect(options[0]?.textContent).toContain('设置');
 
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('heading', { level: 1, name: '成本' })).toBeTruthy();
+    expect(await screen.findByTestId('settings-rail')).toBeTruthy();
     expect(screen.queryByTestId('command-palette')).toBeNull();
 
     // 从顶栏按钮打开 → Esc 关闭，焦点必须回到打开它的按钮
@@ -94,10 +157,10 @@ describe('命令面板（⌘K）', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('顶栏按钮也能打开；无结果时给「换个词试试」+ 直达链接', async () => {
+  it('顶栏按钮也能打开；无结果时给「换个词试试」+ 直达系统页', async () => {
     const user = userEvent.setup();
-    renderApp('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
 
     await user.click(screen.getByTestId('command-trigger'));
     const palette = await screen.findByTestId('command-palette');
@@ -105,13 +168,15 @@ describe('命令面板（⌘K）', () => {
 
     const empty = await screen.findByTestId('palette-empty');
     expect(empty.textContent).toContain('换个词试试');
-    expect(within(empty).getByRole('button', { name: '打开「系统」' })).toBeTruthy();
+    const toSystem = within(empty).getByRole('button', { name: '打开「系统」' });
+    await user.click(toSystem);
+    expect(await screen.findByTestId('system-page')).toBeTruthy();
   });
 
   it('↑↓ 在结果之间移动（Home/End 到首尾）', async () => {
     const user = userEvent.setup();
-    renderApp('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
 
     await user.click(screen.getByTestId('command-trigger'));
     const palette = await screen.findByTestId('command-palette');
@@ -135,67 +200,137 @@ describe('命令面板（⌘K）', () => {
 describe('主题切换', () => {
   it('跟随系统 → 浅色 → 深色循环，并把选择写进 localStorage', async () => {
     const user = userEvent.setup();
-    renderApp('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
 
     const toggle = screen.getByTestId('theme-toggle');
     expect(toggle.getAttribute('data-mode')).toBe('system');
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    // 系统模式：不写 `data-theme`，但 `.dark` 必须按系统偏好翻好（官方组件的 `dark:` 变体只认它）。
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
 
     await user.click(toggle);
     await waitFor(() => {
       expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
     });
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('light');
 
     await user.click(screen.getByTestId('theme-toggle'));
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
 
     await user.click(screen.getByTestId('theme-toggle'));
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('system');
   });
 });
 
-describe('侧栏（窄屏抽屉）', () => {
-  it('窄屏：开合按钮带 aria-expanded，收起后侧栏 inert 且 aria 控件仍在', async () => {
-    // 模拟 <1024px：只让 max-width:1023.98px 命中
-    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => {
-      const matches = query.includes('1023.98px');
-      return {
-        matches,
-        media: query,
-        onchange: null,
-        addListener: () => {},
-        removeListener: () => {},
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        dispatchEvent: () => false,
-      } as unknown as MediaQueryList;
-    });
-
+describe('系统页（/system）与 ⌘.', () => {
+  it('⌘. 导航到系统页（不是模态框）', async () => {
     const user = userEvent.setup();
-    renderApp('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
 
-    const toggle = screen.getByTestId('sidebar-toggle');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.getAttribute('aria-controls')).toBe('app-sidebar');
+    await user.keyboard('{Meta>}.{/Meta}');
 
-    const sidebar = screen.getByTestId('app-sidebar');
-    expect(sidebar.hasAttribute('inert')).toBe(true);
+    const page = await screen.findByTestId('system-page');
+    // 第一屏回答「健康吗」：doctor 逐项 + 运行时开关
+    expect(within(page).getByText('系统健康（doctor）')).toBeTruthy();
+    expect(within(page).getByText('运行时开关')).toBeTruthy();
+    expect(within(page).getByRole('heading', { level: 1, name: '系统' })).toBeTruthy();
+    // 面包屑说明「这是全局页，不属于任何项目」
+    expect(screen.getByTestId('shell-breadcrumb').textContent).toContain('系统');
+    // 原模态框不再存在
+    expect(screen.queryByTestId('system-modal-panel')).toBeNull();
+  });
 
-    await user.click(toggle);
-    expect(screen.getByTestId('sidebar-toggle').getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByTestId('app-sidebar').hasAttribute('inert')).toBe(false);
+  it('侧栏「系统」链接也打开同一个页面（同一个入口两处可点）', async () => {
+    const user = userEvent.setup();
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
+
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    await user.click(within(nav).getByRole('link', { name: '系统' }));
+    expect(await screen.findByTestId('system-page')).toBeTruthy();
+  });
+});
+
+describe('AC-32 全局设置：供应商与四档单价', () => {
+  it('供应商行给出 baseURL / key 掩码 / 连通性 + 延迟 / 可用 model', async () => {
+    renderApp('/system');
+
+    const page = await screen.findByTestId('system-page');
+    // 连通的一家：状态点 + 延迟 + 三个 model + 单价
+    const anthropic = await within(page).findByTestId('system-provider-anthropic');
+    expect(anthropic.textContent).toContain('https://api.anthropic.com/v1');
+    expect(anthropic.textContent).toContain('连通');
+    expect(anthropic.textContent).toContain('412ms');
+    expect(within(anthropic).getByTestId('system-provider-models-anthropic').textContent).toContain('claude-opus-4');
+    expect(anthropic.textContent).toContain('$15 / $75');
+
+    // key：只显示掩码（**绝不**请求真值 —— 契约里根本没有 `key` 字段）
+    expect(within(anthropic).getByTestId('system-provider-key-anthropic').textContent).toContain('sk-a…7f21');
+
+    // 不通的一家：状态点说「不通」，延迟是 —（失败的时间不是延迟）
+    const openai = within(page).getByTestId('system-provider-openai');
+    expect(openai.textContent).toContain('不通');
+    expect(within(openai).getByTestId('system-provider-status-openai').textContent).toContain('—');
+    expect(openai.textContent).toContain('ECONNREFUSED');
+    // `base_url: null` = 用 pi-host 默认端点，不是空白
+    expect(openai.textContent).toContain('pi-host 默认端点');
+
+    // 没配 key 的一家：如实说「未配置」
+    const local = within(page).getByTestId('system-provider-local');
+    expect(within(local).getByTestId('system-provider-key-local').textContent).toContain('key 未配置');
+    expect(local.textContent).toContain('没有登记可用 model');
+  });
+
+  it('四档角色都在，各带输入/输出单价；没配的那档显示未配置 + —（不写 0）', async () => {
+    renderApp('/system');
+
+    const page = await screen.findByTestId('system-page');
+    const table = await within(page).findByTestId('system-model-roles');
+    // 四档必须都在（固定四行）
+    for (const role of ['agent', 'format', 'classify', 'fallback']) {
+      expect(within(table).getByTestId(`system-role-${role}`)).toBeTruthy();
+    }
+
+    const agent = within(table).getByTestId('system-role-agent').textContent ?? '';
+    expect(agent).toContain('Anthropic');
+    expect(agent).toContain('claude-opus-4');
+    expect(agent).toContain('$15 / $75');
+
+    const fallback = within(table).getByTestId('system-role-fallback').textContent ?? '';
+    expect(fallback).toContain('未配置');
+    // 单价未知是 —，不是 $0.0000 / $0
+    expect(fallback).toContain('—');
+    expect(fallback).not.toContain('$0');
+  });
+
+  it('两块都读不到时不假装有值（错误态如实说原因）', async () => {
+    server.use(
+      http.get('/api/settings/providers', () =>
+        HttpResponse.json({ error: { code: 'internal', message: '读取数据库失败' } }, { status: 500 }),
+      ),
+      http.get('/api/settings/models', () =>
+        HttpResponse.json({ error: { code: 'internal', message: '读取数据库失败' } }, { status: 500 }),
+      ),
+    );
+    renderApp('/system');
+
+    const page = await screen.findByTestId('system-page');
+    expect((await within(page).findByTestId('system-providers-error')).textContent).toContain('读取数据库失败');
+    expect(within(page).getByTestId('system-roles-error').textContent).toContain('读取数据库失败');
   });
 });
 
 describe('降级横幅（一行 + 详情抽屉）', () => {
   it('常驻只占一行：摘要 + 详情；明细进 Sheet，Esc 关闭后焦点归还', async () => {
     const user = userEvent.setup();
-    renderApp('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    renderApp('/repos/acme__widgets/issues');
+    await screen.findByTestId('issues-content');
 
     const banner = await screen.findByTestId('degraded-banner');
     // 36px 一行（`h-9`），不再是色块 + bullet 列表
@@ -267,7 +402,8 @@ describe('AsyncSection 的五态', () => {
       </AsyncSection>,
     );
     const loading = screen.getByTestId('demo-loading');
-    expect(loading.querySelectorAll('[data-testid="skeleton"]').length).toBe(4);
+    // 官方 `Skeleton` 的锚点是 `data-slot="skeleton"`（项目层不再自己加 testid）
+    expect(loading.querySelectorAll('[data-slot="skeleton"]').length).toBe(4);
   });
 
   it('离线：顶部出现「离线 · 数据可能过期」pill', () => {
@@ -278,139 +414,5 @@ describe('AsyncSection 的五态', () => {
       </AsyncSection>,
     );
     expect(screen.getByTestId('demo-offline').textContent).toContain('离线');
-  });
-});
-
-describe('Toast', () => {
-  it('最多 3 条、可逐条关闭', async () => {
-    const user = userEvent.setup();
-    render(<Toaster />);
-
-    pushToast({ tone: 'success', title: '已保存' });
-    pushToast({ tone: 'warn', title: '干跑中' });
-    pushToast({ tone: 'danger', title: '读取失败' });
-    pushToast({ tone: 'info', title: '第 4 条应挤掉最旧的' });
-
-    const toaster = await screen.findByTestId('toaster');
-    expect(toaster.getAttribute('role')).toBe('status');
-
-    const items = within(toaster).getAllByLabelText('关闭提示');
-    expect(items.length).toBe(3);
-    expect(toaster.textContent).not.toContain('已保存');
-
-    await user.click(items[0] as HTMLElement);
-    await waitFor(() => {
-      expect(within(toaster).getAllByLabelText('关闭提示').length).toBe(2);
-    });
-  });
-});
-
-describe('Segmented / Field', () => {
-  function Harness() {
-    const [face, setFace] = useState<'off' | 'mention' | 'auto'>('mention');
-    return (
-      <div>
-        <Segmented
-          label="触发方式"
-          value={face}
-          onChange={setFace}
-          options={[
-            { value: 'off', label: '关闭' },
-            { value: 'mention', label: '仅 @' },
-            { value: 'auto', label: '自动' },
-          ]}
-        />
-        <Field label="别名" hint="逗号分隔" error={face === 'off' ? '关闭时不需要别名' : null}>
-          <input type="text" />
-        </Field>
-      </div>
-    );
-  }
-
-  it('方向键切换单选项，Field 把说明与错误绑到控件上', async () => {
-    const user = userEvent.setup();
-    render(<Harness />);
-
-    const group = screen.getByRole('radiogroup', { name: '触发方式' });
-    const current = within(group).getByRole('radio', { name: '仅 @' });
-    expect(current.getAttribute('aria-checked')).toBe('true');
-
-    current.focus();
-    await user.keyboard('{ArrowRight}');
-    expect(within(group).getByRole('radio', { name: '自动' }).getAttribute('aria-checked')).toBe('true');
-
-    await user.keyboard('{ArrowRight}');
-    expect(within(group).getByRole('radio', { name: '关闭' }).getAttribute('aria-checked')).toBe('true');
-
-    // 错误态：控件 aria-invalid + aria-describedby 同时指向说明与错误
-    const input = screen.getByLabelText('别名');
-    await waitFor(() => {
-      expect(input.getAttribute('aria-invalid')).toBe('true');
-    });
-    const describedBy = input.getAttribute('aria-describedby') ?? '';
-    expect(describedBy.split(' ').length).toBe(2);
-  });
-});
-
-describe('Dialog / Table', () => {
-  it('对话框：打开后焦点进面板、Esc 关闭并把焦点还给来路', async () => {
-    const user = userEvent.setup();
-
-    function Harness() {
-      const [open, setOpen] = useState(false);
-      return (
-        <div>
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(true);
-            }}
-          >
-            删除技能
-          </button>
-          <Dialog
-            open={open}
-            onClose={() => {
-              setOpen(false);
-            }}
-            title="确认删除？"
-            description="删除后列表里立刻消失"
-            footer={<button type="button">确认</button>}
-          >
-            <p>这是不可撤销的动作。</p>
-          </Dialog>
-        </div>
-      );
-    }
-
-    render(<Harness />);
-    const opener = screen.getByRole('button', { name: '删除技能' });
-    await user.click(opener);
-
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog.getAttribute('aria-modal')).toBe('true');
-    expect(within(dialog).getByRole('heading', { name: '确认删除？' })).toBeTruthy();
-    // 首焦点在面板内（没有 data-autofocus 时取第一个可聚焦元素）
-    expect(dialog.contains(document.activeElement)).toBe(true);
-
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(document.activeElement).toBe(opener);
-  });
-
-  it('表格：stickyFirst 打开时首列带 sticky 类（横向滚动不丢行标识）', () => {
-    const { container } = render(
-      <Table stickyFirst>
-        <TableBody>
-          <TableRow>
-            <TableCell>#17</TableCell>
-            <TableCell>很长的标题</TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>,
-    );
-    const table = container.querySelector('table');
-    expect(table?.className).toContain('[&_td:first-child]:sticky');
-    expect(container.querySelector('[data-sticky-first]')).toBeTruthy();
   });
 });

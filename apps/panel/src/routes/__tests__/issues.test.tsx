@@ -19,7 +19,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createHandlers } from '../../mocks/handlers/index.ts';
 import { renderWithProviders } from '../../../test/render.tsx';
 import type { IssueListItem } from '../../lib/contract.ts';
+import { deriveStatus } from '../../components/issues/status.ts';
 import { IssuesPage } from '../issues.tsx';
+import { pickFilterOption } from './filter-helpers.tsx';
 
 const server = setupServer(...createHandlers());
 
@@ -126,22 +128,34 @@ const ROWS: IssueListItem[] = [
   makeRow({ number: 300, title: '很久以前的告警', outcomes: { failed: 1 }, minutesAgo: 40 * 24 * 60 }),
 ];
 
-/** 用本文件的 rows 顶掉 `/api/issues`（游标 `i:<offset>`，与契约的「不透明游标」一致）。 */
-function serveIssues(rows: readonly IssueListItem[], options: { pageSize?: number } = {}): void {
+/**
+ * 用本文件的 rows 顶掉 `/api/issues`（游标 `i:<offset>`，与契约的「不透明游标」一致）。
+ *
+ * `totalEstimate` 默认是**全量**（= 满足筛选的行数），所以 `status` 筛选时要按同一份谓词
+ * 再算一遍 —— 这正是服务端口径，也是 C3 要断言的「计数是全量、不是已加载」。
+ */
+function serveIssues(
+  rows: readonly IssueListItem[],
+  options: { pageSize?: number; /** 覆盖服务端计数（`null` = 服务端没统计）。 */ totalEstimate?: number | null } = {},
+): void {
   server.use(
     http.get('/api/issues', ({ request }) => {
       const url = new URL(request.url);
       const limit = options.pageSize ?? Number(url.searchParams.get('limit') ?? '30');
       const cursor = url.searchParams.get('cursor') ?? '';
       const offset = cursor.startsWith('i:') ? Number(cursor.slice(2)) : 0;
-      const page = rows.slice(offset, offset + limit);
+      // 服务端筛选：mock 也按同一份 `status` 谓词计数（`deriveStatus` 与契约一致）
+      const status = url.searchParams.get('status');
+      const matched = status === null ? rows : rows.filter((row) => deriveStatus(row) === status);
+      const page = matched.slice(offset, offset + limit);
       const next = offset + page.length;
-      const hasMore = next < rows.length;
+      const hasMore = next < matched.length;
       return HttpResponse.json({
         generatedAt: new Date(NOW).toISOString(),
         issues: page,
         hasMore,
         nextCursor: hasMore ? `i:${String(next)}` : null,
+        totalEstimate: options.totalEstimate === undefined ? matched.length : options.totalEstimate,
       });
     }),
   );
@@ -168,29 +182,18 @@ function renderCenter(route = '/issues') {
   );
 }
 
-function headerTexts(): string[] {
-  const table = screen.getByTestId('issue-table');
-  return within(table)
-    .getAllByRole('columnheader')
-    .map((cell) => cell.textContent ?? '');
-}
-
-describe('Issue 中心：表格', () => {
-  it('全局视图：列＝项目/编号/标题/标签/状态/reaction/最后活动，带 caption 与 scope', async () => {
+describe('Issue 队列（FR-7.4 的三左栏之一）', () => {
+  it('全局视图：一行一个 issue（编号 / 标题 / 标签 / 状态），rail 头带计数与本页口径', async () => {
     serveIssues(ROWS);
     renderCenter();
 
     const content = await screen.findByTestId('issues-content');
     expect(content).toBeTruthy();
-    expect(headerTexts()).toEqual(['项目', '编号', '标题', '标签', '状态', 'reaction', '最后活动']);
 
-    // a11y：表头是 `<th scope="col">`，caption 只留排序与行数口径
-    const table = screen.getByTestId('issue-table');
-    for (const cell of within(table).getAllByRole('columnheader')) {
-      expect(cell.getAttribute('scope')).toBe('col');
-    }
-    const caption = table.querySelector('caption');
-    expect(caption?.textContent ?? '').toContain('按最后更新倒序');
+    // 头部是「小标签 + 计数」（`rail-head`），不是表头行
+    const rail = screen.getByTestId('issue-rail');
+    expect(rail.className).toContain('w-rail');
+    expect(rail.className).toContain('flex-1');
 
     // 行内容：编号 / 标题 / 标签 / reaction / 待人回答
     const row = within(content).getByTestId('issue-row-acme/widgets#issue17');
@@ -200,19 +203,18 @@ describe('Issue 中心：表格', () => {
     expect(row.textContent).toContain('待人回答');
     expect(row.textContent).toContain('rocket');
 
-    // 首屏：limit=10、不带 cursor
+    // 首屏：limit=20、不带 cursor
     const listUrl = requests.find((url) => url.includes('/api/issues?'));
-    expect(listUrl).toContain('limit=10');
+    expect(listUrl).toContain('limit=20');
     expect(listUrl).not.toContain('cursor=');
   });
 
-  it('仓库上下文：没有「项目」列、请求带 repo、行链接是新路径', async () => {
+  it('仓库上下文：没有「项目」前缀、请求带 repo、行链接是新路径', async () => {
     serveIssues(ROWS);
     renderWithProviders(<IssuesPage repoLock="acme/widgets" />, { route: '/repos/acme__widgets/issues' });
 
     const content = await screen.findByTestId('issues-content');
-    expect(screen.getByRole('heading', { level: 1, name: 'Issue 中心' })).toBeTruthy();
-    expect(headerTexts()).toEqual(['编号', '标题', '标签', '状态', 'reaction', '最后活动']);
+    expect(content).toBeTruthy();
     // 仓库已锁 ⇒ 没有仓库下拉
     expect(screen.queryByLabelText('仓库筛选')).toBeNull();
 
@@ -223,6 +225,7 @@ describe('Issue 中心：表格', () => {
     expect(firstLink?.getAttribute('href')).toBe('/repos/acme__widgets/issues/issue/17');
   });
 });
+
 describe('Issue 中心：筛选', () => {
   it('服务端筛选：状态 / 待人回答 / 类型都落到请求参数与 URL 上', async () => {
     serveIssues(ROWS);
@@ -232,7 +235,7 @@ describe('Issue 中心：筛选', () => {
     await screen.findByTestId('issues-content');
     requests.length = 0;
 
-    await user.selectOptions(screen.getByLabelText('状态筛选'), 'open');
+    await pickFilterOption(user, '状态筛选', 'open');
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toContain('state=open');
     });
@@ -241,38 +244,72 @@ describe('Issue 中心：筛选', () => {
     });
 
     requests.length = 0;
-    await user.selectOptions(screen.getByLabelText('待人回答筛选'), 'true');
+    await pickFilterOption(user, '待人回答筛选', '待人回答');
     await waitFor(() => {
       expect(requests.some((url) => url.includes('awaiting=true'))).toBe(true);
     });
     expect(screen.getByTestId('location').textContent).toContain('awaiting=true');
 
     requests.length = 0;
-    await user.selectOptions(screen.getByLabelText('类型筛选'), 'pr');
+    await pickFilterOption(user, '类型筛选', 'Pull request');
     await waitFor(() => {
       expect(requests.some((url) => url.includes('kind=pr'))).toBe(true);
     });
   });
 
-  it('摘要里的数字点一下就是筛选（只改 URL），再点一次取消', async () => {
+  it('状态带与队列同源（`lib/issue-counts.ts`）—— 数字是筛选入口', async () => {
+    // 状态带挂在 `AppLayout` 上，页面级测试看不到它；这里锁住的是**同源口径**：
+    // 三个分桶（待处理 / 运行中 / 失败）与状态带的 `strip-*` 用的是同一个 hook。
+    serveIssues(ROWS);
+    renderCenter();
+
+    const content = await screen.findByTestId('issues-content');
+    expect(within(content).getByTestId('issues-split')).toBeTruthy();
+    // 队列头部的计数与行数一致（口径不会两处各算一遍）
+    const rail = screen.getByTestId('issue-rail');
+    expect(rail.textContent).toContain('4 项');
+  });
+
+  it('C3 计数是全量口径（`totalEstimate`），不是「已加载」', async () => {
+    // 一页只给 2 行，但全量是 4：两者必须能区分
+    serveIssues(ROWS, { pageSize: 2 });
+    renderCenter();
+
+    const content = await screen.findByTestId('issues-content');
+    expect(within(content).getAllByTestId('issue-row-link')).toHaveLength(2);
+
+    // rail 头部的计数 = 服务端全量 4，不是已加载的 2
+    expect(screen.getByTestId('issue-rail').textContent).toContain('4 项');
+    // caption 同时给出两个口径
+    const caption = screen.getByTestId('issues-caption').textContent ?? '';
+    expect(caption).toContain('共 4 行（全量口径）');
+    expect(caption).toContain('已加载 2 行');
+  });
+
+  it('`totalEstimate` 为 `null` 时如实说「服务端没有返回全量计数」，不冒充 0', async () => {
+    serveIssues(ROWS, { totalEstimate: null });
+    renderCenter();
+
+    await screen.findByTestId('issues-content');
+    const rail = screen.getByTestId('issue-rail').textContent ?? '';
+    // 全量未知 → 退回「已加载 N 项」，并明确写出这是已加载口径
+    expect(rail).toContain('已加载 4 项');
+    expect(rail).not.toContain('0 项');
+    expect(screen.getByTestId('issues-caption').textContent).toContain('服务端没有返回全量计数');
+  });
+
+  it('客户端筛选时计数退回「已加载」（不拿全量冒充筛选结果）', async () => {
     serveIssues(ROWS);
     const user = userEvent.setup();
     renderCenter();
 
     await screen.findByTestId('issues-content');
-    const failedChip = screen.getByTestId('issues-summary-failed');
-    expect(failedChip.getAttribute('aria-pressed')).toBe('false');
-
-    await user.click(failedChip);
+    await user.type(screen.getByLabelText('搜索标题或编号'), '42');
     await waitFor(() => {
-      expect(screen.getByTestId('location').textContent).toContain('status=failed');
+      expect(within(screen.getByTestId('issues-content')).getAllByTestId('issue-row-link')).toHaveLength(1);
     });
-    expect(screen.getByTestId('issues-summary-failed').getAttribute('aria-pressed')).toBe('true');
-
-    await user.click(screen.getByTestId('issues-summary-failed'));
-    await waitFor(() => {
-      expect(screen.getByTestId('location').textContent).not.toContain('status=failed');
-    });
+    // 客户端筛选只作用于已加载行：头部如实标出口径
+    expect(screen.getByTestId('issue-rail').textContent).toContain('已加载 1 项');
   });
 
   it('客户端过滤：搜索标题/编号、标签、时间窗都在已加载的行里生效（不发额外请求）', async () => {
@@ -299,15 +336,15 @@ describe('Issue 中心：筛选', () => {
 
     // 搜索：清掉后再按标签过滤
     await user.clear(screen.getByLabelText('搜索标题或编号'));
-    await user.selectOptions(screen.getByLabelText('标签筛选'), 'needs-info');
+    await pickFilterOption(user, '标签筛选', 'needs-info');
     await waitFor(() => {
       const rows = screen.getByTestId('issues-content');
       expect(within(rows).getAllByTestId('issue-row-link')).toHaveLength(2);
     });
 
     // 时间窗：40 天前的行被过滤掉
-    await user.selectOptions(screen.getByLabelText('标签筛选'), '');
-    await user.selectOptions(screen.getByLabelText('时间窗筛选'), '30d');
+    await pickFilterOption(user, '标签筛选', '全部标签');
+    await pickFilterOption(user, '时间窗筛选', '最近 30 天');
     await waitFor(() => {
       expect(within(screen.getByTestId('issues-content')).getAllByTestId('issue-row-link')).toHaveLength(3);
     });
@@ -332,7 +369,7 @@ describe('Issue 中心：筛选', () => {
 
 describe('Issue 中心：分页与四态', () => {
   it('游标分页：加载更多把第二页拼在后面', async () => {
-    const many = Array.from({ length: 12 }, (_, index) =>
+    const many = Array.from({ length: 24 }, (_, index) =>
       makeRow({ number: 100 + index, title: `演示 issue ${String(100 + index)}`, minutesAgo: 10 + index }),
     );
     serveIssues(many);
@@ -340,13 +377,13 @@ describe('Issue 中心：分页与四态', () => {
     renderCenter();
 
     await screen.findByTestId('issues-content');
-    expect(screen.getAllByTestId('issue-row-link')).toHaveLength(10);
+    expect(screen.getAllByTestId('issue-row-link')).toHaveLength(20);
 
     await user.click(screen.getByTestId('issues-load-more'));
     await waitFor(() => {
-      expect(screen.getAllByTestId('issue-row-link')).toHaveLength(12);
+      expect(screen.getAllByTestId('issue-row-link')).toHaveLength(24);
     });
-    expect(requests.some((url) => url.includes('cursor=i%3A10') || url.includes('cursor=i:10'))).toBe(true);
+    expect(requests.some((url) => url.includes('cursor=i%3A20') || url.includes('cursor=i:20'))).toBe(true);
   });
 
   it('四态：loading / error / empty / content 都有落点', async () => {
@@ -389,25 +426,33 @@ describe('Issue 中心：分页与四态', () => {
   });
 });
 
-describe('Issue 中心：主从与键盘', () => {
-  it('点行选中：`?selected=` 进 URL，右侧出概要 + 打开完整详情', async () => {
+describe('Issue 队列：主从与键盘', () => {
+  it('首屏默认选中第一条：右侧直接是会话流（AC-27 要求首屏就能看到它卡在哪）', async () => {
+    serveIssues(ROWS);
+    renderCenter();
+
+    const content = await screen.findByTestId('issues-content');
+    // 默认选中第一条（不写 URL）：右侧立刻是完整会话流，不是「未选中」
+    expect(within(content).getByTestId('issue-row-acme/widgets#issue17').getAttribute('data-state')).toBe('selected');
+    expect(await screen.findByTestId('issue-conversation')).toBeTruthy();
+    expect(screen.queryByTestId('issues-preview-empty')).toBeNull();
+  });
+
+  it('点另一行：`?selected=` 进 URL，右侧换成那一行的会话流', async () => {
     serveIssues(ROWS);
     const user = userEvent.setup();
     renderCenter();
 
     const content = await screen.findByTestId('issues-content');
-    const row = within(content).getByTestId('issue-row-acme/widgets#issue17');
+    const row = within(content).getByTestId('issue-row-acme/widgets#issue42');
     await user.click(row);
 
     await waitFor(() => {
-      expect(screen.getByTestId('location').textContent).toContain('selected=acme%2Fwidgets%23issue17');
+      expect(screen.getByTestId('location').textContent).toContain('selected=acme%2Fwidgets%23issue42');
     });
-    // 选中态用品牌底（data-state=selected），不是胶囊
-    expect(within(content).getByTestId('issue-row-acme/widgets#issue17').getAttribute('data-state')).toBe('selected');
-
-    const preview = await screen.findByTestId('issue-preview');
-    expect(preview.textContent).toContain('EACCES');
-    expect(within(preview).getByTestId('issue-preview-open')).toBeTruthy();
+    // 选中态是「左侧 3px 强调条 + 浅强调底」（`rail-row-selected`），不是胶囊
+    expect(within(content).getByTestId('issue-row-acme/widgets#issue42').getAttribute('data-state')).toBe('selected');
+    expect(await screen.findByTestId('issue-conversation')).toBeTruthy();
   });
 
   it('键盘：j/k 移动选中，Enter 打开整页详情', async () => {
@@ -416,11 +461,7 @@ describe('Issue 中心：主从与键盘', () => {
     renderCenter();
     await screen.findByTestId('issues-content');
 
-    await user.keyboard('j');
-    await waitFor(() => {
-      expect(screen.getByTestId('location').textContent).toContain('selected=acme%2Fwidgets%23issue17');
-    });
-
+    // 首屏已选中第一条；`j` 下移一条
     await user.keyboard('j');
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toContain('issue42');

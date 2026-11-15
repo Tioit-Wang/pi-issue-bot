@@ -1,274 +1,70 @@
 /*
- * 面板样式底座：令牌 → Tailwind 4 映射 → 基础层。
+ * 面板样式底座：官方 shadcn/ui (Tailwind 4) 主题 → 项目扩展令牌 → 基础层。
  *
- * 视觉方向（与 design-demo 一致）：中性底盘 + 单一青色强调 + 墨色主操作。
- * - 底盘：近白偏暖（hue 95）的画面，面三级 background / card / muted。
- * - 文字四级（hue 264）：0.205 / 0.435 / 0.605 / 0.72，级差自己承担层级，
- *   不再靠字号放大。
- * - 强调只有一支：`--brand`（青，hue 205）。它只用于**当前选区 / 焦点环 /
- *   状态点旁边的一点点**；**主操作按钮不是品牌色，是墨色实心**（`--primary`）。
- * - 状态四档（成功 155 / 警示 72 / 失败 27 / 信息 245）只允许小面积：
- *   圆点、徽章、2px 左边条、图表柱。禁止整行/整卡染色。
- * - 层级只用 hairline（ink 9% / 15% / 24%）；**页面元素无阴影**，阴影只属于浮层
- *   （见 @theme 里被改写的 `--shadow-*`：页面级 shadow 一律降级成 1px 描边）。
- * - 字号五档：页面标题 16 / 区块标题 12.5 / 正文 13 / 辅助 11 / 微标 9.5。没有 20px+。
- * - 密度：表格行 33 / 控件 28/30/32 / 间距 4px 网格 / 圆角控件 6、页面 8–10、浮层 10–12。
- * - 动效 120–180ms `cubic-bezier(0.22,1,0.36,1)`，只动 背景色/边框色/颜色/透明度/位移。
- * - 深色不是反色：`[data-theme='dark']`（手动）与 `@media (prefers-color-scheme: dark)`
- *   （跟随系统）双通道，两边取值必须逐字相同。
+ * 这一版是一次**底座替换**，不是换皮（2026-11 企业级 admin 重构）：
+ * - 主题、圆角、字号、阴影、动效全部改用 `shadcn/ui` 官方 v4 默认值（`new-york` 风格 +
+ *   `baseColor: neutral` + CSS 变量）。语义令牌名与官方文档逐字一致
+ *   （`--background` / `--card` / `--popover` / `--primary` / `--muted` / `--accent` /
+ *   `--destructive` / `--border` / `--input` / `--ring` / `--chart-*` / `--sidebar-*`），
+ *   所以 `shadcn add` 拿到的组件可以直接落地，不需要为每个组件改一遍类名。
+ * - 官方令牌之外只留三组**项目扩展**，都是官方语义里没有、而本产品必需的东西：
+ *   1. 状态四档（`--success` / `--warn` / `--danger` / `--info`，各带 `-fg` `-bg`）；
+ *   2. 文字第四级（`--faint-foreground` / `--subtle-foreground`）：表格里的时间戳、
+ *      计数、单位需要比 `muted-foreground` 更弱的一档，否则整张表都挤在同一亮度上；
+ *   3. 左栏尺寸（`--rail-*`）：Issue 队列 / 设置分区 / 技能列表三处共用一套行高。
+ * - 深色两个通道都要翻：`.dark` 给官方组件的 `dark:` 变体，`[data-theme="dark"]` 给本项目令牌。
+ *   `layout/use-theme.ts` 的 `apply()` 同时写这两个（只写一个会得到「一半深色」：官方组件按浅色画、
+ *   本项目令牌按深色画）。没有显式主题时跟随系统偏好 —— 媒体查询里那份精确值必须与 `.dark`
+ *   逐字相同，改一处就要改另一处。
+ * - 深色不是浅色的反色：纸白翻成墨黑时，文字亮度级差、hairline 比例都要重算。
+ *
+ * 组件层约定（`apps/panel/src/components/ui/*`）：**不要**在这里给 shadcn 组件加样式，
+ * 要改就改组件自身的 `className` 或加变体；令牌层只描述「是什么颜色 / 多大 / 多圆」。
  */
 @import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 
-/* ── 1. 语义令牌（浅色） ──────────────────────────────────────────────────── */
-:root {
-  color-scheme: light;
+/* Tailwind 4 的深色变体：`dark:` 前缀匹配 `.dark` 祖先（官方写法） */
+@custom-variant dark (&:is(.dark *));
 
-  /* 中性底盘：三级面 + 四级文字 */
-  --background: oklch(0.988 0.002 95);
-  --foreground: oklch(0.205 0.012 264);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.205 0.012 264);
-  --muted: oklch(0.971 0.003 95);
-  --muted-foreground: oklch(0.435 0.011 264);
-  /* 第三级文字（时间戳、计数、单位、表头） */
-  --faint-foreground: oklch(0.605 0.01 264);
-  /* 第四级文字（占位符、禁用态、极弱标注） */
-  --subtle-foreground: oklch(0.72 0.008 264);
-
-  /* 强调：**唯一**一支青色。只用于当前选区 / 焦点环 / 强调文字 */
-  --brand: oklch(0.475 0.088 205);
-  --brand-foreground: oklch(0.99 0.01 205);
-  --brand-soft: color-mix(in oklab, var(--brand) 9%, var(--card));
-  --brand-line: color-mix(in oklab, var(--brand) 34%, transparent);
-
-  /* 主操作 = 墨色实心（底 `--primary`，字 = 页面底色），**不是**品牌色 */
-  --primary: oklch(0.205 0.012 264);
-  --primary-foreground: oklch(0.988 0.002 95);
-  --primary-hover: color-mix(in oklab, var(--primary) 86%, var(--brand));
-  --primary-active: color-mix(in oklab, var(--primary) 76%, var(--brand));
-
-  /* 兼容层：页面里既有的 shadcn 名字继续可用 */
-  --secondary: oklch(0.971 0.003 95);
-  --secondary-foreground: oklch(0.205 0.012 264);
-  /* `accent` 在 shadcn 语义里是「hover 底色」= 二级面，不是品牌色 */
-  --accent: oklch(0.971 0.003 95);
-  --accent-foreground: oklch(0.205 0.012 264);
-  --destructive: oklch(0.545 0.185 27);
-  --destructive-foreground: oklch(0.99 0.01 27);
-
-  /* 分隔三档 hairline（ink 9% / 15% / 24%）：一律不用阴影表达层级 */
-  --border: color-mix(in oklab, oklch(0.205 0.012 264) 9%, transparent);
-  --input: color-mix(in oklab, oklch(0.205 0.012 264) 15%, transparent);
-  --border-strong: color-mix(in oklab, oklch(0.205 0.012 264) 24%, transparent);
-  --ring: oklch(0.475 0.088 205); /* 焦点环 = 青，2px */
-
-  /* 状态四档：色相固定（155 / 72 / 27 / 245），底色由 color-mix 与面混出 10~15% */
-  --success: oklch(0.52 0.125 155);
-  --success-fg: oklch(0.38 0.095 155);
-  --success-bg: color-mix(in oklab, var(--success) 10%, var(--card));
-  --warn: oklch(0.66 0.135 72);
-  --warn-fg: oklch(0.46 0.1 62);
-  --warn-bg: color-mix(in oklab, var(--warn) 15%, var(--card));
-  --danger: oklch(0.545 0.185 27);
-  --danger-fg: oklch(0.47 0.17 27);
-  --danger-bg: color-mix(in oklab, var(--danger) 10%, var(--card));
-  --info: oklch(0.55 0.1 245);
-  --info-fg: oklch(0.45 0.1 245);
-  --info-bg: color-mix(in oklab, var(--info) 10%, var(--card));
-  --neutral: oklch(0.6 0.008 264);
-  --neutral-fg: oklch(0.45 0.01 264);
-  --neutral-bg: oklch(0.962 0.003 264);
-
-  /* 浮层阴影：**唯一**允许用阴影的地方 */
-  --shadow-float:
-    0 18px 42px -16px oklch(0.2 0.01 264 / 0.26),
-    0 3px 10px -4px oklch(0.2 0.01 264 / 0.14);
-
-  /* 尺寸节奏（4px 网格）：控件 28/30/32，表格行 33 */
-  --radius: 0.625rem; /* 10px：页面元素（浮层 10–12、控件 6） */
-  --control-sm: 1.75rem; /* 28px */
-  --control-md: 1.875rem; /* 30px */
-  --control-lg: 2rem; /* 32px */
-  --row-height: 2.0625rem; /* 33px：表格 / 列表行 */
-  --gutter: 1.5rem; /* 24px：区块间距 */
-  --gutter-tight: 1rem; /* 16px */
-  --gutter-hair: 0.5rem; /* 8px */
-
-  /* 动效：120–180ms，只服务状态变化 */
-  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease: var(--ease-out-quint);
-  --dur-fast: 120ms;
-  --dur-base: 160ms;
-  --dur-slow: 180ms;
-
-  /* 字体：系统栈 + 中文回退；等宽给 id/hash/路径 */
-  --font-ui:
-    'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
-  --font-code:
-    ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', 'Cascadia Code', Consolas,
-    'Liberation Mono', monospace;
-
-  /* 图表：色相与状态四档对齐（图表只用这五个） */
-  --chart-1: oklch(0.55 0.1 245);
-  --chart-2: oklch(0.52 0.125 155);
-  --chart-3: oklch(0.66 0.135 72);
-  --chart-4: oklch(0.545 0.185 27);
-  --chart-5: oklch(0.6 0.008 264);
-}
-
-/* ── 2. 深色令牌（双通道：data-theme 手动 / 系统偏好） ────────────────────── */
-[data-theme='dark'] {
-  color-scheme: dark;
-  --background: oklch(0.168 0.008 264);
-  --foreground: oklch(0.955 0.004 264);
-  --card: oklch(0.207 0.009 264);
-  --card-foreground: oklch(0.955 0.004 264);
-  --muted: oklch(0.243 0.01 264);
-  --muted-foreground: oklch(0.745 0.008 264);
-  --faint-foreground: oklch(0.6 0.008 264);
-  --subtle-foreground: oklch(0.49 0.008 264);
-
-  --brand: oklch(0.79 0.098 195);
-  --brand-foreground: oklch(0.2 0.03 205);
-  --brand-soft: color-mix(in oklab, var(--brand) 14%, var(--card));
-  --brand-line: color-mix(in oklab, var(--brand) 40%, transparent);
-
-  /* 深色主操作：墨色翻成亮面实心（不是把浅色按钮调亮） */
-  --primary: oklch(0.955 0.004 264);
-  --primary-foreground: oklch(0.168 0.008 264);
-  --primary-hover: color-mix(in oklab, var(--primary) 86%, var(--brand));
-  --primary-active: color-mix(in oklab, var(--primary) 76%, var(--brand));
-
-  --secondary: oklch(0.243 0.01 264);
-  --secondary-foreground: oklch(0.955 0.004 264);
-  --accent: oklch(0.243 0.01 264);
-  --accent-foreground: oklch(0.955 0.004 264);
-  --destructive: oklch(0.68 0.17 27);
-  --destructive-foreground: oklch(0.175 0.02 27);
-
-  --border: color-mix(in oklab, oklch(0.955 0.004 264) 11%, transparent);
-  --input: color-mix(in oklab, oklch(0.955 0.004 264) 18%, transparent);
-  --border-strong: color-mix(in oklab, oklch(0.955 0.004 264) 28%, transparent);
-  --ring: oklch(0.79 0.098 195);
-
-  --success: oklch(0.72 0.13 155);
-  --success-fg: oklch(0.82 0.12 155);
-  --success-bg: color-mix(in oklab, var(--success) 16%, var(--card));
-  --warn: oklch(0.79 0.13 78);
-  --warn-fg: oklch(0.86 0.11 82);
-  --warn-bg: color-mix(in oklab, var(--warn) 16%, var(--card));
-  --danger: oklch(0.68 0.17 27);
-  --danger-fg: oklch(0.8 0.13 27);
-  --danger-bg: color-mix(in oklab, var(--danger) 18%, var(--card));
-  --info: oklch(0.72 0.11 245);
-  --info-fg: oklch(0.83 0.09 245);
-  --info-bg: color-mix(in oklab, var(--info) 16%, var(--card));
-  --neutral: oklch(0.6 0.008 264);
-  --neutral-fg: oklch(0.75 0.008 264);
-  --neutral-bg: oklch(0.25 0.01 264);
-
-  --shadow-float: 0 20px 48px -18px oklch(0 0 0 / 0.62), 0 2px 8px -4px oklch(0 0 0 / 0.5);
-
-  --chart-1: oklch(0.72 0.11 245);
-  --chart-2: oklch(0.72 0.13 155);
-  --chart-3: oklch(0.79 0.13 78);
-  --chart-4: oklch(0.68 0.17 27);
-  --chart-5: oklch(0.6 0.008 264);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    color-scheme: dark;
-    --background: oklch(0.168 0.008 264);
-    --foreground: oklch(0.955 0.004 264);
-    --card: oklch(0.207 0.009 264);
-    --card-foreground: oklch(0.955 0.004 264);
-    --muted: oklch(0.243 0.01 264);
-    --muted-foreground: oklch(0.745 0.008 264);
-    --faint-foreground: oklch(0.6 0.008 264);
-    --subtle-foreground: oklch(0.49 0.008 264);
-
-    --brand: oklch(0.79 0.098 195);
-    --brand-foreground: oklch(0.2 0.03 205);
-    --brand-soft: color-mix(in oklab, var(--brand) 14%, var(--card));
-    --brand-line: color-mix(in oklab, var(--brand) 40%, transparent);
-
-    --primary: oklch(0.955 0.004 264);
-    --primary-foreground: oklch(0.168 0.008 264);
-    --primary-hover: color-mix(in oklab, var(--primary) 86%, var(--brand));
-    --primary-active: color-mix(in oklab, var(--primary) 76%, var(--brand));
-
-    --secondary: oklch(0.243 0.01 264);
-    --secondary-foreground: oklch(0.955 0.004 264);
-    --accent: oklch(0.243 0.01 264);
-    --accent-foreground: oklch(0.955 0.004 264);
-    --destructive: oklch(0.68 0.17 27);
-    --destructive-foreground: oklch(0.175 0.02 27);
-
-    --border: color-mix(in oklab, oklch(0.955 0.004 264) 11%, transparent);
-    --input: color-mix(in oklab, oklch(0.955 0.004 264) 18%, transparent);
-    --border-strong: color-mix(in oklab, oklch(0.955 0.004 264) 28%, transparent);
-    --ring: oklch(0.79 0.098 195);
-
-    --success: oklch(0.72 0.13 155);
-    --success-fg: oklch(0.82 0.12 155);
-    --success-bg: color-mix(in oklab, var(--success) 16%, var(--card));
-    --warn: oklch(0.79 0.13 78);
-    --warn-fg: oklch(0.86 0.11 82);
-    --warn-bg: color-mix(in oklab, var(--warn) 16%, var(--card));
-    --danger: oklch(0.68 0.17 27);
-    --danger-fg: oklch(0.8 0.13 27);
-    --danger-bg: color-mix(in oklab, var(--danger) 18%, var(--card));
-    --info: oklch(0.72 0.11 245);
-    --info-fg: oklch(0.83 0.09 245);
-    --info-bg: color-mix(in oklab, var(--info) 16%, var(--card));
-    --neutral: oklch(0.6 0.008 264);
-    --neutral-fg: oklch(0.75 0.008 264);
-    --neutral-bg: oklch(0.25 0.01 264);
-
-    --shadow-float: 0 20px 48px -18px oklch(0 0 0 / 0.62), 0 2px 8px -4px oklch(0 0 0 / 0.5);
-
-    --chart-1: oklch(0.72 0.11 245);
-    --chart-2: oklch(0.72 0.13 155);
-    --chart-3: oklch(0.79 0.13 78);
-    --chart-4: oklch(0.68 0.17 27);
-    --chart-5: oklch(0.6 0.008 264);
-  }
-}
-
-/* ── 3. Tailwind 映射（@theme inline：类名 → 变量，双通道自动生效） ────────── */
+/* ── 1. Tailwind 映射（类名 → 变量） ─────────────────────────────────────────── */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-faint: var(--faint-foreground);
-  --color-subtle: var(--subtle-foreground);
-
-  --color-brand: var(--brand);
-  --color-brand-foreground: var(--brand-foreground);
-  --color-brand-soft: var(--brand-soft);
-  --color-brand-line: var(--brand-line);
-
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --color-primary-hover: var(--primary-hover);
-  --color-primary-active: var(--primary-active);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-
   --color-border: var(--border);
-  --color-border-strong: var(--border-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* 项目扩展：状态四档（只允许小面积：圆点、徽章、2px 左边条、图表柱） */
   --color-success: var(--success);
   --color-success-fg: var(--success-fg);
   --color-success-bg: var(--success-bg);
@@ -285,65 +81,270 @@
   --color-neutral-fg: var(--neutral-fg);
   --color-neutral-bg: var(--neutral-bg);
 
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
+  /* 项目扩展：文字第四级 + 当前选区强调色 */
+  --color-faint: var(--faint-foreground);
+  --color-subtle: var(--subtle-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-line: var(--brand-line);
+  --color-border-strong: var(--border-strong);
 
-  /* 字号五档：微标 9.5 / 辅助 11 / 区块标题 12.5 / 正文 13 / 页面标题 16（上限 17） */
-  --text-2xs: 0.59375rem;
+  /* 微标（表头、分组标题、单位）：官方字号表里没有 9.5–10px 这一档 */
+  --text-2xs: 0.625rem;
   --text-2xs--line-height: 1.3;
-  --text-2xs--letter-spacing: 0.04em;
-  --text-xs: 0.6875rem;
-  --text-xs--line-height: 1.4;
-  --text-sm: 0.8125rem;
-  --text-sm--line-height: 1.5;
-  --text-base: 0.78125rem;
-  --text-base--line-height: 1.35;
-  --text-base--letter-spacing: -0.005em;
-  --text-lg: 1rem;
-  --text-lg--line-height: 1.25;
-  --text-lg--letter-spacing: -0.015em;
-  --text-xl: 1.0625rem;
-  --text-xl--line-height: 1.2;
-  --text-xl--letter-spacing: -0.02em;
-  /* 兼容旧类名：与 xl 同档，**不再有 20px+ 大标题** */
-  --text-2xl: 1.0625rem;
-  --text-2xl--line-height: 1.2;
-  --text-2xl--letter-spacing: -0.02em;
+  --text-2xs--letter-spacing: 0.06em;
 
   --font-sans: var(--font-ui);
   --font-mono: var(--font-code);
 
-  /* 圆角：控件 6、页面元素 8、浮层 10–12 */
-  --radius-xs: 0.25rem; /* 4：状态点、极小块 */
-  --radius-sm: 0.3125rem; /* 5：徽章 / 标签 */
-  --radius-md: 0.375rem; /* 6：按钮、输入框 */
-  --radius-lg: 0.5rem; /* 8：表格容器、卡片 */
-  --radius-xl: 0.625rem; /* 10：dialog / popover / palette */
-  --radius-2xl: 0.75rem; /* 12：浮层上限 */
+  /* 圆角阶梯：官方从 `--radius` 派生（改一个值整条阶梯跟着变） */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 
+  /* 左栏尺寸（`w-rail` / `h-rail-head` / `min-h-rail-row`） */
+  --spacing-rail: var(--rail-width);
+  --spacing-rail-head: var(--rail-head-height);
+  --spacing-rail-row: var(--rail-row-height);
+}
+
+/* ── 2. 浅色令牌（官方 neutral + 项目扩展） ──────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  --radius: 0.625rem;
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+
+  /* ── 项目扩展 ─────────────────────────────────────────────────────────────── */
+  /* 文字第四级：第三级之下还有一档（时间戳 / 计数 / 单位 / 禁用态） */
+  --faint-foreground: oklch(0.556 0 0);
+  --subtle-foreground: oklch(0.708 0 0);
+
+  /* 当前选区强调色。它**不是**主操作色：主操作是官方 `--primary`（墨色实心） */
+  --brand: oklch(0.55 0.13 250);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-soft: color-mix(in oklab, var(--brand) 10%, var(--card));
+  --brand-line: color-mix(in oklab, var(--brand) 34%, transparent);
+
+  /* 第三档 hairline：`--border` / `--input` 之上还需要一档更实的线（表头、分组分隔） */
+  --border-strong: color-mix(in oklab, var(--foreground) 24%, transparent);
+
+  /* 状态四档：色相固定（155 绿 / 72 橙 / 27 红 / 245 蓝），底色由 color-mix 与面混出 */
+  --success: oklch(0.52 0.125 155);
+  --success-fg: oklch(0.38 0.095 155);
+  --success-bg: color-mix(in oklab, var(--success) 10%, var(--card));
+  --warn: oklch(0.66 0.135 72);
+  --warn-fg: oklch(0.46 0.1 62);
+  --warn-bg: color-mix(in oklab, var(--warn) 15%, var(--card));
+  --danger: oklch(0.577 0.245 27.325);
+  --danger-fg: oklch(0.47 0.17 27);
+  --danger-bg: color-mix(in oklab, var(--danger) 10%, var(--card));
+  --info: oklch(0.55 0.1 245);
+  --info-fg: oklch(0.45 0.1 245);
+  --info-bg: color-mix(in oklab, var(--info) 10%, var(--card));
+  --neutral: oklch(0.6 0 0);
+  --neutral-fg: oklch(0.45 0 0);
+  --neutral-bg: oklch(0.962 0 0);
+
+  /* 左栏统一（三个左栏只组合类名，不各写一份尺寸） */
+  --rail-width: 17.5rem; /* 280px */
+  --rail-head-height: 2rem; /* 32px：小标签 + 计数 */
+  --rail-row-height: 1.75rem; /* 28px：一行可选条目 */
+
+  /* 字体：系统栈 + 中文回退；等宽给 id / hash / 路径 / 命令 */
+  --font-ui:
+    'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-code:
+    ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', 'Cascadia Code', Consolas,
+    'Liberation Mono', monospace;
+
+  /* 动效：只服务状态变化，不做装饰性动画 */
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 200ms;
+}
 
-  /* 阴影只属于浮层：页面级 shadow-* 一律降级成 1px hairline（层级用线，不用投影） */
-  --shadow-2xs: none;
-  --shadow-xs: none;
-  --shadow-sm: 0 0 0 1px var(--border);
-  --shadow-md: 0 0 0 1px var(--border-strong);
-  --shadow-lg: var(--shadow-float);
-  --shadow-xl: var(--shadow-float);
-  --shadow-2xl: var(--shadow-float);
-  --shadow-overlay: var(--shadow-float);
+/* ── 3. 深色令牌（唯一来源 `.dark`；`data-theme` 是旧通道兼容） ───────────────── */
+.dark,
+[data-theme='dark'] {
+  color-scheme: dark;
 
-  --spacing-row: 2.0625rem;
-  --spacing-gutter: 1.5rem;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+
+  --faint-foreground: oklch(0.708 0 0);
+  --subtle-foreground: oklch(0.556 0 0);
+
+  --brand: oklch(0.62 0.145 255);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-soft: color-mix(in oklab, var(--brand) 18%, var(--card));
+  --brand-line: color-mix(in oklab, var(--brand) 42%, transparent);
+
+  --border-strong: color-mix(in oklab, var(--foreground) 26%, transparent);
+
+  --success: oklch(0.72 0.13 155);
+  --success-fg: oklch(0.82 0.12 155);
+  --success-bg: color-mix(in oklab, var(--success) 16%, var(--card));
+  --warn: oklch(0.79 0.13 78);
+  --warn-fg: oklch(0.86 0.11 82);
+  --warn-bg: color-mix(in oklab, var(--warn) 16%, var(--card));
+  --danger: oklch(0.704 0.191 22.216);
+  --danger-fg: oklch(0.8 0.13 27);
+  --danger-bg: color-mix(in oklab, var(--danger) 18%, var(--card));
+  --info: oklch(0.72 0.11 245);
+  --info-fg: oklch(0.83 0.09 245);
+  --info-bg: color-mix(in oklab, var(--info) 16%, var(--card));
+  --neutral: oklch(0.6 0 0);
+  --neutral-fg: oklch(0.75 0 0);
+  --neutral-bg: oklch(0.25 0 0);
+}
+
+/*
+ * 跟随系统偏好：只在**没有**显式主题时生效。
+ * 这份取值必须与上面的 `.dark` 逐字相同 —— 改一处就要改另一处（没有 CSS 变量继承的别的办法，
+ * `@media` 不能出现在选择器列表里）。`use-theme.ts` 的 `system` 模式就是把属性删掉走这条。
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not(.light) {
+    color-scheme: dark;
+
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+
+    --chart-1: oklch(0.488 0.243 264.376);
+    --chart-2: oklch(0.696 0.17 162.48);
+    --chart-3: oklch(0.769 0.188 70.08);
+    --chart-4: oklch(0.627 0.265 303.9);
+    --chart-5: oklch(0.645 0.246 16.439);
+
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+
+    --faint-foreground: oklch(0.708 0 0);
+    --subtle-foreground: oklch(0.556 0 0);
+
+    --brand: oklch(0.62 0.145 255);
+    --brand-foreground: oklch(0.985 0 0);
+    --brand-soft: color-mix(in oklab, var(--brand) 18%, var(--card));
+    --brand-line: color-mix(in oklab, var(--brand) 42%, transparent);
+
+    --border-strong: color-mix(in oklab, var(--foreground) 26%, transparent);
+
+    --success: oklch(0.72 0.13 155);
+    --success-fg: oklch(0.82 0.12 155);
+    --success-bg: color-mix(in oklab, var(--success) 16%, var(--card));
+    --warn: oklch(0.79 0.13 78);
+    --warn-fg: oklch(0.86 0.11 82);
+    --warn-bg: color-mix(in oklab, var(--warn) 16%, var(--card));
+    --danger: oklch(0.704 0.191 22.216);
+    --danger-fg: oklch(0.8 0.13 27);
+    --danger-bg: color-mix(in oklab, var(--danger) 18%, var(--card));
+    --info: oklch(0.72 0.11 245);
+    --info-fg: oklch(0.83 0.09 245);
+    --info-bg: color-mix(in oklab, var(--info) 16%, var(--card));
+    --neutral: oklch(0.6 0 0);
+    --neutral-fg: oklch(0.75 0 0);
+    --neutral-bg: oklch(0.25 0 0);
+  }
 }
 
 /* ── 4. 基础层 ─────────────────────────────────────────────────────────────── */
 @layer base {
   * {
-    border-color: var(--border);
+    @apply border-border outline-ring/50;
   }
 
   html {
@@ -351,11 +352,8 @@
   }
 
   body {
-    background-color: var(--background);
-    color: var(--foreground);
+    @apply bg-background text-foreground;
     font-family: var(--font-ui);
-    font-size: 0.8125rem; /* = --text-sm（13px），与设计系统正文一致 */
-    line-height: 1.5;
     font-feature-settings: 'cv05' 1, 'ss01' 1;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
@@ -371,15 +369,8 @@
     letter-spacing: -0.01em;
   }
 
-  /* 键盘焦点：全站唯一的 2px 青色环（鼠标点击不出现） */
-  :focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
-    border-radius: 3px;
-  }
-
   ::selection {
-    background-color: color-mix(in oklab, var(--brand) 16%, transparent);
+    background-color: color-mix(in oklab, var(--brand) 18%, transparent);
   }
 
   /* 时间戳 / 计数 / 金额：等宽数字，列对齐不跳动 */
@@ -394,13 +385,12 @@
   .micro-label {
     font-size: var(--text-2xs);
     line-height: 1.3;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     font-weight: 500;
     color: var(--faint-foreground);
   }
 
-  /* 骨架脉冲：唯一的「持续动画」，reduced-motion 下随全局关闭 */
   @keyframes pi-fade-in {
     from {
       opacity: 0;
@@ -421,17 +411,6 @@
     }
   }
 
-  @keyframes pi-slide-in-right {
-    from {
-      opacity: 0.6;
-      transform: translateX(12px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-
   @keyframes pi-spin {
     to {
       transform: rotate(360deg);
@@ -439,7 +418,7 @@
   }
 }
 
-/* ── 5. 工具类（本项目专用的少量扩展） ────────────────────────────────────── */
+/* ── 5. 工具类（本项目专用扩展） ────────────────────────────────────────────── */
 @utility animate-pop-in {
   animation: pi-pop-in var(--dur-base) var(--ease-out-quint);
 }
@@ -448,20 +427,79 @@
   animation: pi-fade-in var(--dur-fast) var(--ease-out-quint);
 }
 
-@utility animate-slide-in-right {
-  animation: pi-slide-in-right var(--dur-slow) var(--ease-out-quint);
-}
-
 @utility animate-spin-fast {
   animation: pi-spin 0.6s linear infinite;
 }
 
-/* 列表入场：小阶梯（最多 8 行，避免长表格拖时间） */
 @utility stagger-row {
   animation: pi-fade-in var(--dur-base) var(--ease-out-quint) both;
 }
 
-/* ── 6. reduced-motion：全局归零（过渡、动画、延时、平滑滚动） ─────────────── */
+/*
+ * 左栏（rail）通用画法。三处左栏（Issue 队列 / 设置分区 / 技能列表）职责都是「一列可选条目」，
+ * 所以只有一个宽度、一个头部高度、一个行高、一种选中态；页面只组合类名，不再各写一份。
+ */
+@utility w-rail {
+  width: var(--rail-width);
+}
+
+@media (max-width: 1023.98px) {
+  :root {
+    --rail-width: 16rem; /* 256px：窄屏统一降宽 */
+  }
+}
+
+@utility rail-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+  height: var(--rail-head-height);
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--faint-foreground);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+@utility rail-head-count {
+  margin-left: auto;
+  color: var(--faint-foreground);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* 一行可选条目：最小行高 28、左缘 3px 透明条（选中时才上色，避免选中时文字位移）。
+   用 min-height 而不是 height：条目是「主行 + 次行」，写死高度会把次行压出条目框。 */
+@utility rail-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: var(--rail-row-height);
+  padding: 0 0.75rem;
+  border-left: 3px solid transparent;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  text-align: left;
+  transition:
+    background-color var(--dur-fast) var(--ease-out-quint),
+    color var(--dur-fast) var(--ease-out-quint),
+    border-color var(--dur-fast) var(--ease-out-quint);
+}
+
+@utility rail-row-selected {
+  border-left-color: var(--brand);
+  background-color: var(--brand-soft);
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+/* ── 6. reduced-motion：全局归零（过渡、动画、延时、平滑滚动） ───────────────── */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-fast: 0ms;

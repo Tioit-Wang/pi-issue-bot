@@ -3,6 +3,7 @@ import { Search } from 'lucide-react';
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -13,22 +14,21 @@ import { queryKeys } from '../lib/queries.ts';
 import { repoIssuePath, repoWorkspacePath, useRepoRoute } from '../lib/repo-route.ts';
 import { useRepoDirectory } from '../lib/repos.ts';
 import { cn } from '../lib/utils.ts';
-import { GLOBAL_NAV, REPO_NAV, repoNavPath } from '../layout/nav.ts';
-import { useModalFocus } from './ui/dialog.tsx';
+import { navGroups, SYSTEM_PATH } from '../layout/nav.ts';
 
 /**
  * 命令面板（⌘K / Ctrl+K，或 `/`）。
  *
  * 目标：让「去某页 / 切仓库 / 跳到最近处理过的 issue」这三件事**不用碰鼠标**。
  * 搜索范围（子序列模糊匹配：命中即可，命中越靠前、越连续分越高）：
- * 1. 页面（全局 5 条 + 当前仓库 5 条）；
- * 2. 仓库（`useRepoDirectory`，与左栏切换器同一数据源）；
+ * 1. 页面（侧栏三组用**同一份** `navGroups`：项目 / 证据 / 全局，含 `/system`）；
+ * 2. 仓库（`useRepoDirectory`，与切换器同一数据源）；
  * 3. 最近 issue（`api.issues({ limit: 8 })`，**只在面板打开时**发请求）。
  *
  * 键盘：`↑`/`↓` 移动、`Home`/`End` 首尾、`↵` 打开、`Esc` 关闭（焦点还给触发元素）。
- * 无结果时给「换个词试试」+ 一个直达链接（系统页：仓库从这里注册）。
+ * 无结果时给「换个词试试」+ 一个直达入口（系统页 `/system`）。
  *
- * 打开状态放在模块级 store：顶栏按钮与全局快捷键都要能开它，而它自己挂在 AppLayout。
+ * 打开状态放在模块级 store：内容区顶栏的搜索按钮与全局快捷键都要能开它，而它自己挂在 AppLayout。
  */
 const listeners = new Set<() => void>();
 let opened = false;
@@ -73,7 +73,8 @@ type Entry = {
   label: string;
   /** 副标题：路径、仓库名、issue 标题。 */
   hint?: string;
-  to: string;
+  /** 只有 `to`：命令面板里的每一项都是页面跳转（系统也是页面了）。 */
+  to?: string;
 };
 
 /** 子序列模糊匹配：`acw` 命中 `acme/widgets`；不命中的字符直接淘汰。 */
@@ -155,38 +156,52 @@ export function CommandPalette() {
     };
   }, []);
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // 打开：清空查询、聚焦输入框；关闭：焦点还给打开它的那个元素（顶栏按钮 / ⌘K 无来路）
   useEffect(() => {
     if (!open) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setQuery('');
     setActive(0);
-    // 焦点由 `useModalFocus` 交给 `[data-autofocus]` 的输入框，这里不重复抢
+    inputRef.current?.focus();
+    const onWindowKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeCommandPalette();
+    };
+    window.addEventListener('keydown', onWindowKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onWindowKeyDown);
+      previous?.focus();
+    };
   }, [open]);
 
   const entries = useMemo<Entry[]>(() => {
-    const pages: Entry[] = [
-      ...GLOBAL_NAV.map((item) => ({
-        id: `page:${item.path}`,
+    /*
+     * 页面组：三组侧栏项（项目 / 证据 / 全局）用**同一份** `navGroups`。
+     * 没有项目上下文时项目组只剩 Issue（`/`）、证据组为空 —— 与侧栏完全一致，
+     * 不会出现「侧栏没有、命令面板里点进去 404」这种第二处真相。
+     * 已删的四个报表页（总览 / 成本 / 质量 / 审计）不在 `navGroups` 里，所以面板里也搜不到；
+     * 「系统」是与侧栏同一处目标的普通页面条目（`/system`），不是模态框。
+     */
+    const pages: Entry[] = navGroups(repo)
+      .flatMap((group) => group.links)
+      .filter((link) => link.path !== null)
+      .map((link) => ({
+        id: `page:${link.key}`,
         group: '页面' as const,
-        label: item.label,
-        hint: item.path,
-        to: item.path,
-      })),
-      ...(repo === null
-        ? []
-        : REPO_NAV.map((item) => ({
-            id: `page:${item.key}`,
-            group: '页面' as const,
-            label: item.label,
-            hint: `${repo}${item.suffix}`,
-            to: repoNavPath(repo, item.key),
-          }))),
-    ];
+        label: link.label,
+        hint: link.path ?? '/',
+        to: link.path ?? '/',
+      }));
 
     const repoEntries: Entry[] = repos.map((item) => ({
       id: `repo:${item.repo}`,
       group: '仓库' as const,
       label: item.repo,
-      hint: item.enabled ? '工作台' : '已停用',
+      hint: item.enabled ? 'Issue 队列' : '已停用',
       to: repoWorkspacePath(item.repo),
     }));
 
@@ -219,13 +234,11 @@ export function CommandPalette() {
     document.getElementById(`palette-item-${current.id}`)?.scrollIntoView?.({ block: 'nearest' });
   }, [current]);
 
-  const { panelRef, onKeyDown } = useModalFocus(open, closeCommandPalette);
 
   const go = (entry: Entry): void => {
     closeCommandPalette();
-    void navigate(entry.to);
+    if (entry.to !== undefined) void navigate(entry.to);
   };
-
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>): void => {
     if (
       event.key === 'ArrowDown' ||
@@ -254,6 +267,29 @@ export function CommandPalette() {
       if (current !== undefined) go(current);
     }
   };
+  /*
+   * 焦点陷阱：面板声明了 `role="dialog" aria-modal="true"`，那就必须真的拦得住 Tab ——
+   * 否则键盘用户在「模态」里按 Tab 会跑到背后的页面上（宣称模态却没有模态行为）。
+   * 只拦 Tab；Esc / ↑↓ / ↵ 由输入框与窗口监听处理。
+   */
+  const trapFocus = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Tab') return;
+    const panel = panelRef.current;
+    if (panel === null) return;
+    const list = Array.from(
+      panel.querySelectorAll<HTMLElement>('input, [href], button:not([tabindex="-1"]), [role="option"]'),
+    );
+    const first = list[0];
+    const last = list[list.length - 1];
+    if (first === undefined || last === undefined) return;
+    if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    }
+  };
 
   if (!open) return null;
 
@@ -262,7 +298,6 @@ export function CommandPalette() {
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]"
-      onKeyDown={onKeyDown}
       data-testid="command-palette"
     >
       <button
@@ -270,20 +305,24 @@ export function CommandPalette() {
         aria-label="关闭命令面板"
         tabIndex={-1}
         onClick={closeCommandPalette}
-        className="animate-fade-in absolute inset-0 cursor-default bg-foreground/25"
+        // 遮罩要用**中性黑**而不是 `foreground/25`：深色主题下 foreground 是白的，
+        // 用它会把手底下的页面"洗白"，遮罩越深越亮（2026-11-16 实机复核）。
+        className="animate-fade-in absolute inset-0 cursor-default bg-black/50"
       />
+
 
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="命令面板"
-        className="animate-pop-in relative z-10 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-overlay"
+        onKeyDown={trapFocus}
+        className="animate-pop-in relative z-10 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
       >
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <Search aria-hidden className="size-4 shrink-0 text-faint" strokeWidth={1.75} />
           <input
-            data-autofocus
+            ref={inputRef}
             type="text"
             aria-label="搜索页面、仓库与最近 issue"
             placeholder="搜索页面 / 仓库 / 最近 issue…"
@@ -308,13 +347,13 @@ export function CommandPalette() {
             <div className="px-3 py-6 text-center" data-testid="palette-empty">
               <p className="text-sm text-foreground">{`没有匹配「${query.trim()}」的结果`}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                换个词试试，或者去系统页看看仓库有没有注册。
+                换个词试试，或者去「系统」看看仓库有没有注册。
               </p>
               <button
                 type="button"
                 onClick={() => {
                   closeCommandPalette();
-                  void navigate('/system');
+                  void navigate(SYSTEM_PATH);
                 }}
                 className="mt-2 rounded-md border border-border px-2 py-1 text-xs text-foreground transition-colors duration-[120ms] hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               >

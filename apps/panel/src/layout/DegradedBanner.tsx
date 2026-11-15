@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Button } from '../components/ui/button.tsx';
 import { Link } from 'react-router';
-import { StatusDot } from '../components/ui/badge.tsx';
-import { Sheet } from '../components/ui/dialog.tsx';
+import { StatusDot } from '../components/ui/status-badge.tsx';
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '../components/ui/sheet.tsx';
 import { formatAbsoluteTime } from '../lib/format.ts';
+import { SYSTEM_PATH } from './nav.ts';
 import { useSystem } from '../lib/queries.ts';
 
 /**
@@ -33,6 +35,23 @@ type DegradedReason = {
 export function DegradedBanner() {
   const { data } = useSystem();
   const [open, setOpen] = useState(false);
+  const openerRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
+
+  /*
+   * 抽屉关掉后焦点回到「详情」：这个 Sheet 没有 Radix 的 `Trigger`（开合由状态控制），
+   * 关掉时焦点会掉到 body 上，键盘用户就丢了位置。显式还一次。
+   */
+  useEffect(() => {
+    if (open) {
+      wasOpen.current = true;
+      return;
+    }
+    if (!wasOpen.current) return;
+    wasOpen.current = false;
+    openerRef.current?.focus();
+  }, [open]);
+
   if (data === undefined) return null;
 
   const reasons: DegradedReason[] = [];
@@ -74,59 +93,66 @@ export function DegradedBanner() {
         data-testid="degraded-banner"
         role="region"
         aria-label="系统降级"
-        className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border bg-warn-bg px-3 text-xs whitespace-nowrap text-warn-fg md:px-6"
+        className="flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b border-border bg-card px-3 text-xs whitespace-nowrap md:px-4"
       >
         <StatusDot tone="warn" />
-        <span className="shrink-0 font-medium">系统降级</span>
+        <span className="shrink-0 font-medium text-foreground">系统降级</span>
         <Sep />
-        <span className="min-w-0 truncate" title={summary}>
+        <span className="min-w-0 truncate text-muted-foreground" title={summary}>
           {reasons[0]?.short}
         </span>
         <Sep />
-        <span className="shrink-0 tabular" title={summary}>
+        <span className="shrink-0 tabular text-muted-foreground" title={summary}>
           {`${String(reasons.length)} 项`}
         </span>
 
-        <button
+        <Button
+          ref={openerRef}
           type="button"
+          variant="outline"
+          size="xs"
+          className="ml-auto"
           onClick={() => {
             setOpen(true);
           }}
-          className="ml-auto h-6 shrink-0 rounded-sm border border-border bg-card px-1.5 text-xs text-foreground transition-[background-color,color] duration-[120ms] ease-out-quint hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           详情
-        </button>
+        </Button>
       </div>
 
       <Sheet
         open={open}
-        onClose={() => {
-          setOpen(false);
+        onOpenChange={(next) => {
+          setOpen(next);
         }}
-        title="系统降级"
-        description={`${String(reasons.length)} 项未满足的条件`}
-        testId="degraded-detail"
-        width="sm"
-        footer={
-          <Link
-            to="/system"
-            className="rounded-sm border border-border bg-card px-2 py-1 text-xs text-foreground transition-[background-color] duration-[120ms] ease-out-quint hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-            onClick={() => {
-              setOpen(false);
-            }}
-          >
-            系统页
-          </Link>
-        }
       >
-        <ul className="flex flex-col gap-2" data-testid="degraded-detail-list">
-          {reasons.map((reason) => (
-            <li key={reason.short} className="flex min-w-0 flex-col gap-0.5 border-l-2 border-warn pl-2">
-              <span className="text-sm font-medium text-foreground">{reason.short}</span>
-              <span className="text-xs leading-relaxed text-muted-foreground">{reason.detail}</span>
-            </li>
-          ))}
-        </ul>
+        <SheetContent side="right" data-testid="degraded-detail-panel" className="gap-3">
+          <SheetHeader>
+            <SheetTitle>系统降级</SheetTitle>
+            <SheetDescription>{`${String(reasons.length)} 项未满足的条件`}</SheetDescription>
+          </SheetHeader>
+
+          <ul className="flex flex-col gap-2 px-4" data-testid="degraded-detail-list">
+            {reasons.map((reason) => (
+              <li key={reason.short} className="flex min-w-0 flex-col gap-0.5 border-l-2 border-warn pl-2">
+                <span className="text-sm font-medium text-foreground">{reason.short}</span>
+                <span className="text-xs leading-relaxed text-muted-foreground">{reason.detail}</span>
+              </li>
+            ))}
+          </ul>
+
+          <SheetFooter>
+            <Link
+              to={SYSTEM_PATH}
+              className="text-sm text-primary underline-offset-4 hover:underline"
+              onClick={() => {
+                setOpen(false);
+              }}
+            >
+              打开系统页
+            </Link>
+          </SheetFooter>
+        </SheetContent>
       </Sheet>
     </>
   );

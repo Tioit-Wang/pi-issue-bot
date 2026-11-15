@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card.tsx';
 import { cn } from '../../lib/utils.ts';
+import { TONE_TEXT } from '../ui/status.ts';
 
 /**
  * 顶部数字卡（tech-plan §9.3：总览页 4 个 StatCard）。
@@ -10,17 +11,10 @@ export type StatCardProps = {
   label: string;
   value: ReactNode;
   hint?: ReactNode;
-  /** 语义色调：只影响数字颜色（成功绿 / 失败红 / 中性）。 */
-  tone?: 'neutral' | 'success' | 'warning' | 'danger';
+  /** 语义色：只影响数字颜色（tone 来自 `ui/status.ts`，不在这里另写颜色表）。 */
+  tone?: 'neutral' | 'success' | 'warn' | 'danger';
   className?: string;
   testId?: string;
-};
-
-const TONE_CLASS: Record<NonNullable<StatCardProps['tone']>, string> = {
-  neutral: 'text-foreground',
-  success: 'text-success-fg',
-  warning: 'text-warn-fg',
-  danger: 'text-danger-fg',
 };
 
 export function StatCard({ label, value, hint, tone = 'neutral', className, testId }: StatCardProps) {
@@ -30,7 +24,11 @@ export function StatCard({ label, value, hint, tone = 'neutral', className, test
         <CardTitle className="text-xs font-medium text-muted-foreground">{label}</CardTitle>
       </CardHeader>
       <CardContent className="pt-2">
-        <div className={cn('text-2xl font-semibold tabular-nums', TONE_CLASS[tone])}>{value}</div>
+        <div
+          className={cn('text-2xl font-semibold tabular-nums', tone === 'neutral' ? 'text-foreground' : TONE_TEXT[tone])}
+        >
+          {value}
+        </div>
         {hint === undefined ? null : <CardDescription className="mt-1">{hint}</CardDescription>}
       </CardContent>
     </Card>

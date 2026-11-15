@@ -15,7 +15,8 @@ import { useEffect, useState, type MouseEvent } from 'react';
 import { Navigate, useLocation, useNavigate, useParams } from 'react-router';
 import { Alert, AlertTitle } from '../components/ui/alert.tsx';
 import { Button } from '../components/ui/button.tsx';
-import { Breadcrumb } from '../components/Breadcrumb.tsx';
+import { StatusBadge } from '../components/ui/status-badge.tsx';
+import { TONE_BORDER } from '../components/ui/status.ts';
 import { AsyncSection } from '../components/AsyncSection.tsx';
 import { PageHeader } from '../components/PageHeader.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
@@ -29,7 +30,7 @@ import { SettingsNav, SettingsStatusBar, sectionSummary } from '../components/se
 import { useRepoStatus } from '../components/settings/use-repo-status.ts';
 import { useRestoreDefaults, useSettingsDraft } from '../components/settings/use-settings-draft.ts';
 import { DEFAULT_REPO_SETTINGS } from '../../../../packages/contract/src/index.ts';
-import { repoSettingsPath, repoWorkspacePath, useRepoRoute } from '../lib/repo-route.ts';
+import { repoSettingsPath, useRepoRoute } from '../lib/repo-route.ts';
 import { cn } from '../lib/utils.ts';
 import { normalizeSettingsSection, SETTINGS_SECTIONS, type SettingsSectionKey } from '../layout/nav.ts';
 import { NotFoundPage } from './not-found.tsx';
@@ -149,17 +150,11 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
   const fillHeight = section === 'events';
 
   return (
+    /*
+      面包屑由外壳统一画（`shell-breadcrumb`，`layout/AppLayout.tsx`）。这一页曾经自己画一条，
+      结果是同一个位置出现两条内容相同的面包屑 —— 外壳重构后只留一处。
+    */
     <div className={cn('flex min-w-0 flex-col gap-3', fillHeight && 'h-full min-h-0')}>
-      <Breadcrumb
-        testId="repo-breadcrumb"
-        items={[
-          { label: '全部项目', to: '/' },
-          { label: repo, to: repoWorkspacePath(repo) },
-          { label: '设置', to: repoSettingsPath(repo) },
-          { label: sectionLabel(section) },
-        ]}
-      />
-
       <PageHeader
         title={`设置 · ${sectionLabel(section)}`}
         badges={
@@ -200,18 +195,38 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
       */}
       <div
         className={cn(
-          'grid min-w-0 gap-4 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-6',
-          fillHeight ? 'min-h-0 flex-1 lg:items-stretch' : 'lg:items-start',
+          'grid min-w-0 gap-4 lg:grid-cols-[var(--rail-width)_minmax(0,1fr)] lg:gap-6',
+          // `fillHeight`（事件绑定分区）要「自己不满就内部滚」，所以整条高度链必须通到底：
+          // 1. 容器拿到 `flex-1` 的剩余高度；
+          // 2. **行高也要显式撑满** —— grid 默认 `grid-template-rows: auto`，行高由内容决定，
+          //    容器再有高度也不会分给行（2026-11-15 实机：外层 1064px、左栏只有 159px）；
+          // 3. 子项用 `items-stretch` 拉满行高，且**不能加 `lg:sticky`** —— sticky 元素的高度
+          //    恒等于自己的内容高度，一旦吸顶就再也接不到剩余空间。
+          fillHeight
+            ? 'min-h-0 flex-1 lg:grid-rows-[minmax(0,1fr)] lg:items-stretch'
+            : 'lg:items-start',
         )}
       >
-        <div className="min-w-0 lg:sticky lg:top-14">
+        {/* `fillHeight` 时这一层必须把行高传下去（`h-full`）：`Rail` 内部是 `flex-col` + `nav flex-1`，
+            父级高度不确定时 `flex-1` 算不出剩余空间，左栏就只剩内容高度（实机 159px vs 行高 1064px）。
+            同时不能再套 `lg:sticky` —— sticky 的高度恒等于内容高度。 */}
+        <div className={cn('flex min-w-0 flex-col', fillHeight ? 'min-h-0 flex-1' : 'lg:sticky lg:top-14')}>
           <SettingsNav items={navItems} current={section} dirty={dirty} onNavigate={guardNavigate} />
         </div>
 
-        <div className={cn('flex min-w-0 flex-col gap-3', fillHeight && 'min-h-0 flex-1')}>
+        {/*
+          `max-w-[720px]`：右侧是**单列表单**，不是表格。宽度放开到整屏时，
+          一行字会横跨 1400px，标签与控件之间的对应关系反而看不出来；
+          企业级 admin 的常规做法就是「表单窄、两侧留白」。表格类内容（词表）在分区内部
+          自己用 grid 的 `minmax(0, …)` 分配列宽，所以不会因为这里收窄而溢出。
+        */}
+        <div className={cn('flex w-full max-w-[720px] min-w-0 flex-col gap-3', fillHeight && 'min-h-0 flex-1')}>
           {pendingSection === null ? null : (
-            <Alert tone="warn" data-testid="repo-settings-dirty-guard">
-              <AlertTitle>当前分区有未保存的改动</AlertTitle>
+            <Alert className={cn('bg-card', TONE_BORDER.warn)} data-testid="repo-settings-dirty-guard">
+              <AlertTitle className="flex flex-wrap items-center gap-1.5">
+                <StatusBadge tone="warn">未保存</StatusBadge>
+                当前分区有未保存的改动
+              </AlertTitle>
               <div className="px-0.5 text-xs leading-relaxed">
                 <p>「{sectionLabel(section)}」的改动还没保存。离开这一页会丢掉它们（服务端仍是上一份配置）。</p>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -298,8 +313,11 @@ function InvalidSettings({
   onRestore: () => void;
 }) {
   return (
-    <Alert tone="danger" data-testid="repo-settings-invalid">
-      <AlertTitle>这个仓库的配置不合法（settings_valid = false）</AlertTitle>
+    <Alert variant="destructive" data-testid="repo-settings-invalid">
+      <AlertTitle className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge tone="danger">配置非法</StatusBadge>
+        这个仓库的配置不合法（settings_valid = false）
+      </AlertTitle>
       <div className="px-0.5 text-xs leading-relaxed">
         <p>
           {repo} 的 repos.settings 通不过 repoSettingsSchema，所以 webhook 会忽略它的事件（不会用默认值硬跑）。
@@ -311,14 +329,15 @@ function InvalidSettings({
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Button
-            variant="danger"
+            variant="destructive"
             size="sm"
             onClick={onRestore}
-            loading={pending}
+            disabled={pending}
+            aria-busy={pending}
             title={pending ? '正在写入…' : '用 repoSettingsSchema 的默认值覆盖这个仓库的 settings'}
             data-testid="repo-settings-restore-defaults"
           >
-            用部署默认覆盖（修复配置）
+            {pending ? '正在写入…' : '用部署默认覆盖（修复配置）'}
           </Button>
           <span className="text-2xs">历史数据（feedback / label_decisions）不受影响，仓库行也不动。</span>
         </div>

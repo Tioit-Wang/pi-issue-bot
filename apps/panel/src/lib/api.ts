@@ -25,6 +25,8 @@ import type {
   IssueSessionResponse,
   IssuesQuery,
   IssuesResponse,
+  ModelProvidersResponse,
+  ModelRolesResponse,
   OverviewQuery,
   OverviewResponse,
   QualityQuery,
@@ -204,6 +206,18 @@ export const api = {
   /* ── 仓库写面（`/api/repos/*`；契约见 `packages/contract/src/api.ts` §7b） ──────
    * `repo` 含 `/`，路径一律拆成 `:owner/:name` 两段（`repoBasePath`）。
    */
+
+  /* ── 全局设置（供应商 / 四档模型角色，`AC-32`） ──────────────────────────────
+   * 只读：面板本版不提供「改 key / 改单价」的写入口（`FR-7.5`：缺写接口就画禁用态）。
+   * `key` 真值永不返回（契约只给 `key_configured` + `key_mask`），所以这里**不可能**
+   * 请求到明文 —— 不是「记得别显示」，是拿不到。
+   */
+
+  /** 每个供应商一行：名称 / baseURL / key 掩码 / 连通性状态点 + 延迟 / 可用 model 列表。 */
+  modelProviders: (): Promise<ModelProvidersResponse> => request<ModelProvidersResponse>('/api/settings/providers'),
+
+  /** 四档角色（agent / format / classify / fallback）各一行，各带输入 / 输出单价。 */
+  modelRoles: (): Promise<ModelRolesResponse> => request<ModelRolesResponse>('/api/settings/models'),
 
   /** 全部仓库 + 状态（面板切换器 / 系统页 / 健康卡）。 */
   repos: (): Promise<ReposResponse> => request<ReposResponse>('/api/repos'),

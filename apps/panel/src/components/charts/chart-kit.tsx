@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import { cn } from '../../lib/utils.ts';
+import { TONE_DOT, type Tone } from '../ui/status.ts';
 
 /** 系统是否要求减少动效（SSR / jsdom 下默认 false）。 */
 export function usePrefersReducedMotion(): boolean {
@@ -59,7 +60,7 @@ export type TipRow = { name: string; value: string; color?: string | undefined }
  * 自定义 tooltip 内容：面 + hairline + 等宽数字。
  *
  * 不用 recharts 默认 tooltip 的原因：它带白底、边框与阴影，且数字不 tabular；
- * 在深色下默认样式几乎读不清。这里与 `Tooltip`（组件库那个）视觉一致：`shadow-overlay` 只给浮层。
+ * 在深色下默认样式几乎读不清。这里与 `Tooltip`（组件库那个）视觉一致：浮层只用官方 `shadow-lg`。
  */
 export function ChartTip({
   title,
@@ -71,7 +72,7 @@ export function ChartTip({
   footnote?: ReactNode;
 }) {
   return (
-    <div className="pointer-events-none min-w-32 rounded-md border border-border bg-card px-2 py-1.5 text-xs shadow-overlay">
+    <div className="pointer-events-none min-w-32 rounded-md border border-border bg-card px-2 py-1.5 text-xs shadow-lg">
       <p className="text-2xs text-faint">{title}</p>
       <ul className="mt-1 flex flex-col gap-0.5">
         {rows.map((row) => (
@@ -107,17 +108,12 @@ export function ShareBar({
   ratio: number | null;
   /** 读屏文案（例如「占比 61.3%」）。 */
   label: string;
-  tone?: 'brand' | 'success' | 'warn' | 'danger' | 'neutral';
+  tone?: Extract<Tone, 'brand' | 'success' | 'warn' | 'danger' | 'neutral'>;
   className?: string;
 }) {
   const safe = ratio === null || !Number.isFinite(ratio) ? 0 : Math.min(1, Math.max(0, ratio));
-  const fill = {
-    brand: 'bg-brand',
-    success: 'bg-success',
-    warn: 'bg-warn',
-    danger: 'bg-danger',
-    neutral: 'bg-neutral',
-  }[tone];
+  // 填充色只有一处来源：`ui/status.ts` 的 `TONE_DOT`（不再在这里写第二张颜色表）
+  const fill = TONE_DOT[tone];
 
   return (
     <span

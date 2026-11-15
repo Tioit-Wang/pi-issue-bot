@@ -1,10 +1,13 @@
-﻿/**
- * 两级导航 + 仓库切换器 + 当前仓库工作台（W1-C 的骨架行为）。
+/**
+ * 外壳导航 + 仓库切换器 + 设置分区（`FR-7.1` / `AC-26` / `AC-31`，侧栏式 admin）。
  *
- * 用 `AppRoutes`（生产同一份路由表）渲染，因为要断言的正是「外壳 + 路由」一起工作的效果：
- * - 左栏一列两组：全局 6 条（`NAV_ITEMS`）+ 当前仓库 4 条（`:repo` 从 URL 解出来）；
- * - 仓库切换器：打开 → 搜索过滤 → 选中即跳该仓库工作台，并把仓库记进 localStorage；
- * - 四态：加载（Skeleton）/ 空 / 错 / 有数据在切换器与工作台两处都有落点。
+ * 改造后没有顶栏、没有 dock、没有系统模态框：三层是「项目上下文（侧栏顶部切换器）
+ * → 项目 / 证据 / 全局三组导航 → 系统页（`/system`）」。所以这里断言的全是**版面事实**：
+ *
+ * - 没有仓库上下文时项目组只剩 Issue（`/`），设置 / 技能 / 运行无处可去（不渲染死链）；
+ * - 落在项目页面时三条链接指向当前项目，且当前页高亮（`aria-current`）；
+ * - 仓库切换器：打开 → 搜索过滤 → 选中即跳该项目的 Issue 队列并记住仓库；
+ * - 「全部项目」与「管理仓库…」固定在切换器底部，后者跳到系统页。
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
@@ -15,7 +18,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { createHandlers } from '../../mocks/handlers/index.ts';
 import { systemMock } from '../../mocks/handlers/system.ts';
-import { AppRoutes, NAV_ITEMS } from '../../routes.tsx';
+import { AppRoutes } from '../../routes.tsx';
+import { REPO_NAV } from '../../layout/nav.ts';
 import { forgetLastRepo, readLastRepo } from '../../lib/repo-route.ts';
 
 const server = setupServer(...createHandlers());
@@ -56,58 +60,71 @@ function renderAt(path: string): void {
   );
 }
 
-describe('两级导航', () => {
-  it('没有选中仓库时：只渲染「全局」一组（空组与提示句都不出现），切换器只说「选择仓库」', async () => {
+/** 侧栏的三组（组名就是「这是哪一层」）。 */
+function navGroup(key: 'project' | 'evidence' | 'global'): HTMLElement {
+  return within(screen.getByRole('navigation', { name: '主导航' })).getByTestId(`nav-group-${key}`);
+}
+
+describe('侧栏导航（项目 / 证据 / 全局）', () => {
+  it('没有项目上下文时：项目组只有 Issue，「证据」组整个不渲染', async () => {
     renderAt('/');
-    expect(await screen.findByRole('heading', { level: 1, name: '工作台' })).toBeTruthy();
+    expect(await screen.findByTestId('issue-rail')).toBeTruthy();
 
-    const nav = screen.getByRole('navigation', { name: '主导航' });
-    expect(nav.textContent).toContain('全局');
-    // 没有仓库上下文 → 整组「当前仓库」不渲染（版面自己解释，不写提示句）
-    expect(nav.textContent).not.toContain('当前仓库');
-    expect(screen.queryByTestId('sidebar-no-repo')).toBeNull();
-    for (const item of NAV_ITEMS) {
-      expect(within(nav).getByRole('link', { name: item.label })).toBeTruthy();
-    }
-    // 仓库组的 4 条链接此时不存在（避免 `undefined` 拼出的坏 URL）
-    expect(within(nav).queryByRole('link', { name: '工作台' })).toBeNull();
+    const project = navGroup('project');
+    expect(within(project).getAllByRole('link').map((link) => link.textContent)).toEqual(['Issue']);
+    expect(within(project).queryByRole('link', { name: '设置' })).toBeNull();
+    expect(within(project).queryByRole('link', { name: '技能' })).toBeNull();
+    // 没有仓库就没有运行记录可看：证据组不渲染，而不是画一个点了 404 的链接
+    expect(within(screen.getByRole('navigation', { name: '主导航' })).queryByTestId('nav-group-evidence')).toBeNull();
+    // 全局组始终在：系统不依赖项目
+    expect(within(navGroup('global')).getByRole('link', { name: '系统' })).toBeTruthy();
 
-    // 切换器触发器：只说要去做什么，不用"未选择"这种否定式次级标签
+    // 切换器触发器：只说要去做什么，不用「未选择」这种否定式次级标签
     const trigger = screen.getByRole('button', { name: '切换仓库' });
     expect(trigger.textContent).toContain('选择仓库');
     expect(trigger.textContent).not.toContain('未选择');
   });
 
-  it('落在仓库页面时：仓库组 4 条链接指向当前仓库（不再有「流水线」），且当前页高亮', async () => {
-    renderAt('/repos/acme__widgets/runs');
-    expect(await screen.findByRole('heading', { level: 1, name: '运行' })).toBeTruthy();
+  it('落在项目页面时：三项指向当前项目，当前页高亮（aria-current）', async () => {
+    renderAt('/repos/acme__widgets/settings/general');
+    expect(await screen.findByTestId('repo-settings-section')).toBeTruthy();
 
-    const nav = screen.getByRole('navigation', { name: '主导航' });
-    expect(within(nav).getByRole('link', { name: '工作台' }).getAttribute('href')).toBe('/repos/acme__widgets');
-    expect(within(nav).getByRole('link', { name: 'Issue 中心' }).getAttribute('href')).toBe(
-      '/repos/acme__widgets/issues',
-    );
-    // v0.3：「流水线」页已退役，仓库组里不能再有这个链接（否则点过去是 404）
-    expect(within(nav).queryByRole('link', { name: '流水线' })).toBeNull();
-    expect(within(nav).getByRole('link', { name: '运行' }).getAttribute('href')).toBe('/repos/acme__widgets/runs');
-    expect(within(nav).getByRole('link', { name: '设置' }).getAttribute('href')).toBe('/repos/acme__widgets/settings');
+    const project = navGroup('project');
+    expect(within(project).getByRole('link', { name: 'Issue' }).getAttribute('href')).toBe('/repos/acme__widgets/issues');
+    expect(within(project).getByRole('link', { name: '设置' }).getAttribute('href')).toBe('/repos/acme__widgets/settings');
+    expect(within(project).getByRole('link', { name: '技能' }).getAttribute('href')).toBe('/repos/acme__widgets/skills');
 
-    const runsLink = within(nav).getByRole('link', { name: '运行' });
-    expect(runsLink.getAttribute('aria-current')).toBe('page');
+    // 顺序即信息优先级：Issue 在最上
+    expect(REPO_NAV.map((item) => item.label)).toEqual(['Issue', '设置', '技能']);
+    expect(within(project).getByRole('link', { name: '设置' }).getAttribute('aria-current')).toBe('page');
+    expect(within(project).getByRole('link', { name: 'Issue' }).getAttribute('aria-current')).toBeNull();
+  });
 
-    // 两组各有微标签，且第二组带 hairline 分隔（`mt-2 border-t pt-2`）
-    expect(nav.textContent).toContain('全局');
-    expect(nav.textContent).toContain('当前仓库');
-    const repoGroup = nav.lastElementChild as HTMLElement | null;
-    expect(repoGroup?.className).toContain('border-t');
+  it('「证据」组在项目上下文里出现，指向该项目的运行列表', async () => {
+    renderAt('/repos/acme__widgets/issues');
+    await screen.findByTestId('issue-rail');
+
+    const evidence = navGroup('evidence');
+    expect(within(evidence).getByRole('link', { name: '运行' }).getAttribute('href')).toBe('/repos/acme__widgets/runs');
+  });
+
+  it('「系统」是页面跳转（不是浮层）：点一下路由就变', async () => {
+    const user = userEvent.setup();
+    renderAt('/repos/acme__widgets/issues');
+    await screen.findByTestId('issue-rail');
+
+    await user.click(within(navGroup('global')).getByRole('link', { name: '系统' }));
+
+    expect(await screen.findByTestId('system-page')).toBeTruthy();
+    // `MemoryRouter` 不动 `window.location`：路由真的变了由「系统页渲染出来」证明
   });
 });
 
-describe('仓库切换器', () => {
-  it('打开 → 两个仓库都在 → 搜索过滤 → 选中跳工作台并记住仓库', async () => {
+describe('仓库切换器（项目上下文）', () => {
+  it('打开 → 两个仓库都在 → 搜索过滤 → 选中跳 Issue 队列并记住仓库', async () => {
     const user = userEvent.setup();
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    await screen.findByTestId('issue-rail');
 
     await user.click(screen.getByRole('button', { name: '切换仓库' }));
 
@@ -129,7 +146,10 @@ describe('仓库切换器', () => {
     await user.clear(search);
     await user.click(await screen.findByTestId('repo-switcher-item-acme/widgets'));
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'acme/widgets' })).toBeTruthy();
+    // 切换项目 = 落在该项目的 Issue 队列（`/repos/acme__widgets`）
+    await waitFor(() => {
+      expect(screen.getByTestId('repo-switcher').textContent).toContain('acme/widgets');
+    });
     expect(readLastRepo()).toBe('acme/widgets');
     // 面板关闭
     expect(screen.queryByLabelText('搜索仓库')).toBeNull();
@@ -138,7 +158,7 @@ describe('仓库切换器', () => {
   it('Escape 关闭面板并把焦点还给触发器', async () => {
     const user = userEvent.setup();
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    await screen.findByTestId('issue-rail');
 
     const trigger = screen.getByRole('button', { name: '切换仓库' });
     await user.click(trigger);
@@ -150,27 +170,26 @@ describe('仓库切换器', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('底部固定「全部项目」与「管理仓库…」', async () => {
+  it('底部固定「全部项目」与「管理仓库…」（后者打开系统页）', async () => {
     const user = userEvent.setup();
-    renderAt('/repos/acme__widgets');
-    await screen.findByRole('heading', { level: 1, name: 'acme/widgets' });
+    renderAt('/repos/acme__widgets/issues');
+    await screen.findByTestId('issue-rail');
 
     await user.click(screen.getByRole('button', { name: '切换仓库' }));
-    const menu = await screen.findByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: '全部项目' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: '全部项目' })).toBeTruthy();
 
-    await user.click(within(menu).getByRole('menuitem', { name: '管理仓库…' }));
-    expect(await screen.findByRole('heading', { level: 1, name: '系统' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '管理仓库…' }));
+    expect(await screen.findByTestId('system-page')).toBeTruthy();
   });
 
-  it('空态：两个来源都没有仓库 → 提示去系统页确认安装（不是空白）', async () => {
+  it('空态：两个来源都没有仓库 → 提示去「系统」确认安装（不是空白）', async () => {
     const user = userEvent.setup();
     server.use(
       http.get('/api/repos', () => HttpResponse.json({ repos: [] })),
       http.get('/api/system', () => HttpResponse.json({ ...systemMock(), repos: [] })),
     );
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    await screen.findByTestId('issue-rail');
 
     await user.click(screen.getByRole('button', { name: '切换仓库' }));
     const empty = await screen.findByTestId('repo-switcher-empty');
@@ -184,7 +203,7 @@ describe('仓库切换器', () => {
       http.get('/api/system', () => HttpResponse.json({ error: { code: 'internal', message: '读不到系统' } }, { status: 500 })),
     );
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: '工作台' });
+    await screen.findByTestId('issue-rail');
 
     await user.click(screen.getByRole('button', { name: '切换仓库' }));
     const error = await screen.findByTestId('repo-switcher-error');
@@ -193,58 +212,18 @@ describe('仓库切换器', () => {
   });
 });
 
-describe('/repos/:repo 工作台', () => {
-  it('正常态：面包屑 + 仓库徽章 + 最近运行 / 最近 Issue / 全局口径', async () => {
-    renderAt('/repos/acme__widgets');
-
-    expect(await screen.findByTestId('repo-workspace-content')).toBeTruthy();
-    expect(screen.getByTestId('repo-breadcrumb').textContent).toContain('工作台');
-    // 仓库徽章来自 /api/repos（dry-run 必须显眼：它决定「不写 GitHub」）
-    const badges = screen.getByTestId('repo-workspace-badges');
-    expect(badges.textContent).toContain('启用');
-    await waitFor(() => {
-      expect(badges.textContent).toContain('dry-run');
-    });
-
-    expect(screen.getByTestId('repo-workspace-runs')).toBeTruthy();
-    expect(screen.getByTestId('repo-workspace-issues')).toBeTruthy();
-    // overview 没按仓库切分 ⇒ 明确写「全局口径」
-    expect(screen.getByTestId('repo-workspace-global').textContent).toContain('全局口径');
-  });
-
-  it('空态：该仓库没有任何运行与会话 → 「该仓库暂无数据」', async () => {
-    renderAt('/repos/acme__widgets?mock=empty');
-
-    const empty = await screen.findByTestId('repo-workspace-empty');
-    expect(empty.textContent).toContain('该仓库暂无数据');
-    expect(screen.queryByTestId('repo-workspace-content')).toBeNull();
-  });
-
-  it('错误态：500 → Alert（不是白屏）', async () => {
-    renderAt('/repos/acme__widgets?mock=error');
-
-    const error = await screen.findByTestId('repo-workspace-error');
-    expect(error.textContent).toContain('读取失败');
-  });
-
-  it('加载态：先 Skeleton 再有内容', async () => {
-    renderAt('/repos/acme__widgets?mock=slow');
-
-    expect(await screen.findByTestId('repo-workspace-loading')).toBeTruthy();
-    expect(await screen.findByTestId('repo-workspace-content', undefined, { timeout: 5000 })).toBeTruthy();
-  });
-
-  it('设置分区：4 个分区导航都在，落地页是「通用」的真表单（不是占位说明）', async () => {
+describe('设置分区（FR-7.4 的三左栏之一）', () => {
+  it('4 个分区都在 rail 里，落地页是「通用」的真表单', async () => {
     renderAt('/repos/acme__widgets/settings/general');
 
-    expect(await screen.findByRole('heading', { level: 1, name: '设置 · 通用' })).toBeTruthy();
-    const nav = screen.getByRole('navigation', { name: '设置分区' });
+    expect(await screen.findByTestId('repo-settings-section')).toBeTruthy();
+    const rail = screen.getByTestId('settings-rail');
+    const nav = within(rail).getByRole('navigation', { name: '设置分区' });
     for (const label of ['通用', '事件绑定', '标签', '执行']) {
       expect(within(nav).getByRole('link', { name: new RegExp(label, 'u') })).toBeTruthy();
     }
 
-    // 设置来自 MSW 的 `/api/repos/:owner/:name/settings`（W3-H 的 mock），等它到再断言控件
-    const section = await screen.findByTestId('repo-settings-section');
+    const section = screen.getByTestId('repo-settings-section');
     expect(within(section).getByTestId('settings-general-repo').textContent).toBe('acme/widgets');
     expect(within(section).getByRole('switch', { name: '接受事件（enabled）' })).toBeTruthy();
     expect(within(section).getByRole('switch', { name: '写回 GitHub' })).toBeTruthy();

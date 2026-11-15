@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createHandlers } from '../../mocks/handlers/index.ts';
 import { renderWithProviders } from '../../../test/render.tsx';
 import { TasksPage } from '../tasks.tsx';
+import { filterDisplayValue, pickFilterOption } from './filter-helpers.tsx';
 
 const server = setupServer(...createHandlers());
 
@@ -71,7 +72,7 @@ describe('/tasks 列表', () => {
     );
     await screen.findByTestId('tasks-content');
 
-    await user.selectOptions(screen.getByLabelText('状态筛选'), 'failed');
+    await pickFilterOption(user, '状态筛选', '失败');
 
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toContain('status=failed');
@@ -90,7 +91,7 @@ describe('/tasks 列表', () => {
 
     await screen.findByTestId('tasks-content');
     requests.length = 0;
-    await user.selectOptions(screen.getByLabelText('时间范围筛选'), '24h');
+    await pickFilterOption(user, '时间范围筛选', '最近 24 小时');
 
     await waitFor(() => {
       const ranged = requests.find((url) => url.includes('from='));
@@ -103,9 +104,10 @@ describe('/tasks 列表', () => {
     renderWithProviders(<TasksPage />, { route: '/tasks?status=failed&repo=other%2Flib&range=24h' });
 
     await screen.findByTestId('tasks-content');
-    expect((screen.getByLabelText('状态筛选') as HTMLSelectElement).value).toBe('failed');
-    expect((screen.getByLabelText('仓库筛选') as HTMLSelectElement).value).toBe('other/lib');
-    expect((screen.getByLabelText('时间范围筛选') as HTMLSelectElement).value).toBe('24h');
+    // 触发器显示的就是选中的那一项的文案（Radix 没有原生 `<select>.value`）
+    expect(filterDisplayValue('状态筛选')).toContain('失败');
+    expect(filterDisplayValue('仓库筛选')).toContain('other/lib');
+    expect(filterDisplayValue('时间范围筛选')).toContain('最近 24 小时');
     expect(
       requests.some((url) => url.includes('status=failed') && url.includes('repo=other%2Flib')),
     ).toBe(true);

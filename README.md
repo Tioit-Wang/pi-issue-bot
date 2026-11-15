@@ -11,7 +11,7 @@ GitHub issue 自动处理平台：webhook 接事件 → PostgreSQL 记事实 →
 - 被 `@pi-bot /命令` 时执行技能（`/review-pr`、`/issue-triage`、`/issue-repro` 等）
 - 建 issue（指纹去重 + 日配额）
 - 推 `bot/*` 分支并开 PR（推送集 = 声明 ∩ 实际改动）
-- 面板：吞吐、成本、改回率、审计、issue 会话回放
+- 面板（侧栏式 admin，Tailwind 4 + shadcn/ui）：issue 队列与会话回放、仓库设置、技能、运行证据、系统健康
 
 ## 不做什么
 
@@ -30,7 +30,7 @@ pnpm install
 pnpm -r typecheck; pnpm -r test; pnpm lint   # 门禁
 
 $env:PI_BOT_PG_DSN = 'postgres://postgres:postgres@127.0.0.1:5432/pi_issue_bot'
-pnpm cli -- migrate        # 16 张初始表 + schema_migrations
+pnpm cli -- migrate        # 28 张业务表 + schema_migrations 账本（重复执行幂等）
 
 pnpm cli -- serve          # 3000；metrics 9464
 pnpm cli -- doctor         # 13 项预检
@@ -71,7 +71,7 @@ pnpm --filter @pi-issue-bot/panel dev   # 面板 5173，/api 代理到 3000
 
 ```
 apps/server     控制面 + 执行面（Node 24，187 文件）
-apps/panel      面板（React 19，13 条路由 + 4 条 legacy 重定向）
+apps/panel      面板（React 19 + Vite + shadcn/ui；14 条路由 = 10 现行 + 4 legacy 重定向）
 packages/       contract（zod + OpenAPI）· envelope · racp-client · shared
 migrations/     0000–0011
 openapi/        生成物，入 git

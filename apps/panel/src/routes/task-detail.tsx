@@ -4,7 +4,7 @@ import { AsyncSection } from '../components/AsyncSection.tsx';
 import { PageHeader } from '../components/PageHeader.tsx';
 import { Section } from '../components/Section.tsx';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx';
-import { Badge, StatusDot } from '../components/ui/badge.tsx';
+import { StatusBadge, StatusDot } from '../components/ui/status-badge.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { statusTone, TONE_TEXT } from '../components/ui/status.ts';
 import type { TaskDetailResponse } from '../lib/contract.ts';
@@ -89,23 +89,23 @@ function TaskDetail({ id }: { id: string }) {
         badges={
           task === undefined ? undefined : (
             <>
-              <Badge tone={statusTone(task.status)} dot>
+              <StatusBadge tone={statusTone(task.status)} dot>
                 {task.status}
-              </Badge>
-              {task.failureClass === null ? null : <Badge tone="danger">{task.failureClass}</Badge>}
-              {task.outcome === null ? null : <Badge tone={statusTone(task.outcome)}>{task.outcome}</Badge>}
-              {task.dryRun ? <Badge tone="warn">dry-run</Badge> : null}
-              <Badge tone="neutral">{`耗时 ${formatDuration(task.durationMs)}`}</Badge>
-              <Badge tone="neutral">{`成本 ${formatUsd(task.costUsd)}`}</Badge>
+              </StatusBadge>
+              {task.failureClass === null ? null : <StatusBadge tone="danger">{task.failureClass}</StatusBadge>}
+              {task.outcome === null ? null : <StatusBadge tone={statusTone(task.outcome)}>{task.outcome}</StatusBadge>}
+              {task.dryRun ? <StatusBadge tone="warn">dry-run</StatusBadge> : null}
+              <StatusBadge tone="neutral">{`耗时 ${formatDuration(task.durationMs)}`}</StatusBadge>
+              <StatusBadge tone="neutral">{`成本 ${formatUsd(task.costUsd)}`}</StatusBadge>
             </>
           )
         }
         actions={
           <Link
             className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            to={repo === null ? '/audit' : repoRunsPath(repo)}
+            to={repo === null ? '/' : repoRunsPath(repo)}
           >
-            {repo === null ? '返回审计' : '返回运行列表'}
+            {repo === null ? '返回 Issue 队列' : '返回运行列表'}
           </Link>
         }
       />
@@ -119,9 +119,9 @@ function TaskDetail({ id }: { id: string }) {
         emptyAction={
           <Link
             className="mt-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-            to={repo === null ? '/audit' : repoRunsPath(repo)}
+            to={repo === null ? '/' : repoRunsPath(repo)}
           >
-            {repo === null ? '回到审计' : '回到运行列表'}
+            {repo === null ? '回到 Issue 队列' : '回到运行列表'}
           </Link>
         }
         onRetry={() => {
@@ -207,15 +207,15 @@ function TaskDetailBody({ data }: { data: TaskDetailResponse }) {
                     data-testid={`task-detail-event-${event.kind}`}
                   >
                     <span className="w-8 shrink-0 text-right tabular text-faint">{formatCount(event.cursor)}</span>
-                    <Badge tone="neutral">{EVENT_KIND_LABEL[event.kind]}</Badge>
+                    <StatusBadge tone="neutral">{EVENT_KIND_LABEL[event.kind]}</StatusBadge>
                     <time className="shrink-0 text-2xs text-faint" title={formatTimeCell(event.at).title}>
                       {formatTimeCell(event.at).text}
                     </time>
                     {event.kind === 'approval' ? (
                       <>
-                        <Badge tone={decision === 'allow' ? 'success' : 'danger'}>
+                        <StatusBadge tone={decision === 'allow' ? 'success' : 'danger'}>
                           {`${tool ?? '审批'} · ${decision ?? '未知判定'}`}
-                        </Badge>
+                        </StatusBadge>
                         {rule === null ? null : <span className="font-mono text-2xs text-muted-foreground">{`rule=${rule}`}</span>}
                         {reason === null ? null : <span className="min-w-0 flex-1 break-all">{reason}</span>}
                       </>
@@ -284,7 +284,7 @@ function EnvelopesSection({
               <div key={envelope.runId} className="flex min-w-0 flex-col gap-2 border-t border-border pt-2 first:border-0 first:pt-0">
                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
                   <span className="font-mono text-xs">{`run ${envelope.runId}`}</span>
-                  <Badge tone={envelope.valid ? 'success' : 'danger'}>{envelope.valid ? '校验通过' : '校验失败'}</Badge>
+                  <StatusBadge tone={envelope.valid ? 'success' : 'danger'}>{envelope.valid ? '校验通过' : '校验失败'}</StatusBadge>
                   <span className="text-2xs text-faint">
                     {`动作 ${formatCount(envelope.actionCount)} · token ${formatTokens(envelope.usage.inputTokens)}/${formatTokens(envelope.usage.outputTokens)} · ${formatUsd(envelope.usage.costUsd)}`}
                   </span>
@@ -306,9 +306,9 @@ function EnvelopesSection({
                             <span className="text-muted-foreground">没有标签</span>
                           ) : (
                             envelope.verdict.labels.map((label) => (
-                              <Badge key={label} tone="neutral">
+                              <StatusBadge key={label} tone="neutral">
                                 {label}
-                              </Badge>
+                              </StatusBadge>
                             ))
                           )}
                         </span>
@@ -324,9 +324,9 @@ function EnvelopesSection({
                       <ul className="flex min-w-0 flex-col gap-1">
                         {envelope.verdict.evidence.map((item) => (
                           <li key={item.rule} className="flex min-w-0 flex-wrap items-baseline gap-1.5">
-                            <Badge tone={item.passed === null ? 'neutral' : item.passed ? 'success' : 'danger'}>
+                            <StatusBadge tone={item.passed === null ? 'neutral' : item.passed ? 'success' : 'danger'}>
                               {item.passed === null ? '未判定' : item.passed ? '通过' : '不通过'}
-                            </Badge>
+                            </StatusBadge>
                             <span className="font-mono text-2xs text-faint">{item.rule}</span>
                             <span className="min-w-0 break-words">{item.quote}</span>
                           </li>
@@ -352,8 +352,8 @@ function EnvelopesSection({
                               )}
                             >
                               <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-                                <Badge tone="neutral">{INTENT_LABEL[action.intent]}</Badge>
-                                <Badge tone={statusTone(action.status)}>{action.status}</Badge>
+                                <StatusBadge tone="neutral">{INTENT_LABEL[action.intent]}</StatusBadge>
+                                <StatusBadge tone={statusTone(action.status)}>{action.status}</StatusBadge>
                                 <span className="min-w-0 truncate font-mono text-2xs text-faint">
                                   {action.target.kind}
                                   {action.target.number === null ? '' : `#${formatCount(action.target.number)}`}
@@ -419,8 +419,8 @@ function DiffSection({ diff }: { diff: TaskDetailResponse['diff'] }) {
       description={`base ${diff.baseSha ?? EMPTY} → head ${diff.headSha ?? EMPTY}`}
       actions={
         <>
-          <Badge tone="neutral">{`${formatCount(lines.length)} 行`}</Badge>
-          {diff.truncated ? <Badge tone="warn">已截断（超过 200 KB）</Badge> : null}
+          <StatusBadge tone="neutral">{`${formatCount(lines.length)} 行`}</StatusBadge>
+          {diff.truncated ? <StatusBadge tone="warn">已截断（超过 200 KB）</StatusBadge> : null}
           <Button variant="secondary" size="sm" onClick={() => setWrap((current) => !current)}>
             {wrap ? '不折行（横向滚动）' : '折行'}
           </Button>

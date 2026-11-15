@@ -98,7 +98,8 @@ describe('/tasks/:id 任务详情', () => {
 
     const missing = await screen.findByTestId('task-detail-empty');
     expect(missing.textContent).toContain('任务不存在');
-    expect(within(missing).getByRole('link', { name: '回到审计' })).toBeTruthy();
+    // 审计页已随 `AC-26` 从路由表里删掉：没有仓库上下文时回「全部项目的 Issue 队列」（`/`）
+    expect(within(missing).getByRole('link', { name: '回到 Issue 队列' })).toBeTruthy();
     // 不是错误态：501/500 的「读取失败」不该出现
     expect(screen.queryByTestId('task-detail-error')).toBeNull();
   });

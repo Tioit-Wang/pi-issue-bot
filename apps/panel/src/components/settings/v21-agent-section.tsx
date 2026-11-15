@@ -17,6 +17,8 @@ import type { AgentActions, RepoSettings } from '../../../../../packages/contrac
 import { SaveBar } from './save-bar.tsx';
 import { DEFAULT_SYSTEM_PROMPT, MODEL_NAME_RE, SYSTEM_PROMPT_MAX_CHARS } from '../../../../../packages/contract/src/index.ts';
 import { Alert, AlertDescription } from '../ui/alert.tsx';
+import { FieldDescription, FieldGroup } from '../ui/field.tsx';
+import { TONE_BORDER } from '../ui/status.ts';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
 import { NumberField, SwitchField, TextAreaField, TextField } from './form.tsx';
@@ -211,13 +213,24 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
   return (
     <div className="flex flex-col gap-6" data-testid="settings-execution">
       <Section first title="系统提示词">
-        <SystemPromptField stored={agent.system_prompt} readOnly={readOnly} onChange={setSystemPrompt} />
+        <FieldGroup className="gap-2">
+          <FieldDescription>
+            这段文字**每一轮都会带上**（不参与压缩），所以它的代价是上下文窗口：写满 4000 字符就等于每次都少掉半个窗口。
+            这里写「这个仓库的规矩」（技术栈、命令、评审口径），不要写一次性指令——那些属于事件模板。
+          </FieldDescription>
+          <SystemPromptField stored={agent.system_prompt} readOnly={readOnly} onChange={setSystemPrompt} />
+        </FieldGroup>
       </Section>
 
       <Section title="执行限额">
-        <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2">
-          {LIMIT_FIELDS.map((field) => (
-            <NumberField
+        <FieldGroup className="gap-3">
+          <FieldDescription>
+            这些数字决定「跑起来会在哪里被掐断」：并发越高 GitHub rate limit 与成本压力越大，日配额用完当天不再处理，
+            单轮/单任务超时按失败收尾（不自动重试）。v0.3 的五个 `limits` 与默认模型也在同一屏，避免两处对照。
+          </FieldDescription>
+          <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2">
+            {LIMIT_FIELDS.map((field) => (
+              <NumberField
               key={field.key}
               id={`v21-execution-${field.key}`}
               label={field.label}
@@ -278,6 +291,7 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
             disabledReason="仓库已归档：只读"
           />
         </div>
+        </FieldGroup>
       </Section>
 
       <Section
@@ -307,7 +321,7 @@ export function V21AgentSection({ state }: SettingsSectionProps) {
             ))}
           </div>
 
-          <Alert tone="warn" data-testid="v21-execution-actions-note">
+          <Alert data-testid="v21-execution-actions-note" className={cn('bg-card', TONE_BORDER.warn)}>
             <AlertDescription>
               这三个开关会改变仓库的可见状态（多出 issue / 分支 / 被关闭的单）。关闭「写回 GitHub」时
               它们仍会被跳过；上线前建议先只开「建 issue」做灰度。

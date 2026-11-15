@@ -1,21 +1,28 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronsUpDown } from 'lucide-react';
 import { describeError } from '../components/AsyncSection.tsx';
-import { Badge, StatusDot } from '../components/ui/badge.tsx';
-import { DropdownMenu } from '../components/ui/dropdown-menu.tsx';
+import { Button } from '../components/ui/button.tsx';
+import { Input } from '../components/ui/input.tsx';
+import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
+import { StatusBadge, StatusDot } from '../components/ui/status-badge.tsx';
 import { formatRelativeTime } from '../lib/format.ts';
 import { rememberLastRepo, repoWorkspacePath, useRepoRoute } from '../lib/repo-route.ts';
 import { useRepoDirectory, type RepoSummary } from '../lib/repos.ts';
 import { cn } from '../lib/utils.ts';
+import { SYSTEM_PATH } from './nav.ts';
 
 /**
- * 仓库切换器（左栏顶部）。
+ * 仓库切换器（侧栏顶部）：**项目上下文的唯一入口**（`FR-7.1` 的第一层）。
  *
  * 交互：点触发器 → 面板（搜索框自动聚焦）→ 输入即筛（`owner/name` 子串匹配）
- * → 点一行进该仓库工作台，同时把它记成「上次打开的仓库」（旧 `/tasks/:id` 链接要用）。
- * 底部固定两项：`全部项目`（回全局总览）与 `管理仓库…`（`/system`）。
+ * → 点一行进该仓库的 Issue 队列，同时把它记成「上次打开的仓库」（旧 `/tasks/:id` 要用）。
+ * 底部固定两项：`全部项目`（回全局 Issue 队列）与 `管理仓库…`（`/system`）。
+ *
+ * 为什么是 `Popover` 而不是 `DropdownMenu`：面板里有一个**文本输入框**。
+ * Radix 的菜单把方向键与逐个可打印字符按「菜单项之间的跳转」解释，
+ * 输入框放进去会抢键（打不出 `zzz`）。Popover 只负责定位与关合，键盘留给输入框。
  *
  * 每行给一个**状态点 + 徽章组**，回答「这个仓库现在能不能正常跑」：
  * 启用（success）/ 停用（neutral）/ 干跑（warn）/ 配置非法（danger）/ 已归档（neutral）。
@@ -28,7 +35,9 @@ export function RepoSwitcher() {
   const { repo: activeRepo } = useRepoRoute();
   const { repos, source, isLoading, error, isEmpty, refetch } = useRepoDirectory();
   const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -38,150 +47,174 @@ export function RepoSwitcher() {
 
   const openRepo = (repo: string): void => {
     rememberLastRepo(repo);
+    setOpen(false);
     void navigate(repoWorkspacePath(repo));
   };
 
+  // 打开就聚焦搜索框：键盘用户不必先 Tab 进面板再找输入框。
+  // 用一次 timeout 而不是同步 focus：Portal 里的内容在本次提交里才挂上，
+  // 而 Radix 的开合焦点管理也在这一轮跑 —— 同步抢焦点会被它盖掉。
+  useEffect(() => {
+    if (!open) return;
+    setQuery('');
+    const timer = window.setTimeout(() => {
+      searchRef.current?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open]);
+
   return (
-    <DropdownMenu
-      testId="repo-switcher"
-      triggerLabel="切换仓库"
-      panelClassName="w-72"
-      label={
-        <span className="flex min-w-0 flex-1 items-center gap-2">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label="切换仓库"
+          title="切换仓库（⌘K 也能搜）"
+          data-testid="repo-switcher"
+          className="h-8 w-full justify-start gap-2 px-2 font-normal"
+        >
           {activeRepo === null ? (
             // 空态只说要去做什么（"选择仓库"），不用"未选择"这种否定式次级标签占两行
-            <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">选择仓库</span>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">选择仓库</span>
           ) : (
-            // 选中时只显示仓库名（等宽一行）："当前仓库"已经由下方分组标题说明，不重复
-            <span
-              className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-foreground"
-              title={activeRepo}
-            >
+            // 选中时只显示仓库名（等宽一行）："当前仓库"已经由分组标题说明，不重复
+            <span className="min-w-0 flex-1 truncate text-left font-mono text-xs font-medium text-foreground" title={activeRepo}>
               {activeRepo}
             </span>
           )}
-          <ChevronsUpDown aria-hidden className="ml-auto size-3.5 shrink-0 text-faint" strokeWidth={1.75} />
-        </span>
-      }
-    >
-      {(close) => (
-        <>
-          <div className="border-b border-border p-1.5">
-            <input
-              data-autofocus
-              type="search"
-              aria-label="搜索仓库"
-              placeholder="搜索 owner/name…"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-              }}
-              className={cn(
-                'h-7 w-full rounded-sm border border-input bg-background px-2 text-xs text-foreground',
-                'transition-[border-color] duration-[120ms] ease-out-quint hover:border-border-strong',
-                'outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-              )}
-            />
-          </div>
+          <ChevronsUpDown aria-hidden className="ml-auto size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+        </Button>
+      </PopoverTrigger>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-1" data-testid="repo-switcher-list">
-            {isLoading ? (
-              <div className="flex flex-col gap-1 p-1" data-testid="repo-switcher-loading">
-                {[0, 1, 2].map((index) => (
-                  <Skeleton key={`repo-skeleton-${String(index)}`} className="h-8 w-full" />
-                ))}
-              </div>
-            ) : error !== null ? (
-              <div className="px-2 py-2 text-xs" data-testid="repo-switcher-error">
-                <p className="font-medium text-danger-fg">仓库清单读取失败</p>
-                <p className="mt-0.5 text-muted-foreground">{describeError(error)}</p>
-                <button
-                  type="button"
-                  className="mt-2 rounded-sm border border-border px-2 py-0.5 text-foreground transition-colors duration-[120ms] hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-                  onClick={() => {
-                    refetch();
-                  }}
-                >
-                  重试
-                </button>
-              </div>
-            ) : isEmpty ? (
-              <div className="px-2 py-2 text-xs" data-testid="repo-switcher-empty">
-                <p className="text-foreground">还没有任何仓库</p>
-                <p className="mt-0.5 leading-relaxed text-muted-foreground">
-                  去「系统」页确认安装信息，或等 GitHub App 安装事件建行。
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void navigate('/system');
-                  }}
-                  className="mt-2 rounded-sm border border-border px-2 py-0.5 text-foreground transition-colors duration-[120ms] hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-                >
-                  打开系统页
-                </button>
-              </div>
-            ) : filtered.length === 0 ? (
-              <p className="px-2 py-2 text-xs text-muted-foreground" data-testid="repo-switcher-no-match">
-                {`没有匹配「${query.trim()}」的仓库`}
+      <PopoverContent
+        align="start"
+        className="w-72 gap-0 p-0"
+        // 焦点交给下面那个输入框（Popover 默认把焦点放在内容容器上）
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+        }}
+      >
+        <div className="border-b border-border p-1.5">
+          <Input
+            ref={searchRef}
+            type="search"
+            aria-label="搜索仓库"
+            placeholder="搜索 owner/name…"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+            }}
+            className="h-8 text-xs"
+          />
+        </div>
+
+        <div
+          className="flex max-h-80 min-h-0 flex-col overflow-y-auto p-1"
+          role="listbox"
+          aria-label="仓库"
+          data-testid="repo-switcher-list"
+        >
+          {isLoading ? (
+            <div className="flex flex-col gap-1 p-1" data-testid="repo-switcher-loading">
+              {[0, 1, 2].map((index) => (
+                <Skeleton key={`repo-skeleton-${String(index)}`} className="h-8 w-full" />
+              ))}
+            </div>
+          ) : error !== null ? (
+            <div className="px-2 py-2 text-xs" data-testid="repo-switcher-error">
+              <p className="font-medium text-destructive">仓库清单读取失败</p>
+              <p className="mt-0.5 text-muted-foreground">{describeError(error)}</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="mt-2"
+                onClick={() => {
+                  refetch();
+                }}
+              >
+                重试
+              </Button>
+            </div>
+          ) : isEmpty ? (
+            <div className="px-2 py-2 text-xs" data-testid="repo-switcher-empty">
+              <p className="text-foreground">还没有任何仓库</p>
+              <p className="mt-0.5 leading-relaxed text-muted-foreground">
+                去「系统」页确认安装信息，或等 GitHub App 安装事件建行。
               </p>
-            ) : (
-              filtered.map((repo) => (
-                <RepoRow
-                  key={repo.repo}
-                  repo={repo}
-                  active={repo.repo === activeRepo}
-                  onSelect={() => {
-                    openRepo(repo.repo);
-                    close(false);
-                  }}
-                />
-              ))
-            )}
-          </div>
-
-          {source === 'system' ? (
-            <p
-              className="border-t border-border px-2 py-1 text-2xs text-muted-foreground"
-              data-testid="repo-switcher-degraded"
-            >
-              降级数据：`/api/repos` 不可用，本列表来自 `/api/system`
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="mt-2"
+                onClick={() => {
+                  setOpen(false);
+                  void navigate(SYSTEM_PATH);
+                }}
+              >
+                打开系统页
+              </Button>
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="px-2 py-2 text-xs text-muted-foreground" data-testid="repo-switcher-no-match">
+              {`没有匹配「${query.trim()}」的仓库`}
             </p>
-          ) : null}
+          ) : (
+            filtered.map((repo) => (
+              <RepoRow
+                key={repo.repo}
+                repo={repo}
+                active={repo.repo === activeRepo}
+                onSelect={() => {
+                  openRepo(repo.repo);
+                }}
+              />
+            ))
+          )}
+        </div>
 
-          <div className="border-t border-border p-1">
-            <button
-              type="button"
-              role="menuitem"
-              aria-current={activeRepo === null ? 'true' : undefined}
-              className={cn(
-                'flex h-7 w-full items-center gap-2 rounded-sm px-2 text-left text-xs',
-                'transition-colors duration-[120ms] ease-out-quint',
-                'hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-                activeRepo === null ? 'bg-brand-soft font-medium text-foreground' : 'text-foreground',
-              )}
-              onClick={() => {
-                void navigate('/');
-                close(false);
-              }}
-            >
-              全部项目
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-left text-xs text-muted-foreground transition-colors duration-[120ms] hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-              onClick={() => {
-                void navigate('/system');
-                close(false);
-              }}
-            >
-              管理仓库…
-            </button>
-          </div>
-        </>
-      )}
-    </DropdownMenu>
+        {source === 'system' ? (
+          <p
+            className="border-t border-border px-2 py-1 text-2xs text-muted-foreground"
+            data-testid="repo-switcher-degraded"
+          >
+            降级数据：`/api/repos` 不可用，本列表来自 `/api/system`
+          </p>
+        ) : null}
+
+        <div className="flex flex-col gap-0.5 border-t border-border p-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-current={activeRepo === null ? 'true' : undefined}
+            className="justify-start text-xs"
+            onClick={() => {
+              setOpen(false);
+              void navigate('/');
+            }}
+          >
+            全部项目
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="justify-start text-xs text-muted-foreground"
+            onClick={() => {
+              setOpen(false);
+              void navigate(SYSTEM_PATH);
+            }}
+          >
+            管理仓库…
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -200,15 +233,15 @@ function RepoRow({ repo, active, onSelect }: { repo: RepoSummary; active: boolea
   return (
     <button
       type="button"
-      role="menuitem"
-      aria-current={active ? 'true' : undefined}
+      role="option"
+      aria-selected={active}
       data-testid={`repo-switcher-item-${repo.repo}`}
       onClick={onSelect}
       className={cn(
-        'flex w-full flex-col gap-0.5 rounded-sm px-2 py-1.5 text-left',
+        'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left',
         'transition-colors duration-[120ms] ease-out-quint',
-        'hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-        active ? 'bg-brand-soft text-foreground' : 'text-foreground',
+        'hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none',
+        active ? 'bg-accent text-accent-foreground' : 'text-foreground',
       )}
     >
       <span className="flex min-w-0 items-center gap-1.5">
@@ -216,10 +249,10 @@ function RepoRow({ repo, active, onSelect }: { repo: RepoSummary; active: boolea
         <span className="min-w-0 flex-1 truncate font-mono text-xs" title={repo.repo}>
           {repo.repo}
         </span>
-        {repo.archivedAt === null ? null : <Badge tone="neutral">已归档</Badge>}
-        {repo.enabled ? null : <Badge tone="neutral">停用</Badge>}
-        {repo.dryRun ? <Badge tone="warn">dry-run</Badge> : null}
-        {repo.settingsValid ? null : <Badge tone="danger">配置无效</Badge>}
+        {repo.archivedAt === null ? null : <StatusBadge tone="neutral">已归档</StatusBadge>}
+        {repo.enabled ? null : <StatusBadge tone="neutral">停用</StatusBadge>}
+        {repo.dryRun ? <StatusBadge tone="warn">dry-run</StatusBadge> : null}
+        {repo.settingsValid ? null : <StatusBadge tone="danger">配置无效</StatusBadge>}
       </span>
       <span className="truncate text-2xs text-muted-foreground">
         {repo.lastActivityAt === null ? '暂无活动' : `最近活动 ${formatRelativeTime(repo.lastActivityAt)}`}

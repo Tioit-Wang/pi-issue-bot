@@ -4,24 +4,30 @@
  * 技能**只属于项目**（没有全局技能这一层），所以这一页就是技能的唯一入口：
  * 列表（本项目自己的技能 + 三个引擎内置技能）、启用开关、文件树编辑器、导入 zip。
  *
+ * 页面形状按企业级 admin 重排：**左列表（rail）+ 右定义预览**。左侧挑一条，
+ * 右侧立刻回答「它是谁、从哪来、第几版、会不会被执行」，再决定要不要进编辑器。
+ *
  * 两个入口，各自管一类事：
- *  - 点技能名 / 「编辑」→ **模态框**（左文件树、右纯文本；可改任一 markdown，可传 zip 覆盖本技能）；
+ *  - 点技能名 / 「编辑」→ **编辑器弹窗**（左文件树、右纯文本；可改任一 markdown，可传 zip 覆盖本技能）；
  *  - 页面右上「导入技能 zip」→ 一个 zip 里的**多个技能目录**批量导入（新建或覆盖），逐条报结果。
  *
- * 两条不做的诚实：
+ * 三条不做的诚实：
  *  - 不做 Markdown 预览（`innerHTML` 渲染技能正文会变成 XSS 面），只给等宽文本域；
- *  - 不做乐观更新：`currentVersion` 由服务端决定，猜错就得回滚两次。
+ *  - 不做乐观更新：`currentVersion` 由服务端决定，猜错就得回滚两次；
+ *  - 提示只走 `sonner` 的 `toast()`（全站只有一套提示系统，旧的手写 toast 已随重构删除）。
  */
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { toast } from 'sonner';
 import { AsyncSection } from '../components/AsyncSection.tsx';
 import { PageHeader } from '../components/PageHeader.tsx';
+import { Rail, railRowClass } from '../components/Rail.tsx';
 import { Section } from '../components/Section.tsx';
 import { EnabledSwitch } from '../components/skills/enabled-switch.tsx';
 import { SkillEditorModal } from '../components/skills/skill-editor-modal.tsx';
-import { Badge } from '../components/ui/badge.tsx';
 import { Button } from '../components/ui/button.tsx';
+import { Field, FieldDescription, FieldGroup, FieldTitle } from '../components/ui/field.tsx';
 import { Skeleton } from '../components/ui/skeleton.tsx';
-import { useToast } from '../components/ui/toast.tsx';
+import { StatusBadge } from '../components/ui/status-badge.tsx';
 import { ApiError } from '../lib/api.ts';
 import { formatCount } from '../lib/format.ts';
 import { useSkillImport, useSkillPatch, useSkills } from '../lib/queries.ts';
@@ -74,7 +80,6 @@ function importErrorMessage(caught: unknown): string {
 }
 
 function RepoSkillsBody({ repo }: { repo: string }) {
-  const toast = useToast();
   /** 本项目的技能（`?repo=owner/name`）。 */
   const project = useSkills({ repo });
   /** 三个内置技能是引擎自带的（`source=builtin`），单独取一次再并进列表。 */
@@ -116,14 +121,29 @@ function RepoSkillsBody({ repo }: { repo: string }) {
    * 保存成功会失效 `['skills']`，行一刷新，弹窗顶部的版本号就跟着变。
    */
   const editingItem = editingId === null ? null : (rows.find((item) => item.id === editingId) ?? null);
+
+  /**
+   * 「左栏选中」与「编辑器开着」是两件事：关掉弹窗后右侧仍要能看这一条的定义，
+   * 否则每看一次说明都要重新开一次弹窗。
+   */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedItem = selectedId === null ? null : (rows.find((item) => item.id === selectedId) ?? null);
+
   const togglingId = patch.isPending ? (patch.variables?.id ?? null) : null;
 
+  /** 点行 = 选中 + 打开编辑器（同一个动作，不让人点两次）。 */
+  const openSkill = (id: string): void => {
+    setSelectedId(id);
+    setEditingId(id);
+  };
+
   const toggleEnabled = (item: SkillListItem): void => {
+    setSelectedId(item.id);
     patch.mutate(
       { id: item.id, patch: { enabled: !item.enabled } },
       {
         onError: (caught) => {
-          toast.push({ tone: 'danger', title: '切换启用状态失败', description: describeSkillWriteError(caught, '切换') });
+          toast.error('切换启用状态失败', { description: describeSkillWriteError(caught, '切换') });
         },
       },
     );
@@ -163,14 +183,15 @@ function RepoSkillsBody({ repo }: { repo: string }) {
             ) : null}
             <Button
               size="sm"
-              loading={importSkills.isPending}
+              disabled={importSkills.isPending}
+              aria-busy={importSkills.isPending}
               title="导入一个 zip（原始二进制，≤ 5 MB）：zip 里每个含 SKILL.md 的目录算一个技能，同名即覆盖成新版本"
               onClick={() => {
                 fileInputRef.current?.click();
               }}
               data-testid="repo-skills-import"
             >
-              导入技能 zip
+              {importSkills.isPending ? '导入中…' : '导入技能 zip'}
             </Button>
             <input
               ref={fileInputRef}
@@ -257,7 +278,7 @@ function RepoSkillsBody({ repo }: { repo: string }) {
           }
         >
           {projectRows.length === 0 ? (
-            // 空态是一句话，不是空卡片：下面紧跟的三个内置技能已经说明了「其实有人在干活」
+            // 空态是一句话，不是空卡片：旁边三个内置技能已经说明了「其实有人在干活」
             <p
               className="text-xs leading-relaxed text-muted-foreground"
               data-testid="repo-skills-empty"
@@ -269,28 +290,41 @@ function RepoSkillsBody({ repo }: { repo: string }) {
           ) : null}
 
           {rows.length === 0 ? null : (
-            <ul className="flex flex-col divide-y divide-border" data-testid="repo-skills-list">
-              {rows.map((item, index) => {
-                const overrideId = item.overriddenBy;
-                const overrideName =
-                  overrideId === null ? null : (overrideNames.get(overrideId) ?? overrideId);
-                const editing = editingId === item.id;
+            /*
+              左列表 + 右定义预览：技能页的读法是「先挑一个，再看它是什么」。
+              两栏而不是一栏表格：技能是十几个量级，左侧 rail 与设置分区、Issue 队列
+              共用同一套行高与选中态（`--rail-*` 令牌），在三个页面之间不用重新学。
+            */
+            <div className="grid min-w-0 gap-4 lg:grid-cols-[var(--rail-width)_minmax(0,1fr)] lg:items-start">
+              <Rail
+                label="技能"
+                count={`${formatCount(rows.length)} 个 · ${formatCount(rows.filter((item) => item.enabled).length)} 启用`}
+                testId="repo-skills-list"
+                className="overflow-hidden rounded-lg border border-border"
+              >
+                {rows.map((item, index) => {
+                  const overrideId = item.overriddenBy;
+                  const overrideName = overrideId === null ? null : (overrideNames.get(overrideId) ?? overrideId);
+                  const selected = selectedId === item.id;
 
-                return (
-                  <li
-                    key={item.id}
-                    data-testid={`repo-skill-item-${item.id}`}
-                    className={cn('stagger-row flex min-w-0 flex-col')}
-                    style={{ animationDelay: `${String(Math.min(index, 8) * 20)}ms` }}
-                  >
-                    <div className="grid min-w-0 grid-cols-1 items-center gap-x-3 gap-y-1 py-1.5 md:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto]">
+                  return (
+                    <div
+                      key={item.id}
+                      data-testid={`repo-skill-item-${item.id}`}
+                      data-state={selected ? 'selected' : undefined}
+                      className={railRowClass(
+                        selected,
+                        'stagger-row flex-col items-stretch justify-center gap-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+                      )}
+                      style={{ animationDelay: `${String(Math.min(index, 8) * 20)}ms` }}
+                    >
                       <span className="flex min-w-0 items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => {
-                            setEditingId(item.id);
+                            openSkill(item.id);
                           }}
-                          aria-expanded={editing}
+                          aria-expanded={editingId === item.id}
                           aria-label={`打开 ${item.name} 的编辑器`}
                           data-testid={`repo-skill-open-${item.id}`}
                           className={cn(
@@ -305,63 +339,74 @@ function RepoSkillsBody({ repo }: { repo: string }) {
                             {item.name}
                           </span>
                         </button>
-                        <Badge tone={SOURCE_TONE[item.source]} data-testid="repo-skill-row-source">
+                        <StatusBadge tone={SOURCE_TONE[item.source]} data-testid="repo-skill-row-source">
                           {SOURCE_LABEL[item.source]}
-                        </Badge>
-                      </span>
-
-                      <span
-                        className="min-w-0 truncate text-xs text-muted-foreground"
-                        title={item.description}
-                        data-testid="repo-skill-row-description"
-                      >
-                        {item.description}
-                      </span>
-
-                      <span className="flex min-w-0 items-center justify-end gap-1.5">
+                        </StatusBadge>
                         <span
-                          className="tabular text-2xs text-faint"
+                          className="ml-auto shrink-0 tabular text-2xs text-faint"
                           title="当前版本"
                           data-testid="repo-skill-row-version"
                         >
                           v{formatCount(item.currentVersion)}
                         </span>
+                      </span>
+                      <span className="flex min-w-0 items-center gap-1.5 text-2xs text-faint">
+                        <span
+                          className="min-w-0 truncate"
+                          title={item.description}
+                          data-testid="repo-skill-row-description"
+                        >
+                          {item.description}
+                        </span>
                         {overrideName === null ? null : (
                           <span
-                            className="whitespace-nowrap rounded-full bg-muted px-1.5 py-px text-2xs text-muted-foreground"
+                            className="shrink-0 rounded-full bg-muted px-1.5 text-2xs text-muted-foreground"
                             title={`同名的「${overrideName}」本项目版优先级更高，这一份（内置）不会被执行`}
                             data-testid="repo-skill-row-overridden"
                           >
-                            已被本项目覆盖
+                            已被覆盖
                           </span>
                         )}
-                        {item.enabled ? null : <span className="text-2xs text-faint">已停用</span>}
-                        <EnabledSwitch
-                          checked={item.enabled}
-                          pending={togglingId === item.id}
-                          label={`${item.name} 启用状态`}
-                          testId={`repo-skill-toggle-${item.id}`}
-                          onToggle={() => {
-                            toggleEnabled(item);
-                          }}
-                        />
+                        {item.enabled ? null : <span className="shrink-0 text-subtle">已停用</span>}
+                        <span className="ml-auto shrink-0">
+                          <EnabledSwitch
+                            checked={item.enabled}
+                            pending={togglingId === item.id}
+                            label={`${item.name} 启用状态`}
+                            testId={`repo-skill-toggle-${item.id}`}
+                            onToggle={() => {
+                              toggleEnabled(item);
+                            }}
+                          />
+                        </span>
                         <Button
                           variant="ghost"
                           size="sm"
-                          aria-expanded={editing}
+                          aria-expanded={editingId === item.id}
                           data-testid={`repo-skill-edit-${item.id}`}
                           onClick={() => {
-                            setEditingId(item.id);
+                            openSkill(item.id);
                           }}
                         >
                           编辑
                         </Button>
                       </span>
                     </div>
-                  </li>
-                );
-              })}
-            </ul>
+                  );
+                })}
+              </Rail>
+
+              <SkillPreview
+                item={selectedItem}
+                onOpen={() => {
+                  if (selectedItem !== null) openSkill(selectedItem.id);
+                }}
+                onToggle={() => {
+                  if (selectedItem !== null) toggleEnabled(selectedItem);
+                }}
+                toggling={selectedItem !== null && togglingId === selectedItem.id}
+              />
+            </div>
           )}
         </AsyncSection>
       </Section>
@@ -375,6 +420,93 @@ function RepoSkillsBody({ repo }: { repo: string }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * 右侧「定义预览」：左栏选中哪一条，这里就显示它的**定义与代价**。
+ *
+ * 为什么不直接把文件内容铺在这里：技能正文可能几百行，页面级预览会让左栏失去意义；
+ * 正文编辑属于弹窗（文件树 + 等宽编辑器 + 保存即发新版本）。这里给的是
+ * 「它是谁、从哪来、当前第几版、会不会被执行、被谁覆盖」——
+ * 也就是决定「要不要打开编辑器」的那几件事。
+ */
+function SkillPreview({
+  item,
+  onOpen,
+  onToggle,
+  toggling,
+}: {
+  item: SkillListItem | null;
+  onOpen: () => void;
+  onToggle: () => void;
+  toggling: boolean;
+}) {
+  if (item === null) {
+    return (
+      <div
+        className="flex min-w-0 flex-col gap-1 rounded-lg border border-dashed border-border px-4 py-6"
+        data-testid="repo-skills-detail"
+      >
+        <p className="text-sm font-medium text-foreground">还没有选中技能</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          从左侧点一个技能名，这里会显示它的来源、版本与启用状态；点「编辑」打开文件树与正文编辑器。
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex min-w-0 flex-col gap-4 rounded-lg border border-border bg-card px-4 py-4"
+      data-testid="repo-skills-detail"
+      data-skill-id={item.id}
+    >
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span
+          className="min-w-0 truncate font-mono text-sm font-medium text-foreground"
+          data-testid="repo-skill-detail-name"
+        >
+          {item.name}
+        </span>
+        <StatusBadge tone={SOURCE_TONE[item.source]}>{SOURCE_LABEL[item.source]}</StatusBadge>
+        <StatusBadge tone={item.enabled ? 'success' : 'neutral'} dot>
+          {item.enabled ? '启用' : '已停用'}
+        </StatusBadge>
+        <span className="tabular text-2xs text-faint">v{formatCount(item.currentVersion)}</span>
+      </div>
+
+      <FieldGroup className="gap-3">
+        <Field className="gap-1">
+          <FieldTitle>它会做什么</FieldTitle>
+          <FieldDescription>{item.description}</FieldDescription>
+        </Field>
+        <Field className="gap-1" data-testid="repo-skill-detail-override">
+          <FieldTitle>优先级</FieldTitle>
+          <FieldDescription>
+            {item.overriddenBy === null
+              ? '同名的内建技能会被这一份覆盖：解析时只看这一份。'
+              : `同名的本项目技能（${item.overriddenBy}）优先级更高，这一份不会被执行。`}
+          </FieldDescription>
+        </Field>
+      </FieldGroup>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={onOpen} data-testid="repo-skill-detail-edit">
+          编辑（文件树 + 正文）
+        </Button>
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          启用状态
+          <EnabledSwitch
+            checked={item.enabled}
+            pending={toggling}
+            label={`${item.name} 启用状态（详情）`}
+            testId="repo-skill-detail-toggle"
+            onToggle={onToggle}
+          />
+        </span>
+      </div>
     </div>
   );
 }

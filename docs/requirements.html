@@ -419,6 +419,12 @@
           <thead><tr><th style="width:80px">版本</th><th style="width:110px">日期</th><th style="width:90px">作者</th><th>变更</th></tr></thead>
           <tbody>
             <tr>
+              <td>v2.2</td>
+              <td>2026-11-16</td>
+              <td>小豆</td>
+              <td>面板改需求（P0）：<a class="ref" href="#fr-7-1">FR-7.1</a> 由「顶栏 + 底部 dock 三页 + 系统模态框」改为<b>侧栏式 admin</b>，「系统」从模态框变成页面 <code>/system</code>；<a class="ref" href="#fr-7-2">FR-7.2</a> 同步改为健康与开关进「系统」页；<a class="ref" href="#ac-26">AC-26</a>、<a class="ref" href="#q-7">Q-7</a> 跟进，并把「证据（运行）」组写进导航。同批把面板组件底座换成 shadcn/ui 官方产物，视觉按官方默认值重置（见 <code>apps/panel/DESIGN.md</code>、<code>docs/panel-admin-refactor.md</code>）。</td>
+            </tr>
+            <tr>
               <td>v2.1</td>
               <td>2026-11-12</td>
               <td>小豆</td>
@@ -1407,14 +1413,14 @@ https://github.com/org/repo/issues/1950
       <h3 id="s5-7">5.7 面板：导航与页面</h3>
 
       <div class="req rule" id="fr-7-1">
-        <div class="hd"><span class="id">FR-7.1</span><span class="ttl">三层结构，每层一个入口</span><span class="pri">P0</span></div>
-        <p>面板只有三层：<b>项目上下文</b>（左上角切换，含「全部项目」）、<b>项目级导航</b>（Issue / 设置 / 技能，放在 dock）、<b>全局</b>（dock 最右的「系统」打开模态框）。不设总览、成本、质量、审计、系统五个独立页面。</p>
-        <div class="note"><b>理由：</b>五个全局页一天只被打开几次，却常驻吃掉约 15% 宽度；全局页每多一个，项目级那三件事就更难找一次。</div>
+        <div class="hd"><span class="id">FR-7.1</span><span class="ttl">侧栏承载导航，内容区带面包屑</span><span class="pri">P0</span></div>
+        <p>面板是<b>侧栏式 admin</b>：左侧固定导航栏（可折叠成图标栏，窄屏变抽屉）分三组（有项目上下文时才有「证据」组；「全部项目」时它没有归属，不渲染）—— <b>项目</b>（Issue / 设置 / 技能）、<b>证据</b>（运行记录）、<b>全局</b>（系统）。<b>项目上下文</b>由侧栏顶部的仓库切换器负责（含「全部项目」）。右侧内容区第一行是状态带（「此刻什么状态」），第二行是面包屑 + 页面标题，然后才是页面本身（面包屑由外壳统一渲染，页面不要再画一条）；内容区是唯一滚动容器。<b>「系统」是页面 <code>/system</code></b>（不再是模态框）：可书签、可刷新、<code>⌘.</code> 直达。总览、成本、质量、审计四个页面仍<b>不存在</b>，信息去处见 <a class="ref" href="#fr-7-2">FR-7.2</a>。</p>
+        <div class="note"><b>理由：</b>导航放在侧栏才装得下三组入口而不挤占内容宽度；把五个报表页做成常驻项的做法已被这版否掉——报表的信息去状态带与会话流，「系统」则是唯一需要独立页面的全局面（它要能被深链和刷新）。</div>
       </div>
 
       <div class="req rule" id="fr-7-2">
         <div class="hd"><span class="id">FR-7.2</span><span class="ttl">删掉的页面，信息必须有去处</span><span class="pri">P0</span></div>
-        <p>顶栏状态带回答「此刻什么状态」：待处理、运行中、失败、p95 四个数字，加一个降级 chip。系统健康（doctor 各项、运行时开关、连接、只读常量）进「系统」模态框第一屏。单次成本以 token 数与单价出现在会话流里；被改回与审计事件落进写回行。</p>
+        <p>内容区第一行的状态带回答「此刻什么状态」：待处理、运行中、失败、p95 四个数字，加一个降级 chip。系统健康（doctor 各项、运行时开关、连接、只读常量）进「系统」页（<code>/system</code>）第一屏。单次成本以 token 数与单价出现在会话流里；被改回与审计事件落进写回行。</p>
         <div class="note"><b>硬约束：</b>找不到去处就不许删。日后若发现某项仍被高频查看，先往状态带加数字，再考虑加回页面——顺序反过来成本高得多。</div>
       </div>
 
@@ -1871,7 +1877,7 @@ https://github.com/org/repo/issues/1950
                 <li id="ac-24"><span class="box"></span><span class="id">AC-24</span><span>同一会话压缩两次后，模型仍能复述第一轮确定的目标与硬约束（验证摘要没有丢关键信息）。</span></li>
         <li id="ac-25"><span class="box"></span><span class="id">AC-25</span><span>压缩发生后，后台能看到压缩记录（前后 token、是否兜底、第几代），且原始对话一条不少。</span></li>
 <li id="ac-23"><span class="box"></span><span class="id">AC-23</span><span>issue 关闭后沙箱被回收，重新打开并触发时复用原会话：历史上下文仍在，沙箱自动重建。</span></li>
-        <li id="ac-26"><span class="box"></span><span class="id">AC-26</span><span>面板的项目级导航只有 Issue / 设置 / 技能三项，全局只有一个「系统」入口；总览、成本、质量、审计、系统五个页面在路由表里不存在。</span></li>
+        <li id="ac-26"><span class="box"></span><span class="id">AC-26</span><span>面板是侧栏式 admin：左侧导航分「项目（Issue / 设置 / 技能）」「证据（运行）」「全局（系统 <code>/system</code>）」三组（「全部项目」时没有项目上下文，证据组不渲染）；全局页只有「系统」一项，且它是<b>页面</b>——侧栏项、<code>⌘.</code> 与命令面板指向同一处，可书签、可刷新；总览、成本、质量、审计四个页面在路由表里不存在。</span></li>
         <li id="ac-27"><span class="box"></span><span class="id">AC-27</span><span>打开任一 issue，首屏自上而下是：标题行、收起的原文卡、收起的系统提示词、第一条人类输入；不需要滚到第二屏才知道它卡在哪。</span></li>
         <li id="ac-28"><span class="box"></span><span class="id">AC-28</span><span>展开原文卡能看到作者、时间、标签与正文；同一条评论不会同时出现在原文卡与会话流里（会话流中只出现一次）。</span></li>
         <li id="ac-29"><span class="box"></span><span class="id">AC-29</span><span>展开系统提示词，看到的是完整 markdown 原文（含 <code># 角色</code>、<code>## 硬约束</code> 等标题），不是分层表格或摘要。</span></li>
@@ -1929,9 +1935,9 @@ https://github.com/org/repo/issues/1950
       </div>
 
       <div class="req" id="q-7">
-        <div class="hd"><span class="id">Q-7</span><span class="ttl">面板只留三个项目页，删掉五个全局页 · 已定</span></div>
-        <p><b>已定：</b>项目级导航只有 Issue / 设置 / 技能；全局只剩 dock 最右一个「系统」模态框。总览、成本、质量、审计、系统五个页面取消，信息分别进顶栏状态带、会话流与模态框（<a class="ref" href="#fr-7-2">FR-7.2</a>）。</p>
-        <div class="note"><b>理由：</b>面板的高频动作是「处理某一条卡住的 issue」，不是「看报表」。全局页常驻吃掉宽度，却不承担高频动作。</div>
+        <div class="hd"><span class="id">Q-7</span><span class="ttl">面板改成侧栏式 admin，删掉四个报表页 · 已定</span></div>
+        <p><b>已定：</b>左侧固定导航栏分三组 —— <b>项目</b>（Issue / 设置 / 技能）、<b>证据</b>（运行记录）、<b>全局</b>（<code>/system</code>）。总览、成本、质量、审计四个页面取消，信息分别进内容区第一行的状态带、会话流与「系统」页（<a class="ref" href="#fr-7-2">FR-7.2</a>）。「系统」是<b>页面</b>（可书签、可刷新、<code>⌘.</code> 直达），不再是模态框。</p>
+        <div class="note"><b>理由：</b>面板的高频动作是「处理某一条卡住的 issue」，不是「看报表」；报表信息压进状态带与会话流之后，剩下的全局面只有「系统」一个，而它需要能被深链收藏与刷新，所以做成页面。导航放侧栏才装得下三组入口而不挤占内容宽度。</div>
       </div>
 
       <div class="req" id="q-8">

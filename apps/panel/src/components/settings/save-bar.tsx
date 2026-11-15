@@ -4,18 +4,22 @@
  * 四态齐在一次：
  *  - `idle`：没有改动 → 按钮 `disabled` 且 `title` 写明原因（不是「灰着让人猜」）；
  *  - `saving`：`aria-busy` + 文案变「保存中…」，宽度不变；
- *  - `saved`：`role="status"` 播报，不自作多情地弹 toast；
- *  - `error`：`role="alert"` + 字段路径清单（`details.issues`）+ 预算数字。
+ *  - `saved`：`role="status"` 播报，不自作多情地弹提示；
+ *  - `error`：`role="alert"` + 字段路径清单（`details.issues`）+ 预算数字，
+ *    并且**同时**弹一条 `sonner` 的 toast —— 保存失败时人常常已经滚到页面别处，
+ *    行内那行字在吸底条里够不着；toast 是唯一能确保被看见的一层。
  *
  * 为什么吸底（`sticky bottom-0`）：设置页一屏能塞下 5~8 组字段，保存按钮如果跟在最后，
  * 改到第 2 组时它就滚出视野了；吸底让它始终在拇指/视线落点，同时不遮挡内容（背景 95% + blur）。
  */
+import { useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { Button } from '../ui/button.tsx';
+import { StatusBadge } from '../ui/status-badge.tsx';
 import { cn } from '../../lib/utils.ts';
 import type { SaveIssue, WriteFailure } from './failures.ts';
 import type { SaveStatus } from './use-settings-draft.ts';
 import { formatCount } from '../../lib/format.ts';
-
 /** 字段路径 + 原因（路径等宽显示：`labels.max_per_issue: 不能大于 20`）。 */
 export function IssueList({ issues, testId }: { issues: readonly SaveIssue[]; testId?: string }) {
   if (issues.length === 0) return null;
@@ -73,6 +77,24 @@ export function SaveBar({
           ? '没有未保存的改动'
           : null;
   const disabled = disabledReason !== null || saving;
+
+  /*
+    失败只播报一次：`failure` 是 react-query 的错误对象，每次 render 都是同一个引用，
+    所以用 ref 记住「已经弹过哪一条」。用 effect 而不是在 onSave 里弹，是因为
+    失败信息是草稿层算出来的（`describeWriteFailure`），保存条只是它的展示面。
+  */
+  const announced = useRef<WriteFailure | null>(null);
+  useEffect(() => {
+    if (status !== 'error' || failure === null) {
+      announced.current = null;
+      return;
+    }
+    if (announced.current === failure) return;
+    announced.current = failure;
+    toast.error(failure.message, {
+      description: failure.issues.length === 0 ? undefined : `涉及 ${formatCount(failure.issues.length)} 处字段`,
+    });
+  }, [status, failure]);
 
   const statusText: string =
     status === 'saving'
@@ -157,12 +179,15 @@ export function SaveBar({
           <div
             role="alert"
             data-testid={`${testId}-save-error`}
-            className="rounded-md border border-danger/40 bg-danger-bg px-2 py-1.5 text-xs text-danger-fg"
+            className="flex flex-col gap-1 rounded-md border border-danger/40 bg-danger-bg px-2 py-1.5 text-xs text-danger-fg"
           >
-            <p className="font-medium">{failure.message}</p>
+            <p className="flex flex-wrap items-center gap-1.5 font-medium">
+              <StatusBadge tone="danger">保存失败</StatusBadge>
+              <span>{failure.message}</span>
+            </p>
             <IssueList issues={failure.issues} testId={`${testId}-save-issues`} />
             {failure.budget === null ? null : (
-              <p className="mt-1 text-2xs">
+              <p className="text-2xs">
                 预算：可用 {formatCount(failure.budget.available)} 字符 / 请求 {formatCount(failure.budget.requested)} 字符
               </p>
             )}

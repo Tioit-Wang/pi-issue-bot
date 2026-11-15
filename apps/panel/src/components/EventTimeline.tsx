@@ -1,6 +1,6 @@
 import { Link } from 'react-router';
-import { Badge, StatusDot } from './ui/badge.tsx';
-import type { Tone } from './ui/status.ts';
+import { StatusBadge, StatusDot } from './ui/status-badge.tsx';
+import { statusTone } from './ui/status.ts';
 import type { AuditRow } from '../lib/contract.ts';
 import { formatAbsoluteTime, formatCount, formatRelativeTime } from '../lib/format.ts';
 import { repoWorkspacePath } from '../lib/repo-route.ts';
@@ -43,13 +43,6 @@ const INTENT_LABEL: Record<AuditRow['intent'], string> = {
   'reaction.remove': '删 reaction',
 };
 
-/** 事件结果 → tone（`dry-run` 是 warn：写没落地，但也没失败）。 */
-function eventTone(status: AuditRow['status']): Tone {
-  if (status === 'applied') return 'success';
-  if (status === 'failed' || status === 'rejected') return 'danger';
-  if (status === 'dry-run') return 'warn';
-  return 'neutral';
-}
 
 /** 一天的分组键（UTC 自然日，与契约的时间口径一致）。 */
 function dayKey(at: string): string {
@@ -113,7 +106,7 @@ export function EventTimeline({ rows, testId }: EventTimelineProps) {
             data-testid={`${testId ?? 'timeline'}-day-${group.key}`}
           >
             {group.rows.map((row, rowIndex) => {
-              const tone = eventTone(row.status);
+              const tone = statusTone(row.status);
               const statusLabel = STATUS_LABEL[row.status] ?? row.status;
               const stagger = groupIndex === 0 ? rowIndex : 8;
               return (
@@ -148,8 +141,8 @@ export function EventTimeline({ rows, testId }: EventTimelineProps) {
                     {targetLabel(row.target)}
                   </span>
                   <Sep />
-                  <Badge tone={tone}>{INTENT_LABEL[row.intent]}</Badge>
-                  {row.dryRun ? <Badge tone="warn">dry-run</Badge> : null}
+                  <StatusBadge tone={tone}>{INTENT_LABEL[row.intent]}</StatusBadge>
+                  {row.dryRun ? <StatusBadge tone="warn">dry-run</StatusBadge> : null}
                   <span className="ml-auto min-w-0 shrink-0 truncate text-2xs text-faint">
                     {row.actor.login === null ? '@—' : `@${row.actor.login}`}
                   </span>

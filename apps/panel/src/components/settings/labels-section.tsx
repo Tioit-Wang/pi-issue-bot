@@ -10,8 +10,11 @@
 import { useState } from 'react';
 import type { LabelRole, LabelVocabularyEntry, RepoSettings } from '../../../../../packages/contract/src/index.ts';
 import { pipelineLabelCoverage } from '../../../../../packages/contract/src/index.ts';
-import { Badge } from '../ui/badge.tsx';
-import { Select } from '../ui/select.tsx';
+import { Button } from '../ui/button.tsx';
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '../ui/field.tsx';
+import { RadioGroup, RadioGroupItem } from '../ui/radio-group.tsx';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select.tsx';
+import { StatusBadge } from '../ui/status-badge.tsx';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
 import { ChipEditor, NumberField, SwitchField, TextField } from './form.tsx';
@@ -135,7 +138,12 @@ export function LabelsSection({ state }: SettingsSectionProps) {
           </span>
         }
       >
-        <div className="flex flex-col gap-2">
+        <FieldGroup className="gap-2">
+          <FieldDescription>
+            词表是**给模型看的标签语义**（`meaning` 会进提示词）。`managed` 决定这个标签参不参与自动对齐：
+            关掉 = 不删不加，完全由人管；`status=retired` = GitHub 上已删掉，不再进入目标态。
+            代价：词表写得含糊，打标就会含糊；`managed` 全开而词表里有手打的标签，撤标会动到人的标签。
+          </FieldDescription>
           {coverageReason === null ? null : (
             <p
               className="text-xs text-warn-fg"
@@ -184,30 +192,45 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                     disabled={readOnly}
                     disabledReason="仓库已归档：只读"
                   />
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <label
-                      htmlFor={`labels-vocab-role-${String(index)}`}
-                      className="text-xs font-medium text-muted-foreground"
-                    >
+                  {/*
+                    角色下拉用官方 Radix `Select`：值仍是契约枚举，展示是中文。
+                    名的来源两处都给（`FieldLabel` 的 htmlFor 关联 + `aria-label`），
+                    因为 Radix 的 trigger 是 `<button role="combobox">`，不给 `aria-label` 时
+                    读屏只会念出当前值，听不出「这是哪一行的哪个字段」。
+                  */}
+                  <Field className="min-w-0 gap-1">
+                    <FieldLabel htmlFor={`labels-vocab-role-${String(index)}`} className="text-xs font-medium">
                       角色
-                    </label>
+                    </FieldLabel>
                     <Select
-                      id={`labels-vocab-role-${String(index)}`}
-                      options={ROLE_OPTIONS}
-                      placeholder={null}
                       value={entry.role}
                       disabled={readOnly}
-                      title={readOnly ? '仓库已归档：只读' : '分类结论靠它找标签；需求 / 缺陷各至少一个'}
-                      aria-label={`词表第 ${String(index + 1)} 条的角色`}
-                      onChange={(event) => {
-                        const next = ROLE_OPTIONS.find((option) => option.value === event.target.value);
-                        if (next === undefined) return;
-                        updateVocabulary(index, { role: next.value });
+                      onValueChange={(next) => {
+                        const picked = ROLE_OPTIONS.find((option) => option.value === next);
+                        if (picked === undefined) return;
+                        updateVocabulary(index, { role: picked.value });
                       }}
-                      className="h-[var(--control-sm)]"
-                      data-testid={`labels-vocab-role-${String(index)}`}
-                    />
-                  </div>
+                    >
+                      <SelectTrigger
+                        id={`labels-vocab-role-${String(index)}`}
+                        size="sm"
+                        className="w-full"
+                        disabled={readOnly}
+                        title={readOnly ? '仓库已归档：只读' : '分类结论靠它找标签；需求 / 缺陷各至少一个'}
+                        aria-label={`词表第 ${String(index + 1)} 条的角色`}
+                        data-testid={`labels-vocab-role-${String(index)}`}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ROLE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
                   <TextField
                     id={`labels-vocab-meaning-${String(index)}`}
                     label="meaning"
@@ -282,52 +305,64 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                       disabledReason="仓库已归档：只读"
                     />
                   </div>
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <label
-                      htmlFor={`labels-vocab-status-${String(index)}`}
-                      className="text-xs font-medium text-muted-foreground"
-                    >
+                  <Field className="min-w-0 gap-1">
+                    <FieldLabel htmlFor={`labels-vocab-status-${String(index)}`} className="text-xs font-medium">
                       status
-                    </label>
+                    </FieldLabel>
+                    {/*
+                      `status` 的取值只有 active / retired：Radix `Select` 的 trigger 会带
+                      `role="combobox"`，名字里必须带 `status` ——「第 3 行的下拉」这种名字
+                      在读屏里根本分不清是角色还是状态。
+                    */}
                     <Select
-                      id={`labels-vocab-status-${String(index)}`}
-                      options={[
-                        { value: 'active', label: 'active' },
-                        { value: 'retired', label: 'retired' },
-                      ]}
-                      placeholder={null}
                       value={entry.status ?? 'active'}
                       disabled={readOnly}
-                      title={readOnly ? '仓库已归档：只读' : 'retired = GitHub 上已删除，不再进入目标态'}
-                      aria-label={`第 ${String(index + 1)} 行的 status`}
-                      onChange={(event) => {
-                        updateVocabulary(index, { status: event.target.value === 'retired' ? 'retired' : 'active' });
+                      onValueChange={(next) => {
+                        updateVocabulary(index, { status: next === 'retired' ? 'retired' : 'active' });
                       }}
-                      className="h-[var(--control-sm)]"
-                    />
-                  </div>
+                    >
+                      <SelectTrigger
+                        id={`labels-vocab-status-${String(index)}`}
+                        size="sm"
+                        className="w-full"
+                        disabled={readOnly}
+                        title={readOnly ? '仓库已归档：只读' : 'retired = GitHub 上已删除，不再进入目标态'}
+                        aria-label={`第 ${String(index + 1)} 行的 status`}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">active</SelectItem>
+                        <SelectItem value="retired">retired</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
                   <div className="flex items-end pb-4 md:items-center md:pb-0">
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
+                      size="sm"
                       aria-label={`移除词表项 ${entry.name === '' ? `第 ${String(index + 1)} 条` : entry.name}`}
                       disabled={readOnly}
                       title={readOnly ? '仓库已归档：只读' : '从词表移除'}
                       onClick={() => {
                         patchLabels((current) => ({ ...current, vocabulary: current.vocabulary.filter((_, at) => at !== index) }));
                       }}
-                      className="h-8 rounded-md border border-border px-2 text-xs text-muted-foreground transition-[color,border-color,background-color] duration-[120ms] ease-out-quint hover:border-danger/50 hover:text-danger-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
+                      className="text-muted-foreground hover:text-danger-fg"
                     >
                       移除
-                    </button>
+                    </Button>
                   </div>
                 </div>
               ))}
             </div>
           )}
 
-          <div className="flex items-center gap-2">
-            <button
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={() => {
                 // `role` 在契约里必填（Q4）：空白行先落成 `other`，面板的 role 选择器可以改
                 patchLabels((current) => ({
@@ -338,17 +373,20 @@ export function LabelsSection({ state }: SettingsSectionProps) {
               disabled={readOnly || labels.vocabulary.length >= 200}
               title={readOnly ? '仓库已归档：只读' : '加一条空白词表项'}
               data-testid="labels-vocab-add"
-              className="h-8 rounded-md border border-border px-2 text-xs text-foreground transition-[background-color,color] duration-[120ms] ease-out-quint hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
             >
               添加词表项
-            </button>
+            </Button>
             <span className="text-2xs text-faint">name 必须与仓库里的标签同名，否则按「缺失策略」处理</span>
           </div>
-        </div>
+        </FieldGroup>
       </Section>
 
       <Section title="判定映射（1:N）">
-        <div className="flex flex-col gap-2">
+        <FieldGroup className="gap-2">
+          <FieldDescription>
+            判定键 → 一个或多个标签（逗号分隔）。代价：映射到不存在的标签时按「缺失策略」处理；
+            白名单 `allow` 为空表示「映射到什么就打什么」，一旦填了，映射结果之外的一律不打。
+          </FieldDescription>
           {mapEntries.length === 0 ? (
             <p className="rounded-md border border-dashed border-border px-2.5 py-3 text-xs text-muted-foreground">
               还没有映射：判定类会降级成「只判定不打标」并记 warn。
@@ -408,42 +446,53 @@ export function LabelsSection({ state }: SettingsSectionProps) {
               emptyText="（不设白名单：映射到什么就打什么）"
             />
           </div>
-        </div>
+        </FieldGroup>
       </Section>
 
       <Section title="缺失标签策略与上限">
-        <div className="flex flex-col gap-3">
-          <div role="radiogroup" aria-label="缺失标签策略" className="flex flex-col divide-y divide-border">
+        <FieldGroup className="gap-3">
+          <FieldDescription>
+            策略只影响「映射里写了、但仓库里没有这个标签」时怎么办：`warn` 只记日志，`create` 会**真的建标签**（写动作，干跑跳过），
+            `ignore` 静默跳过。代价：选 `create` 就等于允许 agent 往仓库里加东西，颜色与说明取自词表。
+          </FieldDescription>
+          <RadioGroup
+            aria-label="缺失标签策略"
+            value={labels.missing}
+            disabled={readOnly}
+            className="gap-0 divide-y divide-border"
+            onValueChange={(next) => {
+              const picked = MISSING_OPTIONS.find((option) => option.value === next);
+              if (picked === undefined) return;
+              patchLabels((current) => ({ ...current, missing: picked.value }));
+            }}
+          >
             {MISSING_OPTIONS.map((option) => (
-              <label
+              <Field
                 key={option.value}
-                className={cn(
-                  'flex cursor-pointer items-start gap-2 px-1 py-1.5 transition-colors duration-[120ms] ease-out-quint hover:bg-muted',
-                  labels.missing === option.value && 'bg-brand-soft',
-                )}
+                orientation="horizontal"
+                className="items-start gap-2 px-1 py-1.5"
+                data-disabled={readOnly ? true : undefined}
               >
-                <input
-                  type="radio"
-                  name="labels-missing"
+                <RadioGroupItem
+                  id={`labels-missing-${option.value}`}
                   value={option.value}
-                  checked={labels.missing === option.value}
                   disabled={readOnly}
-                  onChange={() => {
-                    patchLabels((current) => ({ ...current, missing: option.value }));
-                  }}
-                  className="mt-0.5 accent-brand"
+                  className="mt-0.5"
                 />
-                <span className="min-w-0">
-                  <span className="flex flex-wrap items-center gap-1 text-sm text-foreground">
+                <div className="min-w-0">
+                  <FieldLabel
+                    htmlFor={`labels-missing-${option.value}`}
+                    className="flex flex-wrap items-center gap-1 text-sm font-normal text-foreground"
+                  >
                     {option.label}
-                    {option.value === 'warn' ? <Badge tone="neutral">默认</Badge> : null}
-                    {option.value === 'create' ? <Badge tone="warn">写动作</Badge> : null}
-                  </span>
-                  <span className="block text-xs leading-relaxed text-muted-foreground">{option.consequence}</span>
-                </span>
-              </label>
+                    {option.value === 'warn' ? <StatusBadge tone="neutral">默认</StatusBadge> : null}
+                    {option.value === 'create' ? <StatusBadge tone="warn">写动作</StatusBadge> : null}
+                  </FieldLabel>
+                  <FieldDescription>{option.consequence}</FieldDescription>
+                </div>
+              </Field>
             ))}
-          </div>
+          </RadioGroup>
 
           <div className="max-w-xs">
             <NumberField
@@ -461,7 +510,7 @@ export function LabelsSection({ state }: SettingsSectionProps) {
               disabledReason="仓库已归档：只读"
             />
           </div>
-        </div>
+        </FieldGroup>
       </Section>
 
       <SaveBar
@@ -549,16 +598,18 @@ function MapRow({
         disabledReason="仓库已归档：只读"
       />
       <div className="flex items-end pb-4 md:items-center md:pb-0">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           aria-label={`移除判定键 ${judgementKey}`}
           disabled={readOnly}
           title={readOnly ? '仓库已归档：只读' : '移除这条映射'}
           onClick={onRemove}
-          className="h-8 rounded-md border border-border px-2 text-xs text-muted-foreground transition-[color,border-color] duration-[120ms] ease-out-quint hover:border-danger/50 hover:text-danger-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
+          className="text-muted-foreground hover:text-danger-fg"
         >
           移除
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -604,16 +655,17 @@ function AddMapRow({ readOnly, existing, onAdd }: { readOnly: boolean; existing:
           disabledReason="仓库已归档：只读"
         />
       </div>
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="sm"
         onClick={commit}
         disabled={readOnly || text.trim() === ''}
         title={readOnly ? '仓库已归档：只读' : '加入映射（回车同效）'}
         data-testid="labels-map-add"
-        className="h-8 rounded-md border border-border px-2 text-xs text-foreground transition-[background-color,color] duration-[120ms] ease-out-quint hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
       >
         添加映射
-      </button>
+      </Button>
     </div>
   );
 }

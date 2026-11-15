@@ -1,32 +1,36 @@
-import { Info } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
+import { Info, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import { AsyncSection } from '../components/AsyncSection.tsx';
-import { IssueTable, issueKey } from '../components/issues/issue-table.tsx';
-import { ReactionChip } from '../components/issues/reaction-chip.tsx';
-import { readReactionState } from '../components/issues/contract-extras.ts';
-import { ISSUE_STATE_LABEL, ISSUE_STATE_TONE, presentStatus } from '../components/issues/status.ts';
+import { FilterSelect } from '../components/FilterSelect.tsx';
+import { IssueConversation } from '../components/issues/IssueConversation.tsx';
+import { IssueQueueRow, issueKey } from '../components/issues/issue-queue.tsx';
+import { Rail } from '../components/Rail.tsx';
 import { Toolbar } from '../components/Toolbar.tsx';
-import { Badge, StatusDot } from '../components/ui/badge.tsx';
-import { Button, buttonVariants } from '../components/ui/button.tsx';
-import { Select } from '../components/ui/select.tsx';
-import { TONE_TEXT } from '../components/ui/status.ts';
-import { useToast } from '../components/ui/toast.tsx';
-import { Tooltip } from '../components/ui/tooltip.tsx';
+import { Button } from '../components/ui/button.tsx';
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '../components/ui/empty.tsx';
+import { Input } from '../components/ui/input.tsx';
+import { Skeleton } from '../components/ui/skeleton.tsx';
+import { Spinner } from '../components/ui/spinner.tsx';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip.tsx';
 import type { IssueListItem, IssuesQuery } from '../lib/contract.ts';
-import { EMPTY, formatCount, formatTimeCell } from '../lib/format.ts';
-import { useIssuesInfinite, useIssueSession } from '../lib/queries.ts';
-import { repoGitHubUrl, repoIssuePath } from '../lib/repo-route.ts';
-import { useViewportMode } from '../layout/use-viewport.ts';
-import { cn } from '../lib/utils.ts';
-import { PageShell } from './PageShell.tsx';
+import { formatCount } from '../lib/format.ts';
+import { queueCountLabel } from '../lib/issue-counts.ts';
+import { useIssueSession, useIssuesInfinite } from '../lib/queries.ts';
+import { repoIssuePath, repoRunPath } from '../lib/repo-route.ts';
 
 /**
- * Issue 中心（`/repos/:repo/issues`；`/issues` 已重定向到这里）—— **主从**布局。
+ * Issue 队列（`/repos/:repo/issues`，以及「全部项目」的 `/`）—— **主从**布局。
  *
- * 左列表（对象行）+ 右概要（当前选中项），一屏回答两件事：**有没有事等我**
- * 与 **这个 issue 处理成什么样了**。详情页仍然是独立路由
- * （`/repos/:repo/issues/:kind/:number`），刷新 / 分享 / 新标签页都可用。
+ * 这是 `AC-26` 之后**唯一**的列表页，所以它同时承担两件事：
+ *   左 = **Issue 队列**（`FR-7.4` 的三左栏之一），右 = **会话流**（`Q-8`）。
+ *
+ * 版式按企业级 admin 的列表页形态：**一条工具栏**（筛选 / 搜索 → 右侧计数与动作）
+ * → 双栏主体（左队列 + 右会话）→ 空 / 加载 / 错误态由 `AsyncSection` 统一给出。
+ * 这里**不做**「表格式视图切换」：本页的核心交互是「点左栏换右栏」，
+ * 表格视图没有 URL 语义也没有需求（`AC-27` 要求首屏就能看到会话流），
+ * 加一个切不回去的视图开关只会让同一份数据有两条读法。
  *
  * 筛选分成两半，界线是**服务端有没有这个参数**（不发明后端行为）：
  *
@@ -36,56 +40,48 @@ import { PageShell } from './PageShell.tsx';
  * | 搜索 | **客户端** | `q` | 契约 `issuesQuerySchema` 没有 `q`（标题只在 jsonb 投递里），debounce 300ms |
  * | 标签 | **客户端** | `label` | 契约没有 `label`（`.strict()` 会 400），只在已加载的行里精确匹配 |
  * | 时间窗 | **客户端** | `window` | 契约没有 `from`/`to`，按 `lastActivityAt` 过滤已加载的行 |
- * | 阶段 / 流水线状态 / 类别 | **客户端** | `stage` / `pstate` / `category` | 契约没有流水线维度参数；`stage=unassigned` = 没有 `issue_pipeline` 行 |
  *
- * 客户端那几项必须说清口径，否则「筛不到」会被当成「真的没有」：列表 caption 与
- * 工具条右侧都写明「只作用于已加载的 N 行」。
+ * 客户端那几项必须说清口径，否则「筛不到」会被当成「真的没有」：工具条右侧的 (i) 写明
+ * 「只作用于已加载的 N 行」。
  *
  * 键盘（列表容器 `tabIndex=0`，`aria-keyshortcuts` 说明）：
- * `j` / `↓` 下一条、`k` / `↑` 上一条、`Enter` 打开选中项详情、`/` 聚焦搜索、`Esc` 清筛选。
+ * `j` / `↓` 下一条、`k` / `↑` 上一条、`Enter` 打开整页详情、`/` 聚焦搜索、`Esc` 清筛选。
  * 输入框里打字时这些快捷键不接管（`isTypingTarget`）。
  */
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 20;
 
 /**
  * 认识的 URL 键：同步时**只动这几个**，其余原样保留（`?mock=error` 这类 mock 参数）。
- *
- * `stage` / `pstate` / `category` 是**客户端**筛选（服务端 `issuesQuerySchema` 是 `.strict()`，
- * 没有流水线维度的参数）：它们只在已加载的行里生效，口径写在工具条的 (i) 与 caption 里。
  */
-const FILTER_KEYS = [
-  'repo',
-  'kind',
-  'state',
-  'status',
-  'awaiting',
-  'label',
-  'window',
-  'q',
-] as const;
+const FILTER_KEYS = ['repo', 'kind', 'state', 'status', 'awaiting', 'label', 'window', 'q'] as const;
 /** 选中键（`?selected=acme/widgets#issue17`）——单独一条，清除筛选时保留。 */
 const SELECTED_KEY = 'selected';
 
 type FilterKey = (typeof FILTER_KEYS)[number];
 type Filters = Record<FilterKey, string>;
 
+/* 每个下拉的第一项都是 `value: ''`（= 不筛选）：`FilterSelect` 把它渲染成「全部 X」。 */
 const STATE_OPTIONS = [
+  { value: '', label: '全部状态' },
   { value: 'open', label: 'open' },
   { value: 'closed', label: 'closed' },
   { value: 'unknown', label: '状态未知' },
 ] as const;
 
 const KIND_OPTIONS = [
+  { value: '', label: 'Issue 与 PR' },
   { value: 'issue', label: 'Issue' },
   { value: 'pr', label: 'Pull request' },
 ] as const;
 
 const AWAITING_OPTIONS = [
+  { value: '', label: '是否待人回答' },
   { value: 'true', label: '待人回答' },
   { value: 'false', label: '不欠回答' },
 ] as const;
 
 const STATUS_OPTIONS = [
+  { value: '', label: '全部派生状态' },
   { value: 'running', label: '进行中' },
   { value: 'queued', label: '已排队' },
   { value: 'failed', label: '失败' },
@@ -94,6 +90,7 @@ const STATUS_OPTIONS = [
 ] as const;
 
 const WINDOW_OPTIONS = [
+  { value: '', label: '全部时间' },
   { value: '24h', label: '最近 24 小时' },
   { value: '7d', label: '最近 7 天' },
   { value: '30d', label: '最近 30 天' },
@@ -155,8 +152,6 @@ export type IssuesPageProps = {
 export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const viewport = useViewportMode();
-  const toast = useToast();
 
   const filters = readFilters(searchParams);
   const repoFilter = repoLock ?? filters.repo;
@@ -168,7 +163,6 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
    * 最新的 URL 参数：debounce 的定时器回调必须基于**最新**参数改一个键，
    * 而不是用 300ms 前那份快照 —— 否则「清搜索」的定时器会把之后改的 `label` 冲掉。
    */
-  const listRef = useRef<HTMLDivElement | null>(null);
   const paramsRef = useRef<URLSearchParams>(searchParams);
   paramsRef.current = searchParams;
 
@@ -207,6 +201,13 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
     useIssuesInfinite(query);
 
   const loaded = useMemo(() => data?.pages.flatMap((page) => page.issues) ?? [], [data]);
+  /**
+   * 队列头部的计数是**全量口径**（`FR-7.4`）：`totalEstimate` 与上面的 `issues` 共用
+   * 服务端同一份筛选谓词，且不带游标（带游标总数会随翻页变小）。
+   * `null` = 服务端没统计 → 头部显示「已加载 N 项」并说明口径，绝不写成 0。
+   * 只取**第一页**的值：翻页不改变总数，用后面那页的只会让缓存里多一份同样的数。
+   */
+  const totalEstimate = data?.pages.at(0)?.totalEstimate ?? null;
   const now = useMemo(() => Date.now(), []);
   const rows = useMemo(
     () =>
@@ -214,101 +215,87 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
         (item) =>
           matchesSearch(item, filters.q) &&
           matchesWindow(item, filters.window, now) &&
-          matchesLabel(item, filters.label) &&
           matchesLabel(item, filters.label),
       ),
     [loaded, filters.q, filters.window, filters.label, now],
   );
 
   const selectedValue = searchParams.get(SELECTED_KEY);
-  const selected = useMemo(
-    () => rows.find((item) => issueKey(item) === selectedValue) ?? null,
-    [rows, selectedValue],
-  );
+  /*
+   * 默认选第一条：`AC-27` 要求「打开任一 issue，首屏就能看到标题行 / 原文卡 / 系统提示词」——
+   * 空白右栏等于把「它卡在哪」推到第二次点击。URL 里的 `?selected=` 仍然优先（可分享）。
+   */
+  const selected = useMemo(() => {
+    if (rows.length === 0) return null;
+    if (selectedValue === null) return rows[0] ?? null;
+    return rows.find((item) => issueKey(item) === selectedValue) ?? rows[0] ?? null;
+  }, [rows, selectedValue]);
 
   const anyFilter = FILTER_KEYS.some((key) => (key === 'repo' && repoLock !== undefined ? false : filters[key] !== ''));
-  const clientFilter =
-    filters.q !== '' ||
-    filters.window !== '' ||
-    filters.label !== '';
-  const summary = useMemo(() => {
-    let running = 0;
-    let failed = 0;
-    let awaiting = 0;
-    for (const item of rows) {
-      const status = presentStatus(item, now);
-      if (status.status === 'running' || status.status === 'queued') running += 1;
-      if (status.status === 'failed') failed += 1;
-      if (item.awaitingReply) awaiting += 1;
-    }
-    return { running, failed, awaiting };
-  }, [rows, now]);
+  const clientFilter = filters.q !== '' || filters.window !== '' || filters.label !== '';
+
+  /*
+   * 三个分桶（待处理 / 运行中 / 失败）只在状态带上用，而状态带的 hook（`lib/issue-counts.ts`）
+   * 自己去取同一份 `/api/issues`。队列这里不再算一遍 —— 否则两处口径必然分叉
+   * （这正是 `FR-7.2` 要防止的「状态带说 5 个失败、列表里只有 3 条」）。
+   */
 
   /** 标签候选 = 已加载数据里的标签 ∪ 当前选中值（不凭空造标签清单）。 */
   const labelOptions = useMemo(() => {
     const seen = new Set<string>();
     for (const item of loaded) for (const label of item.labels) seen.add(label);
     if (filters.label !== '') seen.add(filters.label);
-    return [...seen].sort().map((value) => ({ value, label: value }));
+    return [
+      { value: '', label: '全部标签' },
+      ...[...seen].sort().map((value) => ({ value, label: value })),
+    ];
   }, [loaded, filters.label]);
 
-  const showOwner = useMemo(() => new Set(loaded.map((item) => item.repo)).size > 1, [loaded]);
+  /** 仓库候选 = 已加载数据里的仓库 ∪ 当前选中值（契约里没有仓库清单接口，不凭空造）。 */
+  const repoOptions = useMemo(() => {
+    const seen = new Set(loaded.map((item) => item.repo));
+    if (filters.repo !== '') seen.add(filters.repo);
+    return [
+      { value: '', label: '全部仓库' },
+      ...[...seen].sort().map((value) => ({ value, label: value })),
+    ];
+  }, [loaded, filters.repo]);
 
-  const patchParams = useCallback(
-    (mutate: (next: URLSearchParams) => void): void => {
-      // 复制一份再改：`?mock=error` 这类外部参数必须原样留着
-      const next = new URLSearchParams(searchParams);
-      mutate(next);
-      setSearchParams(next, { replace: true });
-    },
+  const patchParams = useMemo(
+    () =>
+      (mutate: (next: URLSearchParams) => void): void => {
+        // 复制一份再改：`?mock=error` 这类外部参数必须原样留着
+        const next = new URLSearchParams(searchParams);
+        mutate(next);
+        setSearchParams(next, { replace: true });
+      },
     [searchParams, setSearchParams],
   );
 
-  const setFilter = useCallback(
-    (key: FilterKey, value: string): void => {
-      patchParams((next) => {
-        if (value === '') next.delete(key);
-        else next.set(key, value);
-      });
-    },
-    [patchParams],
-  );
+  const setFilter = (key: FilterKey, value: string): void => {
+    patchParams((next) => {
+      if (value === '') next.delete(key);
+      else next.set(key, value);
+    });
+  };
 
-  const toggleFilter = useCallback(
-    (key: FilterKey, value: string): void => {
-      setFilter(key, filters[key] === value ? '' : value);
-    },
-    [filters, setFilter],
-  );
-
-  const clearFilters = useCallback((): void => {
+  const clearFilters = (): void => {
     setSearchDraft('');
     patchParams((next) => {
       for (const key of FILTER_KEYS) next.delete(key);
       next.delete(SELECTED_KEY);
     });
-  }, [patchParams]);
+  };
 
-  /** 选中：宽屏只改 URL（右侧出概要）；窄屏直接进整页详情。 */
-  const select = useCallback(
-    (item: IssueListItem): void => {
-      if (viewport !== 'wide') {
-        void navigate(repoIssuePath(repoLock ?? item.repo, item.kind, item.number));
-        return;
-      }
-      patchParams((next) => {
-        next.set(SELECTED_KEY, issueKey(item));
-      });
-    },
-    [viewport, navigate, repoLock, patchParams],
-  );
+  const select = (item: IssueListItem): void => {
+    patchParams((next) => {
+      next.set(SELECTED_KEY, issueKey(item));
+    });
+  };
 
-  const openDetail = useCallback(
-    (item: IssueListItem): void => {
-      void navigate(repoIssuePath(repoLock ?? item.repo, item.kind, item.number));
-    },
-    [navigate, repoLock],
-  );
+  const openDetail = (item: IssueListItem): void => {
+    void navigate(repoIssuePath(repoLock ?? item.repo, item.kind, item.number));
+  };
 
   /* 键盘：j/k/↑↓ 移动选中、Enter 打开、`/` 聚焦搜索、Esc 清筛选。 */
   useEffect(() => {
@@ -359,179 +346,163 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
     };
   }, [rows, selected, anyFilter, clientFilter, clearFilters, select, openDetail]);
 
+  /*
+   * 两处计数**口径不同且都写清**（不拿一个数字冒充另一个）：
+   *  - `totalEstimate` = 服务端按同一组**服务端筛选**算出的全量总数（翻页不改变它）；
+   *  - `loaded.length` / `rows.length` = 已经拉到浏览器的行数 / 客户端再筛之后的可见行数。
+   */
   const caption =
-    rows.length === loaded.length
-      ? `共 ${formatCount(rows.length)} 行 · 按最后更新倒序`
-      : `显示 ${formatCount(rows.length)} / 已加载 ${formatCount(loaded.length)} 行 · 按最后更新倒序`;
+    totalEstimate === null
+      ? `按最后更新倒序 · 已加载 ${formatCount(loaded.length)} 行（服务端没有返回全量计数）`
+      : `按最后更新倒序 · 共 ${formatCount(totalEstimate)} 行（全量口径）· 已加载 ${formatCount(loaded.length)} 行${
+          rows.length === loaded.length ? '' : ` · 筛选后 ${formatCount(rows.length)} 行`
+        }`;
 
-  /** 空态的动作：仓库锁定且没有任何筛选时，给一条「去 GitHub 建 issue」的出口。 */
-  const repoGithubIssuesUrl = repoLock === undefined ? null : repoGitHubUrl(repoLock);
+  /**
+   * rail 头部的计数（`FR-7.4` 的「30px 小标 + 计数」）：
+   * - 只有服务端筛选时给**全量**（`totalEstimate`）—— 这正是 `FR-7.4` 要的「计数」；
+   * - 客户端筛选（标签 / 搜索 / 时间窗）只作用于已加载行，此时全量数字与眼前的行无关，
+   *   如实退回「已加载 N 项」，不拿全量冒充筛选结果；
+   * - `totalEstimate` 为 `null`（服务端没统计）时同样写「已加载 N 项」，不写 0。
+   */
+  const railCountText = clientFilter
+    ? `已加载 ${formatCount(rows.length)} 项`
+    : queueCountLabel(totalEstimate, loaded.length, '项');
+
+  const copyLink = (item: IssueListItem): void => {
+    const url = `${window.location.origin}${repoIssuePath(repoLock ?? item.repo, item.kind, item.number)}`;
+    void navigator.clipboard
+      .writeText(url)
+      .then(() => {
+        toast.success('链接已复制', { description: url });
+      })
+      .catch(() => {
+        toast.error('复制失败', { description: '浏览器拒绝了剪贴板写入' });
+      });
+  };
 
   return (
-    <PageShell
-      title="Issue 中心"
-      actions={
-        <div className="flex items-center gap-2">
-          {isFetching && !isLoading ? <span className="text-xs text-muted-foreground">刷新中…</span> : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!anyFilter && selectedValue === null}
-            onClick={clearFilters}
-            data-testid="issues-clear"
-          >
-            清除筛选
-          </Button>
-        </div>
-      }
-    >
-      <div className="flex min-w-0 flex-col gap-2">
-        <Toolbar
-          meta={
-            clientFilter
-              ? `已加载 ${formatCount(loaded.length)} 行 · 筛选后 ${formatCount(rows.length)} 行`
-              : `已加载 ${formatCount(loaded.length)} 行`
-          }
-          actions={
-            <>
-              <span className="text-2xs text-faint">j/k 移动 · Enter 打开 · / 搜索 · Esc 清筛选</span>
-              {clientFilter ? (
-                <Tooltip
-                  label={`标签 / 搜索 / 时间窗只筛选已加载的 ${formatCount(loaded.length)} 行：服务端没有这些参数`}
-                >
-                  <button
-                    type="button"
-                    aria-label="筛选范围"
-                    data-testid="issues-filter-scope"
-                    className="grid size-5 place-items-center rounded-sm text-faint transition-[color] duration-[120ms] ease-out-quint hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-                  >
-                    <Info aria-hidden className="size-3" strokeWidth={2} />
-                  </button>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="issues">
+      {/* ① 工具栏：搜索 + 筛选在左，计数 / 病灶说明 / 动作在右（企业级列表页的第一行） */}
+      <Toolbar
+        meta={clientFilter ? `筛选后 ${formatCount(rows.length)} / 已加载 ${formatCount(loaded.length)} 行` : undefined}
+        actions={
+          <>
+            {isFetching && !isLoading ? (
+              <span className="flex items-center gap-1.5 text-2xs text-muted-foreground" data-testid="issues-fetching">
+                <Spinner className="size-3" />
+                刷新中
+              </span>
+            ) : null}
+            {clientFilter ? (
+              // 口径必须贴在筛选旁：标签 / 搜索 / 时间窗只覆盖已加载的行
+              <TooltipProvider delayDuration={0}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label="筛选范围" data-testid="issues-filter-scope">
+                      <Info aria-hidden strokeWidth={2} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {`标签 / 搜索 / 时间窗只筛选已加载的 ${formatCount(loaded.length)} 行：服务端没有这些参数`}
+                  </TooltipContent>
                 </Tooltip>
-              ) : null}
-            </>
-          }
-        >
-          <input
-            ref={searchRef}
-            type="search"
-            aria-label="搜索标题或编号"
-            placeholder="搜索标题 / 编号（/）"
-            value={searchDraft}
-            onChange={(event) => {
-              setSearchDraft(event.target.value);
-            }}
-            className={cn(
-              'h-8 w-56 min-w-0 rounded-md border border-input bg-card px-2 text-sm text-foreground',
-              'transition-[border-color,background-color] duration-[120ms] ease-out-quint',
-              'hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-            )}
-            data-testid="issues-search"
-          />
-          {repoLock === undefined ? (
-            <Select
-              aria-label="仓库筛选"
-              options={[...new Set(loaded.map((item) => item.repo))].sort().map((value) => ({ value, label: value }))}
-              placeholder="全部仓库"
-              value={filters.repo}
-              onChange={(event) => {
-                setFilter('repo', event.target.value);
-              }}
-            />
-          ) : null}
-          <Select
-            aria-label="类型筛选"
-            options={KIND_OPTIONS}
-            placeholder="Issue 与 PR"
-            value={filters.kind}
-            onChange={(event) => {
-              setFilter('kind', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="状态筛选"
-            options={STATE_OPTIONS}
-            placeholder="全部状态"
-            value={filters.state}
-            onChange={(event) => {
-              setFilter('state', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="派生状态筛选"
-            options={STATUS_OPTIONS}
-            placeholder="全部派生状态"
-            value={filters.status}
-            onChange={(event) => {
-              setFilter('status', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="标签筛选"
-            options={labelOptions}
-            placeholder="全部标签"
-            value={filters.label}
-            onChange={(event) => {
-              setFilter('label', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="待人回答筛选"
-            options={AWAITING_OPTIONS}
-            placeholder="是否待人回答"
-            value={filters.awaiting}
-            onChange={(event) => {
-              setFilter('awaiting', event.target.value);
-            }}
-          />
-          <Select
-            aria-label="时间窗筛选"
-            options={WINDOW_OPTIONS}
-            placeholder="全部时间"
-            value={filters.window}
-            onChange={(event) => {
-              setFilter('window', event.target.value);
-            }}
-          />
-        </Toolbar>
-
-        {loaded.length === 0 ? null : (
-          <p className="flex flex-wrap items-center gap-1 px-1 text-xs text-muted-foreground" data-testid="issues-summary">
-            <span className="text-faint">{`已加载 ${formatCount(loaded.length)} 行`}</span>
-            <span aria-hidden>·</span>
-            <ToggleCount
-              testId="issues-summary-running"
-              tone="warn"
-              label="进行中"
-              count={summary.running}
-              pressed={filters.status === 'running'}
+              </TooltipProvider>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => {
-                toggleFilter('status', 'running');
+                void refetch();
               }}
-            />
-            <ToggleCount
-              testId="issues-summary-failed"
-              tone="danger"
-              label="失败"
-              count={summary.failed}
-              pressed={filters.status === 'failed'}
-              onClick={() => {
-                toggleFilter('status', 'failed');
-              }}
-            />
-            <ToggleCount
-              testId="issues-summary-awaiting"
-              tone="warn"
-              label="待人回答"
-              count={summary.awaiting}
-              pressed={filters.awaiting === 'true'}
-              onClick={() => {
-                toggleFilter('awaiting', 'true');
-              }}
-            />
-          </p>
-        )}
-      </div>
+              data-testid="issues-refresh"
+            >
+              <RefreshCw aria-hidden />
+              刷新
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!anyFilter && selectedValue === null}
+              onClick={clearFilters}
+              data-testid="issues-clear"
+            >
+              清除筛选
+            </Button>
+          </>
+        }
+      >
+        <Input
+          ref={searchRef}
+          type="search"
+          aria-label="搜索标题或编号"
+          placeholder="搜索标题 / 编号（/）"
+          value={searchDraft}
+          onChange={(event) => {
+            setSearchDraft(event.target.value);
+          }}
+          className="h-8 w-56"
+          data-testid="issues-search"
+        />
+        {repoLock === undefined ? (
+          <FilterSelect
+            label="仓库筛选"
+            options={repoOptions}
+            value={filters.repo}
+            onChange={(next) => {
+              setFilter('repo', next);
+            }}
+          />
+        ) : null}
+        <FilterSelect
+          label="类型筛选"
+          options={KIND_OPTIONS}
+          value={filters.kind}
+          onChange={(next) => {
+            setFilter('kind', next);
+          }}
+        />
+        <FilterSelect
+          label="状态筛选"
+          options={STATE_OPTIONS}
+          value={filters.state}
+          onChange={(next) => {
+            setFilter('state', next);
+          }}
+        />
+        <FilterSelect
+          label="派生状态筛选"
+          options={STATUS_OPTIONS}
+          value={filters.status}
+          onChange={(next) => {
+            setFilter('status', next);
+          }}
+        />
+        <FilterSelect
+          label="标签筛选"
+          options={labelOptions}
+          value={filters.label}
+          onChange={(next) => {
+            setFilter('label', next);
+          }}
+        />
+        <FilterSelect
+          label="待人回答筛选"
+          options={AWAITING_OPTIONS}
+          value={filters.awaiting}
+          onChange={(next) => {
+            setFilter('awaiting', next);
+          }}
+        />
+        <FilterSelect
+          label="时间窗筛选"
+          options={WINDOW_OPTIONS}
+          value={filters.window}
+          onChange={(next) => {
+            setFilter('window', next);
+          }}
+        />
+      </Toolbar>
 
       <AsyncSection
         isLoading={isLoading}
@@ -539,295 +510,164 @@ export function IssuesPage({ repoLock }: IssuesPageProps = {}) {
         isEmpty={rows.length === 0}
         emptyText={
           anyFilter || clientFilter
-            ? `当前筛选下没有会话${clientFilter ? `（标签/搜索/时间窗/阶段只覆盖已加载的 ${formatCount(loaded.length)} 行，可以继续加载或清除筛选）` : '。换个仓库/类型/状态，或清除筛选。'}`
-            : repoLock === undefined
-              ? '还没有处理过的 Issue 会话 —— 在 issue 里 @ 机器人 或发一条 /命令 就会出现在这里（去「系统」页可确认在线状态）。'
-              : '当前仓库没有 issue 记录'
-        }
-        emptyAction={
-          repoGithubIssuesUrl === null || anyFilter || clientFilter ? undefined : (
-            <a
-              className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'mt-1')}
-              href={repoGithubIssuesUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              打开 GitHub
-            </a>
-          )
+            ? `当前筛选下没有会话${clientFilter ? `（标签/搜索/时间窗只覆盖已加载的 ${formatCount(loaded.length)} 行，可以继续加载或清除筛选）` : '。换个仓库/类型/状态，或清除筛选。'}`
+            : '还没有处理过的 Issue 会话 —— 在 issue 里 @ 机器人 或发一条 /命令 就会出现在这里。'
         }
         onRetry={() => {
           void refetch();
         }}
         skeletonRows={6}
         testId="issues"
+        fill
       >
-        <div className="flex min-w-0 flex-col gap-3" data-testid="issues-list">
-          {/* ≥1280 并排：左列表 + 右概要；更窄时右侧隐藏，点行直接进整页详情 */}
-          <div
-            ref={listRef}
+        {/* 主从：左 Issue 队列（`FR-7.4` 的三左栏之一）+ 右会话流（`Q-8`） */}
+        <div className="flex min-h-0 min-w-0 flex-1 gap-0" data-testid="issues-split">
+          <aside
             tabIndex={0}
             role="group"
-            aria-label="Issue 列表（j/k 移动，Enter 打开）"
+            aria-label="Issue 队列（j/k 移动，Enter 打开）"
             aria-keyshortcuts="j k ArrowUp ArrowDown Enter / Escape"
-            className="grid min-w-0 gap-3 rounded-lg border border-border bg-card p-1 xl:grid-cols-[minmax(0,1fr)_22rem]"
+            className="flex min-h-0 min-w-0 flex-col"
           >
-            <div className="min-w-0">
-              <IssueTable
-                rows={rows}
-                selectedKey={selected === null ? null : issueKey(selected)}
-                onSelect={select}
-                showRepo={repoLock === undefined}
-                showOwner={showOwner}
-                caption={caption}
-                repoLock={repoLock}
-              />
-            </div>
-            <aside className="hidden min-w-0 border-l border-border pl-3 xl:block" aria-live="polite">
-              <IssuePreview
-                item={selected}
-                onOpenDetail={openDetail}
-                onCopyLink={(item) => {
-                  const url = `${window.location.origin}${repoIssuePath(repoLock ?? item.repo, item.kind, item.number)}`;
-                  void navigator.clipboard
-                    .writeText(url)
-                    .then(() => {
-                      toast.push({ tone: 'success', title: '链接已复制', description: url });
-                    })
-                    .catch(() => {
-                      toast.push({ tone: 'danger', title: '复制失败', description: '浏览器拒绝了剪贴板写入' });
-                    });
-                }}
-              />
-            </aside>
-          </div>
-
-          <div className="flex items-center justify-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              data-testid="issues-load-more"
-              disabled={hasNextPage !== true || isFetchingNextPage}
-              onClick={() => {
-                void fetchNextPage();
-              }}
+            <Rail
+              label="Issue 队列"
+              count={railCountText}
+              ariaLabel="Issue 队列"
+              testId="issue-rail"
+              className="flex-1"
             >
-              {hasNextPage === true
-                ? isFetchingNextPage
-                  ? '加载中…'
-                  : `加载更多（已加载 ${formatCount(loaded.length)} 个）`
-                : `没有更多了（共 ${formatCount(loaded.length)} 个）`}
-            </Button>
-          </div>
+              {rows.map((item) => (
+                <IssueQueueRow
+                  key={issueKey(item)}
+                  item={item}
+                  selected={selected !== null && issueKey(selected) === issueKey(item)}
+                  showRepo={repoLock === undefined}
+                  onSelect={select}
+                  onOpen={openDetail}
+                  now={now}
+                />
+              ))}
+              <div className="flex items-center justify-center gap-2 border-t border-border p-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-testid="issues-load-more"
+                  disabled={hasNextPage !== true || isFetchingNextPage}
+                  onClick={() => {
+                    void fetchNextPage();
+                  }}
+                >
+                  {hasNextPage === true ? (
+                    isFetchingNextPage ? (
+                      <>
+                        <Spinner aria-hidden />
+                        加载中
+                      </>
+                    ) : (
+                      `加载更多（已加载 ${formatCount(loaded.length)} 个）`
+                    )
+                  ) : (
+                    `没有更多了（共 ${formatCount(loaded.length)} 个）`
+                  )}
+                </Button>
+              </div>
+            </Rail>
+          </aside>
+
+          <section className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3" aria-live="polite">
+            {selected === null ? (
+              <Empty data-testid="issues-preview-empty" className="py-10">
+                <EmptyHeader>
+                  <EmptyTitle>还没有可预览的会话</EmptyTitle>
+                  <EmptyDescription>从左边选一条 issue，会话流会显示在这里。</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <SelectedConversation item={selected} repoLock={repoLock} onCopyLink={copyLink} />
+            )}
+          </section>
         </div>
       </AsyncSection>
-    </PageShell>
+
+      <p className="pt-1 text-2xs text-faint" data-testid="issues-caption">
+        {caption}
+      </p>
+    </div>
   );
 }
 
-function ToggleCount({
-  testId,
-  tone,
-  label,
-  count,
-  pressed,
-  onClick,
-}: {
-  testId: string;
-  tone: 'warn' | 'danger';
-  label: string;
-  count: number;
-  pressed: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={pressed}
-      data-testid={testId}
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-sm px-1 py-0.5 transition-[background-color,color] duration-[120ms] ease-out-quint hover:bg-muted',
-        TONE_TEXT[tone],
-      )}
-    >
-      <StatusDot tone={tone} />
-      {label}
-      <span className="tabular">{formatCount(count)}</span>
-    </button>
-  );
-}
-
-/* ── 右侧概要（当前选中项） ───────────────────────────────────────────────── */
-
-function IssuePreview({
+/**
+ * 右侧：选中项的**完整会话流**（`Q-8` / `AC-27`）。
+ *
+ * 与 `/repos/:repo/issues/:kind/:number` 用的是同一个 `IssueConversation` 组件：
+ * 详情页是「刷新 / 分享 / 新标签页都可用」的稳定地址，这里是「点一下就换」的同一份内容。
+ * 两处共用组件是 `AC-28`/`AC-29` 不会两边画法不一致的唯一办法。
+ */
+function SelectedConversation({
   item,
-  onOpenDetail,
-  onCopyLink,
-}: {
-  item: IssueListItem | null;
-  onOpenDetail: (item: IssueListItem) => void;
-  onCopyLink: (item: IssueListItem) => void;
-}) {
-  if (item === null) {
-    return (
-      <div className="flex h-full flex-col gap-1 p-2" data-testid="issue-preview-empty">
-        <p className="text-sm text-foreground">未选中会话</p>
-      </div>
-    );
-  }
-
-  return <IssuePreviewBody item={item} onOpenDetail={onOpenDetail} onCopyLink={onCopyLink} />;
-}
-
-function IssuePreviewBody({
-  item,
-  onOpenDetail,
+  repoLock,
   onCopyLink,
 }: {
   item: IssueListItem;
-  onOpenDetail: (item: IssueListItem) => void;
+  repoLock: string | undefined;
   onCopyLink: (item: IssueListItem) => void;
 }) {
   const slash = item.repo.indexOf('/');
   const owner = slash < 0 ? item.repo : item.repo.slice(0, slash);
   const name = slash < 0 ? '' : item.repo.slice(slash + 1);
   const session = useIssueSession({ owner, name, kind: item.kind, number: item.number });
-  const now = Date.now();
-  const status = presentStatus(item, now);
-  const reaction = readReactionState(item);
-  const issue = session.data?.issue ?? null;
-  const turns = session.data?.turns ?? [];
+  const repo = repoLock ?? item.repo;
 
-  return (
-    <div className="flex min-w-0 flex-col gap-2.5 p-2" data-testid="issue-preview">
-      <div className="flex min-w-0 flex-col gap-1">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <StatusDot tone={status.tone} label={status.label} pulse={status.status === 'running' && !status.stalled} />
-          <span className={cn('text-xs font-medium', TONE_TEXT[status.tone])}>{status.label}</span>
-          <Badge tone={ISSUE_STATE_TONE[item.state]}>{ISSUE_STATE_LABEL[item.state]}</Badge>
-          {item.awaitingReply ? <Badge tone="warn">待人回答</Badge> : null}
-        </span>
-        <h3 className="min-w-0 text-sm font-semibold text-foreground" title={item.title ?? undefined}>
-          <span className="font-mono text-xs text-faint">{`${item.kind}#${String(item.number)} `}</span>
-          {item.title ?? '（取不到标题）'}
-        </h3>
-        <span className="min-w-0 truncate font-mono text-2xs text-faint" title={item.repo}>
-          {item.repo}
-        </span>
+  if (session.isLoading) {
+    return (
+      <div className="flex flex-col gap-1 p-2" data-testid="issues-preview-loading">
+        {[0, 1, 2, 3].map((index) => (
+          <Skeleton key={`skeleton-${String(index)}`} className="h-9 w-full rounded-md" />
+        ))}
       </div>
+    );
+  }
 
-      <div className="flex flex-wrap items-center gap-1">
-        <ReactionChip state={reaction} />
-        {item.labels.length === 0 ? (
-          <span className="text-xs text-muted-foreground">没有标签</span>
-        ) : (
-          item.labels.slice(0, 4).map((label) => (
-            <Badge key={label} tone="neutral" className="max-w-full truncate">
-              {label}
-            </Badge>
-          ))
-        )}
-        {item.labels.length > 4 ? <span className="text-2xs text-faint">{`+${String(item.labels.length - 4)}`}</span> : null}
-      </div>
-
+  if (session.error !== null) {
+    return (
       <AsyncSection
-        isLoading={session.isLoading}
+        isLoading={false}
         error={session.error}
-        isEmpty={session.data === null && !session.isLoading}
-        emptyText="这个 issue 没有会话记录"
-        emptyHint="接口返回 404：没有任何任务处理过它"
+        testId="issue-preview"
         onRetry={() => {
           void session.refetch();
         }}
-        skeletonRows={3}
-        testId="issue-preview-session"
       >
-        <div className="flex min-w-0 flex-col gap-2 text-xs">
-          <dl className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-1">
-            <Meta label="人类轮次" value={formatCount(item.humanTurns)} />
-            <Meta label="机器人轮次" value={formatCount(item.botTurns)} />
-            <Meta label="最后活动" value={formatTimeCell(item.lastActivityAt).text} title={formatTimeCell(item.lastActivityAt).title} />
-            <Meta
-              label="最后回复"
-              value={item.lastReplyAt === null ? EMPTY : formatTimeCell(item.lastReplyAt).text}
-              title={item.lastReplyAt === null ? 'dry-run 仓库不写 actions 行，这个值会是空的（≠ 没回过）' : undefined}
-            />
-          </dl>
-
-          {issue === null ? null : (
-            <p className="min-w-0 break-words text-muted-foreground">
-              <span className="text-faint">参与者：</span>
-              {issue.participants.length === 0 ? EMPTY : issue.participants.join('、')}
-            </p>
-          )}
-
-          <div className="flex min-w-0 flex-col gap-1">
-            <p className="micro-label">最近轮次</p>
-            {turns.length === 0 ? (
-              <p className="text-muted-foreground">还没有轮次</p>
-            ) : (
-              <ol className="flex min-w-0 flex-col gap-1">
-                {turns.slice(-3).reverse().map((turn) => (
-                  <li key={turn.id} className="flex min-w-0 items-center gap-1.5">
-                    <Badge tone={turn.role === 'human' ? 'neutral' : 'info'}>{turn.role === 'human' ? '人' : '机'}</Badge>
-                    <span className="min-w-0 flex-1 truncate text-muted-foreground" title={turn.text ?? undefined}>
-                      {turn.text === null || turn.text === '' ? '（没有正文）' : turn.text}
-                    </span>
-                    <time className="shrink-0 text-2xs text-faint" title={formatTimeCell(turn.at).title}>
-                      {formatTimeCell(turn.at).text}
-                    </time>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-        </div>
+        {null}
       </AsyncSection>
+    );
+  }
 
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => {
-            onOpenDetail(item);
-          }}
-          data-testid="issue-preview-open"
-        >
-          打开完整详情
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            onCopyLink(item);
-          }}
-          data-testid="issue-preview-copy"
-        >
-          复制链接
-        </Button>
-        {item.url === null ? null : (
-          <a
-            className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))}
-            href={item.url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            打开 GitHub
-          </a>
-        )}
-      </div>
-    </div>
-  );
-}
+  if (session.data === null || session.data === undefined) {
+    return (
+      <AsyncSection
+        isLoading={false}
+        error={null}
+        isEmpty
+        emptyText="这个 issue 没有会话记录"
+        emptyHint="接口返回 404：没有任何任务处理过它"
+        testId="issue-preview"
+        onRetry={() => {
+          void session.refetch();
+        }}
+      >
+        {null}
+      </AsyncSection>
+    );
+  }
 
-function Meta({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="flex min-w-0 flex-col">
-      <span className="text-2xs text-faint">{label}</span>
-      <span className="min-w-0 truncate tabular text-muted-foreground" title={title ?? value}>
-        {value}
-      </span>
-    </div>
+    <IssueConversation
+      data={session.data}
+      taskHref={(taskId) => repoRunPath(repo, taskId)}
+      onCopyLink={() => {
+        onCopyLink(item);
+      }}
+    />
   );
 }

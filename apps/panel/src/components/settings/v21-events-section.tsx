@@ -29,6 +29,7 @@ import { useState } from 'react';
 import type { EventKey, EventSwitch, RepoSettings } from '../../../../../packages/contract/src/index.ts';
 import { DEFAULT_EVENT_TEMPLATES, EVENT_PROMPT_MAX_CHARS, PROMPT_PLACEHOLDERS } from '../../../../../packages/contract/src/index.ts';
 import { cn } from '../../lib/utils.ts';
+import { FieldDescription, FieldGroup } from '../ui/field.tsx';
 import { ChipEditor, Segmented, SwitchField, TextAreaField, TextField, type SegmentedOption } from './form.tsx';
 import { SaveBar } from './save-bar.tsx';
 import { countChangedPaths } from './settings-chrome.tsx';
@@ -134,6 +135,18 @@ export function V21EventsSection({ state }: SettingsSectionProps) {
 这是「整页无滚动条」的实现骨架，不是样式微调。
 */
     <div className="flex h-full min-h-0 flex-1 flex-col gap-3" data-testid="settings-events">
+      {/*
+        分区顶部的一句「代价」：这一页的每个标签都是一个事件闸门，
+        代价不是「开关变灰」，而是「关掉之后这类事件连审计都不会产生」。
+        用官方 `FieldGroup` + `FieldDescription`（与其它三个分区同一读法），不新造说明样式。
+      */}
+      <FieldGroup className="shrink-0 gap-1">
+        <FieldDescription>
+          每个标签是一个事件闸门：`直接触发` 一律进 agent，`条件触发` 先过该事件的附加条件，
+          `不触发` 连审计都不产生。代价：`不触发` 等于告诉运维「这类事件不存在」，
+          排查时看不到任何投递痕迹；拿不准就先用 `条件触发`。
+        </FieldDescription>
+      </FieldGroup>
       {/*
 标签栏：下划线式（与 `ui/tabs.tsx` 的选区语言一致）。这里不复用那个组件，
 因为它把 tablist 与 tabpanel 包在一个 `flex-col gap-3` 里、面板高度由内容决定；
@@ -639,13 +652,29 @@ function TemplateField({
       disabled={readOnly}
       disabledReason="仓库已归档：只读"
       footer={
-        <p
-          className={cn('text-2xs tabular', tooLong ? 'text-danger-fg' : 'text-faint')}
-          data-testid={`v21-event-prompt-count-${eventKey}`}
-        >
-          {String(text.length)} / {String(EVENT_PROMPT_MAX_CHARS)} 字符
-        </p>
+        <div className="flex min-w-0 flex-col gap-1">
+          {/*
+            WP4-R S4：模板框声称「显示生效内容」，但后续轮实际用的是平台另一套增量模板。
+            这里必须**如实说明**，否则用户会以为改这里就能改所有轮次的下发内容。
+            不新增配置项（需求 §6.3 没有它）——只说明现状。
+          */}
+          <p
+            className="text-2xs leading-relaxed text-muted-foreground"
+            data-testid={`v21-event-prompt-scope-${eventKey}`}
+          >
+            <span className="text-foreground">首轮用这里的模板</span>
+            ；后续同一会话的轮次平台默认另有一套<b className="font-semibold text-foreground">增量模板</b>
+            （只发变更与本轮指令，不含整篇正文）；若这里改成自定义模板，则两种轮次都原样使用这一份。
+          </p>
+          <p
+            className={cn('text-2xs tabular', tooLong ? 'text-danger-fg' : 'text-faint')}
+            data-testid={`v21-event-prompt-count-${eventKey}`}
+          >
+            {String(text.length)} / {String(EVENT_PROMPT_MAX_CHARS)} 字符
+          </p>
+        </div>
       }
+
     />
   );
 }

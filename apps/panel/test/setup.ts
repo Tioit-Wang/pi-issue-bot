@@ -36,6 +36,22 @@ if (typeof window !== 'undefined' && window.matchMedia === undefined) {
   });
 }
 
+/*
+ * 指针捕获与滚动：Radix 的 `Select` / `Popover` 在 `pointerdown` 里调
+ * `hasPointerCapture` / `setPointerCapture`，在 jsdom 里这两个方法不存在，
+ * 缺失时组件直接抛 `TypeError`（不是断言失败，是渲染期崩）。
+ * 只补「浏览器有、jsdom 没有」的那部分：捕获本身没有可观察语义，留空实现即可。
+ */
+if (typeof Element !== 'undefined' && !Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
+
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 afterEach(() => {
   cleanup();
   window.history.replaceState({}, '', '/');

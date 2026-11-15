@@ -1,19 +1,21 @@
 /**
  * v2.1 设置分区的**局部**表单零件：多选（复选框组）。
  *
- * 为什么单独一个文件而不是加进 `form.tsx`：`form.tsx` 是 W3-I 的通用原语（文本 / 数字 / 文本域 /
- * 开关 / 分段单选 / chip 列表），里面**没有**多选，因为旧分区里根本不需要；而 v2.1 的三个分区
- * 一共要用三处多选（`issues.labeled` 的触发标签、评论闸门的 `allow_roles`、角色的作者关联七选）。
- * 放回 `form.tsx` 会让通用原语多出一个只有 v2.1 用的控件，所以留在 v2.1 自己的目录里。
+ * 为什么单独一个文件而不是加进 `form.tsx`：`form.tsx` 拆 `Segmented` 与
+ * `ChipEditor` 之外的通用原语里**没有**多选，而 v2.1 的三个分区一共要用三处
+ * （`issues.labeled` 的触发标签、评论闸门的 `allow_roles`、角色的作者关联七选）。
+ * 放回 `form.tsx` 会让通用装配层多出一个只有 v2.1 用的控件。
  *
- * 视觉与 `form.tsx` 一致：`label` 与控件用 `id`/`htmlFor` 成对生成，提示与错误走
- * `aria-describedby`，禁用态一律带 `title` 说明原因；不新造颜色。
+ * 用的是官方 `Field` + `Checkbox` + `FieldLabel`（每一项都是「方框 + 可点标签」），
+ * 外面那层 `Field` 承担 `role="group"` / `aria-disabled` / `data-disabled`，
+ * 所以禁用态读屏与测试都看得到（不是只把不透明度调低）。
  *
  * 为什么是复选框组而不是 `ui/select.tsx`：三处候选都是**少而固定**的集合（最多 50 个），
- * 复选框让「现在选了哪几个」一眼可见，而原生 `<select multiple>` 在窄屏上几乎不可用
- * （需要按住 Ctrl）。所以这里用复选框，选项为空时明确写出「先去哪配候选」。
+ * 复选框让「现在选了哪几个」一眼可见，而 Radix 下拉在窄屏上点开一次只能看一屏。
  */
 import { cn } from '../../lib/utils.ts';
+import { Checkbox } from '../ui/checkbox.tsx';
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '../ui/field.tsx';
 
 /** 一个可勾选项：`value` 是落库值，`label` 是给人看的文案。 */
 export type CheckboxOption = {
@@ -67,64 +69,64 @@ export function CheckboxMultiSelect({
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-1" data-testid={testId ?? id}>
-      <span id={`${id}-label`} className="text-xs font-medium text-muted-foreground">
+    <Field data-testid={testId ?? id} data-invalid={error === null ? undefined : true} className="min-w-0">
+      <FieldLabel id={`${id}-label`} className="text-xs font-medium text-muted-foreground">
         {label}
-      </span>
+      </FieldLabel>
 
-      <div
+      {/*
+        `role="group"` / `data-disabled` 挂在这一层（而不是外面那个 `Field`）：
+        外层本身就是 group，`within(容器).getByRole('group')` 只查后代，
+        所以「这一组现在是不是禁用」必须落在一个**可被指到的内层**上。
+      */}
+      <FieldGroup
         role="group"
         aria-labelledby={`${id}-label`}
         aria-describedby={describedBy}
         aria-disabled={disabled ? true : undefined}
         data-disabled={disabled ? 'true' : 'false'}
         className={cn(
-          'flex min-w-0 flex-wrap gap-x-3 gap-y-1 rounded-md border border-border px-2 py-1.5',
+          'gap-x-3 gap-y-1 rounded-md border border-border px-2 py-1.5',
+          columns === 1 ? 'flex-col gap-y-1' : 'flex-row flex-wrap',
           disabled && 'opacity-60',
-          columns === 1 && 'flex-col gap-y-1',
         )}
       >
         {options.length === 0 ? (
           <p className="text-xs leading-relaxed text-muted-foreground">{emptyText}</p>
         ) : (
-          options.map((option, index) => (
-            <label
-              key={option.value}
-              htmlFor={`${id}-opt-${String(index)}`}
-              title={disabled ? (disabledReason ?? '不可修改') : option.title}
-              className={cn(
-                'inline-flex items-center gap-1.5 text-sm text-foreground',
-                disabled ? 'cursor-not-allowed' : 'cursor-pointer',
-              )}
-            >
-              <input
-                id={`${id}-opt-${String(index)}`}
-                type="checkbox"
-                value={option.value}
-                checked={values.includes(option.value)}
-                disabled={disabled}
-                aria-invalid={error === null ? undefined : true}
-                onChange={(event) => {
-                  toggle(option.value, event.target.checked);
-                }}
-                className="size-3.5 accent-brand disabled:cursor-not-allowed"
-              />
-              <span className={cn('text-xs', option.label === undefined && 'font-mono')}>{option.label ?? option.value}</span>
-            </label>
-          ))
+          options.map((option, index) => {
+            const optionId = `${id}-opt-${String(index)}`;
+            return (
+              <Field
+                key={option.value}
+                orientation="horizontal"
+                className="w-auto items-center gap-1.5"
+                title={disabled ? (disabledReason ?? '不可修改') : option.title}
+              >
+                <Checkbox
+                  id={optionId}
+                  value={option.value}
+                  checked={values.includes(option.value)}
+                  disabled={disabled}
+                  aria-invalid={error === null ? undefined : true}
+                  onCheckedChange={(checked) => {
+                    toggle(option.value, checked === true);
+                  }}
+                />
+                <FieldLabel
+                  htmlFor={optionId}
+                  className={cn('text-xs font-normal', option.label === undefined && 'font-mono')}
+                >
+                  {option.label ?? option.value}
+                </FieldLabel>
+              </Field>
+            );
+          })
         )}
-      </div>
+      </FieldGroup>
 
-      {error === null ? null : (
-        <p id={`${id}-error`} className="text-xs text-danger-fg" role="alert">
-          {error}
-        </p>
-      )}
-      {hint === undefined ? null : (
-        <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">
-          {hint}
-        </p>
-      )}
-    </div>
+      {error === null ? null : <FieldError id={`${id}-error`}>{error}</FieldError>}
+      {hint === undefined ? null : <FieldDescription id={`${id}-hint`}>{hint}</FieldDescription>}
+    </Field>
   );
 }

@@ -1,26 +1,39 @@
 /**
- * 设置页（W3-I）的表单原语。
+ * 设置页表单的**装配层**（不是第二套原语）。
  *
- * 为什么单独一组、而不是直接用 `components/ui/*`：设置页是**唯一**大量出现的密集表单
- * （其余页面是只读表格），需要的东西恰好是 shadcn 原语里没有的：
- *  - `label` 与控件的 `htmlFor`/`id` 必须成对生成（方案里要求「label 与控件关联」，
- *    手写 30 个 `id` 一定会漏），所以每个控件自带 `Field` 外壳；
- *  - 错误与提示用 `aria-describedby` 一起挂到控件上，错误在 `aria-live` 区域里播报；
- *  - 禁用态一律带 `title`，说明「为什么不能改」而不是让人对着灰按钮猜。
+ * 这里只做三件事，并且都必须由 `components/ui/*` 的官方组件承担：
+ *  1. 把「标签 + 控件 + 说明 + 错误」按官方 `Field` 家族的标准形状拼起来
+ *     （`Field` / `FieldLabel` / `FieldDescription` / `FieldError`）；
+ *  2. 控件一律用官方 `Input` / `Textarea` / `Switch` / `ToggleGroup` / `Checkbox` / `Button`，
+ *     页面里不再出现手写 `border`/`focus-visible` 的控件类名；
+ *  3. 保住设置页需要的**行为**：`label` 与控件的 `htmlFor`/`id` 成对生成（30 多个字段手写 id
+ *     一定会漏）、提示与错误挂到 `aria-describedby`、禁用态一律带 `title` 说明原因
+ *     （不是让人对着灰按钮猜）。
  *
- * 视觉沿用现有令牌（`--radius`、`--border`、`--ring`、11/12px 字号），不新造颜色：
- * 开关、分段控件的选中态用 `bg-card` + 细边框，与左栏导航的选中态同一套读法。
- * 动效只保留 `transition-colors`（状态色变化），没有位移/缩放，`motion-reduce` 下无需额外分支。
+ * 为什么保留这一层而不是让每个分区直接写 `<Field>`：`id` 与 `aria-describedby` 的配对、
+ * 数字框的「输入中间态」、文本域占位符的「插入到光标处」都是**跨分区同一条规则**，
+ * 复制到 5 个文件就是 5 处真相。所以这一层只转发，不定义颜色与尺寸。
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from '../../lib/utils.ts';
+import { Badge } from '../ui/badge.tsx';
+import { Button } from '../ui/button.tsx';
+import { Field, FieldDescription, FieldError, FieldLabel } from '../ui/field.tsx';
+import { Input } from '../ui/input.tsx';
+import { Switch } from '../ui/switch.tsx';
+import { Textarea } from '../ui/textarea.tsx';
+import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group.tsx';
 
-/** 输入控件的基础类：与 `components/ui/select.tsx` 的 12px 密度对齐（设置页比列表更密）。 */
-export const controlClass =
-  'h-8 w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm text-foreground outline-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-60 aria-invalid:border-danger';
+/** 控件要挂的 `aria-describedby`（提示 + 错误，可能都有）。 */
+function describedBy(id: string, hint?: string, error?: string | null): string | undefined {
+  const ids: string[] = [];
+  if (error !== null && error !== undefined) ids.push(`${id}-error`);
+  if (hint !== undefined) ids.push(`${id}-hint`);
+  return ids.length === 0 ? undefined : ids.join(' ');
+}
 
-/** 一段「标签 + 控件 + 提示/错误」的组合容器（不直接使用，见下面各个 `*Field`）。 */
-function Field({
+/** 一段「标签 + 控件 + 说明 + 错误」：官方 `Field` 的标准纵向排版。 */
+function FieldShell({
   id,
   label,
   hint,
@@ -35,32 +48,15 @@ function Field({
   children: ReactNode;
   className?: string | undefined;
 }) {
+  const invalid = error !== null && error !== undefined;
   return (
-    <div className={cn('flex min-w-0 flex-col gap-1', className)}>
-      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
-        {label}
-      </label>
+    <Field data-invalid={invalid ? true : undefined} className={cn('min-w-0', className)}>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {children}
-      {error === null || error === undefined ? null : (
-        <p id={`${id}-error`} className="text-xs text-danger-fg" role="alert">
-          {error}
-        </p>
-      )}
-      {hint === undefined ? null : (
-        <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">
-          {hint}
-        </p>
-      )}
-    </div>
+      {hint === undefined ? null : <FieldDescription id={`${id}-hint`}>{hint}</FieldDescription>}
+      {invalid ? <FieldError id={`${id}-error`}>{error}</FieldError> : null}
+    </Field>
   );
-}
-
-/** 控件要挂的 `aria-describedby`（提示 + 错误，可能都有）。 */
-function describedBy(id: string, hint?: string, error?: string | null): string | undefined {
-  const ids: string[] = [];
-  if (error !== null && error !== undefined) ids.push(`${id}-error`);
-  if (hint !== undefined) ids.push(`${id}-hint`);
-  return ids.length === 0 ? undefined : ids.join(' ');
 }
 
 export function TextField({
@@ -95,17 +91,17 @@ export function TextField({
   type?: 'text' | 'url';
 }) {
   return (
-    <Field id={id} label={label} hint={hint} error={error}>
-      <input
+    <FieldShell id={id} label={label} hint={hint} error={error}>
+      <Input
         id={id}
         type={type}
-        className={cn(controlClass, mono && 'font-mono')}
         value={value}
         placeholder={placeholder}
         disabled={disabled}
         title={disabled ? disabledReason : undefined}
         aria-invalid={error !== null && error !== undefined ? true : undefined}
         aria-describedby={describedBy(id, hint, error)}
+        className={cn(mono && 'font-mono')}
         onBlur={onBlur}
         onKeyDown={(event) => {
           if (event.key !== 'Enter' || onEnter === undefined) return;
@@ -116,7 +112,7 @@ export function TextField({
           onChange(event.target.value);
         }}
       />
-    </Field>
+    </FieldShell>
   );
 }
 
@@ -156,19 +152,19 @@ export function NumberField({
   }
 
   return (
-    <Field id={id} label={label} hint={hint} error={error}>
-      <input
+    <FieldShell id={id} label={label} hint={hint} error={error}>
+      <Input
         id={id}
         type="number"
         inputMode="numeric"
         min={min}
         max={max}
-        className={cn(controlClass, 'font-mono')}
         value={text}
         disabled={disabled}
         title={disabled ? disabledReason : undefined}
         aria-invalid={error !== null && error !== undefined ? true : undefined}
         aria-describedby={describedBy(id, hint, error)}
+        className="font-mono"
         onChange={(event) => {
           const raw = event.target.value;
           setText(raw);
@@ -180,7 +176,7 @@ export function NumberField({
           if (Number.isFinite(parsed)) onChange(parsed);
         }}
       />
-    </Field>
+    </FieldShell>
   );
 }
 
@@ -267,8 +263,8 @@ export function TextAreaField({
   };
 
   return (
-    <Field id={id} label={label} hint={hint} error={error} className={fill ? 'min-h-0 flex-1' : undefined}>
-      <textarea
+    <FieldShell id={id} label={label} hint={hint} error={error} className={cn(fill && 'min-h-0 flex-1')}>
+      <Textarea
         id={id}
         ref={ref}
         rows={rows}
@@ -283,15 +279,14 @@ export function TextAreaField({
           onChange(event.target.value);
         }}
         className={cn(
-          controlClass,
-          'h-auto resize-y py-1.5 leading-relaxed break-words',
+          'resize-y leading-relaxed break-words',
           mono && 'font-mono text-xs',
           /*
             `fill` 时高度由 flex 决定（`min-h-0` + `flex-1`），且**框内自己滚**：
             这是「整页不出现滚动条、只有编辑区滚」的落点。
             `resize-none` 是因为拖拽改变高度会把上面的约束打回原形。
           */
-          fill && 'min-h-[6rem] flex-1 resize-none overflow-y-auto',
+          fill && 'min-h-24 flex-1 resize-none overflow-y-auto',
         )}
       />
       {tokens === undefined || tokens.length === 0 ? null : (
@@ -303,9 +298,11 @@ export function TextAreaField({
         >
           <span className="text-2xs text-faint">插入占位符</span>
           {tokens.map((token) => (
-            <button
+            <Button
               key={token.name}
               type="button"
+              variant="outline"
+              size="xs"
               disabled={disabled}
               title={disabled ? disabledReason : (token.description ?? token.name)}
               aria-label={`插入占位符 ${token.name}`}
@@ -316,26 +313,22 @@ export function TextAreaField({
               onClick={() => {
                 insertToken(token.name);
               }}
-              className={cn(
-                'rounded-full border border-border bg-card px-1.5 py-px font-mono text-2xs text-muted-foreground',
-                'transition-colors hover:border-brand hover:text-foreground',
-                'focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-                'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:text-muted-foreground',
-              )}
+              className="font-mono text-2xs"
             >
               {`{{${token.name}}}`}
-            </button>
+            </Button>
           ))}
         </div>
       )}
       {footer}
-    </Field>
+    </FieldShell>
   );
 }
 
 /**
- * 开关（`role="switch"`，不是纯 CSS 假开关）：键盘可聚焦、状态进 `aria-checked`。
- * 标签与说明在左侧，用 `aria-labelledby` / `aria-describedby` 关联到按钮上。
+ * 开关：官方 `Switch`（Radix，`role="switch"` + `aria-checked`，键盘空格可切）。
+ * 名字走 `aria-labelledby` 指向 `FieldLabel`，说明走 `aria-describedby`；
+ * 禁用时 `title` 说明原因。
  */
 export function SwitchField({
   id,
@@ -356,46 +349,31 @@ export function SwitchField({
   disabledReason?: string;
   pending?: boolean;
 }) {
+  const blocked = disabled || pending;
   return (
-    <div className="flex items-start justify-between gap-3 py-1">
+    <Field
+      orientation="horizontal"
+      data-disabled={blocked ? true : undefined}
+      className="items-center justify-between gap-3 py-1"
+    >
       <div className="min-w-0">
-        <p id={`${id}-label`} className="text-sm font-medium text-foreground">
+        <FieldLabel id={`${id}-label`} htmlFor={id} className="text-sm font-medium text-foreground">
           {label}
-        </p>
+        </FieldLabel>
         {description === undefined ? null : (
-          <p id={`${id}-description`} className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            {description}
-          </p>
+          <FieldDescription id={`${id}-description`}>{description}</FieldDescription>
         )}
       </div>
-      <button
+      <Switch
         id={id}
-        type="button"
-        role="switch"
-        aria-checked={checked}
+        checked={checked}
+        disabled={blocked}
+        title={disabled ? disabledReason : undefined}
         aria-labelledby={`${id}-label`}
         aria-describedby={description === undefined ? undefined : `${id}-description`}
-        disabled={disabled || pending}
-        title={disabled ? disabledReason : undefined}
-        onClick={() => {
-          onChange(!checked);
-        }}
-        className={cn(
-          'relative mt-0.5 inline-flex h-4 w-[26px] shrink-0 items-center rounded-full transition-colors',
-          'focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-          checked ? 'bg-success' : 'bg-neutral/50',
-          (disabled || pending) && 'cursor-not-allowed opacity-50',
-        )}
-      >
-        <span
-          aria-hidden="true"
-          className={cn(
-            'block size-3 rounded-full bg-white shadow transition-transform',
-            checked ? 'translate-x-[11px]' : 'translate-x-[2px]',
-          )}
-        />
-      </button>
-    </div>
+        onCheckedChange={onChange}
+      />
+    </Field>
   );
 }
 
@@ -406,9 +384,15 @@ export type SegmentedOption<T extends string> = {
   title?: string;
 };
 
-/** 分段单选（原生 `radio` 藏在 label 里 → 方向键/空格/Tab 全部免费拿到）。 */
+/**
+ * 分段单选：官方 `ToggleGroup type="single"`。
+ *
+ * 为什么是它而不是 `ui/radio-group.tsx`：Radix 的单选组把每个选项画成一个**圆点 + 标签**，
+ * 而这一组是「三态小开关条」，要的是「按钮长相 + radio 语义」。Radix 的 single ToggleGroup
+ * 正是这个组合（`role="radiogroup"` + 子项 `role="radio"` + `aria-checked`），
+ * 键盘方向键与空格都是现成的；自己写 `<input type="radio" class="sr-only">` 才是第二套原语。
+ */
 export function Segmented<T extends string>({
-  name,
   value,
   options,
   onChange,
@@ -416,6 +400,7 @@ export function Segmented<T extends string>({
   disabled = false,
   disabledReason,
 }: {
+  /** 保留字段：调用方仍在传（同一批单选的命名），语义已由 `ariaLabel` 承担。 */
   name: string;
   value: T;
   options: readonly SegmentedOption<T>[];
@@ -425,39 +410,32 @@ export function Segmented<T extends string>({
   disabledReason?: string;
 }) {
   return (
-    <div
-      role="radiogroup"
+    <ToggleGroup
+      type="single"
+      value={value}
       aria-label={ariaLabel}
-      className={cn('inline-flex shrink-0 rounded-md border border-border bg-muted p-px', disabled && 'opacity-60')}
+      disabled={disabled}
+      variant="outline"
+      size="sm"
+      className={cn('w-fit shrink-0', disabled && 'opacity-60')}
+      onValueChange={(next) => {
+        // single 组允许「再点一次取消」，但三态这里没有「空」：取消视为无操作
+        if (next === '') return;
+        const picked = options.find((option) => option.value === next);
+        if (picked !== undefined) onChange(picked.value);
+      }}
     >
       {options.map((option) => (
-        <label
+        <ToggleGroupItem
           key={option.value}
+          value={option.value}
           title={disabled ? disabledReason : option.title}
-          className={cn(
-            'cursor-pointer rounded-[5px] px-2 py-0.5 text-xs whitespace-nowrap transition-colors',
-            'has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand',
-            option.value === value
-              ? 'bg-card font-medium text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground',
-            disabled && 'cursor-not-allowed',
-          )}
+          className="text-xs"
         >
-          <input
-            type="radio"
-            className="sr-only"
-            name={name}
-            value={option.value}
-            checked={option.value === value}
-            disabled={disabled}
-            onChange={() => {
-              onChange(option.value);
-            }}
-          />
           {option.label}
-        </label>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -510,41 +488,35 @@ export function ChipEditor({
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
-        {label}
-      </label>
+    <Field data-invalid={error === null ? undefined : true} className="min-w-0">
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
 
       <ul className="flex min-h-6 flex-wrap items-center gap-1" data-testid={`${id}-chips`}>
         {values.length === 0 ? <li className="text-xs text-muted-foreground">{emptyText}</li> : null}
         {values.map((entry) => (
           <li key={entry}>
-            <span
-              className={cn(
-                'inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-foreground',
-                mono && 'font-mono',
-              )}
-            >
+            <Badge variant="secondary" className={cn('gap-1 pr-0.5', mono && 'font-mono')}>
               {entry}
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon-xs"
                 aria-label={`移除 ${entry}`}
                 disabled={disabled}
                 title={disabled ? disabledReason : `移除 ${entry}`}
                 onClick={() => {
                   onChange(values.filter((candidate) => candidate !== entry));
                 }}
-                className="rounded-full px-0.5 text-muted-foreground transition-colors hover:text-danger-fg focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <span aria-hidden="true">×</span>
-              </button>
-            </span>
+              </Button>
+            </Badge>
           </li>
         ))}
       </ul>
 
       <div className="flex items-center gap-1">
-        <input
+        <Input
           id={id}
           type="text"
           value={text}
@@ -552,7 +524,8 @@ export function ChipEditor({
           placeholder={placeholder}
           title={disabled ? disabledReason : undefined}
           aria-invalid={error === null ? undefined : true}
-          aria-describedby={error === null ? (hint === undefined ? undefined : `${id}-hint`) : `${id}-error`}
+          aria-describedby={describedBy(id, hint, error)}
+          className={cn('max-w-56', mono && 'font-mono')}
           onChange={(event) => {
             setText(event.target.value);
             setError(null);
@@ -563,41 +536,33 @@ export function ChipEditor({
             event.preventDefault();
             commit();
           }}
-          className={cn(controlClass, 'max-w-56', mono && 'font-mono')}
         />
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           onClick={commit}
           disabled={disabled || text.trim() === ''}
           title={disabled ? disabledReason : '加入列表（回车同效）'}
-          className="h-8 shrink-0 rounded-md border border-border px-2 text-xs text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
         >
           添加
-        </button>
+        </Button>
       </div>
 
-      <div aria-live="polite">
-        {error === null ? null : (
-          <p id={`${id}-error`} className="text-xs text-danger-fg" role="alert">
-            {error}
-          </p>
-        )}
-        {hint === undefined ? null : (
-          <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">
-            {hint}
-          </p>
-        )}
+      <div aria-live="polite" className="flex flex-col gap-1">
+        {error === null ? null : <FieldError id={`${id}-error`}>{error}</FieldError>}
+        {hint === undefined ? null : <FieldDescription id={`${id}-hint`}>{hint}</FieldDescription>}
       </div>
-    </div>
+    </Field>
   );
 }
 
 /** 一行说明（键 → 值），设置页里用来展示「只读元数据」。 */
 export function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex min-w-0 items-baseline gap-2 text-sm">
+    <Field orientation="horizontal" className="items-baseline gap-2">
       <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
-      <span className="min-w-0 break-all text-foreground">{children}</span>
-    </div>
+      <span className="min-w-0 flex-1 text-sm break-all text-foreground">{children}</span>
+    </Field>
   );
 }

@@ -1,74 +1,56 @@
-import {
-  cloneElement,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ReactElement,
-  type ReactNode,
-} from 'react';
-import { cn } from '../../lib/utils.ts';
+"use client"
 
-/**
- * 提示（Tooltip）：hover **与** focus 都显示，150ms 延迟（快速划过不闪）。
- *
- * 可访问性：气泡 `role="tooltip"`，并通过 `aria-describedby` 关联到触发器 ——
- * 读屏用户 focus 到按钮时能听到同样的一句话。Esc 立刻收起。
- *
- * 只用于「补充说明」：不要把唯一的关键信息塞进 tooltip（触屏用户看不到）。
- */
-export type TooltipProps = {
-  label: ReactNode;
-  children: ReactElement<{ 'aria-describedby'?: string }>;
-  side?: 'top' | 'bottom';
-  delay?: number;
-  className?: string;
-};
+import * as React from "react"
+import { cn } from "cn"
+import { Tooltip as TooltipPrimitive } from "radix-ui"
 
-export function Tooltip({ label, children, side = 'top', delay = 150, className }: TooltipProps) {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clear = useCallback(() => {
-    if (timer.current !== null) {
-      clearTimeout(timer.current);
-      timer.current = null;
-    }
-  }, []);
-
-  useEffect(() => clear, [clear]);
-
-  const show = (): void => {
-    clear();
-    timer.current = setTimeout(() => {
-      setOpen(true);
-    }, delay);
-  };
-  const hide = (): void => {
-    clear();
-    setOpen(false);
-  };
-
+function TooltipProvider({
+  delayDuration = 0,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
-    <span className="relative inline-flex" onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}>
-      {cloneElement(children, { 'aria-describedby': open ? id : children.props['aria-describedby'] })}
-      {open ? (
-        <span
-          id={id}
-          role="tooltip"
-          className={cn(
-            'animate-fade-in pointer-events-none absolute left-1/2 z-50 -translate-x-1/2',
-            'max-w-64 rounded-md border border-border bg-card px-2 py-1 text-xs whitespace-nowrap',
-            'text-card-foreground shadow-overlay',
-            side === 'top' ? 'bottom-[calc(100%+4px)]' : 'top-[calc(100%+4px)]',
-            className,
-          )}
-        >
-          {label}
-        </span>
-      ) : null}
-    </span>
-  );
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      {...props}
+    />
+  )
 }
+
+function Tooltip({
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+}
+
+function TooltipTrigger({
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
+}
+
+function TooltipContent({
+  className,
+  sideOffset = 0,
+  children,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+  return (
+    <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Content
+        data-slot="tooltip-content"
+        sideOffset={sideOffset}
+        className={cn(
+          "z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md bg-foreground px-3 py-1.5 text-xs text-balance text-background fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+          className
+        )}
+        {...props}
+      >
+        {children}
+        <TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] bg-foreground fill-foreground" />
+      </TooltipPrimitive.Content>
+    </TooltipPrimitive.Portal>
+  )
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }

@@ -1,9 +1,10 @@
 /**
- * 技能编辑器（**模态框**）：左边是技能目录的文件树，右边是纯文本 textarea。
+ * 技能编辑器（**官方 `Dialog` 弹窗**）：左边是技能目录的文件树，右边是纯文本 textarea。
  *
- * 为什么是模态框而不是行内展开：一个技能是**一个目录**（`SKILL.md` + `references/*.md` …），
+ * 为什么是弹窗而不是行内展开：一个技能是**一个目录**（`SKILL.md` + `references/*.md` …），
  * 用户要来回切换文件、还要能整体换掉它；行内展开会把这些挤进列表里，且看不到「我正在改哪个文件」。
- * 抽屉也不合适 —— 它要盖住列表右侧，而这里需要的是「专心改一个技能」。
+ * 抽屉（`Sheet`）也不合适 —— 它要盖住列表右侧，而这里需要的是「专心改一个技能」，
+ * 且正文编辑需要横向空间（等宽文本 + 文件树两栏），弹窗给得出，右侧抽屉给不出。
  *
  * 三条不做的诚实：
  *  - **不渲染 Markdown**：技能正文是提示词，渲染成 HTML 只会带来 XSS 面且看不出空白与换行的差别；
@@ -14,11 +15,20 @@
  * 不翻译成「保存失败」——那句话里带着具体是哪条规则没过。
  */
 import { useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { toast } from 'sonner';
 import { AsyncSection } from '../AsyncSection.tsx';
 import { Button } from '../ui/button.tsx';
-import { Dialog } from '../ui/dialog.tsx';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog.tsx';
+import { Field, FieldDescription, FieldError, FieldLabel } from '../ui/field.tsx';
 import { Skeleton } from '../ui/skeleton.tsx';
-import { useToast } from '../ui/toast.tsx';
+import { Textarea } from '../ui/textarea.tsx';
 import { ApiError } from '../../lib/api.ts';
 import { formatCount } from '../../lib/format.ts';
 import { useSkillFiles, useSkillOverwrite, useSkillSaveFile } from '../../lib/queries.ts';
@@ -43,11 +53,13 @@ function messageOf(error: unknown): string {
   return '未知错误';
 }
 
+/** 正文编辑框的 id（`FieldLabel` 的 htmlFor 与控件、测试都指向它）。 */
+const TEXTAREA_ID = 'skill-editor-text';
+
 export function SkillEditorModal({ item, onClose }: { item: SkillListItem; onClose: () => void }) {
   const files = useSkillFiles(item.id);
   const saveFile = useSkillSaveFile();
   const overwrite = useSkillOverwrite();
-  const toast = useToast();
   const zipInputRef = useRef<HTMLInputElement | null>(null);
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -120,9 +132,8 @@ export function SkillEditorModal({ item, onClose }: { item: SkillListItem; onClo
       { id: item.id, file },
       {
         onSuccess: (result) => {
-          toast.push({
-            tone: 'success',
-            title: `已用 zip 覆盖 ${result.skill.name}（v${formatCount(result.version)}）`,
+          // 提示走 sonner（`ui/toast.tsx` 是旧实现，这一处不再挂第二套提示系统）
+          toast.success(`已用 zip 覆盖 ${result.skill.name}（v${formatCount(result.version)}）`, {
             description: '旧版本仍在版本记录里',
           });
           onClose();
@@ -137,152 +148,153 @@ export function SkillEditorModal({ item, onClose }: { item: SkillListItem; onClo
   const fileCountText = files.data === undefined ? '读取文件…' : `${formatCount(fileList.length)} 个文件`;
 
   return (
+    /*
+      Radix `Dialog`：Esc / 遮罩点击 / 关闭按钮都走 `onOpenChange(false)`，
+      统一交给 `requestClose` 拦一次「有未保存改动吗」——比自己在 keydown 里判 Esc 可靠
+      （焦点在哪一层都能收到），且焦点陷阱、`aria-modal`、滚动锁都是现成的。
+    */
     <Dialog
       open
-      onClose={requestClose}
-      size="lg"
-      testId="skill-editor-modal"
-      title={
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="min-w-0 truncate font-mono">{item.name}</span>
-          <span className="tabular shrink-0 text-2xs font-normal text-faint" data-testid="skill-editor-version">
-            v{formatCount(item.currentVersion)}
-          </span>
-        </span>
-      }
-      description={`${fileCountText} · 改任一个文件都会生成新版本`}
-      footer={
-        <>
+      onOpenChange={(next) => {
+        if (!next) requestClose();
+      }}
+    >
+      <DialogContent
+        data-testid="skill-editor-modal-panel"
+        className="max-h-[calc(100dvh-2rem)] w-full overflow-y-auto sm:max-w-3xl"
+      >
+        <DialogHeader>
+          <DialogTitle className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 truncate font-mono">{item.name}</span>
+            <span className="tabular shrink-0 text-2xs font-normal text-faint" data-testid="skill-editor-version">
+              v{formatCount(item.currentVersion)}
+            </span>
+          </DialogTitle>
+          <DialogDescription>{`${fileCountText} · 改任一个文件都会生成新版本`}</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex min-w-0 flex-col gap-2" onKeyDown={onKeyDown} data-testid={`skill-editor-${item.id}`}>
+          {item.source === 'builtin' ? (
+            <p className="text-2xs leading-relaxed text-muted-foreground" data-testid="skill-editor-hint">
+              这是内置技能的副本，保存后即为本项目覆盖。
+            </p>
+          ) : null}
+
+          <AsyncSection
+            isLoading={files.isLoading}
+            error={files.error}
+            isEmpty={!files.isLoading && files.error == null && fileList.length === 0}
+            emptyText="这个技能目录里没有可编辑的文本文件。"
+            emptyHint="面板只列出 md / txt / json / yaml / toml；要补文件请打包成 zip 后覆盖本技能。"
+            testId="skill-editor-files"
+            onRetry={() => {
+              void files.refetch();
+            }}
+            skeleton={<Skeleton className="h-64 w-full rounded-md" />}
+          >
+            <div className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-[minmax(0,13rem)_minmax(0,1fr)]">
+              {/* 左：文件树 + 「上传 zip 覆盖」 */}
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <p className="micro-label">文件</p>
+                <div className="max-h-56 min-w-0 overflow-y-auto rounded-md border border-border bg-card py-0.5 md:max-h-[23rem]">
+                  <ul className="flex min-w-0 flex-col" data-testid="skill-editor-tree">
+                    <FileTree nodes={tree} depth={0} activePath={activePath} onSelect={selectFile} />
+                  </ul>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={overwrite.isPending}
+                  aria-busy={overwrite.isPending}
+                  title="上传一个 zip（≤ 5 MB）整目录覆盖本技能；技能名必须与当前一致"
+                  onClick={() => {
+                    zipInputRef.current?.click();
+                  }}
+                  data-testid="skill-editor-upload"
+                >
+                  {overwrite.isPending ? '上传中…' : '上传 zip 覆盖本技能'}
+                </Button>
+                <input
+                  ref={zipInputRef}
+                  type="file"
+                  accept=".zip,application/zip"
+                  hidden
+                  data-testid="skill-editor-upload-input"
+                  onChange={onPickZip}
+                />
+                {overwriteError === null ? null : (
+                  <FieldError role="alert" data-testid="skill-editor-upload-error" className="text-xs text-danger-fg">
+                    覆盖失败：{overwriteError}
+                  </FieldError>
+                )}
+              </div>
+
+              {/* 右：当前文件的纯文本（`Field` 家族承担标签、说明与错误） */}
+              <Field data-invalid={saveError === null ? undefined : true} className="min-w-0 gap-1">
+                <div className="flex min-w-0 items-baseline justify-between gap-2">
+                  <FieldLabel
+                    htmlFor={TEXTAREA_ID}
+                    data-testid="skill-editor-current-path"
+                    className="min-w-0 truncate font-mono text-xs"
+                    title={activePath ?? undefined}
+                  >
+                    {activePath ?? '—'}
+                  </FieldLabel>
+                  <span className="shrink-0 tabular text-2xs text-faint">{formatBytes(utf8ByteLength(value))}</span>
+                </div>
+                <Textarea
+                  id={TEXTAREA_ID}
+                  data-testid="skill-editor-textarea"
+                  value={value}
+                  readOnly={!editable}
+                  spellCheck={false}
+                  onChange={(event) => {
+                    if (activePath === null) return;
+                    setDraft({ path: activePath, text: event.target.value });
+                    setSavedVersion(null);
+                  }}
+                  className={cn(
+                    'h-64 w-full resize-y whitespace-pre-wrap font-mono text-xs leading-relaxed break-words md:h-[22rem]',
+                    editable ? '' : 'cursor-default bg-muted text-muted-foreground',
+                  )}
+                />
+                {editable ? null : (
+                  <FieldDescription data-testid="skill-editor-readonly">
+                    只读：面板只编辑 md / txt / json / yaml / toml，其它文件请改完打包成 zip 再覆盖。
+                  </FieldDescription>
+                )}
+                {saveError === null ? null : (
+                  <FieldError role="alert" data-testid="skill-editor-error" className="text-xs text-danger-fg">
+                    保存失败：{saveError}
+                  </FieldError>
+                )}
+                {savedVersion === null ? null : (
+                  <p role="status" data-testid="skill-editor-saved" className="text-xs text-success-fg">
+                    已保存 {activePath ?? ''} · v{formatCount(savedVersion)}
+                  </p>
+                )}
+              </Field>
+            </div>
+          </AsyncSection>
+        </div>
+
+        <DialogFooter className="items-center sm:justify-end">
           <span className="mr-auto text-2xs tabular text-faint">{formatCount(value.length)} 字符</span>
           <Button variant="secondary" size="sm" onClick={requestClose} data-testid="skill-editor-cancel">
             关闭
           </Button>
           <Button
             size="sm"
-            loading={saveFile.isPending}
-            disabled={!dirty || !editable}
+            disabled={!dirty || !editable || saveFile.isPending}
+            aria-busy={saveFile.isPending}
             title={dirty ? undefined : '没有改动'}
             onClick={submit}
             data-testid="skill-editor-save"
           >
-            保存
+            {saveFile.isPending ? '保存中…' : '保存'}
           </Button>
-        </>
-      }
-    >
-      <div className="flex min-w-0 flex-col gap-2" onKeyDown={onKeyDown} data-testid={`skill-editor-${item.id}`}>
-        {item.source === 'builtin' ? (
-          <p className="text-2xs leading-relaxed text-muted-foreground" data-testid="skill-editor-hint">
-            这是内置技能的副本，保存后即为本项目覆盖。
-          </p>
-        ) : null}
-
-        <AsyncSection
-          isLoading={files.isLoading}
-          error={files.error}
-          isEmpty={!files.isLoading && files.error == null && fileList.length === 0}
-          emptyText="这个技能目录里没有可编辑的文本文件。"
-          emptyHint="面板只列出 md / txt / json / yaml / toml；要补文件请打包成 zip 后覆盖本技能。"
-          testId="skill-editor-files"
-          onRetry={() => {
-            void files.refetch();
-          }}
-          skeleton={<Skeleton className="h-64 w-full rounded-md" />}
-        >
-          <div className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-[minmax(0,13rem)_minmax(0,1fr)]">
-            {/* 左：文件树 + 「上传 zip 覆盖」 */}
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <p className="micro-label">文件</p>
-              <div className="max-h-56 min-w-0 overflow-y-auto rounded-md border border-border bg-card py-0.5 md:max-h-[23rem]">
-                <ul className="flex min-w-0 flex-col" data-testid="skill-editor-tree">
-                  <FileTree nodes={tree} depth={0} activePath={activePath} onSelect={selectFile} />
-                </ul>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={overwrite.isPending}
-                title="上传一个 zip（≤ 5 MB）整目录覆盖本技能；技能名必须与当前一致"
-                onClick={() => {
-                  zipInputRef.current?.click();
-                }}
-                data-testid="skill-editor-upload"
-              >
-                上传 zip 覆盖本技能
-              </Button>
-              <input
-                ref={zipInputRef}
-                type="file"
-                accept=".zip,application/zip"
-                hidden
-                data-testid="skill-editor-upload-input"
-                onChange={onPickZip}
-              />
-              {overwriteError === null ? null : (
-                <p
-                  role="alert"
-                  data-testid="skill-editor-upload-error"
-                  className="text-xs leading-relaxed break-words text-danger-fg"
-                >
-                  覆盖失败：{overwriteError}
-                </p>
-              )}
-            </div>
-
-            {/* 右：当前文件的纯文本 */}
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex min-w-0 items-baseline justify-between gap-2">
-                <span
-                  className="min-w-0 truncate font-mono text-xs text-foreground"
-                  title={activePath ?? undefined}
-                  data-testid="skill-editor-current-path"
-                >
-                  {activePath ?? '—'}
-                </span>
-                <span className="shrink-0 tabular text-2xs text-faint">{formatBytes(utf8ByteLength(value))}</span>
-              </div>
-              <textarea
-                aria-label={activePath === null ? `${item.name} 的文件内容` : `${activePath} 的文本内容`}
-                data-testid="skill-editor-textarea"
-                value={value}
-                readOnly={!editable}
-                spellCheck={false}
-                onChange={(event) => {
-                  if (activePath === null) return;
-                  setDraft({ path: activePath, text: event.target.value });
-                  setSavedVersion(null);
-                }}
-                className={cn(
-                  'h-64 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 md:h-[22rem]',
-                  'whitespace-pre-wrap font-mono text-xs leading-relaxed break-words text-foreground',
-                  'transition-[border-color] duration-[var(--dur-fast)] ease-out-quint hover:border-border-strong',
-                  'focus-visible:border-brand outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-                  editable ? '' : 'cursor-default bg-muted text-muted-foreground',
-                )}
-              />
-              {editable ? null : (
-                <p className="text-2xs leading-relaxed text-muted-foreground" data-testid="skill-editor-readonly">
-                  只读：面板只编辑 md / txt / json / yaml / toml，其它文件请改完打包成 zip 再覆盖。
-                </p>
-              )}
-              {saveError === null ? null : (
-                <p
-                  role="alert"
-                  data-testid="skill-editor-error"
-                  className="text-xs leading-relaxed break-words text-danger-fg"
-                >
-                  保存失败：{saveError}
-                </p>
-              )}
-              {savedVersion === null ? null : (
-                <p role="status" data-testid="skill-editor-saved" className="text-xs text-success-fg">
-                  已保存 {activePath ?? ''} · v{formatCount(savedVersion)}
-                </p>
-              )}
-            </div>
-          </div>
-        </AsyncSection>
-      </div>
+        </DialogFooter>
+      </DialogContent>
     </Dialog>
   );
 }

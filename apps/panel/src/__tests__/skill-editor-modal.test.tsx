@@ -19,7 +19,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createHandlers } from '../mocks/handlers/index.ts';
 import { resetSkillsMock } from '../mocks/handlers/skills.ts';
 import { SkillEditorModal } from '../components/skills/skill-editor-modal.tsx';
-import { Toaster, clearToasts } from '../components/ui/toast.tsx';
+import { toast } from 'sonner';
+import { Toaster } from '../components/ui/sonner.tsx';
 import { renderWithProviders } from '../../test/render.tsx';
 import { RepoSkillsPage } from '../routes/repo-skills.tsx';
 import type { SkillListItem } from '../../../../packages/contract/src/index.ts';
@@ -42,7 +43,7 @@ afterEach(() => {
 beforeEach(() => {
   // mock 的 `Map` 是模块级状态，`resetHandlers()` 不会复位它
   resetSkillsMock();
-  clearToasts();
+  toast.dismiss();
 });
 
 /** `/release-notes` 的列表行（与 `mocks/handlers/skills.ts` 的 seed 对应：两层目录）。 */
@@ -214,8 +215,8 @@ describe('技能编辑器模态框', () => {
     const file = zipFile(['release-notes/SKILL.md']);
     fireEvent.change(screen.getByTestId('skill-editor-upload-input'), { target: { files: [file] } });
 
-    const toaster = await screen.findByTestId('toaster');
-    expect(toaster.textContent ?? '').toContain('已用 zip 覆盖 /release-notes（v3）');
+    // 提示走 sonner：Toaster 挂在测试里（AppLayout 之外），所以断言「这条文案出现在文档里」
+    expect(await screen.findByText(/已用 zip 覆盖 \/release-notes（v3）/u)).toBeTruthy();
 
     expect(uploads).toHaveLength(1);
     expect(uploads[0]?.url).toContain(`/api/skills/${ITEM.id}/versions`);

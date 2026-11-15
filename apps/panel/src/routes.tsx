@@ -1,9 +1,7 @@
 import { Route, Routes } from 'react-router';
 import type { ReactElement } from 'react';
 import { AppLayout } from './layout/AppLayout.tsx';
-import { GLOBAL_NAV, REPO_NAV } from './layout/nav.ts';
-import { AuditPage } from './routes/audit.tsx';
-import { CostsPage } from './routes/costs.tsx';
+import { REPO_NAV } from './layout/nav.ts';
 import { IssueDetailPage } from './routes/issue-detail.tsx';
 import {
   LegacyIssueDetailRedirect,
@@ -12,18 +10,15 @@ import {
   LegacyTaskListRedirect,
 } from './routes/legacy.tsx';
 import { NotFoundPage } from './routes/not-found.tsx';
-import { OverviewPage } from './routes/overview.tsx';
-import { QualityPage } from './routes/quality.tsx';
-import { RepoIssuesPage } from './routes/repo-issues.tsx';
+import { GlobalIssuesPage, RepoIssuesPage } from './routes/repo-issues.tsx';
 import { RepoRunsPage } from './routes/repo-runs.tsx';
 import { RepoSettingsPage } from './routes/repo-settings.tsx';
 import { RepoSkillsPage } from './routes/repo-skills.tsx';
-import { RepoWorkspacePage } from './routes/repo-workspace.tsx';
 import { SystemPage } from './routes/system.tsx';
 import { TaskDetailPage } from './routes/task-detail.tsx';
 
 /**
- * 路由表 —— **一次冻结在这里**（多仓库工作台版，`docs/plan-multi-repo.md` §9）。
+ * 路由表 —— **一次冻结在这里**。
  *
  * 为什么用 `<Routes>` 而不是 `createBrowserRouter`：测试里要能塞 `MemoryRouter`
  * （jsdom 没有 History 语义），声明式路由两种入口通吃；`main.tsx` 用 `BrowserRouter`。
@@ -31,11 +26,21 @@ import { TaskDetailPage } from './routes/task-detail.tsx';
  * 为什么 `:repo` 是**单段** `owner__name`：见 `lib/repo-route.ts` 的说明（编码/解码与往返）。
  *
  * 三组路径：
- * - `global`：不带仓库（总览/成本/质量/审计/系统），URL 与改造前一致；
- * - `repo`：`/repos/:repo/*`，左栏「当前仓库」分组只用这几条；
+ * - `global`：不带仓库 —— `/`（「全部项目」的 Issue 队列）与 `/system`（系统页）；
+ * - `repo`：`/repos/:repo/*`，承载项目级三件事（Issue / 设置 / 技能）+ 两个证据页；
  * - `legacy`：旧路径，只做 302 重定向（`routes/legacy.tsx`），不出现在导航里。
  *
- * 新增页面时**只改这一个数组**：导航（`layout/nav.ts` 的两个分组）、路由、四态测试断言
+ * **`AC-26` / `FR-7.1` 改写后的落点**：面板是侧栏式 admin。侧栏渲染的是 `layout/nav.ts` 的三组
+ * （项目 / 证据 / 全局），这里的 `nav` 字段说的是「它是不是一级入口」—— 运行虽在侧栏的「证据」组
+ * 里可点，但它是会话流里的证据，不是并列的一级入口，所以 `nav: false`。
+ * 总览、成本、质量、审计四条路由**不存在**，所以任何书签、文档链接、命令面板条目都打不开它们
+ * （不是「藏起来了」）。它们的去处见 `FR-7.2`：状态带、会话流、系统页。
+ *
+ * 「运行」与「运行详情」保留路由但 `nav: false`：它们是会话流里的**证据**
+ * （`taskId` / 写回行点进去的详情）。侧栏的「证据」组按这条路由渲染，但它不是
+ * 并列的一级入口 —— `nav` 说的就是这件事。
+ *
+ * 新增页面时**只改这一个数组**：导航（`layout/nav.ts`）、路由、四态测试断言
  * 都跟着它走；`routes/__tests__` 与 `test/routes.test.tsx` 会钉住这张表。
  */
 export type PanelRouteGroup = 'global' | 'repo' | 'legacy';
@@ -43,33 +48,31 @@ export type PanelRouteGroup = 'global' | 'repo' | 'legacy';
 export type PanelRoute = {
   path: string;
   label: string;
-  /** 是否出现在左栏导航（详情页与旧路径重定向不出现在导航里）。 */
+  /** 是否出现在侧栏的一级导航里；详情页、证据页与旧路径都是 false。 */
   nav: boolean;
-  /** 路径归属（见文件头三组说明）。 */
+  /**
+   * **路径归属**（不带仓库 / 带仓库 / 旧路径），不是侧栏分组 —— 侧栏分组在 `layout/nav.ts`。
+   * `'/'` 因此是 `global`（没有仓库段），而它在侧栏里落在「项目」组。
+   */
   group: PanelRouteGroup;
   element: ReactElement;
 };
 
 export const PANEL_ROUTES: readonly PanelRoute[] = [
-  /* ── 全局 ──────────────────────────────────────────────────────────────── */
-  { path: '/', label: '总览', nav: true, group: 'global', element: <OverviewPage /> },
-  { path: '/costs', label: '成本', nav: true, group: 'global', element: <CostsPage /> },
-  { path: '/quality', label: '质量', nav: true, group: 'global', element: <QualityPage /> },
-  { path: '/audit', label: '审计', nav: true, group: 'global', element: <AuditPage /> },
+  /* ── 全部项目（没有仓库上下文） ──────────────────────────────────────────── */
+  { path: '/', label: 'Issue', nav: true, group: 'global', element: <GlobalIssuesPage /> },
   { path: '/system', label: '系统', nav: true, group: 'global', element: <SystemPage /> },
-
-  /* ── 当前仓库 ──────────────────────────────────────────────────────────── */
-  { path: '/repos/:repo', label: '工作台', nav: true, group: 'repo', element: <RepoWorkspacePage /> },
-  { path: '/repos/:repo/issues', label: 'Issue 中心', nav: true, group: 'repo', element: <RepoIssuesPage /> },
+  /* ── 当前项目 ──────────────────────────────────────────────────────────── */
+  // 旧书签 `/repos/<repo>`（原「工作台」页）落到同一个 Issue 队列：那一页已按 `FR-7.1` 退役
+  { path: '/repos/:repo', label: 'Issue', nav: false, group: 'repo', element: <RepoIssuesPage /> },
+  { path: '/repos/:repo/issues', label: 'Issue', nav: true, group: 'repo', element: <RepoIssuesPage /> },
   {
     path: '/repos/:repo/issues/:kind/:number',
-    label: 'Issue 详情',
+    label: 'Issue 会话',
     nav: false,
     group: 'repo',
     element: <IssueDetailPage />,
   },
-  { path: '/repos/:repo/runs', label: '运行', nav: true, group: 'repo', element: <RepoRunsPage /> },
-  { path: '/repos/:repo/runs/:id', label: '运行详情', nav: false, group: 'repo', element: <TaskDetailPage /> },
   { path: '/repos/:repo/settings', label: '设置', nav: true, group: 'repo', element: <RepoSettingsPage /> },
   {
     path: '/repos/:repo/settings/:section',
@@ -79,6 +82,9 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     element: <RepoSettingsPage />,
   },
   { path: '/repos/:repo/skills', label: '技能', nav: true, group: 'repo', element: <RepoSkillsPage /> },
+  // 证据页：从会话流的 `taskId` / 写回行点进来
+  { path: '/repos/:repo/runs', label: '运行', nav: false, group: 'repo', element: <RepoRunsPage /> },
+  { path: '/repos/:repo/runs/:id', label: '运行详情', nav: false, group: 'repo', element: <TaskDetailPage /> },
 
   /* ── 旧路径（302 重定向，见 routes/legacy.tsx） ──────────────────────────── */
   { path: '/tasks', label: '任务（旧链接）', nav: false, group: 'legacy', element: <LegacyTaskListRedirect /> },
@@ -93,15 +99,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   },
 ];
 
-/**
- * 旧的 `NAV_ITEMS`（= 全局导航）。
- *
- * 保留是为了不破坏 `index.ts` 的对外导出与既有引用；**新代码请用** `layout/nav.ts` 的
- * `GLOBAL_NAV` / `REPO_NAV`（仓库那一组要按当前 `:repo` 拼路径，静态表拼不出来）。
- */
-export const NAV_ITEMS = GLOBAL_NAV.map((item) => ({ path: item.path, label: item.label }));
-
-/** 左栏「当前仓库」分组的键（供测试断言导航与路由表一致）。 */
+/** 项目级导航的键（供测试断言侧栏「项目」组与路由表一致；顺序 = 侧栏顺序）。 */
 export const REPO_NAV_KEYS = REPO_NAV.map((item) => item.key);
 
 export function AppRoutes() {

@@ -1,91 +1,47 @@
-import { cva, type VariantProps } from 'class-variance-authority';
-import type { HTMLAttributes } from 'react';
-import { cn } from '../../lib/utils.ts';
-import { TONE_BADGE, TONE_DOT, statusTone, type Tone } from './status.ts';
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "cn"
+import { Slot } from "radix-ui"
 
-/**
- * 状态徽章 + 状态点。颜色**只来自** `ui/status.ts` 的映射表（页面不得自造颜色）。
- *
- * 旧变体名（`success` / `warning` / `danger` / `muted` / `outline` / `secondary` / `default`）
- * 全部保留：页面里已经用了上百处，改名收益为零，语义映射到新的 tone 即可。
- */
 const badgeVariants = cva(
-  'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
+  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3",
   {
     variants: {
       variant: {
-        /* 语义变体（新代码用这些）：一律「低饱和底 + 同色系文字」，小面积，不整行染色 */
-        neutral: TONE_BADGE.neutral,
-        success: TONE_BADGE.success,
-        warn: TONE_BADGE.warn,
-        danger: TONE_BADGE.danger,
-        info: TONE_BADGE.info,
-        brand: TONE_BADGE.brand,
-        /* 兼容旧名（`default` 不再是实心品牌色，改为青色低饱和底） */
-        warning: TONE_BADGE.warn,
-        muted: TONE_BADGE.neutral,
-        default: TONE_BADGE.brand,
-        secondary: 'bg-muted text-muted-foreground',
-        outline: 'border border-border text-muted-foreground',
+        default: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
+        secondary:
+          "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
+        destructive:
+          "bg-destructive text-white focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40 [a&]:hover:bg-destructive/90",
+        outline:
+          "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+        ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 [a&]:hover:underline",
       },
     },
-    defaultVariants: { variant: 'neutral' },
-  },
-);
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
 
-export type BadgeProps = HTMLAttributes<HTMLSpanElement> &
-  VariantProps<typeof badgeVariants> & {
-    /** tone 优先于 variant（新代码只传 tone）。 */
-    tone?: Tone;
-    /** 前面加一个 6px 状态点（读屏时点本身 aria-hidden，语义由文字承担）。 */
-    dot?: boolean;
-  };
-
-export function Badge({ className, variant, tone, dot = false, children, ...props }: BadgeProps) {
-  return (
-    <span className={cn(badgeVariants({ variant }), tone === undefined ? undefined : toneClass(tone), className)} {...props}>
-      {dot ? <StatusDot tone={tone ?? 'neutral'} /> : null}
-      {children}
-    </span>
-  );
-}
-
-/** tone → 徽章类名（`Badge` 的 `tone` 走这里，避免再维护一套变体名）。 */
-function toneClass(tone: Tone): string {
-  return TONE_BADGE[tone];
-}
-
-/** 状态点（6px 圆点）。`label` 给出读屏文案；不给则纯装饰。 */
-export function StatusDot({
-  tone = 'neutral',
-  label,
+function Badge({
   className,
-  pulse = false,
-}: {
-  tone?: Tone;
-  label?: string;
-  className?: string;
-  /** 运行中：外圈轻微呼吸（reduced-motion 下自动静止）。 */
-  pulse?: boolean;
-}) {
+  variant = "default",
+  asChild = false,
+  ...props
+}: React.ComponentProps<"span"> &
+  VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot.Root : "span"
+
   return (
-    <span
-      aria-hidden={label === undefined ? true : undefined}
-      {...(label === undefined ? {} : { role: 'img', 'aria-label': label })}
-      data-tone={tone}
-      className={cn(
-        'inline-block size-1.5 shrink-0 rounded-full',
-        TONE_DOT[tone],
-        pulse && 'animate-pulse',
-        className,
-      )}
+    <Comp
+      data-slot="badge"
+      data-variant={variant}
+      className={cn(badgeVariants({ variant }), className)}
+      {...props}
     />
-  );
+  )
 }
 
-/** 任务/动作状态 → 徽章 variant（**唯一映射处**，页面不要各写 switch）。 */
-export function statusVariant(status: string): NonNullable<BadgeProps['variant']> {
-  return statusTone(status);
-}
-
-export { badgeVariants };
+export { Badge, badgeVariants }

@@ -13,7 +13,9 @@
 import { useState } from 'react';
 import { DEFAULT_TRIGGER_ALIASES } from '../../../../../packages/contract/src/index.ts';
 import { Alert, AlertDescription } from '../ui/alert.tsx';
-import { Badge } from '../ui/badge.tsx';
+import { FieldDescription, FieldGroup } from '../ui/field.tsx';
+import { StatusBadge } from '../ui/status-badge.tsx';
+import { TONE_BORDER } from '../ui/status.ts';
 import { cn } from '../../lib/utils.ts';
 import { ChipEditor, TextAreaField } from './form.tsx';
 import type { SettingsSectionProps } from './section-props.ts';
@@ -57,7 +59,11 @@ export function TriggerAdvanced({ state }: SettingsSectionProps) {
       </summary>
 
       <div className="flex flex-col gap-3 border-t border-border px-2.5 py-2">
-        <div className="flex flex-col gap-2">
+        <FieldGroup className="gap-2">
+          <FieldDescription>
+            别名是「谁能 @ 到这个机器人」的唯一开关面：`@` 后面的名字命中任一别名才算叫人。
+            代价：别名越短越容易被人无意命中（`@bot` 这种），写多了还会让评论里的普通提及变成任务。
+          </FieldDescription>
           <ChipEditor
             id="triggers-aliases"
             label="额外别名（aliases，1–8 个）"
@@ -93,7 +99,7 @@ export function TriggerAdvanced({ state }: SettingsSectionProps) {
               部署默认：{DEFAULT_TRIGGER_ALIASES.map((alias) => `@${alias}`).join(' / ')}
             </p>
           </div>
-        </div>
+        </FieldGroup>
 
         <div className="flex flex-col gap-2" data-testid="triggers-preview">
           <TextAreaField
@@ -127,9 +133,9 @@ function PreviewResult({ body, triggers }: { body: string; triggers: SettingsSec
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border bg-card px-2.5 py-2" aria-live="polite">
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <Badge tone={yes ? 'success' : 'neutral'} dot data-testid="trigger-preview-verdict">
+        <StatusBadge tone={yes ? 'success' : 'neutral'} dot data-testid="trigger-preview-verdict">
           {yes ? '会触发' : '不触发'}
-        </Badge>
+        </StatusBadge>
         <span className="min-w-0 text-xs leading-relaxed text-foreground" data-testid="trigger-preview-reason">
           {preview.reason}
         </span>
@@ -144,7 +150,7 @@ function PreviewResult({ body, triggers }: { body: string; triggers: SettingsSec
 
         <dt className="text-2xs text-faint">解析结果</dt>
         <dd className="flex min-w-0 flex-wrap items-center gap-1" data-testid="trigger-preview-kind">
-          <Badge tone={parse.kind === 'none' ? 'neutral' : 'info'}>{KIND_LABEL[parse.kind] ?? parse.kind}</Badge>
+          <StatusBadge tone={parse.kind === 'none' ? 'neutral' : 'info'}>{KIND_LABEL[parse.kind] ?? parse.kind}</StatusBadge>
           {parse.alias === null ? null : <span className="font-mono text-2xs text-muted-foreground">{`@${parse.alias}`}</span>}
         </dd>
 
@@ -155,7 +161,7 @@ function PreviewResult({ body, triggers }: { body: string; triggers: SettingsSec
           （没有代码区：正文里的 @ 全部参与判定）
         </p>
       ) : (
-        <Alert tone="warn" role="status">
+        <Alert role="status" className={cn('bg-card', TONE_BORDER.warn)}>
           <AlertDescription>
             被代码区蒙版挡住的片段（不算叫人；围栏块与行内代码里的 @ 永远不触发）：
           </AlertDescription>

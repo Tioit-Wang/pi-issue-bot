@@ -37,12 +37,25 @@ function systemDark(): boolean {
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
-/** 把当前模式写到 `<html data-theme>`（`system` 时删掉属性，交回媒体查询）。 */
+/**
+ * 把当前模式写到 `<html>`：`data-theme` 给本项目的令牌层，`class="dark"` 给 shadcn 官方组件。
+ *
+ * 为什么两个都要写：官方组件的深色修正走 Tailwind 的 `dark:` 变体，而 `dark:` 在本底座里被
+ * 定义成 `.dark` 祖先（`index.css` 的 `@custom-variant dark (&:is(.dark *))`）。只写
+ * `data-theme` 的话，36 个官方组件里所有 `dark:` 类（输入框底、页签激活态、开关轨道…）
+ * 在深色下全部失效，而本项目自己的令牌（`[data-theme='dark']` 选择器）却生效 ——
+ * 结果是「一半深色」。所以两个通道必须一起翻。
+ *
+ * `system` 模式不写 `data-theme`（交回 `prefers-color-scheme` 媒体查询），但仍然按解析结果
+ * 翻 `.dark`：`dark:` 变体没有「跟随系统」这条通道。
+ */
 function apply(next: ThemeMode): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   if (next === 'system') root.removeAttribute('data-theme');
   else root.setAttribute('data-theme', next);
+  const dark = next === 'system' ? systemDark() : next === 'dark';
+  root.classList.toggle('dark', dark);
 }
 
 function emit(): void {
@@ -74,6 +87,9 @@ function subscribe(listener: () => void): () => void {
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const onChange = (): void => {
+      // 系统偏好变了：`system` 模式下要重新翻一次 `.dark`，否则只有本项目令牌跟着变，
+      // 官方组件的 `dark:` 类还停在旧值（同一屏两种深色）。
+      apply(mode);
       emit();
     };
     media.addEventListener('change', onChange);

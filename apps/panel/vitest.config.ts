@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig, mergeConfig } from 'vitest/config';
 import baseConfig from '../../vitest.config.ts';
 
@@ -10,6 +11,16 @@ import baseConfig from '../../vitest.config.ts';
 export default mergeConfig(
   baseConfig,
   defineConfig({
+    /*
+     * `@/*` 别名：面板源码（含 shadcn 官方组件）用 `@/components/ui/x.tsx` 这样的路径，
+     * vite.config.ts 里已给 bundler 配了同一份别名；测试走 vitest 自己的解析，
+     * 不在这里配一次，组件测试会因为找不到 `@/...` 直接炸（不是断言失败，是解析失败）。
+     */
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
+    },
     test: {
       name: '@pi-issue-bot/panel',
       environment: 'jsdom',

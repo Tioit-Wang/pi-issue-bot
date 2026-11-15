@@ -1,48 +1,98 @@
-import { useEffect, useState } from 'react';
-import { Outlet } from 'react-router';
-import { PanelLeft } from 'lucide-react';
+import { useEffect } from 'react';
+import { Outlet, useLocation, useNavigate } from 'react-router';
+import { Search } from 'lucide-react';
+import { Breadcrumb } from '../components/Breadcrumb.tsx';
 import { CommandPalette, openCommandPalette } from '../components/CommandPalette.tsx';
-import { StatusDot } from '../components/ui/badge.tsx';
-import { Toaster } from '../components/ui/toast.tsx';
+import { Button } from '../components/ui/button.tsx';
+import { Kbd } from '../components/ui/kbd.tsx';
+import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../components/ui/sidebar.tsx';
+import { Toaster } from '../components/ui/sonner.tsx';
 import { useSystem } from '../lib/queries.ts';
+import { useRepoRoute } from '../lib/repo-route.ts';
 import { cn } from '../lib/utils.ts';
+import { AppSidebar } from './AppSidebar.tsx';
+import { degradedStateOf } from './degraded.ts';
 import { DegradedBanner } from './DegradedBanner.tsx';
-import { Sidebar } from './Sidebar.tsx';
-import { ThemeToggle } from './ThemeToggle.tsx';
-import { useViewportMode } from './use-viewport.ts';
+import { crumbsFor, SYSTEM_PATH } from './nav.ts';
+import { StatusStrip } from './StatusStrip.tsx';
 
 /**
- * 面板外壳：顶栏 + 左栏 + 内容区（+ 三个全局浮层）。
+ * 面板外壳：**侧栏式 admin**（`FR-7.1` / `AC-26` 改写后的形状）。
  *
- * 三层职责划分（不要互相抢）：
- * 1. **顶栏**：全局的东西 —— 品牌、⌘K、系统状态点、主题切换、侧栏开合；
- * 2. **左栏**：去哪里 —— 仓库切换器 + 两组导航 + 底部连接状态；
- * 3. **内容区**：当前页面（`min-w-0` 防溢出；页面自己管 `PageHeader` / `Section`）。
+ * ```
+ * ┌───────────┬─────────────────────────────────────────┐
+ * │ 侧栏       │ 状态带（四个数字 + 降级 chip）· 搜索 ⌘K   │
+ * │ 仓库切换   ├─────────────────────────────────────────┤
+ * │ 项目       │ 降级横幅（只在真降级时占一行）             │
+ * │ 证据       ├─────────────────────────────────────────┤
+ * │ 全局       │ 面包屑                                   │
+ * │ 主题/折叠  │ <Outlet />  ← 内容区是唯一滚动容器        │
+ * └───────────┴─────────────────────────────────────────┘
+ * ```
  *
- * 全局浮层只有三个，都挂在这里（唯一挂载点）：
- * `<CommandPalette />`（⌘K）、`<Toaster />`（右下提示）、`<DegradedBanner />`（降级横幅）。
+ * 三个决定，都有代价：
  *
- * 响应式：≥1280 三栏可用；1024–1279 侧栏可折叠（顶栏按钮，带 `aria-expanded`）；
- * <1024 侧栏变抽屉（遮罩点击关闭，关闭时 `inert` 不进 Tab 序）。
+ * 1. **导航只有侧栏一处**。改造前是「顶栏 + 吸底 dock + 系统模态框」三层，
+ *    高频动作（处理某条卡住的 issue）反而要再点两次。现在项目 / 证据 / 全局三组
+ *    常驻左侧，`FR-7.2` 的「五个全局页的信息去处」仍按原文落在状态带、会话流与系统页。
+ * 2. **内容区是唯一滚动容器**（`overflow-y-auto`）。外壳高度锁在视口内
+ *    （`h-dvh overflow-hidden`），否则「整页不滚、只有编辑区滚」的设置页无处安放。
+ *    侧栏自己滚（`SidebarContent` 内部 `overflow-auto`），两个滚动区互不影响。
+ * 3. **面包屑由外壳画**（`shell-breadcrumb`），页面只画自己的 `h1`。
+ *    一个视图里只允许有一条「我在哪」。
+ *
+ * 全局浮层只有两个，都挂在这里（唯一挂载点）：`<CommandPalette />`（⌘K）与
+ * `<Toaster />`（右下提示）。「系统」不再是浮层 —— 它是 `/system` 路由。
+ *
+ * 快捷键（`aria-keyshortcuts` 已经写在对应按钮上）：
+ * - `⌘K` / `Ctrl+K`：命令面板（实现在 `CommandPalette` 自己身上，因为它要在关闭时也能开）；
+ * - `⌘.` / `Ctrl+.`：去系统页（导航，不是模态框）；
+ * - `[`：折叠 / 展开侧栏（与侧栏底部按钮同一个 `toggleSidebar`）。
  */
 export function AppLayout() {
-  const mode = useViewportMode();
-  const [userSidebarOpen, setUserSidebarOpen] = useState<boolean | null>(null);
+  return (
+    <SidebarProvider className="h-dvh min-h-0 w-full overflow-hidden">
+      <Shell />
+    </SidebarProvider>
+  );
+}
 
-  // 宽屏恒开；中屏默认开（可折叠）；窄屏默认关（抽屉）
-  const sidebarOpen = mode === 'wide' ? true : (userSidebarOpen ?? mode === 'medium');
-  const toggleVisible = mode !== 'wide';
+function Shell() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const { repo } = useRepoRoute();
+  const { toggleSidebar } = useSidebar();
+  const { data: system, isError } = useSystem();
+  const degradation = degradedStateOf(system, isError);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      // `⌘.` / `Ctrl+.`：系统是**页面**，所以这里是跳转而不是开浮层
+      if ((event.metaKey || event.ctrlKey) && event.key === '.') {
+        event.preventDefault();
+        void navigate(SYSTEM_PATH);
+        return;
+      }
+      // `[`：折叠 / 展开侧栏。输入框里按 `[` 是打字，不是快捷键
+      if (event.key !== '[' || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return;
+      }
+      event.preventDefault();
+      toggleSidebar();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [navigate, toggleSidebar]);
 
   return (
-    /*
-  高度锁在视口内：外壳不滚，`main` 自己滚。
-  为什么改（原来是 `min-h-screen` + 整页滚动）：事件绑定设置页要求「整页无滚动条、
-  只有提示词编辑区内部滚动」，这只有当**外壳高度确定**时才能用 `h-full + min-h-0`
-  把高度一路传给编辑区。副作用是其它页面行为不变——它们本来就在 `main` 里滚。
-*/
-<div className="flex h-dvh overflow-hidden bg-background text-foreground">
-  {/* 键盘用户第一站：跳过导航直达主内容 */}
-  <a
+    <>
+      {/* 键盘用户第一站：跳过侧栏直达主内容 */}
+      <a
         href="#main-content"
         className={cn(
           'sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-2 focus-visible:left-2 focus-visible:z-50',
@@ -53,162 +103,54 @@ export function AppLayout() {
         跳到主内容
       </a>
 
-      {mode === 'narrow' && sidebarOpen ? (
-        <button
-          type="button"
-          aria-label="关闭侧栏"
-          tabIndex={-1}
-          onClick={() => {
-            setUserSidebarOpen(false);
-          }}
-          className="animate-fade-in fixed inset-0 z-20 cursor-default bg-foreground/25"
-        />
-      ) : null}
+      <AppSidebar />
 
-      <Sidebar
-        mode={mode}
-        open={sidebarOpen}
-        onClose={() => {
-          setUserSidebarOpen(false);
-        }}
-      />
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur">
-          {toggleVisible ? (
-            <button
-              type="button"
-              aria-expanded={sidebarOpen}
-              aria-controls="app-sidebar"
-              aria-label={sidebarOpen ? '收起侧栏' : '展开侧栏'}
-              data-testid="sidebar-toggle"
-              onClick={() => {
-                setUserSidebarOpen(!sidebarOpen);
-              }}
-              className={cn(
-                'grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground',
-                'transition-colors duration-[120ms] ease-out-quint hover:bg-muted hover:text-foreground',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-              )}
-            >
-              <PanelLeft aria-hidden className="size-4" strokeWidth={1.75} />
-            </button>
-          ) : null}
-
-          <div className="flex min-w-0 items-baseline gap-2">
-            <span className="text-sm font-semibold tracking-tight whitespace-nowrap">pi-issue-bot</span>
+      {/*
+        `SidebarInset` 本身就是 `<main>`：再套一层 `<main>` 会是嵌套 landmark。
+        所以它承担「主内容 + 跳过链接目标」，里面再分固定行与滚动区。
+      */}
+      <SidebarInset
+        id="main-content"
+        tabIndex={-1}
+        data-testid="shell-main"
+        className="flex h-dvh min-w-0 flex-1 flex-col overflow-hidden"
+      >
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-background px-2">
+          <SidebarTrigger className="md:hidden" aria-label="打开侧栏" data-testid="sidebar-mobile-trigger" />
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <StatusStrip repo={repo} state={degradation} />
           </div>
-
-          <div className="ml-auto flex min-w-0 items-center gap-1.5">
-            <button
-              type="button"
-              onClick={openCommandPalette}
-              aria-keyshortcuts="Meta+K Control+K"
-              data-testid="command-trigger"
-              className={cn(
-                'hidden h-7 items-center gap-2 rounded-md border border-border bg-card px-2 text-xs text-muted-foreground',
-                'transition-[background-color,border-color,color] duration-[120ms] ease-out-quint',
-                'hover:border-border-strong hover:text-foreground',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand md:flex',
-              )}
-            >
-              <span>搜索页面 / 仓库…</span>
-              <kbd className="rounded-sm border border-border px-1 text-2xs text-faint">⌘K</kbd>
-            </button>
-
-            <GlobalStatus />
-            <ThemeToggle />
-          </div>
-        </header>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={openCommandPalette}
+            aria-keyshortcuts="Meta+K Control+K"
+            data-testid="command-trigger"
+            className="hidden shrink-0 gap-2 text-xs font-normal text-muted-foreground md:inline-flex"
+          >
+            <Search aria-hidden className="size-3.5" strokeWidth={1.75} />
+            <span>搜索页面 / 仓库…</span>
+            <Kbd className="h-4 text-2xs">⌘K</Kbd>
+          </Button>
+        </div>
 
         <DegradedBanner />
 
         {/*
-          唯一滚动容器：`flex-1 min-h-0 overflow-y-auto`。
-          页面若想「自己不滚、内部某块滚」（事件绑定设置页），就用 `h-full min-h-0` 接住这个高度。
+          唯一滚动容器。`flex flex-col` 而不是光 `block`：Issue 页与设置页的根节点写的
+          是 `flex-1`（它们自己内部还要再分几块滚动区），`flex-1` 只在 flex 父级里生效。
         */}
-        <main
-          id="main-content"
-          tabIndex={-1}
-          className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-4 md:px-6 md:py-5"
-        >
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 md:px-4 md:py-4">
+          <div className="shrink-0 pb-2">
+            <Breadcrumb items={crumbsFor(pathname)} testId="shell-breadcrumb" />
+          </div>
           <Outlet />
-        </main>
-      </div>
+        </div>
+      </SidebarInset>
 
       <CommandPalette />
       <Toaster />
-    </div>
+    </>
   );
-}
-
-/**
- * 全局状态点：一眼回答"现在有没有事需要我处理"。
- *
- * 优先级：离线 > 熔断暂停 > host 不可达 > 降级 > 正常。
- * 只显示**一个**点：状态点一多就没人看了；细节在总览与降级横幅里。
- *
- * 文案只用**状态词**（`429 熔断中` / `降级运行` / `pi-host 不可达`），
- * 不写"刷新中"这类瞬时动词 —— 顶栏描述的是"系统此刻处于什么状态"，
- * 而"正在请求"由刷新按钮的 spinner 承担，两件事不要混在一处。
- * 有异常时（warn / danger）整块升级成一行 pill，颜色只在异常时出现。
- */
-function GlobalStatus() {
-  const { data, isError } = useSystem();
-  const online = useOnline();
-
-  const paused = data !== undefined && data.flags.some((flag) => flag.key === 'rate_limit_pause');
-  const hostDown = data?.host.status === 'down';
-  const degraded = data?.doctor.status === 'fail' || data?.host.status === 'degraded' || isError;
-
-  const state: { tone: 'success' | 'warn' | 'danger' | 'neutral'; label: string } = !online
-    ? { tone: 'neutral', label: '离线' }
-    : paused
-      ? { tone: 'warn', label: '429 熔断中' }
-      : hostDown
-        ? { tone: 'danger', label: 'pi-host 不可达' }
-        : degraded
-          ? { tone: 'warn', label: '降级运行' }
-          : { tone: 'success', label: '正常' };
-
-  const pill = state.tone === 'warn' || state.tone === 'danger';
-
-  return (
-    <span
-      data-testid="global-status"
-      data-state={state.tone}
-      title={`系统状态：${state.label}`}
-      className={cn(
-        'flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-2xs',
-        pill ? 'bg-card' : 'text-muted-foreground',
-        state.tone === 'warn' && 'border border-border text-warn-fg',
-        state.tone === 'danger' && 'border border-border text-danger-fg',
-      )}
-    >
-      <StatusDot tone={state.tone} pulse={state.tone === 'warn'} />
-      <span aria-hidden className="hidden whitespace-nowrap sm:inline">
-        {state.label}
-      </span>
-      <span className="sr-only">{`系统状态：${state.label}`}</span>
-    </span>
-  );
-}
-
-/** 浏览器在线状态（`navigator.onLine` + online/offline 事件）。 */
-function useOnline(): boolean {
-  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
-
-  useEffect(() => {
-    const update = (): void => {
-      setOnline(typeof navigator === 'undefined' ? true : navigator.onLine);
-    };
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    return () => {
-      window.removeEventListener('online', update);
-      window.removeEventListener('offline', update);
-    };
-  }, []);
-
-  return online;
 }

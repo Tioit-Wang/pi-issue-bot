@@ -63,8 +63,10 @@ export const queryKeys = {
   skillVersions: (id: string) => ['skills', 'versions', id] as const,
   /** 技能目录里每个文件的全文（模态框编辑器用；写后随 `'skills'` 前缀一起失效）。 */
   skillFiles: (id: string) => ['skills', 'files', id] as const,
+  /** 全局设置两块（`AC-32`）：供应商清单与四档角色单价，各自一个 key。 */
+  modelProviders: () => ['settings', 'providers'] as const,
+  modelRoles: () => ['settings', 'models'] as const,
 };
-
 /** 面板的 QueryClient 默认值：失败只重试一次（内网接口，重试多了只会拖慢首屏）。 */
 export function createQueryClient(): QueryClient {
   return new QueryClient({
@@ -137,6 +139,29 @@ export function useSystem() {
   return useQuery({
     queryKey: queryKeys.system(),
     queryFn: () => api.system(),
+    refetchInterval: REFETCH_INTERVAL.list,
+  });
+}
+
+/**
+ * 供应商清单（`AC-32`）。轮询间隔用列表档：连通性状态由后端测定，面板不自己探测。
+ *
+ * 为什么不做 `enabled: false` / 懒加载：模态框一打开就要同时给出两块（供应商 + 四档单价），
+ * 分两次懒加载只会让「打开后先空一下再出现」。
+ */
+export function useModelProviders() {
+  return useQuery({
+    queryKey: queryKeys.modelProviders(),
+    queryFn: () => api.modelProviders(),
+    refetchInterval: REFETCH_INTERVAL.list,
+  });
+}
+
+/** 四档模型角色（`agent` / `format` / `classify` / `fallback`）各一行的单价。 */
+export function useModelRoles() {
+  return useQuery({
+    queryKey: queryKeys.modelRoles(),
+    queryFn: () => api.modelRoles(),
     refetchInterval: REFETCH_INTERVAL.list,
   });
 }

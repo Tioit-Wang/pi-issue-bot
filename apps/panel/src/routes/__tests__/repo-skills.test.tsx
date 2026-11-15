@@ -18,7 +18,8 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHandlers } from '../../mocks/handlers/index.ts';
 import { resetSkillsMock } from '../../mocks/handlers/skills.ts';
-import { Toaster, clearToasts } from '../../components/ui/toast.tsx';
+import { toast } from 'sonner';
+import { Toaster } from '../../components/ui/sonner.tsx';
 import { renderWithProviders } from '../../../test/render.tsx';
 import { RepoSkillsPage } from '../repo-skills.tsx';
 
@@ -46,7 +47,7 @@ beforeEach(() => {
   requests.length = 0;
   // mock 的 `Map` 是模块级状态，`resetHandlers()` 不会复位它
   resetSkillsMock();
-  clearToasts();
+  toast.dismiss();
 });
 
 /** 路由里的仓库是单段编码 `owner__name`；`ROUTE_PATTERN` 是路由表里的写法（含 `:repo`）。 */

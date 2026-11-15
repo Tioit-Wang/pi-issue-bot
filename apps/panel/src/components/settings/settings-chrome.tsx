@@ -11,7 +11,8 @@ import { useRef, type KeyboardEvent, type MouseEvent } from 'react';
 import { Link } from 'react-router';
 import type { RepoSettings } from '../../../../../packages/contract/src/index.ts';
 import type { SettingsSectionKey } from '../../layout/nav.ts';
-import { StatusDot } from '../ui/badge.tsx';
+import { Rail, railCount, railRowClass } from '../Rail.tsx';
+import { StatusDot } from '../ui/status-badge.tsx';
 import { cn } from '../../lib/utils.ts';
 import { formatCount, formatRelativeTime } from '../../lib/format.ts';
 
@@ -151,15 +152,21 @@ function StateItem({
   );
 }
 
-/* ── 左侧二级导航 ─────────────────────────────────────────────────────────── */
+/* ── 左侧二级导航（`FR-7.4` 的三左栏之一） ───────────────────────────────── */
 
 export type SettingsNavItem = { key: SettingsSectionKey; label: string; summary: string; href: string };
 
 /**
- * 二级导航：宽屏竖排（当前项 = 品牌左条 + 8% 底），窄屏变横向滚动条。
+ * 二级导航：**与 Issue 队列、技能列表同宽同画法**（`FR-7.4` / `AC-31`）。
+ *
+ * 宽度 280px（窄屏 256，`w-rail` 自带断点）、头部 32px「小标签 + 计数」（`rail-head`）、
+ * 行高 28（`rail-row`）、选中态「左侧强调条 + 浅强调底」（`rail-row-selected`）——
+ * 四个数值全部来自 `index.css` 的 `--rail-*` 令牌（本次重构后 `--rail-width` = 17.5rem），
+ * 这一页不再自己写一份。左栏自己是 `bg-card` + `border-r`，所以这里不再补一圈边框，
+ * 否则「企业级 admin 的左导航」会变成一张浮在页面里的卡片。
  *
  * 为什么是 `<nav>` + 链接而不是 `Tabs`：每一项是**地址**（能贴给别人、刷新不丢），
- * `Tabs` 是同一页面里的视图切换。键盘用方向键在项间移动（与左栏同一套读法），
+ * `Tabs` 是同一页面里的视图切换。键盘用方向键在项间移动（与 Issue 队列同一套读法），
  * 有未保存改动时由调用方拦下导航。
  */
 export function SettingsNav({
@@ -186,16 +193,14 @@ export function SettingsNav({
   };
 
   return (
-    <div
-      onKeyDown={move}
-      className={cn(
-        'min-w-0',
-        // 窄屏：一条横向滚动条，不换行、不裁切内容（且不产生整页横向滚条）
-        '-mx-1 flex gap-1 overflow-x-auto px-1 pb-1',
-        'lg:mx-0 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:px-0 lg:pb-0',
-      )}
-    >
-      <nav aria-label="设置分区" className="flex min-w-0 gap-1 lg:w-full lg:flex-col lg:gap-0.5">
+    <div onKeyDown={move} className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <Rail
+        label="设置分区"
+        count={railCount(items.length, '分区')}
+        ariaLabel="设置分区"
+        testId="settings-rail"
+        className="overflow-hidden"
+      >
         {items.map((item, index) => {
           const active = item.key === current;
           return (
@@ -211,16 +216,12 @@ export function SettingsNav({
               onClick={(event) => {
                 onNavigate(event, item.key);
               }}
-              className={cn(
-                'group min-w-40 shrink-0 rounded-md px-2 py-1.5 lg:min-w-0 lg:shrink',
-                'transition-[background-color,color,border-color] duration-[120ms] ease-out-quint',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
-                active
-                  ? 'bg-brand-soft lg:border-l-2 lg:border-brand lg:pl-[6px]'
-                  : 'hover:bg-muted lg:border-l-2 lg:border-transparent lg:pl-[6px]',
+              className={railRowClass(
+                active,
+                'flex-col items-stretch justify-center gap-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
               )}
             >
-              <span className="flex items-center gap-1.5">
+              <span className="flex min-w-0 items-center gap-1.5">
                 <span className={cn('text-sm font-medium', active ? 'text-brand' : 'text-foreground')}>{item.label}</span>
                 {active && dirty ? (
                   <span className="ml-auto inline-flex items-center gap-1 text-2xs text-warn-fg" title="有未保存改动">
@@ -229,13 +230,13 @@ export function SettingsNav({
                   </span>
                 ) : null}
               </span>
-              <span className="mt-0.5 block truncate text-2xs text-faint" title={item.summary} aria-hidden="true">
+              <span className="block truncate text-2xs text-faint" title={item.summary} aria-hidden="true">
                 {item.summary}
               </span>
             </Link>
           );
         })}
-      </nav>
+      </Rail>
     </div>
   );
 }

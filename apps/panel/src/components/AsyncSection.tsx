@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ApiError } from '../lib/api.ts';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert.tsx';
 import { Button } from './ui/button.tsx';
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from './ui/empty.tsx';
 import { Skeleton } from './ui/skeleton.tsx';
 import { cn } from '../lib/utils.ts';
 
@@ -12,10 +13,10 @@ import { cn } from '../lib/utils.ts';
  * 四态就必然各页不一致（有的显示骨架、有的显示空白）。这里把四态收敛成一处，
  * 页面只描述「有数据时长什么样」。
  *
- * 五态的呈现规则（D1 设计系统）：
- * - **加载**：与最终布局同形的骨架（`skeletonRows` 行，行高 32px），骨架不跳高；
- * - **错误**：一句人话（`describeError`）+ 重试按钮 + 折叠的技术细节；
- * - **空**：一句事实 + 一个可行动作（`emptyAction`）；
+ * 五态的呈现规则（用官方组件表达，不手写第二套）：
+ * - **加载**：`Skeleton`（与最终布局同形的 `skeletonRows` 行，骨架不跳高）；
+ * - **错误**：`Alert variant="destructive"` —— 一句人话（`describeError`）+ 重试按钮 + 折叠的技术细节；
+ * - **空**：`Empty`（`EmptyHeader` / `EmptyTitle` / `EmptyDescription`）+ 一个可行动作（`emptyAction`）；
  * - **有数据**：`children`；
  * - **离线**：`navigator.onLine === false` 或请求本身是网络错误 → 顶部 pill
  *   「离线 · 数据可能过期」，并在给了 `onRetry` 时每 5s 自动重试一次。
@@ -206,16 +207,21 @@ export function AsyncSection({
     return (
       <div className="flex min-w-0 flex-col gap-2">
         {pill}
-        <div
+        <Empty
           data-testid={testId === undefined ? 'empty' : `${testId}-empty`}
-          className="flex flex-col items-start gap-1.5 rounded-lg border border-dashed border-border px-4 py-8"
+          // 空态靠左对齐：这一栏里通常还有「清除筛选」这类动作，居中会把动作推离文字
+          className="items-start rounded-lg border border-dashed border-border py-8 text-left"
         >
-          <p className="text-sm text-foreground">{emptyText}</p>
-          {emptyHint === undefined ? null : (
-            <p className="text-xs leading-relaxed text-muted-foreground">{emptyHint}</p>
+          <EmptyHeader className="max-w-none items-start text-left">
+            <EmptyTitle className="text-sm font-medium">{emptyText}</EmptyTitle>
+            {emptyHint === undefined ? null : (
+              <EmptyDescription className="text-xs leading-relaxed">{emptyHint}</EmptyDescription>
+            )}
+          </EmptyHeader>
+          {emptyAction === undefined ? null : (
+            <EmptyContent className="max-w-none items-start">{emptyAction}</EmptyContent>
           )}
-          {emptyAction}
-        </div>
+        </Empty>
       </div>
     );
   }

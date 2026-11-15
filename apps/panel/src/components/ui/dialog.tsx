@@ -1,267 +1,156 @@
-import { useEffect, useId, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
-import { cn } from '../../lib/utils.ts';
+import * as React from "react"
+import { cn } from "cn"
+import { XIcon } from "lucide-react"
+import { Dialog as DialogPrimitive } from "radix-ui"
 
-/**
- * 对话框与右侧抽屉：**同一套焦点管理**，只是外壳不同。
- *
- * 为什么不用原生 `<dialog>` / `popover`：`showModal()` 在 jsdom 里不全、也无法精细控制
- * 入场动效；这里用 `createPortal` + 手写焦点陷阱，行为在两个环境里完全一致。
- *
- * 焦点约定（三件事，缺一都会让键盘用户卡住）：
- * 1. 打开时把焦点交给 `[data-autofocus]`，否则面板里第一个可聚焦元素；
- * 2. `Tab` / `Shift+Tab` 在面板内循环（首尾相接）；
- * 3. `Esc` 关闭，关闭后焦点**还给**打开它的那个元素。
- *
- * 其余：`aria-modal="true"` + `aria-labelledby/description`；背景点击关闭；
- * 打开时锁住 body 滚动。浮层是全站唯一允许用阴影的地方。
- */
-const FOCUSABLE = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
+import { Button } from "@/components/ui/button.tsx"
 
-type ShellProps = {
-  open: boolean;
-  onClose: () => void;
-  title: ReactNode;
-  /** 标题下的一句话说明（读屏也会读）。 */
-  description?: ReactNode;
-  children: ReactNode;
-  /** 底部动作条（通常是 取消 + 主操作）。 */
-  footer?: ReactNode;
-  /** `data-testid` 前缀：`${testId}-panel` / `-overlay`。 */
-  testId?: string;
-};
-
-/** 模态焦点管理：对话框、抽屉与命令面板共用（不各写一遍）。 */
-export function useModalFocus(open: boolean, onClose: () => void) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const restoreRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const panel = panelRef.current;
-    // 记住「来路」：打开前焦点在面板外的哪个元素上（关闭时还给它）。
-    // 面板内的元素不算来路（否则会还给自己，焦点就丢了）。
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && panel?.contains(active) !== true) {
-      restoreRef.current = active;
-    }
-    const preferred =
-      panel?.querySelector<HTMLElement>('[data-autofocus]') ?? panel?.querySelector<HTMLElement>(FOCUSABLE);
-    (preferred ?? panel)?.focus();
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      restoreRef.current?.focus();
-    };
-  }, [open]);
-
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
-    if (event.key === 'Escape') {
-      event.stopPropagation();
-      onClose();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const panel = panelRef.current;
-    if (panel === null) return;
-    const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-    if (items.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const first = items[0];
-    const last = items[items.length - 1];
-    if (first === undefined || last === undefined) return;
-    const active = document.activeElement;
-    if (event.shiftKey && (active === first || active === panel)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
-  return { panelRef, onKeyDown };
+function Dialog({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  return <DialogPrimitive.Root data-slot="dialog" {...props} />
 }
 
-export type DialogProps = ShellProps & {
-  size?: 'sm' | 'md' | 'lg';
-};
-
-/** 居中对话框（确认、表单、技术细节）。 */
-export function Dialog({
-  open,
-  onClose,
-  title,
-  description,
-  children,
-  footer,
-  size = 'md',
-  testId,
-}: DialogProps) {
-  const { panelRef, onKeyDown } = useModalFocus(open, onClose);
-  const titleId = useId();
-  const descriptionId = useId();
-  if (!open) return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      onKeyDown={onKeyDown}
-      data-testid={testId === undefined ? undefined : `${testId}-overlay`}
-    >
-      <button
-        type="button"
-        aria-label="关闭对话框"
-        tabIndex={-1}
-        onClick={onClose}
-        className="animate-fade-in absolute inset-0 cursor-default bg-foreground/25"
-      />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={description === undefined ? undefined : descriptionId}
-        tabIndex={-1}
-        data-testid={testId === undefined ? 'dialog' : `${testId}-panel`}
-        className={cn(
-          'animate-pop-in relative z-10 flex max-h-[85vh] w-full flex-col overflow-hidden rounded-xl',
-          'border border-border bg-card text-card-foreground shadow-overlay focus-visible:outline-none',
-          size === 'sm' && 'max-w-sm',
-          size === 'md' && 'max-w-lg',
-          size === 'lg' && 'max-w-3xl',
-        )}
-      >
-        <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-base font-semibold tracking-tight">
-              {title}
-            </h2>
-            {description === undefined ? null : (
-              <p id={descriptionId} className="mt-0.5 text-xs text-muted-foreground">
-                {description}
-              </p>
-            )}
-          </div>
-          <CloseButton onClose={onClose} />
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
-
-        {footer === undefined ? null : (
-          <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">
-            {footer}
-          </footer>
-        )}
-      </div>
-    </div>,
-    document.body,
-  );
+function DialogTrigger({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Trigger>) {
+  return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
 }
 
-export type SheetProps = ShellProps & {
-  /** 抽屉宽度档（右侧滑出）。 */
-  width?: 'sm' | 'md' | 'lg';
-};
-
-/** 右侧抽屉：用于「不离开当前页面的次级任务」（预览、筛选、事件详情）。 */
-export function Sheet({
-  open,
-  onClose,
-  title,
-  description,
-  children,
-  footer,
-  width = 'md',
-  testId,
-}: SheetProps) {
-  const { panelRef, onKeyDown } = useModalFocus(open, onClose);
-  const titleId = useId();
-  const descriptionId = useId();
-  if (!open) return null;
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex justify-end"
-      onKeyDown={onKeyDown}
-      data-testid={testId === undefined ? undefined : `${testId}-overlay`}
-    >
-      <button
-        type="button"
-        aria-label="关闭抽屉"
-        tabIndex={-1}
-        onClick={onClose}
-        className="animate-fade-in absolute inset-0 cursor-default bg-foreground/20"
-      />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={description === undefined ? undefined : descriptionId}
-        tabIndex={-1}
-        data-testid={testId === undefined ? 'sheet' : `${testId}-panel`}
-        className={cn(
-          'animate-slide-in-right relative z-10 flex h-full w-full flex-col border-l border-border bg-card',
-          'text-card-foreground shadow-overlay focus-visible:outline-none',
-          width === 'sm' && 'max-w-sm',
-          width === 'md' && 'max-w-md',
-          width === 'lg' && 'max-w-2xl',
-        )}
-      >
-        <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-base font-semibold tracking-tight">
-              {title}
-            </h2>
-            {description === undefined ? null : (
-              <p id={descriptionId} className="mt-0.5 text-xs text-muted-foreground">
-                {description}
-              </p>
-            )}
-          </div>
-          <CloseButton onClose={onClose} />
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">{children}</div>
-
-        {footer === undefined ? null : (
-          <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">
-            {footer}
-          </footer>
-        )}
-      </div>
-    </div>,
-    document.body,
-  );
+function DialogPortal({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Portal>) {
+  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
 }
 
-function CloseButton({ onClose }: { onClose: () => void }) {
+function DialogClose({
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Close>) {
+  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
+}
+
+function DialogOverlay({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
-    <button
-      type="button"
-      onClick={onClose}
-      aria-label="关闭"
+    <DialogPrimitive.Overlay
+      data-slot="dialog-overlay"
       className={cn(
-        'grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground',
-        'transition-colors duration-[120ms] ease-out-quint hover:bg-muted hover:text-foreground',
-        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+        "fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        className
       )}
+      {...props}
+    />
+  )
+}
+
+function DialogContent({
+  className,
+  children,
+  showCloseButton = true,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  showCloseButton?: boolean
+}) {
+  return (
+    <DialogPortal data-slot="dialog-portal">
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        data-slot="dialog-content"
+        className={cn(
+          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+          className
+        )}
+        {...props}
+      >
+        {children}
+        {showCloseButton && (
+          <DialogPrimitive.Close
+            data-slot="dialog-close"
+            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+          >
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </DialogPrimitive.Close>
+        )}
+      </DialogPrimitive.Content>
+    </DialogPortal>
+  )
+}
+
+function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="dialog-header"
+      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
+      {...props}
+    />
+  )
+}
+
+function DialogFooter({
+  className,
+  showCloseButton = false,
+  children,
+  ...props
+}: React.ComponentProps<"div"> & {
+  showCloseButton?: boolean
+}) {
+  return (
+    <div
+      data-slot="dialog-footer"
+      className={cn(
+        "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
+        className
+      )}
+      {...props}
     >
-      <span aria-hidden className="text-sm leading-none">
-        ✕
-      </span>
-    </button>
-  );
+      {children}
+      {showCloseButton && (
+        <DialogPrimitive.Close asChild>
+          <Button variant="outline">Close</Button>
+        </DialogPrimitive.Close>
+      )}
+    </div>
+  )
+}
+
+function DialogTitle({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Title>) {
+  return (
+    <DialogPrimitive.Title
+      data-slot="dialog-title"
+      className={cn("text-lg leading-none font-semibold", className)}
+      {...props}
+    />
+  )
+}
+
+function DialogDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Description>) {
+  return (
+    <DialogPrimitive.Description
+      data-slot="dialog-description"
+      className={cn("text-sm text-muted-foreground", className)}
+      {...props}
+    />
+  )
+}
+
+export {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogOverlay,
+  DialogPortal,
+  DialogTitle,
+  DialogTrigger,
 }

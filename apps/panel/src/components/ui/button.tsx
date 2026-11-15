@@ -1,98 +1,63 @@
-import { cva, type VariantProps } from 'class-variance-authority';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
-import { cn } from '../../lib/utils.ts';
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "cn"
+import { Slot } from "radix-ui"
 
-/**
- * 按钮（原语）：四个语义变体 × 三个高度档（28 / 30 / 32px）。
- *
- * - `primary`：**墨色实心**（底 `--primary` + 页面底色文字）——一屏只留给最重要的那一个动作；
- * - `secondary`：面 + hairline，最常见的「次要动作」；
- * - `ghost`：无底无边，工具条/行内动作；
- * - `danger`：破坏性动作（删除、强制重跑），必须二次确认。
- *
- * 青色 `--brand` **不是**按钮底色：它只留给当前选区与焦点环。
- *
- * 兼容层：页面里既有的 `default` / `outline` / `destructive` 继续可用，指向新变体，
- * 免得为了改个名字去动七个页面。
- *
- * 状态：`loading` 时内联 spinner + `aria-busy`，**宽度不变**（子节点保留占位，
- * 用 `invisible` 隐藏文字），所以按钮不会在提交时抖动；`disabled` 与 `loading` 都不可再点。
- */
 const buttonVariants = cva(
-  [
-    'relative inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md',
-    'font-medium select-none',
-    // 只过渡具体属性 + 令牌时长（禁止全属性过渡）
-    'transition-[background-color,border-color,color,opacity] duration-[var(--dur-fast)] ease-out-quint',
-    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-    'disabled:pointer-events-none disabled:opacity-50',
-    'aria-busy:cursor-progress',
-  ],
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        primary: 'bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active',
-        secondary:
-          'border border-border bg-card text-foreground hover:border-border-strong hover:bg-muted active:bg-muted',
-        ghost: 'bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
-        danger:
-          'bg-danger text-destructive-foreground hover:bg-danger/90 active:bg-danger/80',
-        /* 兼容旧名 */
-        default: 'bg-primary text-primary-foreground hover:bg-primary-hover active:bg-primary-active',
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
         outline:
-          'border border-border bg-card text-foreground hover:border-border-strong hover:bg-muted active:bg-muted',
-        destructive: 'bg-danger text-destructive-foreground hover:bg-danger/90 active:bg-danger/80',
+          "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost:
+          "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
+        link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        sm: 'h-[var(--control-sm)] px-2 text-xs',
-        md: 'h-[var(--control-md)] px-2.5 text-sm',
-        lg: 'h-[var(--control-lg)] px-3 text-sm',
-        /** 只放一个图标（正方形）。 */
-        icon: 'size-[var(--control-md)] p-0',
-        'icon-sm': 'size-[var(--control-sm)] p-0',
+        default: "h-9 px-4 py-2 has-[>svg]:px-3",
+        xs: "h-6 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
+        sm: "h-8 gap-1.5 rounded-md px-3 has-[>svg]:px-2.5",
+        lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
+        icon: "size-9",
+        "icon-xs": "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
+        "icon-sm": "size-8",
+        "icon-lg": "size-10",
       },
     },
-    defaultVariants: { variant: 'primary', size: 'md' },
-  },
-);
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
 
-export type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> &
-  VariantProps<typeof buttonVariants> & {
-    /** 提交中：显示内联 spinner，宽度不变，自动 `aria-busy` + 禁点。 */
-    loading?: boolean;
-    children?: ReactNode;
-  };
-
-export function Button({
+function Button({
   className,
-  variant,
-  size,
-  loading = false,
-  disabled = false,
-  type = 'button',
-  children,
+  variant = "default",
+  size = "default",
+  asChild = false,
   ...props
-}: ButtonProps) {
+}: React.ComponentProps<"button"> &
+  VariantProps<typeof buttonVariants> & {
+    asChild?: boolean
+  }) {
+  const Comp = asChild ? Slot.Root : "button"
+
   return (
-    <button
-      type={type}
-      className={cn(buttonVariants({ variant, size }), className)}
-      disabled={disabled || loading}
-      aria-busy={loading || undefined}
+    <Comp
+      data-slot="button"
+      data-variant={variant}
+      data-size={size}
+      className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-    >
-      <span className={cn('inline-flex items-center gap-2', loading && 'invisible')}>{children}</span>
-      {loading ? (
-        <span
-          aria-hidden="true"
-          data-testid="button-spinner"
-          className="absolute inset-0 flex items-center justify-center"
-        >
-          <span className="size-3.5 animate-spin-fast rounded-full border-[1.5px] border-current border-t-transparent" />
-        </span>
-      ) : null}
-    </button>
-  );
+    />
+  )
 }
 
-export { buttonVariants };
+export { Button, buttonVariants }

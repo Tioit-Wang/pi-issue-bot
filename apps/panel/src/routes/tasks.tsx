@@ -1,11 +1,15 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { RefreshCw } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { AsyncSection } from '../components/AsyncSection.tsx';
-import { StatusDot } from '../components/ui/badge.tsx';
+import { FilterSelect } from '../components/FilterSelect.tsx';
+import { Toolbar } from '../components/Toolbar.tsx';
 import { Button } from '../components/ui/button.tsx';
-import { Select } from '../components/ui/select.tsx';
+import { Spinner } from '../components/ui/spinner.tsx';
+import { StatusDot } from '../components/ui/status-badge.tsx';
 import { statusTone, TONE_TEXT } from '../components/ui/status.ts';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table.tsx';
 import { api } from '../lib/api.ts';
 import type { TaskListItem, TasksQuery } from '../lib/contract.ts';
 import { formatCount, formatDuration, formatTimeCell, formatUsd } from '../lib/format.ts';
@@ -17,9 +21,14 @@ import { PageShell } from './PageShell.tsx';
 /**
  * 运行列表（`/repos/:repo/runs`；数据源 `/api/tasks`，15s 轮询）。
  *
- * 这一页是**对象行**列表（不是数据表）：一行一次运行，读的顺序是
- * **状态点 → 命令 → 目标（repo#issue17）→ 耗时 / 成本 → 多久以前**，
- * 右侧整行可点进运行详情。`running` 的行状态点有轻微脉冲（reduced-motion 下自动静止）。
+ * 版式是企业级 admin 的**表格列表**：工具栏（筛选 + 动作用一条 hairline 与表体分开）
+ * → 表头 + 数据行 → 底部「加载更多」。为什么从「对象行」改成真表格：
+ * 这一页要横向比较的是同一组字段（状态 / 耗时 / 成本 / 时间），
+ * 表头给一次列名比每行重复一次标签更省，也让数字列能对齐成一条线。
+ *
+ * 工具栏里**没有搜索框、也没有视图切换**：契约 `tasksQuerySchema` 没有 `q`，
+ * 而运行列表只有「一行一次运行」这一种读法（明细在详情页），加一个假的视图开关
+ * 等于让同一份数据有两条读法却没有第二条 URL 语义。
  *
  * 三件事仍然是这一页的全部难点：
  *
@@ -35,6 +44,7 @@ import { PageShell } from './PageShell.tsx';
 /** 每页条数：契约默认 50（上限 200），这里显式传，免得服务端默认值变了页面跟着变。 */
 const PAGE_SIZE = 50;
 
+/* 每个下拉的第一项都是 `value: ''`（= 不筛选）：`FilterSelect` 把它渲染成「全部 X」。 */
 const STATUS_OPTIONS = [
   { value: '', label: '全部状态' },
   { value: 'queued', label: '排队中' },
@@ -126,6 +136,7 @@ export type TasksPageProps = {
 
 export function TasksPage({ repoLock }: TasksPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const filters = readFilters(searchParams);
   const repoFilter = repoLock ?? filters.repo;
 
@@ -165,7 +176,10 @@ export function TasksPage({ repoLock }: TasksPageProps = {}) {
   const repoOptions = useMemo(() => {
     const seen = new Set(items.map((item) => item.repo));
     if (repoFilter !== '') seen.add(repoFilter);
-    return [...seen].sort().map((value) => ({ value, label: value }));
+    return [
+      { value: '', label: '全部仓库' },
+      ...[...seen].sort().map((value) => ({ value, label: value })),
+    ];
   }, [items, repoFilter]);
 
   const setFilter = (key: FilterKey, value: string): void => {
@@ -194,168 +208,243 @@ export function TasksPage({ repoLock }: TasksPageProps = {}) {
       }`}
       actions={
         <div className="flex items-center gap-2">
-          {isFetching && !isLoading ? <span className="text-xs text-muted-foreground">刷新中…</span> : null}
+          {isFetching && !isLoading ? (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Spinner className="size-3" />
+              刷新中
+            </span>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              void refetch();
+            }}
+            data-testid="tasks-refresh"
+          >
+            <RefreshCw aria-hidden />
+            刷新
+          </Button>
           <Button variant="ghost" size="sm" disabled={!anyFilter} onClick={clearFilters} data-testid="tasks-clear">
             清除筛选
           </Button>
         </div>
       }
     >
-      <div className="flex flex-wrap items-center gap-2" data-testid="tasks-filters">
-        {repoLock === undefined ? (
-          <Select
-            aria-label="仓库筛选"
-            options={repoOptions}
-            placeholder="全部仓库"
-            value={filters.repo}
-            onChange={(event) => {
-              setFilter('repo', event.target.value);
-            }}
-          />
-        ) : null}
-        <Select
-          aria-label="状态筛选"
-          options={STATUS_OPTIONS}
-          placeholder={null}
-          value={filters.status}
-          onChange={(event) => {
-            setFilter('status', event.target.value);
-          }}
-        />
-        <Select
-          aria-label="失败分类筛选"
-          options={FAILURE_CLASS_OPTIONS}
-          placeholder={null}
-          value={filters.failureClass}
-          onChange={(event) => {
-            setFilter('failureClass', event.target.value);
-          }}
-        />
-        <Select
-          aria-label="命令类型筛选"
-          options={COMMAND_OPTIONS}
-          placeholder={null}
-          value={filters.command}
-          onChange={(event) => {
-            setFilter('command', event.target.value);
-          }}
-        />
-        <Select
-          aria-label="时间范围筛选"
-          options={RANGE_OPTIONS}
-          placeholder={null}
-          value={filters.range}
-          onChange={(event) => {
-            setFilter('range', event.target.value);
-          }}
-        />
-      </div>
-
-      <AsyncSection
-        isLoading={isLoading}
-        error={error}
-        testId="tasks"
-        isEmpty={items.length === 0}
-        emptyText="没有匹配的运行"
-        emptyHint={anyFilter ? '放宽条件或换个时间范围' : '在 issue 里 @ 机器人或发一条 /命令 就会出现'}
-        emptyAction={
-          anyFilter ? (
-            <Button className="mt-1" variant="secondary" size="sm" onClick={clearFilters} data-testid="tasks-empty-clear">
-              清除筛选
-            </Button>
-          ) : null
-        }
-        onRetry={() => {
-          void refetch();
-        }}
-        skeletonRows={8}
-      >
-        <div className="flex min-w-0 flex-col gap-3">
-          <ul className="flex min-w-0 flex-col rounded-lg border border-border bg-card px-1" data-testid="tasks-list">
-            {items.map((run) => (
-              <RunRow key={run.id} run={run} repoLock={repoLock} />
-            ))}
-          </ul>
-          <div className="flex items-center justify-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              data-testid="tasks-load-more"
-              disabled={hasNextPage !== true || isFetchingNextPage}
-              onClick={() => {
-                void fetchNextPage();
+      <div className="flex min-w-0 flex-col gap-3">
+        {/* 工具栏：五类筛选（全部落 URL，刷新不丢），动作在页面标题行 */}
+        <Toolbar
+          meta={anyFilter ? `已筛选 · 已显示 ${formatCount(items.length)} 条` : undefined}
+          className="border-0 pb-0"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5" data-testid="tasks-filters">
+            {repoLock === undefined ? (
+              <FilterSelect
+                label="仓库筛选"
+                options={repoOptions}
+                value={filters.repo}
+                onChange={(next) => {
+                  setFilter('repo', next);
+                }}
+              />
+            ) : null}
+            <FilterSelect
+              label="状态筛选"
+              options={STATUS_OPTIONS}
+              value={filters.status}
+              onChange={(next) => {
+                setFilter('status', next);
               }}
-            >
-              {hasNextPage === true
-                ? isFetchingNextPage
-                  ? '加载中…'
-                  : `加载更多（已显示 ${loadedText} 条）`
-                : `没有更多了（共 ${loadedText} 条）`}
-            </Button>
+            />
+            <FilterSelect
+              label="失败分类筛选"
+              options={FAILURE_CLASS_OPTIONS}
+              value={filters.failureClass}
+              onChange={(next) => {
+                setFilter('failureClass', next);
+              }}
+            />
+            <FilterSelect
+              label="命令类型筛选"
+              options={COMMAND_OPTIONS}
+              value={filters.command}
+              onChange={(next) => {
+                setFilter('command', next);
+              }}
+            />
+            <FilterSelect
+              label="时间范围筛选"
+              options={RANGE_OPTIONS}
+              value={filters.range}
+              onChange={(next) => {
+                setFilter('range', next);
+              }}
+            />
           </div>
-        </div>
-      </AsyncSection>
+        </Toolbar>
+
+        <AsyncSection
+          isLoading={isLoading}
+          error={error}
+          testId="tasks"
+          isEmpty={items.length === 0}
+          emptyText="没有匹配的运行"
+          emptyHint={anyFilter ? '放宽条件或换个时间范围' : '在 issue 里 @ 机器人或发一条 /命令 就会出现'}
+          emptyAction={
+            anyFilter ? (
+              <Button variant="secondary" size="sm" onClick={clearFilters} data-testid="tasks-empty-clear">
+                清除筛选
+              </Button>
+            ) : null
+          }
+          onRetry={() => {
+            void refetch();
+          }}
+          skeletonRows={8}
+        >
+          <div className="flex min-w-0 flex-col gap-3">
+            <div className="overflow-hidden rounded-lg border border-border" data-testid="tasks-list">
+              {/*
+                固定表格布局 + 显式列宽：命令格里有「命令 / 来源 / dry-run」与「失败分类 / 触发人 / 任务 id」
+                两行可变长文本，自适应布局下它要么把相邻列挤变形，要么把自己的内容压成 4 个字符。
+                固定布局让「命令」拿到剩余宽度，超长部分由内层 `truncate` 负责。
+              */}
+              <Table className="w-full table-fixed">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-20">状态</TableHead>
+                    <TableHead>命令</TableHead>
+                    {/* 仓库在 `/repos/:repo/runs` 下与面包屑/侧栏重复，所以只在够宽时出现 */}
+                    <TableHead className="hidden w-36 lg:table-cell">仓库</TableHead>
+                    <TableHead className="hidden w-20 sm:table-cell">目标</TableHead>
+                    <TableHead className="hidden w-16 text-right md:table-cell">耗时</TableHead>
+                    <TableHead className="hidden w-20 text-right md:table-cell">成本</TableHead>
+                    <TableHead className="w-24 text-right">时间</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((run) => (
+                    <RunRow
+                      key={run.id}
+                      run={run}
+                      repoLock={repoLock}
+                      onOpen={() => {
+                        void navigate(repoRunPath(repoLock ?? run.repo, run.id));
+                      }}
+                    />
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                data-testid="tasks-load-more"
+                disabled={hasNextPage !== true || isFetchingNextPage}
+                onClick={() => {
+                  void fetchNextPage();
+                }}
+              >
+                {hasNextPage === true ? (
+                  isFetchingNextPage ? (
+                    <>
+                      <Spinner aria-hidden />
+                      加载中
+                    </>
+                  ) : (
+                    `加载更多（已显示 ${loadedText} 条）`
+                  )
+                ) : (
+                  `没有更多了（共 ${loadedText} 条）`
+                )}
+              </Button>
+            </div>
+          </div>
+        </AsyncSection>
+      </div>
     </PageShell>
   );
 }
 
-/** 一行运行：状态点 → 命令 → 目标 → 耗时 / 成本 → 时间。整行可点进详情。 */
-function RunRow({ run, repoLock }: { run: TaskListItem; repoLock: string | undefined }) {
+/**
+ * 一行运行：状态 → 命令（唯一进详情的链接）→ 仓库 → 目标 → 耗时 / 成本 → 时间。
+ *
+ * 整行可点（`onClick` 进详情），但**链接只有一个**（命令格）：键盘用户 Tab 一次就够，
+ * 也不需要每行两个同名目标。点链接时 `stopPropagation`，避免行与链接各导航一次。
+ */
+function RunRow({
+  run,
+  repoLock,
+  onOpen,
+}: {
+  run: TaskListItem;
+  repoLock: string | undefined;
+  onOpen: () => void;
+}) {
   const tone = statusTone(run.status);
   const time = formatTimeCell(run.queuedAt);
   const href = repoRunPath(repoLock ?? run.repo, run.id);
 
   return (
-    <li className="min-w-0 border-b border-border last:border-0" data-testid={`tasks-row-${run.id}`}>
-      <Link
-        to={href}
-        className={cn(
-          'grid min-w-0 items-center gap-x-3 gap-y-0.5 py-1.5 pl-2',
-          'grid-cols-[auto_minmax(0,1fr)_auto] md:grid-cols-[auto_minmax(0,1fr)_minmax(0,10rem)_4rem_4.5rem_5.5rem]',
-          'border-l-2 border-transparent transition-[background-color] duration-[120ms] ease-out-quint hover:bg-muted',
-        )}
-      >
+    <TableRow
+      data-testid={`tasks-row-${run.id}`}
+      onClick={onOpen}
+      className="cursor-pointer"
+    >
+      <TableCell>
         <span className="flex items-center gap-1.5">
           <StatusDot tone={tone} label={run.status} pulse={run.status === 'running'} />
           <span className={cn('text-xs font-medium', TONE_TEXT[tone])}>{run.status}</span>
         </span>
+      </TableCell>
 
-        <span className="min-w-0">
+      <TableCell>
+        <span className="flex min-w-0 flex-col overflow-hidden">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 truncate font-mono text-xs text-foreground" title={run.command}>
+            <Link
+              to={href}
+              onClick={(event) => {
+                // 行本身也导航：链接自己处理掉，别让冒泡把同一次点击算两遍
+                event.stopPropagation();
+              }}
+              className="min-w-0 truncate font-mono text-xs text-foreground underline-offset-2 hover:underline"
+              title={run.command}
+            >
               {run.command}
-            </span>
+            </Link>
             <span className="shrink-0 text-2xs text-faint">{SOURCE_LABEL[run.source]}</span>
             {run.dryRun ? <span className="shrink-0 text-2xs text-warn-fg">dry-run</span> : null}
           </span>
-          <span className="flex min-w-0 items-center gap-1.5 text-2xs text-faint">
-            <span className="min-w-0 truncate font-mono" title={`${run.repo} ${run.targetKind}#${String(run.targetNumber)}`}>
-              {`${run.repo} ${run.targetKind}#${String(run.targetNumber)}`}
-            </span>
+          <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-2xs text-faint">
             {run.failureClass === null ? null : <span className="shrink-0 text-danger-fg">{run.failureClass}</span>}
-            {run.actorLogin === null ? null : <span className="shrink-0">{`由 ${run.actorLogin} 触发`}</span>}
+            {run.actorLogin === null ? null : <span className="min-w-0 truncate">{`由 ${run.actorLogin} 触发`}</span>}
             <span className="shrink-0 font-mono" title={run.id}>
               {run.id}
             </span>
           </span>
         </span>
+      </TableCell>
 
-        <span className="hidden min-w-0 truncate font-mono text-2xs text-faint md:block" title={run.headSha ?? undefined}>
-          {run.headSha === null ? '—' : run.headSha.slice(0, 7)}
-        </span>
+      <TableCell className="hidden truncate font-mono text-xs text-muted-foreground lg:table-cell">{run.repo}</TableCell>
 
-        <span className="hidden text-right text-xs tabular text-muted-foreground md:block" title="耗时">
-          {formatDuration(run.durationMs)}
-        </span>
+      <TableCell className="hidden text-xs text-muted-foreground sm:table-cell">
+        {`${run.targetKind}#${formatCount(run.targetNumber)}`}
+      </TableCell>
 
-        <span className="hidden text-right text-xs tabular text-muted-foreground md:block" title="成本">
-          {formatUsd(run.costUsd)}
-        </span>
+      <TableCell className="hidden text-right text-xs tabular text-muted-foreground md:table-cell" title="耗时">
+        {formatDuration(run.durationMs)}
+      </TableCell>
 
-        <time className="justify-self-end text-2xs tabular text-faint md:justify-self-auto md:text-right" title={time.title} dateTime={run.queuedAt}>
+      <TableCell className="hidden text-right text-xs tabular text-muted-foreground md:table-cell" title="成本">
+        {formatUsd(run.costUsd)}
+      </TableCell>
+
+      <TableCell className="text-right">
+        <time className="text-2xs tabular text-faint" title={time.title} dateTime={run.queuedAt}>
           {time.text}
         </time>
-      </Link>
-    </li>
+      </TableCell>
+    </TableRow>
   );
 }

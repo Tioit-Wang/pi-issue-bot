@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
 import './index.css';
+import { TooltipProvider } from '@/components/ui/tooltip.tsx';
 import { createQueryClient } from './lib/queries.ts';
 import { startMocks } from './mocks/browser.ts';
 import { AppRoutes } from './routes.tsx';
@@ -23,9 +24,11 @@ async function bootstrap(): Promise<void> {
   createRoot(container).render(
     <StrictMode>
       <QueryClientProvider client={createQueryClient()}>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
+        <TooltipProvider delayDuration={200}>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </TooltipProvider>
       </QueryClientProvider>
     </StrictMode>,
   );

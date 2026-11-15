@@ -171,6 +171,20 @@ describe('设置页 · 分区骨架', () => {
 });
 
 describe('设置页 · 事件与模版', () => {
+  it('模板框下方如实说明「首轮 / 后续轮」的分工（WP4-R S4，不新增配置项）', async () => {
+    renderAt('/repos/acme__widgets/settings/events');
+    const opened = await screen.findByTestId('v21-event-issues.opened');
+
+    const scope = within(opened).getByTestId('v21-event-prompt-scope-issues.opened');
+    // 三件事都要说清：首轮用这里；后续轮平台默认另一套增量模板；自定义模板两轮都用它
+    expect(scope.textContent).toContain('首轮用这里的模板');
+    expect(scope.textContent).toContain('增量模板');
+    expect(scope.textContent).toContain('两种轮次都原样使用这一份');
+    // 只是说明，不是配置项：附近没有新增的开关 / 输入框
+    expect(within(scope).queryByRole('switch')).toBeNull();
+    expect(within(scope).queryByRole('textbox')).toBeNull();
+  });
+
   it('模板输入框默认填着内置默认模板；改成别的内容才写库', async () => {
     const user = userEvent.setup();
     const calls = recordSettingsPut();
@@ -345,10 +359,16 @@ describe('设置页 · 标签（含目标态字段）', () => {
     expect(managed.getAttribute('aria-checked')).toBe('false');
     expect(screen.getByTestId('settings-labels-changed').textContent).toContain('改了 1 项');
 
-    // status 下拉：改成 retired 后仍能保存（服务端把 retired 当「不进入目标态」）
-    const selects = screen.getAllByRole('combobox', { name: /status/u });
-    expect(selects.length).toBeGreaterThan(0);
-    await user.selectOptions(selects[0] as HTMLSelectElement, 'retired');
+    // status 下拉（Radix `Select`，`role="combobox"` 的 trigger + `role="option"` 的列表项）：
+    // 改成 retired 后仍能保存（服务端把 retired 当「不进入目标态」）
+    const statusTrigger = screen.getAllByRole('combobox', { name: /status/u })[0];
+    expect(statusTrigger).toBeTruthy();
+    await user.click(statusTrigger as HTMLElement);
+    await user.click(await screen.findByRole('option', { name: 'retired' }));
+    // 选中状态落到 trigger 上（Radix 把当前值渲染在 `SelectValue` 里）
+    expect(screen.getAllByRole('combobox', { name: /status/u })[0]?.textContent).toContain('retired');
+    // 两处改动都在同一个叶子（`labels.vocabulary` 数组）上，所以仍然只算「改了 1 项」
+    expect(screen.getByTestId('settings-labels-changed').textContent).toContain('改了 1 项');
   });
 });
 

@@ -69,8 +69,99 @@ type ListSeed = Omit<
       | 'feedback'
     >
   >;
-type TurnSeed = Omit<IssueTurn, 'commentId' | 'attempts' | 'truncated'> &
-  Partial<Pick<IssueTurn, 'commentId' | 'attempts' | 'truncated'>>;
+
+/* ── 契约补上的字段（`WP12` 的 C1 / C2 / C4）：夹具补齐，跟上服务端实际形状 ──────────
+ *
+ * 这三处以前是 `.optional()`（契约 owner 为了让旧夹具能编译而放宽）。夹具补上之后，
+ * 契约可以把 `.optional()` 收成 `.nullable()` —— 服务端**总是**给这些键（有值或 `null`）。
+ */
+
+/** issue 主贴元信息（`IssueSummary.body` / `author` / `createdAt`）。 */
+type OriginalSeed = {
+  body: string | null;
+  author: string | null;
+  createdAt: string | null;
+};
+
+/**
+ * 一轮信封原文（`IssueTurn.verdict` / `actions`）：直接取契约类型 —— 形状不固定
+ * （v1 的 `{kind,labels,evidence}`、v2.1 的 `'pass'|'fail'`），所以不在这里另立形状。
+ */
+type EnvelopeSeed = Pick<IssueTurn, 'verdict' | 'actions'>;
+
+type SessionSeed = {
+  original: OriginalSeed;
+  /** 这次会话实际用过的系统提示词原文；`null` = 没有记录。 */
+  systemPrompt: string | null;
+  /** 每轮信封原文（按 `turns` 下标；缺项 = 这一轮没有信封）—— 人类轮永远没有。 */
+  envelopes?: Record<number, EnvelopeSeed>;
+};
+
+/** 与 `IssueSessionResponse` 同形的种子表：一个 issue 一条。 */
+export const SESSION_SEEDS: Record<string, SessionSeed> = {
+  'acme/widgets#issue17': {
+    original: {
+      body:
+        "部署脚本从昨天开始一直报 EACCES：\n\n```\nEACCES: permission denied, open '/var/run/app.sock'\n```\n\n" +
+        'systemd 单元里是 `RuntimeDirectory=app`，重启之后才出现。',
+      author: 'Tioit-Wang',
+      createdAt: '2026-06-01T08:24:11.000Z',
+    },
+    systemPrompt:
+      '# 角色\n\n你是 pi-issue-bot 的执行侧，只对当前 issue 负责。\n\n## 硬约束\n\n- 不猜实现细节：没看到代码就说没看到。\n- 结论先给一句话，再给证据。\n',
+    // 第 2、4 轮（0-based 1 / 3）是机器人轮：带信封原文；第 6 轮（失败轮）没有信封
+    envelopes: {
+      1: {
+        verdict: { kind: 'issue', labels: ['bug'], evidence: [] },
+        actions: [{ intent: 'comment', body: 'EACCES 是目标不允许写：用 RuntimeDirectory 交给 systemd。' }],
+      },
+      3: {
+        verdict: { kind: 'issue', labels: ['bug', 'needs-info'], evidence: [] },
+        actions: [
+          { intent: 'comment', body: '不会复现，但两个副作用要注意。' },
+          { intent: 'label', labels: ['bug', 'needs-info'] },
+        ],
+      },
+    },
+  },
+  'acme/widgets#issue42': {
+    // 投递里没带正文（历史行）：服务端给 `null`，不是「字段缺失」
+    original: { body: null, author: 'bob', createdAt: '2026-05-31T18:10:00.000Z' },
+    systemPrompt: null,
+    envelopes: {
+      1: {
+        verdict: { kind: 'issue', labels: ['needs-info'], evidence: [] },
+        actions: [{ intent: 'comment', body: '把 turn 预算改成 20 分钟。' }],
+      },
+    },
+  },
+  'other/lib#issue7': {
+    original: { body: 'build 脚本能不能强制 --frozen-lockfile？我们上周被锁文件漂移坑过一次。', author: 'carol', createdAt: '2026-06-01T11:54:00.000Z' },
+    systemPrompt: null,
+    // 还没跑过：没有信封
+  },
+  'acme/widgets#issue88': {
+    original: { body: '搜索排名疑似被人工降权：同样的关键词上周还能搜到，现在掉到第 4 页。', author: 'erin', createdAt: '2026-05-31T20:00:00.000Z' },
+    systemPrompt: '# 角色\n\n你是分类侧：只判结论，不改代码。\n',
+    envelopes: {
+      1: {
+        verdict: { kind: 'not-found', labels: [], evidence: [{ rule: 'code:*', quote: '没有权重惩罚相关代码', passed: false }] },
+        // v2.1 的产出允许只给 `actions`：这里演示「只有一半字段」的情形
+        actions: [{ intent: 'comment', body: '无法分类：没找到证据，需要维护者补充。' }],
+      },
+    },
+  },
+};
+
+/** 取种子（找不到时给一份「什么都没有」的，避免每个调用点都判空）。 */
+function seedOf(record: IssueRecord): SessionSeed {
+  return SESSION_SEEDS[`${record.list.repo}#${record.list.kind}${String(record.list.number)}`] ?? {
+    original: { body: null, author: null, createdAt: null },
+    systemPrompt: null,
+  };
+}
+type TurnSeed = Omit<IssueTurn, 'commentId' | 'attempts' | 'truncated' | 'verdict' | 'actions'> &
+  Partial<Pick<IssueTurn, 'commentId' | 'attempts' | 'truncated' | 'verdict' | 'actions'>>;
 
 /** 反馈时间线里的「最新终态」（`received` 只是「我收到了」，不算终态）。 */
 function reactionStateOf(
@@ -106,13 +197,20 @@ type IssueRecord = {
   turns: TurnSeed[];
 };
 
-/** 补齐轮次的契约字段（`commentId`/`attempts`/`truncated`）。 */
+/** 补齐轮次的契约字段（`commentId`/`attempts`/`truncated`/`verdict`/`actions`）。
+ *
+ * `verdict` / `actions` 在契约里是**必填但可空**：服务端总会给出这个键（没有就是 `null`）。
+ * 夹具里补默认 `null` 而不是让每个种子各写一遍 —— 手写 6 份 `verdict: null` 只会让人以为
+ * 「这一轮没有信封」是个需要逐条声明的特例。
+ */
 function finalizeTurn(seed: TurnSeed): IssueTurn {
   return {
     ...seed,
     commentId: seed.commentId ?? null,
     attempts: seed.attempts ?? 1,
     truncated: seed.truncated ?? false,
+    verdict: seed.verdict ?? null,
+    actions: seed.actions ?? null,
   };
 }
 
@@ -622,14 +720,25 @@ export function buildIssuesResponse(search: string, now: number = Date.now()): I
     issues: page.map((record) => finalizeList(record.list)),
     hasMore,
     nextCursor: hasMore ? `${CURSOR_PREFIX}${String(nextOffset)}` : null,
+    /*
+     * 全量口径（契约 `IssuesListResponse.totalEstimate`）：与 `issues` 同一组筛选、
+     * **不受游标影响**。夹具里就是 `filtered.length` —— 这正是服务端 `count(*)` 的口径。
+     */
+    totalEstimate: filtered.length,
   };
 }
 
 /** `?mock=empty` 用的空响应（不是「筛不出结果」，是「库里有 0 条」）。 */
 export function buildEmptyIssuesResponse(now: number = Date.now()): IssuesResponse {
-  return { generatedAt: new Date(now).toISOString(), issues: [], hasMore: false, nextCursor: null };
+  return {
+    generatedAt: new Date(now).toISOString(),
+    issues: [],
+    hasMore: false,
+    nextCursor: null,
+    // 空库：计数是 0，不是 `null`（`null` 留给「服务端未统计」）
+    totalEstimate: 0,
+  };
 }
-
 /**
  * 一个 issue = 一个 session 的完整样本；`null` 表示没有任何人类触发（契约 §3.2 的 404）。
  */
@@ -653,6 +762,7 @@ export function buildIssueSessionResponse(
   if (record === undefined) return null;
 
   const item = finalizeList(record.list);
+  const seed = seedOf(record);
   return {
     generatedAt: new Date(now).toISOString(),
     issue: {
@@ -664,13 +774,33 @@ export function buildIssueSessionResponse(
       state: item.state,
       stateStale: item.stateStale,
       labels: item.labels,
+      // 契约 C1：主贴正文 / 作者 / 创建时间（`WP12` §五.5：空正文是 `null`，不是缺字段）
+      body: seed.original.body,
+      author: seed.original.author,
+      createdAt: seed.original.createdAt,
       participants: record.participants,
       reactionState: item.reactionState,
       // 记了台账但还没落地的那几条（dry-run 计划 / 排队中）
       pendingFeedback: item.feedback.filter((event) => event.appliedAt === null),
     },
-    turns: record.turns.map(finalizeTurn),
+    // 契约 C2：这次会话实际用过的系统提示词原文（`null` = 没有记录）
+    systemPrompt: seed.systemPrompt,
+    // 契约 C4：每轮信封原文（人类轮恒为 `null`）—— 服务端总是给这两个键
+    turns: record.turns.map((turn, index) => withEnvelope(finalizeTurn(turn), index, seed)),
   };
+}
+
+/**
+ * 给一轮补上信封原文（契约 C4）。
+ *
+ * 人类轮恒为 `null`（人话没有信封）；机器人轮按 `SESSION_SEEDS` 的 `envelopes` 下标取，
+ * 没有种子就是 `null`（例如失败轮：`runs` 有行但没有信封）—— 两种情况都是 `null`，
+ * 因为契约里 `null` 的语义正是「这一轮没有信封」。
+ */
+function withEnvelope(turn: IssueTurn, index: number, seed: SessionSeed): IssueTurn {
+  if (turn.role === 'human') return { ...turn, verdict: null, actions: null };
+  const envelope = seed.envelopes?.[index];
+  return { ...turn, verdict: envelope?.verdict ?? null, actions: envelope?.actions ?? null };
 }
 
 function errorResponse(error: MockIssueRequestError): Response {

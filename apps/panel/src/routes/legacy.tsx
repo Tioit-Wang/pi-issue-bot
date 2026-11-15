@@ -20,7 +20,7 @@ import { readLastRepo, repoIssuePath, repoIssuesPath, repoRunPath, repoRunsPath 
  * ```
  * 为什么 `/tasks/:id` 要靠 localStorage 而不是查一次接口：旧 URL 里只有任务 id，
  * 而 `GET /api/tasks/:id` 的响应体里虽然带 `repo`，但那要先把页面渲染出来再等一次往返，
- * 且 404 时没有任何信息可用。`<Sidebar />` 会在每次进入仓库维度页面时写入
+ * 且 404 时没有任何信息可用。侧栏的 `RepoSwitcher` 会在每次切仓库时写入
  * `pi-panel:last-repo`，所以常用路径下这个值总是最新的；实在没有就回首页。
  */
 /** `/tasks`：旧的任务列表 → 上次打开的仓库的运行列表。 */

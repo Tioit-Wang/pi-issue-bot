@@ -5,13 +5,14 @@ import { issueSessionHandlers, issuesHandlers } from './issues.ts';
 import { overviewHandlers } from './overview.ts';
 import { qualityHandlers } from './quality.ts';
 import { reposHandlers } from './repos.ts';
+import { settingsHandlers } from './settings.ts';
 import { skillsHandlers } from './skills.ts';
 import { systemHandlers } from './system.ts';
 import { taskDetailHandlers } from './task-detail.ts';
 import { tasksHandlers } from './tasks.ts';
 
 /**
- * 全部拦截器（**每页一个文件**，互不干扰：W3 的两个 session 各改自己那几页的 handler）。
+ * 全部拦截器（**每页一个文件**，互不干扰：每个 session 各改自己那几页的 handler）。
  *
  * 注意顺序：`/api/tasks/:id` 必须在 `/api/tasks` 之前吗？——不需要，
  * MSW 按注册顺序匹配**完整路径**，`/api/tasks` 不会匹配 `/api/tasks/abc`。
@@ -30,6 +31,8 @@ export function createHandlers(): HttpHandler[] {
     ...qualityHandlers,
     ...auditHandlers,
     ...skillsHandlers,
+    // 全局设置（`/api/settings/providers`、`/api/settings/models`）：`AC-32` 的两块
+    ...settingsHandlers,
     // 仓库写面（`/api/repos`、`/api/repos/:owner/:name/settings`）：四段路径已按具体在前排好
     ...reposHandlers,
     ...systemHandlers,

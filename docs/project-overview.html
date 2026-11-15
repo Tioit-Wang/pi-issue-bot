@@ -93,7 +93,7 @@
             <li>建 issue（指纹去重 + 日配额）</li>
             <li>推 <code>bot/*</code> 分支、开 PR</li>
             <li>会话常驻 + 上下文压缩</li>
-            <li>面板：吞吐 / 成本 / 改回率 / 审计 / 会话回放</li>
+            <li>面板（侧栏式 admin）：issue 队列与会话回放 / 仓库设置 / 技能 / 运行证据 / 系统健康</li>
           </ul>
         </div>
         <div class="no">
@@ -161,10 +161,10 @@
 
           <rect x="518" y="38" width="120" height="112" rx="8" fill="#eaf7f5" stroke="#0b7d70"/>
           <text x="530" y="56" font-size="10.5" font-weight="620" fill="#0b4f47">panel/</text>
-          <text x="530" y="74" font-size="8.6" fill="#0b6a60">13 条路由</text>
+          <text x="530" y="74" font-size="8.6" fill="#0b6a60">14 条路由</text>
           <text x="530" y="89" font-size="8.6" fill="#0b6a60">四态 + MSW</text>
           <text x="530" y="104" font-size="8.6" fill="#0b6a60">10s / 15s / 5s 轮询</text>
-          <text x="530" y="119" font-size="8.6" fill="#0b6a60">工作台 · 成本 · 审计</text>
+          <text x="530" y="119" font-size="8.6" fill="#0b6a60">侧栏 admin · shadcn/ui</text>
           <text x="530" y="134" font-size="8.6" fill="#0b6a60">Issue 会话回放</text>
 
           <rect x="142" y="176" width="406" height="50" rx="8" fill="#ffffff" stroke="#d3d9df"/>
@@ -390,6 +390,11 @@ shared ✗→ contract · contract ✗→ shared / envelope / racp-client</pre>
           <tbody>
             <tr><td><code>skills/workspace.ts</code></td><td>未接线：RACP 无 workspace 写入通道，技能只经提示词投递</td></tr>
             <tr><td><code>compact/</code></td><td>只能观测 host 报的 compaction 事件，不能主动压缩</td></tr>
+            <tr><td><code>compact/window.ts</code></td><td>模型窗口靠「模型名 → 窗口表」现算：provider <code>/models</code> 与 RACP 都不报窗口，表外模型按 128K 估算（<code>estimated=true</code> 可观测）</td></tr>
+            <tr><td><code>compact/turn-compaction.ts</code></td><td>没有摘要模型通道：RACP 无「替我摘要」操作、本仓库不做 provider 客户端 → 压缩恒落阶 5 兜底 checkpoint（<b>AC-24「压缩后仍能复述硬约束」因此未实现</b>）</td></tr>
+            <tr><td><code>runtime/turn-driver.ts</code></td><td>压缩只能靠「换会话」重建上下文（RACP 无替换会话上下文的 operation）；<code>session/attach</code> 若在真机不返回历史，压缩与重建都会静默 no-op</td></tr>
+            <tr><td><code>agent_sessions.system_prompt</code></td><td>系统提示词只在 <code>session/create</code> 下发一次（RACP 的 <code>turn/start</code> 无 system 槽位）→ <b>SL-1「每次调用都带」未实现</b>；该列只是留痕，不是下发</td></tr>
+            <tr><td><code>agent_messages</code> / <code>comment_slots</code></td><td>主键仍是两段 <code>(repo, number)</code>：<code>agent_sessions</code> 已加 <code>domain</code>，这两张没有。当前 PR 事件固定 <code>pr-ignored</code>、从不入队所以无数据风险，但<b>一旦放开 <code>pull_request.*</code> 处理就会立即跨域冲突</b></td></tr>
             <tr><td><code>github/octokit.ts</code></td><td>评论拉取未分页，只取前 100 条</td></tr>
             <tr><td><code>github/executor.ts</code></td><td><code>push_branch</code> 只产出计划，临时 index 流程未接</td></tr>
             <tr><td><code>agent/dispatcher.ts</code></td><td>缺 <code>(repo, issue) WHERE status='running'</code> 部分唯一索引，靠并发 1 缓解</td></tr>
@@ -399,6 +404,12 @@ shared ✗→ contract · contract ✗→ shared / envelope / racp-client</pre>
             <tr><td><code>queries/costs.ts</code></td><td><code>pricingCoverage</code> 是近似值</td></tr>
             <tr><td><code>skills/store.ts</code></td><td>改 description 不回写磁盘 frontmatter</td></tr>
             <tr><td><code>config/yaml.ts</code></td><td>已无生产调用者</td></tr>
+            <tr><td>OpenAPI 生成器</td><td><code>Endpoint.pathParam</code> 只支持单个路径参数 → <code>/api/repos/{owner}/{name}/deliveries</code>、<code>/api/issues/{owner}/{name}/{kind}/{number}/trace</code> 这类多段路径端点进不了产物（<code>openapi-typescript</code> 生成失败是同一缺口）</td></tr>
+            <tr><td><code>jobs/reconcile-reverts.ts</code></td><td>只认 <code>intent==='label'</code>，而 v2.1 写的是 <code>'v21:label'</code> → 撤标没有改回检测</td></tr>
+            <tr><td><code>queries/audit.ts</code> 审批列</td><td>写侧记 <code>kind='approval.audit'</code>、读侧查 <code>kind='approval'</code>，审批列恒 null</td></tr>
+            <tr><td>模型四档角色</td><td><code>agent</code> 档已真实生效；<code>format</code> / <code>classify</code> / <code>fallback</code> 与<b>项目级覆盖</b>需 RACP 支持 per-session 模型参数（<code>session/create</code> 只有 <code>systemPrompt</code>、<code>turn/start</code> 只有 <code>input.text</code>）</td></tr>
+            <tr><td>供应商可用 model 列表</td><td>各家 <code>/models</code> 形状不一致，<code>check</code> 只判连通性 → <code>ProviderCheckResponse.models</code> 恒 <code>null</code></td></tr>
+            <tr><td>个人 PAT 与写回身份</td><td>多用户 PAT 下 <code>GET identity</code> 取第一行；写回链路尚无 operator 概念，退回 bot 有留痕但无「按操作者切换」</td></tr>
           </tbody>
         </table>
       </div>

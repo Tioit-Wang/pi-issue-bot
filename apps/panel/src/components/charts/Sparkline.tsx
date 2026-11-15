@@ -25,7 +25,7 @@ export function Sparkline({ values, colorIndex = 0, label, height = 36, testId }
   if (values.length < 2) {
     return (
       <div
-        className="flex items-center text-[11px] text-muted-foreground"
+        className="flex items-center text-xs text-muted-foreground"
         style={{ height }}
         data-testid={testId === undefined ? undefined : `${testId}-fallback`}
       >
