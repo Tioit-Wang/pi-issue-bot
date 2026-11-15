@@ -113,11 +113,17 @@ export const webhookDeliveries = pgTable(
     /**
      * 判定原因（BR-6：`webhook-v21.ts::v21DecisionRowOf` 对**触发与未触发都写**，便于时间线复盘）。
      *
-     * 未触发侧（`docs/v21-contract.md` §2 的 `SkippedReason`）：
-     * `switch-off` / `body-unchanged` / `label-not-matched` / `not-mentioned` / `role-denied` /
-     * `bot-self` / `closed-not-allowed` / `pr-ignored` / `content-duplicate` / `daily-quota` /
-     * `repo-disabled`；
-     * 触发侧：`enabled` / `conditional-met`。
+     * 事实源是 `trigger/decide.ts` 的 `TriggeredReason | SkippedReason`，当前 20 个取值：
+     *  - 未触发（12）：`switch-off` / `body-unchanged` / `label-not-matched` / `not-mentioned` /
+     *    `role-denied` / `bot-self` / `closed-not-allowed` / `pr-ignored` / `content-duplicate` /
+     *    `daily-quota` / `repo-disabled` / `out-of-scope`
+     *  - 触发（2）：`enabled` / `conditional-met`
+     *  - 验签（2）：`signature-invalid`（有签名但对不上）/ `signature-missing`（没有签名头）
+     *  - 早退病因（6）：`paused` / `installation-event` / `installation-mismatch` /
+     *    `repo-missing` / `repo-read-failed` / `unknown-repo`
+     *
+     * 后两类与 `repo-disabled` 刻意分开：都「不入队」，但病因不同，混成一个会让排查绕路
+     * （实测：issue #30 被 401 拒了，审计里写 `repo-disabled`，而 `repos.enabled` 是 true）。
      *
      * 可空：v2.1 之前的历史投递没有这一列的值（NULL = 还没判定，与终态可区分）。
      */
@@ -647,12 +653,15 @@ export const quotaCounters = pgTable(
 /* ── issue agent（v0.3，`docs/dev-plan-issue-agent.md` §4）────────────────────────── */
 
 /**
- * 一个 issue 一个**持久会话**的游标（v1.5 里它住在 `issue_pipeline`，那张表已随流水线退役删除）。
+ * 一个（**会话域**, 编号）一个**持久会话**的游标（v1.5 里它住在 `issue_pipeline`，那张表已随流水线退役删除）。
  *
  * 为什么单独一张表：会话连续性是 agent 的**唯一有状态资产**——流水线删掉、阶段状态删掉，
  * 但「同一个 issue 的第二句话还能接着上一轮」必须保留（v1 计划就踩过这个坑）。
  *
- * 主键 `(repo, issue_number)`：一个 issue 一行，读写都是点查 + UPSERT。
+ * 主键 `(repo, domain, issue_number)`：一个（域, 编号）一行，读写都是点查 + UPSERT。
+ * **为什么主键里必须有 `domain`（BR-5）**：GitHub 的 PR 编号与 issue 编号同属一个序列，
+ * 只按 `(repo, issue_number)` 定位会让 PR #7 的上下文写进 issue #7 的会话行 ——
+ * 两边互相污染，issue 关单回收沙箱还会顺手把 PR 的会话标成 idle。
  * `session_id` 为 NULL = 还没开过会话（第一次投递会新建）。
  */
 export const agentSessions = pgTable(
@@ -660,6 +669,19 @@ export const agentSessions = pgTable(
   {
     /** `owner/name`，与 `tasks.repo` 同口径 */
     repo: text('repo').notNull(),
+    /**
+     * 会话域：`issue` | `pr`（BR-5「issue 与 PR 各自独立会话，上下文不互通」）。
+     *
+     * 列名与 `agent/store.ts` 的 `AgentSessionDomain` 同口径；取值面靠迁移里的 CHECK 兜底，
+     * 这里不写 `enum`（本仓库全部状态列都是 `text` + 常量，不引入 PG type 的迁移负担）。
+     */
+    domain: text('domain').notNull().default('issue'),
+    /**
+     * 目标编号。
+     *
+     * **PR 也是这个列**：GitHub 的 issue 与 PR 共用一个编号序列，语义由 `domain` 区分。
+     * 刻意不改名 —— 列名改动会牵动 `queries/**`、面板与历史迁移，而收益只是读起来顺眼。
+     */
     issueNumber: integer('issue_number').notNull(),
     /** RACP 会话 id（`session/create` 的返回值）；NULL = 还没开过会话 */
     sessionId: text('session_id'),
@@ -680,10 +702,29 @@ export const agentSessions = pgTable(
     closedAt: timestamp('closed_at', { withTimezone: true }),
     /** 会话创建时刻（超过上限天数 → 轮换） */
     startedAt: timestamp('started_at', { withTimezone: true }),
+    /**
+     * 本会话**实际使用**的系统提示词快照（需求 §6.7 SL-1「常驻、每次调用都带」的可查留痕）。
+     *
+     * 为什么需要落一份：RACP 协议只有 `session/create` 带 `systemPrompt`（`turn/start` 的载荷
+     * 是 `input.{messageId,text}`、`session/attach` 只吃 `sessionId`），所以「每次调用都带」
+     * 在复用轮次里做不到；能做的是让**面板与记录能查到这条会话到底用的是哪一份身份说明**，
+     * 而不是拿「当前项目配置」去猜（配置随时会被改，历史会话不会跟着变）。
+     *
+     * NULL = 还没有任何一次触发记录过（例如只有被拒绝的投递）。
+     */
+    systemPrompt: text('system_prompt'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.repo, t.issueNumber] })],
+  (t) => [primaryKey({ columns: [t.repo, t.domain, t.issueNumber] })],
 );
+
+/** `agent_sessions.domain` 的取值（BR-5：issue 与 PR 各自独立会话）。 */
+export const AGENT_SESSION_DOMAIN = {
+  /** issue 域（`issues.*` / issue 上的评论） */
+  issue: 'issue',
+  /** PR 域（`pull_request.*` / PR 上的评论） */
+  pr: 'pr',
+} as const;
 
 /** `agent_sessions.state` 的取值（只有两种，见 `docs/v21-contract.md` §6）。 */
 export const AGENT_SESSION_STATE = {
@@ -816,6 +857,166 @@ export const agentCompactions = pgTable(
   ],
 );
 
+/* ── 供应商与模型角色（需求 §6.8 / 迁移 0013）──────────────────────────────── */
+
+/**
+ * 一家供应商一条行（CFG-8.1）：名称 / base URL / key 掩码 / 连通性 / 可用 model 列表。
+ *
+ * `keyEnc` **只存密文**（`v1:<iv>:<tag>:<ct>`，AES-256-GCM，与 `host_credentials.token_enc` 同一实现）：
+ * 明文只在宿主进程解出来用，永不落库、不进容器；解密失败必须抛（不变式 I9），
+ * 不许静默当成「未配置」——那会让一家配好的供应商看起来从没配过。
+ *
+ * `keyMask` 是给界面看的可显示掩码（`sk-…a1b2`）：需求要求「界面只显示掩码与已存/未配置」，
+ * 所以掩码与密文一起存，读路径不必解密就能渲染。
+ */
+export const modelProviders = pgTable(
+  'model_providers',
+  {
+    /** 稳定 id（如 `deepseek` / `mimo`）；角色表按它引用，不按显示名。 */
+    id: text('id').primaryKey(),
+    /** 显示名（给人看，可改；引用一律走 `id`）。 */
+    name: text('name').notNull(),
+    /** OpenAI 兼容端点的 base URL（`null` = 用 pi-host 的默认端点）。 */
+    baseUrl: text('base_url'),
+    /** key 密文；`null` = 未配置（界面显示「未配置」）。 */
+    keyEnc: text('key_enc'),
+    /** key 掩码（可显示）；与 `keyEnc` 同生同灭。 */
+    keyMask: text('key_mask'),
+    /** 该家可用的 model **目录**（面板下拉与单价的数据源）：`[{model, input_usd_per_mtok, output_usd_per_mtok}]`。 */
+    models: jsonb('models').notNull().default([]),
+    enabled: boolean('enabled').notNull().default(true),
+    /** 最近一次连通性测定的状态点：`ok` / `fail` / `unknown`。 */
+    status: text('status').notNull().default('unknown'),
+    /** 最近一次连通性测定的往返延迟（毫秒）；没测过为 `NULL`。 */
+    latencyMs: integer('latency_ms'),
+    checkedAt: timestamp('checked_at', { withTimezone: true }),
+    /** 测定失败的原因（面板展示；不含 key）。 */
+    checkError: text('check_error'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('model_providers_updated_at_idx').on(t.updatedAt)],
+);
+
+/** `model_providers.status` 取值（连通性状态点）。 */
+export const MODEL_PROVIDER_STATUS = {
+  ok: 'ok',
+  fail: 'fail',
+  unknown: 'unknown',
+} as const;
+
+/** 模型角色四档（CFG-8.2）：`agent` 执行 / `format` 快速 / `classify` 分类 / `fallback` 兜底。 */
+export const MODEL_ROLE_KINDS = ['agent', 'format', 'classify', 'fallback'] as const;
+
+/**
+ * 全局角色绑定（CFG-8.2）：**一档一行**，绑定「供应商 + 模型」。
+ *
+ * 单价**不在这里**，而在供应商的模型目录（`model_providers.models`）上：角色是「哪一档用哪个模型」，
+ * 单价是模型的属性。挂到角色上会出现两个问题——同一个模型被两档共用时单价要给两遍（迟早不一致），
+ * 以及项目级覆盖换模型后单价查不到（覆盖行没有单价列）。
+ */
+export const modelRoles = pgTable('model_roles', {
+  /** `MODEL_ROLE_KINDS` 之一（主键：四档各只能有一条全局绑定）。 */
+  role: text('role').primaryKey(),
+  /** 引用 `model_providers.id`（不建外键，见文件头；删供应商留下的孤儿由读侧兜底）。 */
+  providerId: text('provider_id').notNull(),
+  /** 模型名（供应商侧的原始名字，如 `deepseek-v4.1-flash`）。 */
+  model: text('model').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * 项目级覆盖（CFG-8.3）：**没有行 = 继承全局**，有行才覆盖。
+ *
+ * 稀疏性是契约的一部分：面板在项目页显示「继承全局（模型名）」，点开覆盖才写一行；
+ * 因此这里不 seed、也没有默认值——给一行默认值等于「所有项目都覆盖了」。
+ */
+export const repoModelRoles = pgTable(
+  'repo_model_roles',
+  {
+    repo: text('repo').notNull(),
+    /** `MODEL_ROLE_KINDS` 之一。 */
+    role: text('role').notNull(),
+    providerId: text('provider_id').notNull(),
+    model: text('model').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.repo, t.role] }),
+    // 项目配置页一次读全该项目的覆盖行
+    index('repo_model_roles_repo_idx').on(t.repo),
+  ],
+);
+
+/**
+ * 面板身份（CFG-9.1）：按用户存的个人 PAT，**密文 + 掩码 + scope 快照 + 过期时刻**。
+ *
+ * 为什么要落 scope 快照：需求要求「检查权限」校验 scope 与过期时间，而 `X-OAuth-Scopes`
+ * 只有发一次 `GET /user` 才知道；把最近一次的结论存下来，面板才能在没点「检查」时也显示三态。
+ */
+export const panelIdentities = pgTable('panel_identities', {
+  /** GitHub login（主键：一人一把 PAT）。 */
+  login: text('login').primaryKey(),
+  /** PAT 密文（`v1:...`）；解密失败必须抛，不许当成「没有令牌」。 */
+  tokenEnc: text('token_enc').notNull(),
+  /** 可显示掩码（`github_pat_…9f3c`）。 */
+  tokenMask: text('token_mask').notNull(),
+  /**
+   * 最近一次读到的 scope 清单（来自 `X-OAuth-Scopes`）。
+   *
+   * **可空是刻意的**：`NULL` = 还没检查过（三态里的 `unchecked`），
+   * `[]` = 检查了但一个 scope 都没有。两者混同会让「刚存的令牌」显示成「权限不足」。
+   */
+  scopes: jsonb('scopes'),
+  /** token 过期时刻（来自 `github-authentication-token-expiration`）；无过期时间为 NULL。 */
+  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  /** 最近一次判定的三态（`PANEL_IDENTITY_STATE`）。 */
+  status: text('status').notNull().default('unchecked'),
+  checkedAt: timestamp('checked_at', { withTimezone: true }),
+  /** 判定细节（缺哪个 scope、还有多久过期），面板直接展示。 */
+  checkDetail: text('check_detail'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** 面板身份的判定态（CFG-9.2 的三态 + `unchecked` 与 `ok`）。 */
+export const PANEL_IDENTITY_STATE = {
+  /** 有令牌且 scope 够、未过期 */
+  ok: 'ok',
+  /** 根本没有个人 PAT（一切写回以 bot 身份署名，这是合法默认） */
+  missing: 'missing',
+  /** 有令牌但缺 `issues:write` 等必需 scope */
+  insufficientScope: 'insufficient-scope',
+  /** 有令牌但已过期 */
+  expired: 'expired',
+  /** 存了但还没检查过 */
+  unchecked: 'unchecked',
+} as const;
+
+/**
+ * 「退回 bot」留痕（CFG-9.2）：令牌缺失 / scope 不足 / 过期 / 无效时，写回必须**显式呈现原因**
+ * 并退回 bot 身份——不得静默成功，也不得静默失败。
+ *
+ * 为什么单独一张表而不是塞进 `actions.audit`：留痕的用途是「事后查为什么这次是 bot 署名的」，
+ * 而「一次都没写成」（全被拒）的场合根本不会有 `actions` 行。
+ */
+export const identityFallbacks = pgTable(
+  'identity_fallbacks',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    /** 被判定的身份（谁配的 PAT）；全局层面（未指定用户）时为 NULL。 */
+    login: text('login'),
+    /** 判定态（`PANEL_IDENTITY_STATE`）。 */
+    state: text('state').notNull(),
+    /** 触发的写动作，如 `comment` / `label` / `create_issue`。 */
+    operation: text('operation').notNull(),
+    /** 写回目标 `owner/name#123`。 */
+    target: text('target').notNull(),
+    /** 面向人的一句话原因（面板展示）。 */
+    reason: text('reason').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('identity_fallbacks_created_at_idx').on(t.createdAt)],
+);
+
 /** schema 里的全部表（启动自检、迁移覆盖度检查、queries 生成都用得上）。 */
 export const ALL_TABLES = {
   webhookDeliveries,
@@ -842,6 +1043,11 @@ export const ALL_TABLES = {
   agentDenials,
   commentSlots,
   agentCompactions,
+  modelProviders,
+  modelRoles,
+  repoModelRoles,
+  panelIdentities,
+  identityFallbacks,
 } as const;
 
 /** 表名清单（单测断言「`db/schema.ts` 里的每一张表都在库里」用它）。 */

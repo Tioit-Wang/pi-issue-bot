@@ -94,8 +94,10 @@ describe('迁移 0009 真的把结构化字段建出来了', () => {
 });
 
 describe('技能的取用方式写在文档里（防再次漂移）', () => {
-  it('skill-authoring 规范明确「不要把工具清单写死在技能里」与「事实由提示词渲染」', () => {
-    const doc = readFileSync(new URL('../../../docs/spec/skill-authoring.md', import.meta.url), 'utf8');
+  it('开发规范明确「技能正文里不许出现占位符 / 工具清单」与「事实由提示词渲染」', () => {
+    // 原来读 `docs/spec/skill-authoring.md`，那份 spec 在文档重写里并入了开发规范（AGENTS.md §11.1）。
+    // 断言的意图不变：这两条规则必须有一处人类可读的落点，且测试跟着它走。
+    const doc = readFileSync(new URL('../../../AGENTS.md', import.meta.url), 'utf8');
     expect(doc).toContain('技能正文里不许出现');
     expect(doc).toContain('工具怎么用');
   });

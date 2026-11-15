@@ -335,13 +335,13 @@ issue 需要「从现象走到可动手的下一步」：根因在哪、影响�
 - 搜不到就写「未定位到」+ 试过的搜索词，不要编造代码位置。
 `;
 
-﻿/**
-﻿ * `/req-analysis`：需求类 issue 分析（相对 `/issue-analysis` 的分工：那边问「根因在哪」，
+/**
+ * `/req-analysis`：需求类 issue 分析（相对 `/issue-analysis` 的分工：那边问「根因在哪」，
  * 这边问「要改成什么样、改哪里、算不算做完」）。
-﻿ *
-﻿ * 与 `/label-triage` 的边界写进「何时用」：那边只归类，这边只出方案。
-﻿ */
-﻿const REQ_ANALYSIS = `---
+ *
+ * 与 `/label-triage` 的边界写进「何时用」：那边只归类，这边只出方案。
+ */
+const REQ_ANALYSIS = `---
 name: req-analysis
 description: 把一条需求 issue 变成可动手的方案：复述目标、指出仓库里现有的相关实现、列改动面与可测的验收标准，并点出必须澄清的歧义；适用于「想做什么已经说了、但不知道要改哪里、怎样算做完」的需求类 issue。
 allowed-tools: [Read, Glob, Grep, Bash]

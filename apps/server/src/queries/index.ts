@@ -19,6 +19,10 @@
 import { QueryError, resolveWindow, type QueriesDeps, type QueryErrorCode } from './sql.ts';
 import { queryAudit, queryAuditCsv } from './audit.ts';
 import { queryCosts } from './costs.ts';
+import { queryDeliveries } from './deliveries.ts';
+import type { DeliveriesParams } from './deliveries.ts';
+import { queryIssueTrace } from './trace.ts';
+import type { IssueTraceParams } from './trace.ts';
 import { queryIssues, queryIssueSession } from './issues.ts';
 import { queryOverview } from './overview.ts';
 import { queryReverts } from './quality.ts';
@@ -29,6 +33,13 @@ import type {
   AuditResponse,
   CostsQuery,
   CostsResponse,
+  DeliveriesQuery,
+  DeliveriesResponse,
+  DeliveryRow,
+  IssueTraceAction,
+  IssueTraceResponse,
+  IssueTraceRun,
+  IssueTraceToolCall,
   OverviewQuery,
   OverviewResponse,
   QualityQuery,
@@ -76,6 +87,18 @@ export type Queries = {
   issues: (query: IssuesQuery) => Promise<IssuesListResponse>;
   /** 一个 issue 的会话（人问 AI 答）；该 issue 没有任何任务时返回 `null`（http 层映射 404）。 */
   issueSession: (params: IssueSessionParams) => Promise<IssueSessionResponse | null>;
+  /**
+   * 一个仓库的投递判定留痕（BR-6 / FR-6.4③）：未触发的事件也要能查到 `decisionReason`。
+   * 时间窗语义同其它只读接口（默认最近 24h）；分页是 `(receivedAt, deliveryId)` 倒序的 keyset。
+   */
+  deliveries: (params: DeliveriesParams, query: DeliveriesQuery) => Promise<DeliveriesResponse>;
+  /**
+   * 一个 issue 的**完整链路**（FR-6.1/6.2/6.3 + FR-6.4③ + NFR-6）：
+   * 投递（含判定原因）→ 执行（run）→ 写回（actions），并在 run 上挂
+   * FR-6.2 的工具明细与 FR-6.3 的按轮次用量。
+   * 「这个 issue 没被处理过」不返回 `null`（投递可能仍在，那正是要查的东西）。
+   */
+  issueTrace: (params: IssueTraceParams) => Promise<IssueTraceResponse>;
 };
 
 export function createQueries(deps: QueriesDeps): Queries {
@@ -99,6 +122,12 @@ export function createQueries(deps: QueriesDeps): Queries {
     system: (query: SystemQuery = {}) => querySystem(runner, now(), query),
     issues: (query) => queryIssues(runner, now(), query),
     issueSession: (params) => queryIssueSession(runner, now(), params),
+    deliveries: (params, query) => {
+      // 时间窗与 /api/audit 同一处补齐：缺省最近 24h，`from > to` 走 QueryError(422)
+      const at = now();
+      return queryDeliveries(runner, params, query, resolveWindow(query, at));
+    },
+    issueTrace: (params) => queryIssueTrace(runner, now(), params),
   };
 }
 
@@ -132,4 +161,13 @@ export type {
   IssuesQuery,
   IssueSessionParams,
   IssueSessionResponse,
+  DeliveriesQuery,
+  DeliveriesResponse,
+  DeliveryRow,
+  DeliveriesParams,
+  IssueTraceParams,
+  IssueTraceResponse,
+  IssueTraceRun,
+  IssueTraceToolCall,
+  IssueTraceAction,
 };

@@ -284,6 +284,116 @@ describe('queries/issues（真库）', () => {
     expect(session.issue.participants).toEqual(['carol', BOT_LOGIN]);
   });
 
+  /**
+   * `AC-28` / `AC-29`：原文卡与系统提示词**真的从库里取到值**（不是字段加了却没读路径）。
+   *
+   * 断言的是具体值：正文（含换行）、作者、主贴创建时间（不是投递时间）、提示词原文，
+   * 以及「按 domain 取」这条边界 —— issue 域与 pr 域各有一行，取错一行就是 BR-5 的串域。
+   */
+  it('AC-28 / AC-29：原文卡与系统提示词来自投递与 agent_sessions 的真值', async () => {
+    const session = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'issue', number: 7 });
+    expect(session).not.toBeNull();
+    if (session === null) return;
+    expect(() => issueSessionResponseSchema.parse(session)).not.toThrow();
+
+    // 正文字段保留换行（markdown 原文），作者与创建时间来自同一条投递（d-iss-7）
+    expect(session.issue.body).toBe('部署脚本从昨天开始报 EACCES：/var/run/app.sock 打不开。\n\n复现步骤见下。');
+    expect(session.issue.author).toBe('alice');
+    expect(session.issue.createdAt).toBe('2026-05-30T09:00:00.000Z');
+
+    // 系统提示词：issue 域那一行（含两级标题），**不是** pr 域那一行
+    expect(session.systemPrompt).toContain('# 角色');
+    expect(session.systemPrompt).toContain('## 硬约束');
+    expect(session.systemPrompt).not.toContain('PR 评审那一路');
+
+    // 同一仓库、同一编号、另一个域：拿的是 pr 的那一行（读路径带 domain）
+    const pr = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'pr', number: 12 });
+    expect(pr).not.toBeNull();
+    if (pr === null) return;
+    expect(pr.systemPrompt).toContain('PR #12 的身份说明');
+    expect(pr.systemPrompt).not.toContain('不猜实现细节');
+    // PR #12 的投递里没有正文/作者/created_at → 三个字段都是 null（不是空串）
+    expect(pr.issue.body).toBeNull();
+    expect(pr.issue.author).toBeNull();
+    expect(pr.issue.createdAt).toBeNull();
+
+    // 没有 agent_sessions 行的 issue：提示词为 null（面板说「没有记录」而不是拿配置拼）
+    const noSession = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'issue', number: 9 });
+    expect(noSession?.systemPrompt).toBeNull();
+    // #9 没有任何能定位到它的投递 → 原文三件套都是 null
+    expect(noSession?.issue.body).toBeNull();
+    expect(noSession?.issue.author).toBeNull();
+    expect(noSession?.issue.createdAt).toBeNull();
+  });
+
+  /**
+   * `AC-30`：每轮信封的 `verdict` / `actions` 原文（面板默认收起显示）。
+   *
+   * 断言：值来自 `envelopes` 的 jsonb 原文、人类轮为 `null`、合并 attempt 时取有信封那次。
+   */
+  it('AC-30：机器人轮的 verdict / actions 来自 envelopes 原文', async () => {
+    const session = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'issue', number: 7 });
+    expect(session).not.toBeNull();
+    if (session === null) return;
+
+    const bot = session.turns.find((turn) => turn.id === 'run:r-a1b');
+    expect(bot?.verdict).toEqual({ kind: 'issue', labels: ['bug'], evidence: [] });
+    expect(bot?.actions).toEqual([
+      { intent: 'comment', body: '结果：这是容器只读挂载导致的。' },
+      { intent: 'label', labels: ['bug'] },
+    ]);
+
+    // dry-run 那一轮：信封在（模型想做什么），actions 表里没有对应行
+    const dry = session.turns.find((turn) => turn.id === 'run:r-a3');
+    expect(dry?.verdict).toEqual({ kind: 'issue', labels: [], evidence: [] });
+    expect(dry?.actions).toEqual([{ intent: 'comment', body: 'dry-run：这是我会发的回复。' }]);
+
+    // 人类轮没有信封 → null（不是空对象）
+    const human = session.turns.find((turn) => turn.role === 'human');
+    expect(human?.verdict).toBeNull();
+    expect(human?.actions).toBeNull();
+
+    // #9 的信封校验失败：verdict / actions 两列都是 NULL → 均为 null
+    const other = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'issue', number: 9 });
+    const failed = other?.turns.find((turn) => turn.role === 'bot');
+    expect(failed?.verdict).toBeNull();
+    expect(failed?.actions).toBeNull();
+  });
+
+  /**
+   * `FR-7.4`：队列头部的计数必须是**全量**口径 —— 游标分页下也是同一个数，
+   * 否则面板把 300 条显示成 30 条（WP11 只能用「已加载」顶着的那个缺口）。
+   */
+  it('FR-7.4：totalEstimate 是全量计数，与筛选同口径且不受游标影响', async () => {
+    const all = await db.queries.issues({ kind: 'issue', limit: 30 });
+    expect(all.issues).toHaveLength(3);
+    expect(all.totalEstimate).toBe(3);
+
+    // 每页 1 条：本页 1 条，但计数仍是 3；带游标翻页时计数不变（游标不是筛选）
+    const firstPage = await db.queries.issues({ kind: 'issue', limit: 1 });
+    expect(firstPage.issues).toHaveLength(1);
+    expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.totalEstimate).toBe(3);
+    const secondPage = await db.queries.issues({
+      kind: 'issue',
+      limit: 1,
+      cursor: firstPage.nextCursor ?? '',
+    });
+    expect(secondPage.issues).toHaveLength(1);
+    expect(secondPage.totalEstimate).toBe(3);
+
+    // 与筛选同口径：这 3 条里只有 other/lib#3 是 queued（acme#7 有 running、acme#9 已成功）
+    const queued = await db.queries.issues({ kind: 'issue', status: 'queued', limit: 30 });
+    expect(queued.issues.map((item) => `${item.repo}#${item.number}`)).toEqual(['other/lib#3']);
+    expect(queued.totalEstimate).toBe(1);
+
+    // 空库：计数 0（不是 null）
+    await db.truncate();
+    const empty = await db.queries.issues({ kind: 'issue', limit: 30 });
+    expect(empty.issues).toEqual([]);
+    expect(empty.totalEstimate).toBe(0);
+  });
+
   it('工具调用：按 toolCallId 合并三类事件、只留一行摘要、50 条截断', async () => {
     const session = await db.queries.issueSession({ owner: 'acme', name: 'widgets', kind: 'issue', number: 7 });
     const bot = session?.turns.find((turn) => turn.id === 'run:r-a1b');
@@ -442,7 +552,7 @@ async function seedIssues(db: TestDb): Promise<void> {
        '{"action":"created","repository":{"full_name":"acme/widgets"},"issue":{"number":7,"title":"EACCES on publish","html_url":"https://github.com/acme/widgets/issues/7","state":"open"},"comment":{"id":1001,"body":"@acme-bot 这个 EACCES 一般是什么原因？","html_url":"https://github.com/acme/widgets/issues/7#issuecomment-1001","user":{"login":"alice"}}}'::jsonb,
        true, '2026-06-01T01:00:20Z'),
       ('d-iss-7', 'issues', 'opened',
-       '{"action":"opened","repository":{"full_name":"acme/widgets"},"issue":{"number":7,"title":"EACCES on publish","html_url":"https://github.com/acme/widgets/issues/7","state":"open"}}'::jsonb,
+       '{"action":"opened","repository":{"full_name":"acme/widgets"},"issue":{"number":7,"title":"EACCES on publish","html_url":"https://github.com/acme/widgets/issues/7","state":"open","body":"部署脚本从昨天开始报 EACCES：/var/run/app.sock 打不开。\\n\\n复现步骤见下。","user":{"login":"alice"},"created_at":"2026-05-30T09:00:00Z"}}'::jsonb,
        true, '2026-06-01T02:00:00Z'),
       ('d-ic-3', 'issue_comment', 'created',
        '{"action":"created","repository":{"full_name":"acme/widgets"},"issue":{"number":7,"title":"EACCES on publish","html_url":"https://github.com/acme/widgets/issues/7","state":"open"},"comment":{"id":1002,"body":"试一下 dry-run 仓库","html_url":"https://github.com/acme/widgets/issues/7#issuecomment-1002","user":{"login":"alice"}}}'::jsonb,
@@ -520,6 +630,28 @@ async function seedIssues(db: TestDb): Promise<void> {
   await pool.query(`
     insert into issue_states (repo, issue_number, closed_at)
     values ('acme/widgets', 9, '2026-05-31T00:00:00Z')
+  `);
+
+  /*
+   * 系统提示词留痕（WP7 落库的那一列）：issue 域与 pr 域各一行、内容不同 ——
+   * 读路径必须带 domain，否则 PR 的身份说明会显示到 issue 的会话页上（BR-5）。
+   */
+  await pool.query(`
+    insert into agent_sessions (repo, domain, issue_number, system_prompt)
+    values
+      ('acme/widgets', 'issue', 7, '# 角色
+
+你是 pi-issue-bot 的执行侧，只对当前 issue 负责。
+
+## 硬约束
+
+- 不猜实现细节：没看到代码就说没看到。'),
+      ('acme/widgets', 'pr',    7, '# 角色
+
+PR 评审那一路的身份说明（这条绝不该出现在 issue #7 的会话页上）。'),
+      ('acme/widgets', 'pr',    12, '# 角色
+
+PR #12 的身份说明：评审上传重试。')
   `);
 
   // r-a1b：55 个 toolCallId（每个 = 1 条 item.started + 1 条 tool.progress），call_3 再多 2 条 progress

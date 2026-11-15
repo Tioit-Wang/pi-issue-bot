@@ -98,6 +98,37 @@ function nonNegative(value: number): number {
  * 口径：`inputTokens` 是**未命中缓存**的那部分（DeepSeek 的 usage 里 `inputTokens` 与
  * `cacheReadTokens` 是并列的两段，`totalTokens = cacheRead + input + output`），
  * 所以三段各乘各的价，不要先加总再乘。
+/**
+ * 单价来源（装配层解析好传进来）：模型名 → 单价。
+ *
+ * 为什么是「模型名 → 单价」而不是「角色 → 单价」：哪一档用哪个模型会随**项目覆盖**变化，
+ * 而单价是模型的属性；按模型查，则「项目覆盖换了模型」时单价照样正确。
+ * 查不到返回 `null` —— **不补 0**：补 0 会把「单价未知」伪装成「这次没花钱」。
+ */
+export type ConfigPrice = {
+  /** 输入单价（USD / 1M tokens）。 */
+  readonly input_usd_per_mtok: number;
+  /** 输出单价（USD / 1M tokens）。 */
+  readonly output_usd_per_mtok: number;
+};
+
+export type PriceResolver = (model: string) => ConfigPrice | null;
+
+/** 计价结果 + 单价来源（`pricingCoverage` 与成本页的解释都读它）。 */
+export type PricedBreakdown = CostBreakdown & {
+  /** `config` = 单价来自「全局设置」；`static` = 用了代码兜底的 DeepSeek 官方价目表。 */
+  readonly pricingSource: 'config' | 'static';
+};
+
+/**
+ * 算一次 turn 的金额（CFG-8.2：单价从配置读，代码价目表兜底）。
+ *
+ * 口径：`inputTokens` 是**未命中缓存**的那部分（DeepSeek 的 usage 里 `inputTokens` 与
+ * `cacheReadTokens` 是并列的两段，`totalTokens = cacheRead + input + output`），
+ * 所以三段各乘各的价，不要先加总再乘。
+ *
+ * `resolvePrice` 给了且命中 → 用配置单价（不分高峰低谷：那两档是 DeepSeek 自家规则，
+ * 别的供应商没有），否则退回官价表。两种路径都按 6 位小数收敛到 `numeric(12,6)`。
  */
 export function estimateDeepSeekCostUsd(input: {
   readonly model: string | null | undefined;
@@ -106,18 +137,47 @@ export function estimateDeepSeekCostUsd(input: {
   readonly holidays?: readonly string[];
   /** 整体缩放（换价但没改代码时的应急口子）；默认 1。 */
   readonly scale?: number;
-}): CostBreakdown {
-  const tier = resolveTier(input.model);
-  const peak = isPeakHour(input.at, input.holidays);
-  const base = DEEPSEEK_PRICES[tier];
-  const price: PriceRow = peak
-    ? base
-    : { cacheHit: base.cacheHit / 2, cacheMiss: base.cacheMiss / 2, output: base.output / 2 };
+  /** 单价来源（`undefined` = 只用代码兜底表）。 */
+  readonly resolvePrice?: PriceResolver | undefined;
+}): PricedBreakdown {
+  const configured =
+    input.model === null || input.model === undefined || input.resolvePrice === undefined
+      ? null
+      : input.resolvePrice(input.model);
   const tokens: UsageTokens = {
     inputTokens: nonNegative(input.tokens.inputTokens),
     cacheReadTokens: nonNegative(input.tokens.cacheReadTokens),
     outputTokens: nonNegative(input.tokens.outputTokens),
   };
+  const tier = resolveTier(input.model);
+  const peak = isPeakHour(input.at, input.holidays);
+
+  if (configured !== null) {
+    // 配置里只有「输入 / 输出」两档价：缓存命中按输入价计（保守，不假装便宜）
+    const raw =
+      (tokens.inputTokens / PER_MILLION) * configured.input_usd_per_mtok +
+      (tokens.cacheReadTokens / PER_MILLION) * configured.input_usd_per_mtok +
+      (tokens.outputTokens / PER_MILLION) * configured.output_usd_per_mtok;
+    const scaled = raw * (input.scale ?? 1);
+    return {
+      costUsd: Math.round(scaled * 1_000_000) / 1_000_000,
+      tier,
+      peak,
+      price: {
+        cacheHit: configured.input_usd_per_mtok,
+        cacheMiss: configured.input_usd_per_mtok,
+        output: configured.output_usd_per_mtok,
+      },
+      priceVersion: PRICE_VERSION,
+      tokens,
+      pricingSource: 'config',
+    };
+  }
+
+  const base = DEEPSEEK_PRICES[tier];
+  const price: PriceRow = peak
+    ? base
+    : { cacheHit: base.cacheHit / 2, cacheMiss: base.cacheMiss / 2, output: base.output / 2 };
   const raw =
     (tokens.inputTokens / PER_MILLION) * price.cacheMiss +
     (tokens.cacheReadTokens / PER_MILLION) * price.cacheHit +
@@ -131,6 +191,7 @@ export function estimateDeepSeekCostUsd(input: {
     price,
     priceVersion: PRICE_VERSION,
     tokens,
+    pricingSource: 'static',
   };
 }
 

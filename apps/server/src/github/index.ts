@@ -11,6 +11,7 @@
  */
 export * from './types.ts';
 export * from './headers.ts';
+export * from './users.ts';
 export * from './errors.ts';
 export * from './auth.ts';
 export * from './octokit.ts';

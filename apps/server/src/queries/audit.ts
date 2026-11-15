@@ -7,8 +7,10 @@
  *   唯一来源是 `webhook_deliveries.payload`，而在查询期解 payload 正是 F9 禁止的做法。
  *   记录为缺口，等入队侧加列（`tasks.actor_association`）后本文件改一行即可。
  * - **跑哪个 sha**：`tasks.head_sha`；issue 判定类没有提交可锚时为 `null`。
- * - **审批判定**：取该 run **最后一条** `kind='approval'` 事件的 `payload{tool,decision,rule}`
- *   （`approval/respond` 的落库约定）；没有审批事件、或形状不完整时为 `null`。
+ * - **审批判定**：取该 run **最后一条** `kind in ('approval.audit', 'approval')` 事件的
+ *   `payload{tool,decision,rule}`。两种写法都要认：`worker/run-task.ts` 写的是 `approval.audit`
+ *   （生产入口），`approval` 是 `approval/respond` 的落库约定；只认一个会让审批列恒 `null`。
+ *   没有审批事件、或形状不完整时为 `null`。
  * - **`truncated`**：命中行数超过 `AUDIT_EXPORT_LIMIT`（50 000，契约常量）时为 true。
  * - CSV 用 `AUDIT_CSV_COLUMNS` 的**顺序**做表头，UTF-8 **带 BOM**，空值写空串（RFC 4180）。
  *
@@ -69,13 +71,17 @@ function auditSelect(params: Params, query: AuditQuery, window: { from: string; 
     where.push(`a.intent = ${params.add(query.intent)}`);
   }
 
+  // 审批判定：取该 run 最后一条 `kind in ('approval.audit','approval')` 的事件。
+  // 两种写法都要认 —— `worker/run-task.ts` 的 `appendEvent()` 写的是 `approval.audit`（生产入口），
+  // `approval` 是 `approval/respond` 的落库约定。只认一个会让审批列恒 null，
+  // 而它看起来像「没有审批」，实际审批发生过（写了但读不到，比不写更危险）。
   return `from actions a
   join runs r on r.id = a.run_id
   join tasks t on t.id = r.task_id
   left join lateral (
     select e.payload
     from run_events e
-    where e.run_id = a.run_id and e.kind = 'approval'
+    where e.run_id = a.run_id and e.kind in ('approval.audit', 'approval')
     order by e.cursor desc
     limit 1
   ) appr on true

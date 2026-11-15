@@ -20,6 +20,7 @@ import {
 import type { EventKey } from '../../../../packages/contract/src/index.ts';
 import { resolveCommentConfig, resolveCommentGates, resolveEventTrigger } from '../config/v21-settings.ts';
 import { findLegalMention } from './mention.ts';
+import type { RoleLoginFallback } from './roles.ts';
 import { matchCommentRole } from './roles.ts';
 
 /* ── 1. 判定结果（严格按 §2 的联合类型） ────────────────────────────────────── */
@@ -48,7 +49,36 @@ export type SkippedReason =
    * 混成一个 reason 的后果是实测踩过的：issue #30 明明被 401 拒了，
    * 审计里写着 `repo-disabled`，而 `repos.enabled` 是 `true`，排查时白绕一圈。
    */
-  | 'signature-invalid';
+  | 'signature-invalid'
+  /**
+   * 请求里**根本没有** `X-Hub-Signature-256` 头（401）。
+   *
+   * 为什么与 `signature-invalid` 分开：两者都是 401，但一个要修 secret（对不上），
+   * 一个要修投递链路（代理/中转没透传请求头）。混成一档，运维会拿着「签名对不上」
+   * 去核对一个压根没发签名的请求。
+   */
+  | 'signature-missing'
+  /** 熔断 / 暂停中（全局 / 安装 / 仓库任一级）：不丢事件、恢复后可 replay，但要留痕。 */
+  | 'paused'
+  /** 安装事件（`installation.*` / `installation_repositories.*`）：只维护 `repos` 行，不进会话。 */
+  | 'installation-event'
+  /** 载荷里没有 `repository.full_name` 且不是安装事件：不知道属于哪个仓库。 */
+  | 'repo-missing'
+  /** `repos` 没有这一行（未知仓库）：配置还没登记，不是「被停用」。 */
+  | 'unknown-repo'
+  /** 仓库行属于 A 安装、投递却来自 B 安装（installation 准入）：会用错 token，必须拒。 */
+  | 'installation-mismatch'
+  /** 读仓库策略失败（库不可用 / 迁移没跑）：病因在基础设施，与仓库配置无关。 */
+  | 'repo-read-failed'
+  /**
+   * 不在本期判定范围的事件（`push` / `issues.reopened|assigned` / `issue_comment.edited|deleted`…）。
+   *
+   * 为什么需要它（BR-6 / FR-6.4③）：`decision = null` 同时承载「还没判定」「不在判定范围」
+   * 「契约外取值」三种含义，面板只能把这一批永不判定的行当「待处理」——组织级 webhook 上
+   * `push` 的量远大于 issue 事件，「待处理」视图会被淹没。与 PR 的 `pr-ignored` 同一语义
+   * （`requirements.html:573` 的「按未触发处理并留痕」），所以这里也要有原因。
+   */
+  | 'out-of-scope';
 
 export type TriggeredDecision = {
   readonly triggered: true;
@@ -56,12 +86,16 @@ export type TriggeredDecision = {
   /** 本次要发给 agent 的指令模板（项目配置优先，缺省用内置默认） */
   readonly template: string;
   readonly reason: TriggeredReason;
+  /** 角色判定里按 login 降级命中的成员（缺省 = 全部按 id 判定，§6.6 坑一） */
+  readonly roleLoginFallbacks?: readonly RoleLoginFallback[];
 };
 
 export type SkippedDecision = {
   readonly triggered: false;
   readonly event: EventKey | 'pull_request.*';
   readonly reason: SkippedReason;
+  /** 角色判定里按 login 降级命中的成员（缺省 = 全部按 id 判定，§6.6 坑一） */
+  readonly roleLoginFallbacks?: readonly RoleLoginFallback[];
 };
 
 export type TriggerDecision = TriggeredDecision | SkippedDecision;
@@ -95,6 +129,13 @@ export type DecideComment = {
   readonly body: string;
   readonly authorAssociation: string | null;
   readonly authorLogin: string | null;
+  /**
+   * 评论人的 GitHub 用户 id（`comment.user.id` / `sender.id`）。
+   *
+   * 为什么判定需要它：角色成员存的是 id（§6.6 坑一：login 会变，旧 login 会被别人注册），
+   * 「匹配以 id 为准」要求作者 id 真的进到判定链。`null` = 载荷没给，判定降级按 login 并留痕。
+   */
+  readonly authorId?: number | null;
 };
 
 export type DecideEventInput = {
@@ -127,6 +168,19 @@ export type DecideEventInput = {
 
 function skip(event: EventKey, reason: SkippedReason): SkippedDecision {
   return { triggered: false, event, reason };
+}
+
+/**
+ * 把「按 login 降级匹配」的留痕挂到判定结果上（空数组 = 不挂，结果形状与以前完全一致）。
+ *
+ * 为什么不在这里直接 `logger.warn`：`decideEvent()` 是纯函数（文件头第一条），
+ * 留痕的落点必须在调用方（`http/webhook-v21.ts` 的 `logger`）。
+ */
+function withRoleFallbacks<D extends TriggerDecision>(decision: D, fallbacks: readonly RoleLoginFallback[]): D {
+  if (fallbacks.length === 0) {
+    return decision;
+  }
+  return { ...decision, roleLoginFallbacks: fallbacks };
 }
 
 /**
@@ -163,6 +217,14 @@ function checkEventCondition(
   return null;
 }
 
+/** 评论闸门的结果：未触发判定 + 角色判定里出现过的降级匹配。 */
+type CommentGateOutcome = {
+  /** 命中闸门时的未触发判定；`null` = 四个闸门全部通过 */
+  readonly skipped: SkippedDecision | null;
+  /** 按 login 降级命中的成员（`require_role` 关着时恒为空） */
+  readonly roleFallbacks: readonly RoleLoginFallback[];
+};
+
 /**
  * 评论闸门（FR-2.4）：四个闸门按固定顺序判，先命中先返回。
  *
@@ -170,19 +232,19 @@ function checkEventCondition(
  * 放在 `require_mention` / `require_role` 之前，留痕原因才指向真正的病因
  * （否则机器人自己在已关闭 issue 下的评论会被记成 `not-mentioned`）。
  */
-function checkCommentGates(input: DecideEventInput): SkippedDecision | null {
+function checkCommentGates(input: DecideEventInput): CommentGateOutcome {
   const gates = resolveCommentGates(input.settings);
   if (gates.ignore_bot && input.actorIsBot === true) {
-    return skip(input.event, 'bot-self');
+    return { skipped: skip(input.event, 'bot-self'), roleFallbacks: [] };
   }
   if (!gates.allow_closed && input.issueState === 'closed') {
-    return skip(input.event, 'closed-not-allowed');
+    return { skipped: skip(input.event, 'closed-not-allowed'), roleFallbacks: [] };
   }
   if (gates.require_mention) {
     const { mentions } = resolveCommentConfig(input.settings);
     const body = input.comment?.body ?? '';
     if (findLegalMention(body, mentions) === null) {
-      return skip(input.event, 'not-mentioned');
+      return { skipped: skip(input.event, 'not-mentioned'), roleFallbacks: [] };
     }
   }
   if (gates.require_role) {
@@ -192,12 +254,15 @@ function checkCommentGates(input: DecideEventInput): SkippedDecision | null {
       allowRoles: gates.allow_roles,
       authorAssociation: input.comment?.authorAssociation ?? null,
       authorLogin: input.comment?.authorLogin ?? null,
+      // 作者 id 来自载荷的用户对象；拿不到就是 `null`，判定侧降级按 login 并留痕（§6.6 坑一）。
+      authorId: input.comment?.authorId ?? null,
     });
     if (!match.allowed) {
-      return skip(input.event, 'role-denied');
+      return { skipped: skip(input.event, 'role-denied'), roleFallbacks: match.loginFallbacks };
     }
+    return { skipped: null, roleFallbacks: match.loginFallbacks };
   }
-  return null;
+  return { skipped: null, roleFallbacks: [] };
 }
 
 /**
@@ -235,10 +300,12 @@ export function decideEvent(input: DecideEventInput): TriggerDecision {
   }
 
   // ④ 评论闸门（仅评论事件有）
+  let roleFallbacks: readonly RoleLoginFallback[] = [];
   if (event === 'issue_comment.created') {
-    const gateSkipped = checkCommentGates(input);
-    if (gateSkipped !== null) {
-      return gateSkipped;
+    const gateOutcome = checkCommentGates(input);
+    roleFallbacks = gateOutcome.roleFallbacks;
+    if (gateOutcome.skipped !== null) {
+      return withRoleFallbacks(gateOutcome.skipped, roleFallbacks);
     }
   }
 
@@ -257,12 +324,15 @@ export function decideEvent(input: DecideEventInput): TriggerDecision {
   const rawPrompt = trigger.prompt ?? '';
   const template = rawPrompt.trim() === '' ? DEFAULT_EVENT_TEMPLATES[event] : rawPrompt;
 
-  return {
+  const triggered: TriggeredDecision = {
     triggered: true,
     event,
     template,
     reason: trigger.enabled === 'on' ? 'enabled' : 'conditional-met',
   };
+  // 降级匹配（按 login 而非 id）必须能被上层记下来：一条「靠可能被顶替的 login 放行」的决定
+  // 与一条「按 id 命中」的决定在留痕里必须可区分（§6.6 坑一）。
+  return withRoleFallbacks(triggered, roleFallbacks);
 }
 
 /**
@@ -273,4 +343,35 @@ export function decideEvent(input: DecideEventInput): TriggerDecision {
  */
 export function decidePullRequest(): PullRequestDecision {
   return { triggered: false, event: 'pull_request.*', reason: 'pr-ignored' };
+}
+
+/**
+ * 「项目当日配额已用尽」的未触发判定（需求 §6.7 SL-3 / `docs/v21-contract.md` §2 的 `daily-quota`）。
+ *
+ * 为什么单独导出而不是让调用方自己拼：`decideEvent()` 的第 ⑥ 步只在**入参**里收到
+ * `dailyQuotaExceeded: true` 时才走这条分支，而配额的读取（`quota_counters`）是异步的、
+ * 发生在判定之后（要先把开关/闸门/去重判完，被拒绝的事件不该吃额度）。
+ * 于是「判完之后、占配额没占到」这一种情况需要一条与第 ⑥ 步**完全同形**的出口，
+ * 否则同一个原因会在两处各拼一份 `{triggered:false, reason:'daily-quota'}`。
+ */
+export function decideDailyQuotaExceeded(event: EventKey): SkippedDecision {
+  return skip(event, 'daily-quota');
+}
+
+/**
+ * 「只知道原因，不知道事件」的判定（BR-6 的写入口需要它）。
+ *
+ * 为什么不能复用 `SkippedDecision`：那个形状带 `event: EventKey`，而外层包装在
+ * 「读到 `repos.settings` 之前就返回」的分支里（暂停 / 安装事件 / 未知仓库 / 验签失败 /
+ * 不在判定范围的 `push`）**确实不知道该事件对应哪个 EventKey**——它不是五个事件之一。
+ * 硬塞一个假的 EventKey 会污染 §2 的判定顺序语义（本文件开头的顺序说明）。
+ *
+ * 用途只有一处：`http/webhook.ts::handleWebhook()` 统一落 `decision` / `decision_reason`，
+ * 它要的只是「触发没触发 + 为什么」，不需要事件键。
+ */
+export function reasonOnlyDecision(reason: SkippedReason): {
+  readonly triggered: false;
+  readonly reason: SkippedReason;
+} {
+  return { triggered: false, reason };
 }

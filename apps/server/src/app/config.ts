@@ -16,8 +16,15 @@
  *     用法错误码，而不是「起来了一半」）；
  *  3. **`describeAppConfig()` 只吐脱敏摘要**：secret / token 一律不出现在日志里（§10.2）。
  */
-import { ConfigError, DEFAULT_BODY_LIMIT_BYTES, defaultMigrationsDir } from '../config/index.ts';
+import {
+  ConfigError,
+  DEFAULT_BODY_LIMIT_BYTES,
+  defaultMigrationsDir,
+  defaultPanelDistDir,
+} from '../config/index.ts';
 import type { EnvLike } from '../config/index.ts';
+// 密钥解析复用 `runtime/crypto.ts` 的唯一实现（那里也是 AES-256-GCM 原语的唯一落点）。
+import { secretKeyFromHex } from '../runtime/crypto.ts';
 
 /** 环境变量名（`deploy/*.service` 的 `EnvironmentFile` 与这里逐字对应）。 */
 export const APP_ENV_KEYS = {
@@ -91,6 +98,16 @@ export const APP_ENV_KEYS = {
   /** 模型名（`gpt-4o-mini`、`deepseek-chat`、`mimo-…`）；兼容别名 `PI_BOT_MODEL` */
   modelName: 'PI_BOT_MODEL_NAME',
   modelNameAlias: 'PI_BOT_MODEL',
+  /** 面板构建产物目录（`vite build` → `apps/panel/dist`）；`off` = 不由本进程托管（交给 Caddy） */
+  panelDir: 'PI_BOT_PANEL_DIR',
+  /**
+   * 加密密钥（64 个 hex = 32 字节，AES-256-GCM）：供应商 key 与面板个人 PAT 的落库密文都用它。
+   *
+   * 为什么不复用 `PI_BOT_HOST_KEY`：那一个归 pi-host 设备令牌（`host_credentials`），
+   * 轮换节奏不同——换模型 key 的加密密钥不该让已配对的 Host 全部失效，反之亦然。
+   * 与 `runtime/crypto.ts` 的约定一致：本进程只把解析后的 32 字节交给调用方。
+   */
+  secretsKey: 'PI_BOT_SECRETS_KEY',
 } as const;
 
 /** 缺省值（来源写在注释里，不做路径推导）。 */
@@ -188,6 +205,15 @@ export interface AppConfig {
   };
   /** 数据目录（磁盘水位检查的对象；也用作 job/cache 的缺省父目录） */
   readonly dataDir: string;
+  /** 面板构建产物目录；`null` = 不托管静态资源（`/` 保持 404，由 Caddy / nginx 发） */
+  readonly panelDistDir: string | null;
+  /**
+   * 供应商 key / 面板个人 PAT 的加密密钥（32 字节）。
+   *
+   * `null` = 没配 `PI_BOT_SECRETS_KEY`：此时设置写面的**写接口**不可用（启动期 warn、调用期 503），
+   * 读接口与其它一切照旧 —— 不静默把 key 存成明文，也不因此让整个服务起不来。
+   */
+  readonly secretsKey: Uint8Array | null;
 }
 
 /* ── 读取原语 ─────────────────────────────────────────────────────────────── */
@@ -275,6 +301,20 @@ function normalizeModelBaseUrl(raw: string, key: string): string {
 /* ── 装配 ─────────────────────────────────────────────────────────────────── */
 
 /**
+ * 面板构建产物目录：`off` = 不托管（交给 Caddy），空 = 默认 `<仓库>/apps/panel/dist`。
+ *
+ * 为什么默认就托管：快速开始写着「3000 上有面板用的静态资源」，而这条链路一直没接
+ * （2026-11-13 实机：`GET /` → 404）。默认开 + `off` 可关，两种部署都不需要改代码。
+ */
+function panelDistDirOf(env: EnvLike): string | null {
+  const raw = readString(env, APP_ENV_KEYS.panelDir);
+  if (raw === null) {
+    return defaultPanelDistDir();
+  }
+  return raw.toLowerCase() === 'off' ? null : raw;
+}
+
+/**
  * 从 env 装配 `AppConfig`。缺关键项抛 `ConfigError`（CLI 捕获后以用法错误码退出）。
  *
  * 关键项只有两个：**PG DSN** 与 **webhook secret**。前者缺了整个进程没有状态，
@@ -345,6 +385,21 @@ export function readAppConfig(env: EnvLike): AppConfig {
       ? panelWriteValue
       : 'loopback';
 
+  // 加密密钥（供应商 key / 面板个人 PAT）：**缺它不禁用整个服务**，只关掉这两个写接口。
+  // 为什么不在启动时炸：没配它之前的部署照样能跑（dry-run 观察期尤其如此），
+  // 而「把 key 存成明文」才是真正不能发生的事 —— 所以这里是「先可用、后要求」的一步。
+  const secretsKeyRaw = readString(env, APP_ENV_KEYS.secretsKey);
+  let secretsKey: Uint8Array | null = null;
+  if (secretsKeyRaw !== null) {
+    try {
+      secretsKey = secretKeyFromHex(secretsKeyRaw);
+    } catch (error) {
+      throw new ConfigError(
+        `${APP_ENV_KEYS.secretsKey} 必须是 64 个 hex 字符（32 字节）：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   return {
     pgDsn: dsn.value,
     migrationsDir: readString(env, APP_ENV_KEYS.migrationsDir) ?? defaultMigrationsDir(),
@@ -404,6 +459,8 @@ export function readAppConfig(env: EnvLike): AppConfig {
       allowPushBranch: readBoolean(env, APP_ENV_KEYS.allowPushBranch, APP_DEFAULTS.allowPushBranch),
     },
     dataDir,
+    panelDistDir: panelDistDirOf(env),
+    secretsKey,
   };
 }
 
@@ -448,6 +505,8 @@ export function describeAppConfig(config: AppConfig): Readonly<Record<string, un
       dataDir: config.host.dataDir,
       deviceTokenConfigured: config.host.token !== null,
     },
+    // 密钥格局：只报「配没配」，值永不出现（§10.2 值级脱敏第一条）。
+    secretsKeyConfigured: config.secretsKey !== null,
     worker: { image: config.worker.image, network: config.worker.network },
   };
 }

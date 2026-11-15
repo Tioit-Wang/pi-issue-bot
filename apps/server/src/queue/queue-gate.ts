@@ -39,12 +39,48 @@ export const QUEUE_GATE_REACTION = 'confused' as const;
  * 传进来的秒数是**所有仓库里最小的**那个阈值（见 `jobs/queue-gate.ts`）：SQL 只做粗筛，
  * 精确边界由 `isQueueTimedOut(candidate, now, 该仓库的阈值)` 在 JS 侧判定——
  * 一条 SQL 服务多个阈值，避免「按仓库分组跑 N 次全表扫描」。
+ *
+ * **排除「等槽」的任务（需求 §6.7 SL-2：并发触顶 = 排队等待、不丢弃）。**
+ * 一个仓库已经在跑的任务数达到它的项目级并发上限时，它排队中的任务是在**等槽**，
+ * 此时把它们判成 `cancelled_queue` 就是「触顶即丢弃」，直接违反需求。所以这一段用
+ * `NOT EXISTS` 把「本仓库 running 数 >= 本仓库并发上限」的行整批排除在候选之外：
+ * 只要还有槽位被占着，排队就继续排；等槽位空出来，任务照常被 worker 领走。
+ *
+ * 为什么把上限读在 SQL 里而不是 JS 侧：取消与否的判定发生在「哪些行是候选」这一层，
+ * 而这个文件是候选集的唯一来源；在同一处读 `repos.settings` 才能保证
+ * 「谁生效」与 `concurrencyPerRepoOf()` 完全一致（v2.1 的 `agent.limits.concurrency`
+ * 优先，老键 `limits.concurrency_per_repo` 只兜底，都没有就 2）。
+ * `jsonb_typeof(...) = 'number'` 是必要的守卫：直接 `::int` 会在手改库写成字符串时抛错，
+ * 而排队闸门必须**永远能工作**（宁可这一轮不取消，也不能让整条定时任务失败）。
  */
 export const QUEUE_GATE_SQL = `SELECT "id", "repo", "target_kind", "target_number", "command", "queued_at"
 FROM "tasks"
 WHERE "status" = $1
   AND "queued_at" IS NOT NULL
   AND now() - "queued_at" > make_interval(secs => $2)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "tasks" "running"
+    -- LEFT JOIN 而非 JOIN：repos 表里没有这一行时也要有「默认 2」的读数，
+    -- 否则等槽保护直接落空（那种仓库的排队行会被当成超时取消）
+    LEFT JOIN "repos" "cfg" ON "cfg"."repo_full_name" = "running"."repo"
+    WHERE "running"."status" = 'running'
+      AND "running"."repo" = "tasks"."repo"
+    GROUP BY "cfg"."settings"
+    HAVING count(*) >= GREATEST(
+      1,
+      LEAST(
+        8,
+        CASE
+          WHEN jsonb_typeof("cfg"."settings" #> '{agent,limits,concurrency}') = 'number'
+            THEN ("cfg"."settings" #>> '{agent,limits,concurrency}')::int
+          WHEN jsonb_typeof("cfg"."settings" #> '{limits,concurrency_per_repo}') = 'number'
+            THEN ("cfg"."settings" #>> '{limits,concurrency_per_repo}')::int
+          ELSE 2
+        END
+      )
+    )
+  )
 ORDER BY "queued_at"
 LIMIT $3`;
 
@@ -200,4 +236,110 @@ export function smallestQueueWaitSeconds(minutes: readonly number[]): number {
     return QUEUE_WAIT_LIMIT_SECONDS;
   }
   return Math.min(...minutes) * 60;
+}
+/* ── 满载导致的永久挂起：只做可观测（需求 §6.7 SL-2「排队等待、不丢弃」的代价）────────── */
+
+/**
+ * 一次最多报多少个「被本仓库满载挡住」的仓库。
+ *
+ * 这不是业务限额，是日志上限：一个仓库一个聚合行，正常只有个位数；
+ * 留一个上限是为了「有人手工造了上百个仓库配置」时也不会把日志刷爆。
+ */
+export const QUEUE_GATE_STARVATION_BATCH_LIMIT = 20;
+
+/**
+ * 「排队行因**本仓库满载**被 `QUEUE_GATE_SQL` 排除、且已等待超过粗筛阈值」的聚合查询。
+ *
+ * 为什么需要它：`NOT EXISTS` 保护让等槽的任务不被取消 —— 这是需求要的「触顶排队、不丢弃」，
+ * 但代价是**某个仓库真的永久满载**时（任务卡在 `running` 却没人推进），它的排队行会被永远
+ * 排除在候选之外，闸门一声不响。运维需要一条能被告警的痕迹，而不是事后从「任务怎么排了三小时」
+ * 里倒推。这条查询**只读**：不取消、不改状态，命中与否都不影响 `QUEUE_GATE_SQL` 的判定。
+ *
+ * 参数：`$1 = status`（`TASK_STATUS.queued`）、`$2 = 粗筛秒数`（所有仓库阈值里最小的那个，
+ * 与 `QUEUE_GATE_SQL` 同一个值）、`$3 = 批量上限`。粗筛条件与并发上限读数（新键 → 老键 → 2）
+ * 都刻意与 `QUEUE_GATE_SQL` 保持一致：两处指的必须是同一批行，否则告警数与实际被挡的行数对不上。
+ *
+ * 返回的列全部在 SQL 里转成数字（`count(*)::int`、`floor(extract(epoch ...))::int`），
+ * 避免 `pg` 把 interval 变成对象再在 JS 侧猜格式：
+ *  - `repo`：仓库全名
+ *  - `waiting`：被挡住的排队行数
+ *  - `max_wait_seconds`：其中最长的一条等了多久（= 最早那条 `queued_at` 的等待秒数）
+ *  - `running`：该仓库当前 `running` 行数
+ *  - `limit_value`：该仓库的并发上限
+ */
+export const QUEUE_GATE_STARVATION_SQL = `SELECT "w"."repo" AS "repo",
+  "w"."waiting" AS "waiting",
+  "w"."max_wait_seconds" AS "max_wait_seconds",
+  "cap"."running" AS "running",
+  "cap"."limit_value" AS "limit_value"
+FROM (
+  SELECT "t"."repo" AS "repo",
+    count(*)::int AS "waiting",
+    floor(extract(epoch FROM (now() - min("t"."queued_at"))))::int AS "max_wait_seconds"
+  FROM "tasks" "t"
+  WHERE "t"."status" = $1
+    AND "t"."queued_at" IS NOT NULL
+    AND now() - "t"."queued_at" > make_interval(secs => $2)
+  GROUP BY "t"."repo"
+) "w"
+JOIN LATERAL (
+  SELECT count(*)::int AS "running",
+    -- 与 QUEUE_GATE_SQL 完全同源：新键 → 老键 → 2，且夹到 1–8；
+    -- COALESCE(..., 2) 让「repos 表里没有这一行」也算默认 2，与 JS 侧 concurrencyPerRepoOf(null) 一致
+    COALESCE(
+      (
+        SELECT GREATEST(
+          1,
+          LEAST(
+            8,
+            CASE
+              WHEN jsonb_typeof("cfg"."settings" #> '{agent,limits,concurrency}') = 'number'
+                THEN ("cfg"."settings" #>> '{agent,limits,concurrency}')::int
+              WHEN jsonb_typeof("cfg"."settings" #> '{limits,concurrency_per_repo}') = 'number'
+                THEN ("cfg"."settings" #>> '{limits,concurrency_per_repo}')::int
+              ELSE 2
+            END
+          )
+        )
+        FROM "repos" "cfg"
+        WHERE "cfg"."repo_full_name" = "w"."repo"
+      ),
+      2
+    ) AS "limit_value"
+  FROM "tasks" "r"
+  WHERE "r"."status" = 'running' AND "r"."repo" = "w"."repo"
+) "cap" ON true
+WHERE "cap"."running" >= "cap"."limit_value"
+ORDER BY "w"."max_wait_seconds" DESC
+LIMIT $3`;
+
+/** `QUEUE_GATE_STARVATION_SQL` 的一行：一个被本仓库满载挡住的仓库。 */
+export type QueueGateStarvedRepo = {
+  readonly repo: string;
+  /** 被挡住的排队行数 */
+  readonly waiting: number;
+  /** 其中最早那条已经等了多少秒 */
+  readonly maxWaitSeconds: number;
+  /** 该仓库当前 `running` 行数 */
+  readonly running: number;
+  /** 该仓库的并发上限（与 `concurrencyPerRepoOf()` 同优先级：新键 → 老键 → 2） */
+  readonly limit: number;
+};
+
+/**
+ * 判断一条满载聚合是否值得报警；值得就原样返回（供结构化日志直接落字段），否则 `null`。
+ *
+ * 判据与「取消」用的是**同一条线**：最长等待**严格大于**该仓库的 `queue_wait_minutes`。
+ * 换算成人话就是「这条本来该被闸门取消，只因为仓库满载才留着」—— 那正是要报警的现场；
+ * 刚开始等、或者只是短暂满载的仓库不该刷日志。
+ */
+export function starvationWarningOf(
+  row: QueueGateStarvedRepo,
+  limitMinutes: number,
+): QueueGateStarvedRepo | null {
+  if (!Number.isFinite(row.maxWaitSeconds) || row.maxWaitSeconds <= 0) {
+    // 没有等待时长就没有「卡住」的证据（与 isQueueTimedOut 对 queued_at 为空的保守口径一致）
+    return null;
+  }
+  return row.maxWaitSeconds > limitMinutes * 60 ? row : null;
 }

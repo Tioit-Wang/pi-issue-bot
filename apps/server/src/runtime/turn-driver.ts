@@ -22,6 +22,15 @@
  */
 
 import {
+  COMPACTION_LIMIT_CODE,
+  messagesFromSnapshotItems,
+} from '../compact/turn-compaction.ts';
+import type {
+  TurnCompactionOutcome,
+  TurnCompactionPort,
+  TurnCompactionRebuild,
+} from '../compact/turn-compaction.ts';
+import {
   INPUT_UNAVAILABLE_ANSWER,
   answerInputRequest,
   decideApproval,
@@ -59,6 +68,17 @@ export type SessionPlan =
  */
 export type SessionAttachResult = {
   readonly cursor?: number | { readonly sequence?: number | null } | null;
+  /**
+   * 快照里的会话条目（`SessionSnapshot.items`）。
+   *
+   * **为什么这里要它**：FR-5.6 的压缩需要「宿主侧真实历史」，而 `attach` 快照是 RACP 目前
+   * 唯一给出历史的 operation（没有 `session/history`）。类型留成 `unknown[]` 是因为条目内容
+   * 形状（`ItemSummary.content`）属于宿主私有结构，抽取的容错逻辑放在
+   * `compact/turn-compaction.ts::messagesFromSnapshotItems()`，driver 不猜它。
+   */
+  readonly items?: readonly unknown[];
+  /** `true` = 快照只给了第一页，更老的历史读不到（压缩侧的 token 估算因此是下界）。 */
+  readonly hasMoreHistory?: boolean;
 };
 
 /** 从 `session/attach` 的返回值里取数字游标（取不到给 `null`）。 */
@@ -196,7 +216,13 @@ export interface TurnDriveResult {
    * 上层据此写 `issue_pipeline.session_cursor`；`ephemeral` 也会给（无害，便于观测）。
    */
   readonly cursor: number | null;
-  /** `true` = 这一轮本该复用会话但 `session/attach` 失败，已新建会话（不阻塞）。 */
+  /**
+   * `true` = 本轮**上下文被重置过**，上层据此把 `agent_sessions.turns` 归零
+   * （新会话没有旧正文历史，下一轮必须重新下发全文）。两种来源，都是「新会话、空历史」：
+   *  1. 本该复用会话但 `session/attach` 失败 → 新建会话继续（不阻塞）；
+   *  2. 压缩后**换会话重建**（FR-5.6「喂给模型的内容 = 从最新 checkpoint 重建」）——
+   *     旧会话归档，新会话只拿到重建视图（摘要 + 保留的真实最近消息）。
+   */
   readonly sessionReset: boolean;
 }
 
@@ -239,6 +265,14 @@ export interface TurnDriverParams {
    * operation 调用（§10.5「light 跳过 diff 采集」）。缺省 `true` 保证老任务行为不变。
    */
   readonly collectDiff?: boolean;
+  /**
+   * 请求前的压缩检查点（FR-5.6）。**不注入 = 与接线前逐字节一致**（老部署、老任务、单测）。
+   *
+   * 位置是需求明写的「请求发出前」：`session/attach` 之后（此刻拿得到宿主侧历史）、
+   * `turn/start` 之前（此刻还来得及拒发）。返回 `send:false` 时本文件**不发送请求**，
+   * 直接以 `COMPACTION_HARD_LIMIT` 抛出 —— 宁可失败并留痕，也不发一个注定被 provider 拒掉的包。
+   */
+  readonly compaction?: TurnCompactionPort;
   /** 事件源：上层用 `client.onEvent()` 装配；测试注入假事件流。 */
   readonly events: (context: { readonly sessionId: string; readonly turnId: string }) => AsyncIterable<EventEnvelope>;
   /** 每条事件都过一遍（落 `run_events`）；抛错会被记下但不中断任务。 */
@@ -335,7 +369,16 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
   let turnId: string | undefined;
   let after = requestedAfter;
   let sessionReset = false;
+  /** `true` = 压缩后换过会话（旧会话归档，新会话从重建视图开始）—— 也要把 `sessionReset` 交给上层。 */
+  let sessionRebuilt = false;
   let cursor: number | null = null;
+  /**
+   * `session/attach` 的快照（`null` = 没 attach / attach 失败）。
+   *
+   * 压缩检查点要的历史只能从这里拿（RACP 没有 `session/history`），所以快照必须活到
+   * 第 3.5 步，不能像以前那样用完即弃。
+   */
+  let attachSnapshot: SessionAttachResult | null = null;
 
   try {
     return await runWithDeadline(
@@ -358,6 +401,7 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
         // —— 面板要能解释「为什么这一轮的上下文断了一次」。
         if (persistent && plan.sessionId !== undefined && plan.sessionId !== '') {
           const attached = await attachSession(params.ops, plan.sessionId, logger);
+          attachSnapshot = attached;
           if (attached !== null) {
             sessionId = plan.sessionId;
             // 没显式给 `after` 时用快照游标兜底：至少不会从 0 重放整段历史
@@ -393,10 +437,66 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
 
         // 3. events/subscribe（`after` = 上一轮游标；`ephemeral` 恒从 0 开始）
         await params.ops.eventsSubscribe({ sessionId, after }, requestOptions);
+        // 3.5 压缩检查点（FR-5.6「检查点固定在请求发出前」）
+        //
+        // 为什么必须夹在这里：历史只能从第 2 步的 `session/attach` 快照里拿，而 `turn/start`
+        // 是唯一真正的「请求发出」。再早拿不到历史，再晚就来不及拒发。
+        //
+        // `compaction` 未注入 / 快照里没历史（`ephemeral` 会话、本轮新建会话）→ 原样返回提示词，
+        // 提示词与本层接线前**逐字节一致**。
+        const decision = await runCompactionCheckpoint({
+          compaction: params.compaction,
+          sessionId,
+          turnText: params.prompt,
+          snapshot: attachSnapshot,
+          logger,
+        });
 
-        // 4. turn/start
+        // 3.6 换会话重建（FR-5.6「喂给模型的内容 = 从最新 checkpoint 重建」）
+        //
+        // 为什么是「换会话」而不是「拼前缀」：RACP 没有「替换会话上下文」的 operation
+        // （`packages/racp-client/src/ops.ts` 全表核对过），`turn/start` 只带 `{ messageId, text }`。
+        // 换一个会话 = 宿主侧上下文真的变空，重建视图因此真的比原来小；原始对话一条不删，
+        // 它们仍在 `agent_messages` / `agent_compactions` 里（后台视图）。
+        //
+        // 换会话失败**不判死任务**：退回前缀路径（不减小请求，但至少能跑完这一轮），并留 warn。
+        let turnText = decision.text;
+        if (decision.rebuild !== null) {
+          const rebuiltSessionId = await rebuildSession({
+            ops: params.ops,
+            projectId,
+            sessionId,
+            ...(params.systemPrompt === undefined ? {} : { systemPrompt: params.systemPrompt }),
+            ...(params.title === undefined ? {} : { title: params.title }),
+            logger,
+            requestOptions,
+          });
+          if (rebuiltSessionId === null) {
+            logger.warn(
+              { sessionId },
+              '压缩检查点：换会话重建失败，退回前缀路径（本轮请求没有变小，原始历史未丢）',
+            );
+          } else {
+            logger.info(
+              {
+                from: sessionId,
+                to: rebuiltSessionId,
+                rebuiltTokens: decision.rebuild.tokens,
+                recentMessages: decision.rebuild.recentMessages,
+              },
+              '压缩检查点：换会话重建上下文（旧会话已归档，新会话只拿到摘要 + 最近真实消息）',
+            );
+            sessionId = rebuiltSessionId;
+            // 新会话没有任何历史事件：订阅从 0 开始，游标也从头计
+            after = 0;
+            turnText = decision.rebuild.text;
+            sessionRebuilt = true;
+          }
+        }
+
+        // 4. turn/start（`turnText` = 重建视图 / checkpoint 前缀 / 临边提醒，见第 3.5–3.6 步）
         const turn = await params.ops.turnStart(
-          { sessionId, input: { messageId: params.messageId, text: params.prompt } },
+          { sessionId, input: { messageId: params.messageId, text: turnText } },
           requestOptions,
         );
         turnId = turn.id;
@@ -456,7 +556,8 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
           archived,
           sessionMode: plan.mode,
           cursor,
-          sessionReset,
+          // 换过会话同样是「上下文被重置」（见 `TurnDriveResult.sessionReset`）
+          sessionReset: sessionReset || sessionRebuilt,
         } satisfies TurnDriveResult;
       },
     );
@@ -470,6 +571,155 @@ export async function driveTurn(params: TurnDriverParams): Promise<TurnDriveResu
     }
     throw appError;
   }
+}
+
+/** 压缩检查点的结论（两种「本轮怎么发」的入口，见第 3.5–3.6 步）。 */
+type CompactionDecision = {
+  /** 不换会话时本轮要发的文本（checkpoint 前缀 / 临边提醒 / 原文） */
+  readonly text: string;
+  /** 有值 = 端口要求换会话重建（`null` = 走 `text`） */
+  readonly rebuild: TurnCompactionRebuild | null;
+};
+
+/**
+ * 请求前的压缩检查点（FR-5.6）。
+ *
+ * 三件事，按责任划清：
+ *  1. 把「宿主侧真实历史」从快照里还原出来（形状容错在 `compact/turn-compaction.ts`）；
+ *  2. 调端口。**端口约定不抛**，这里再兜一次：压缩器自己炸了不能把一轮已经跑到这里、
+ *     捧着一条完整提示词的任务判死（代价 = 按原文发送，见端口注释）；
+ *  3. `send:false` → **不发送请求**，抛 `COMPACTION_HARD_LIMIT`。需求原文是「过了硬边界
+ *     不发送请求，宁可失败也不发一个注定被拒的包」，所以失败要带足够的原因去留痕
+ *     （`details` 里有 beforeTokens / hardLimit / layers）。
+ *
+ * 本函数**不换会话、不发送**：换会话是 ops 的事（`rebuildSession()`），发送点只有
+ * 第 4 步的 `turn/start` 一处。这里只决定「这一步要不要换、换了发什么」。
+ *
+ * 为什么读 `snapshot.items` 而不是自己查库：`run_events` 是我们**看到的事件**，不是宿主
+ * 真正喂给模型的消息（`item.delta` 都不落库）；拿事件流冒充历史会让压缩算错量级。
+ */
+async function runCompactionCheckpoint(input: {
+  readonly compaction: TurnCompactionPort | undefined;
+  readonly sessionId: string;
+  readonly turnText: string;
+  readonly snapshot: SessionAttachResult | null;
+  readonly logger: Logger;
+}): Promise<CompactionDecision> {
+  if (input.compaction === undefined) {
+    return { text: input.turnText, rebuild: null };
+  }
+
+  const items = input.snapshot?.items;
+  const history = items === undefined ? [] : messagesFromSnapshotItems(items);
+  const historyComplete = input.snapshot?.hasMoreHistory !== true;
+
+  let outcome: TurnCompactionOutcome;
+  try {
+    outcome = await input.compaction({
+      sessionId: input.sessionId,
+      turnText: input.turnText,
+      history,
+      historyComplete,
+    });
+  } catch (error) {
+    // 端口承诺不抛；真抛了按原文发送（同端口注释里的取舍），但必须能被发现
+    input.logger.warn(
+      { code: isAppError(error) ? error.code : 'UNKNOWN' },
+      '压缩检查点异常（按原文发送本轮请求）',
+    );
+    return { text: input.turnText, rebuild: null };
+  }
+
+  if (!outcome.send) {
+    throw new AppError(outcome.message, {
+      code: outcome.code === '' ? COMPACTION_LIMIT_CODE : outcome.code,
+      failureClass: 'model',
+      // 不重试：同一份历史重投一次还是同一个 token 数，重试只会把 20min 的任务时限烧在这里
+      retriable: false,
+      details: { ...outcome.details },
+    });
+  }
+
+  if (outcome.note !== null) {
+    input.logger.info(
+      {
+        generation: outcome.note.generation,
+        beforeTokens: outcome.note.beforeTokens,
+        afterTokens: outcome.note.afterTokens,
+        summaryChars: outcome.note.summaryChars,
+        fallback: outcome.note.fallback,
+        layers: outcome.note.layers,
+        historyComplete: outcome.note.historyComplete,
+        rebuild: outcome.rebuild !== undefined,
+      },
+      '压缩检查点：已追加一条 checkpoint（压缩记录已落 agent_compactions，原始对话未改写）',
+    );
+  } else if (outcome.reminder !== null) {
+    input.logger.debug({ tier: outcome.reminder }, '本轮请求已带上临边提醒（该档只响一次）');
+  }
+
+  return { text: outcome.text, rebuild: outcome.rebuild ?? null };
+}
+
+/**
+ * 压缩后的「换会话重建」（FR-5.6「喂给模型的内容 = 从最新 checkpoint 重建」）。
+ *
+ * 为什么必须换会话：`packages/racp-client/src/ops.ts` 的全部 operation 里没有「替换会话上下文」，
+ * `turn/start` 只接受 `{ messageId, text }`。所以「重建」只能落成「新会话 + 一段自包含正文」：
+ * 新会话的宿主上下文是空的，重建视图因此真的比原来小；原始对话一条不删，仍在
+ * `agent_messages` / `agent_compactions`（后台视图）。
+ *
+ * 顺序与失败取舍（`null` = 换会话失败，调用方退回前缀路径）：
+ *  1. 先 `session/create`：失败就返回 `null`，旧会话还能用 —— 任务不该因为「压缩器想换会话
+ *     但宿主建不出来」而失败；
+ *  2. 再在新会话上 `events/subscribe`：订阅是按 sessionId 的，旧会话那条订阅读不到新事件；
+ *     这一步失败也返回 `null`（宁可退回前缀，也不要在一个没订阅的会话上发 turn，那样事件全丢）；
+ *  3. 最后才 `session/archive` 旧会话 —— 它是清理动作，失败只 warn：新会话已可用，
+ *     不该因为「旧的没归档成功」把这一轮判死。反过来（先归档再建）会把任务卡在没有会话的状态上。
+ */
+async function rebuildSession(input: {
+  readonly ops: TurnDriverOps;
+  readonly projectId: string;
+  readonly sessionId: string;
+  readonly systemPrompt?: string;
+  readonly title?: string;
+  readonly logger: Logger;
+  readonly requestOptions: RequestOptions;
+}): Promise<string | null> {
+  let createdId: string;
+  try {
+    const created = await input.ops.sessionCreate(
+      {
+        projectId: input.projectId,
+        permissionMode: 'ask',
+        mode: 'agent',
+        // 身份走 system 通道：新会话是全新上下文，system 提示词必须跟着一起给
+        ...(input.systemPrompt === undefined || input.systemPrompt === ''
+          ? {}
+          : { systemPrompt: input.systemPrompt }),
+        ...(input.title === undefined ? {} : { title: input.title }),
+      },
+      input.requestOptions,
+    );
+    createdId = created.id;
+    await input.ops.eventsSubscribe({ sessionId: createdId, after: 0 }, input.requestOptions);
+  } catch (error) {
+    input.logger.warn(
+      { sessionId: input.sessionId, code: isAppError(error) ? error.code : 'UNKNOWN' },
+      '换会话重建失败：新会话不可用，退回 checkpoint 前缀路径（这一轮照常跑，但请求没有变小）',
+    );
+    return null;
+  }
+
+  try {
+    await input.ops.sessionArchive({ sessionId: input.sessionId }, input.requestOptions);
+  } catch (error) {
+    input.logger.warn(
+      { sessionId: input.sessionId, code: isAppError(error) ? error.code : 'UNKNOWN' },
+      '换会话重建：旧会话归档失败（Host 可能不提供该 operation；不影响本轮）',
+    );
+  }
+  return createdId;
 }
 
 /**

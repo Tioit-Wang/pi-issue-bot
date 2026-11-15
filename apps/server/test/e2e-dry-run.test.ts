@@ -197,7 +197,7 @@ describe('e2e dry-run：webhook → worker → 信封（真 PG，GitHub 零副�
 
     // 3) 装配确实连到了 host（否则上面全是空跑）
     expect(host.calls.map((call) => call.method)).toContain('turn/start');
-    // 持久会话：首轮走 `session/create`（`session/archive` 只在轮换时发生，不再是每轮固定动作）
+    // 持久会话：首轮走 `session/create`；之后（FR-3.4）永不轮换 → 不存在 `session/archive`
     expect(host.calls.map((call) => call.method)).toContain('session/create');
 
     // 贴给 PM 的证据行（`npx vitest run apps/server/test/e2e-dry-run.test.ts` 时可见）

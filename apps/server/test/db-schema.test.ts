@@ -24,7 +24,11 @@ import {
   issueStates,
   labelDecisions,
   agentSessions,
+  modelProviders,
+  modelRoles,
+  panelIdentities,
   quotaCounters,
+  repoModelRoles,
   repos,
   runtimeFlags,
   tasks,
@@ -63,7 +67,25 @@ const AGENT_TABLES = ['agent_sessions', 'agent_messages', 'agent_denials'] as co
 /** v2.1 新增的两张表（`migrations/0011_v21.sql`）：评论槽位 + 压缩记录。 */
 const V21_TABLES = ['comment_slots', 'agent_compactions'] as const;
 
-const EXPECTED_TABLES = [...INIT_TABLES, ...MULTI_REPO_TABLES, ...AGENT_TABLES, ...V21_TABLES] as const;
+/**
+ * v2.1 修复新增的五张表（`migrations/0013_wp9_model_providers.sql`）：
+ * 供应商 / 模型角色 / 项目覆盖 / 面板身份 / 退回留痕（需求 §6.8、§6.9）。
+ */
+const WP9_TABLES = [
+  'model_providers',
+  'model_roles',
+  'repo_model_roles',
+  'panel_identities',
+  'identity_fallbacks',
+] as const;
+
+const EXPECTED_TABLES = [
+  ...INIT_TABLES,
+  ...MULTI_REPO_TABLES,
+  ...AGENT_TABLES,
+  ...V21_TABLES,
+  ...WP9_TABLES,
+] as const;
 
 /** `0003_multi_repo.sql`：纯新增的列与表（`ALTER TABLE ADD COLUMN` / `CREATE TABLE`）。 */
 const MIGRATION_0003 = path.join(REPO_ROOT, 'migrations', '0003_multi_repo.sql');
@@ -75,9 +97,9 @@ async function readMigration(): Promise<string> {
   return readFile(MIGRATION_FILE, 'utf8');
 }
 
-describe('db/schema：24 张表', () => {
-  it('表名清单 = tech-plan §7.2 的 16 张 + 多仓库 3 张 + issue agent 3 张 + v2.1 2 张（无多无少）', () => {
-    expect(ALL_TABLE_NAMES.length).toBe(24);
+describe('db/schema：29 张表', () => {
+  it('表名清单 = 0000 的 16 + 多仓库 3 + issue agent 3 + v2.1 2 + 供应商与身份 5（无多无少）', () => {
+    expect(ALL_TABLE_NAMES.length).toBe(29);
     expect([...ALL_TABLE_NAMES].sort()).toEqual([...EXPECTED_TABLES].sort());
   });
 
@@ -361,5 +383,64 @@ describe('v2.1 的增量列与两张新表（db/schema ↔ 0011_v21.sql）', () 
     expect(sql).not.toMatch(/ALTER COLUMN/i);
     // 语句分隔符是迁移运行器切句的依据（不要按分号切：函数体里有分号）
     expect(sql).toContain('--> statement-breakpoint');
+  });
+});
+
+describe('供应商 / 模型角色 / 面板身份的表与迁移（db/schema ↔ 0013 / 0015）', () => {
+  /** `0013_wp9_model_providers.sql`：五张表的建表语句（需求 §6.8、§6.9）。 */
+  const MIGRATION_0013 = path.join(REPO_ROOT, 'migrations', '0013_wp9_model_providers.sql');
+  /** `0015_panel_identity_scopes_nullable.sql`：`scopes` 放宽为可空（区分「未检查」与「没有 scope」）。 */
+  const MIGRATION_0015 = path.join(REPO_ROOT, 'migrations', '0015_panel_identity_scopes_nullable.sql');
+
+  it('五张新表都在 schema 里，且列与迁移一致', async () => {
+    const sql = await readFile(MIGRATION_0013, 'utf8');
+    for (const table of [
+      'model_providers',
+      'model_roles',
+      'repo_model_roles',
+      'panel_identities',
+      'identity_fallbacks',
+    ]) {
+      expect(sql).toContain(`CREATE TABLE IF NOT EXISTS "${table}"`);
+      expect([...ALL_TABLE_NAMES]).toContain(table);
+    }
+    // 关键列：key 只存密文 + 掩码（真值永不落库）
+    expect(sql).toContain('"key_enc" text');
+    expect(sql).toContain('"key_mask" text');
+    expect(sql).not.toMatch(/"key_enc" text NOT NULL/);
+    // 身份：密文 + 掩码 + 过期时刻
+    expect(sql).toContain('"token_enc" text NOT NULL');
+    expect(sql).toContain('"token_mask" text NOT NULL');
+    expect(sql).toContain('"token_expires_at" timestamp with time zone');
+    // 时间列一律 timestamptz
+    expect(sql).not.toMatch(/"\w+" timestamp(?! with time zone)/);
+    // 不建外键（AGENTS §7.4）
+    expect(sql).not.toMatch(/FOREIGN KEY|REFERENCES/i);
+    expect(sql).toContain('--> statement-breakpoint');
+  });
+
+  it('panel_identities.scopes 可空（NULL = 还没检查过；[] = 检查了但没 scope）', async () => {
+    const columns = getTableColumns(panelIdentities);
+    expect(columns.scopes.notNull).toBe(false);
+    const sql = await readFile(MIGRATION_0015, 'utf8');
+    expect(sql).toContain('ALTER COLUMN "scopes" DROP NOT NULL');
+    expect(sql).toContain('--> statement-breakpoint');
+  });
+
+  it('模型目录的单价不在角色表上（挂在模型上，项目覆盖后单价才查得到）', () => {
+    const roleColumns = getTableColumns(modelRoles);
+    expect(Object.keys(roleColumns)).toEqual(expect.arrayContaining(['role', 'providerId', 'model']));
+    expect(Object.keys(roleColumns)).not.toContain('inputPriceUsdPerMtok');
+    // 目录本身是 provider 的 jsonb 列
+    expect(Object.keys(getTableColumns(modelProviders))).toContain('models');
+  });
+
+  it('项目级覆盖是「稀疏」的：主键 (repo, role)，没有默认行', () => {
+    const columns = getTableColumns(repoModelRoles);
+    expect(Object.keys(columns)).toEqual(expect.arrayContaining(['repo', 'role', 'providerId', 'model']));
+    expect(columns.repo.notNull).toBe(true);
+    expect(columns.role.notNull).toBe(true);
+    // 没有「默认继承」这样的默认值：没有行就是继承（删行即继承）
+    expect(columns.providerId.hasDefault).toBe(false);
   });
 });

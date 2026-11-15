@@ -13,16 +13,21 @@
  */
 
 export {
-  EXPIRE_IN_SECONDS_DEFAULT,
-  EXPIRE_IN_SECONDS_REVIEW_PR,
+  DEFAULT_TURN_TIMEOUT_MINUTES,
+  EXPIRE_IN_SECONDS_MAX,
+  MAX_TURN_TIMEOUT_MINUTES,
+  MIN_TURN_TIMEOUT_MINUTES,
   QUEUE,
   QUEUES,
   REVIEW_PR_COMMAND,
+  REVIEW_PR_TURN_TIMEOUT_MINUTES,
   SCHEDULES,
   ensureQueues,
-  expireInSecondsForCommand,
+  enqueueExpireInSeconds,
   queueSpecOf,
   registerSchedules,
+  turnTimeoutMinutesFor,
+  turnTimeoutMsFor,
   validateDefinitions,
 } from './definitions.ts';
 export type {
@@ -66,6 +71,8 @@ export {
   QUEUE_GATE_CANCEL_SQL,
   QUEUE_GATE_REACTION,
   QUEUE_GATE_SQL,
+  QUEUE_GATE_STARVATION_BATCH_LIMIT,
+  QUEUE_GATE_STARVATION_SQL,
   QUEUE_WAIT_LIMIT_MINUTES,
   QUEUE_WAIT_LIMIT_SECONDS,
   isQueueTimedOut,
@@ -74,11 +81,13 @@ export {
   queueWaitSeconds,
   resolveQueueWaitMinutes,
   smallestQueueWaitSeconds,
+  starvationWarningOf,
 } from './queue-gate.ts';
 export type {
   QueueGateAction,
   QueueGateCandidate,
   QueueGateReactionPort,
+  QueueGateStarvedRepo,
   QueueWaitLimit,
 } from './queue-gate.ts';
 
@@ -136,3 +145,17 @@ export type {
   TaskWorkerOptions,
   WorkBoss,
 } from './boss.ts';
+
+export {
+  DAILY_QUOTA_DEFAULT,
+  DAILY_QUOTA_KIND,
+  MAX_DAILY_QUOTA,
+  MIN_DAILY_QUOTA,
+  QUOTA_SQL,
+  clampDailyQuota,
+  dailyQuotaWindowStart,
+  isDailyQuotaExhausted,
+  readDailyQuotaUsed,
+  reserveDailyQuota,
+} from './quota.ts';
+export type { QuotaInput, QuotaReservation } from './quota.ts';

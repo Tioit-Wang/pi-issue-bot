@@ -220,6 +220,20 @@ export type RepoPolicy = {
   readonly settingsValid: boolean;
   /** 解析成功后的配置；非法 / 列标记为不可用时为 null */
   readonly settings: RepoConfig | null;
+  /**
+   * **原始** jsonb（`repos.settings` 列里那一份，未经契约解析）。
+   *
+   * 为什么必须单独给一份：`repoSettingsSchema` 会给缺省字段**补默认值**
+   * （`agent.limits.concurrency: 2`、`agent.limits.turn_timeout_minutes: 20`），
+   * 于是「项目没配」与「项目配了默认值」在 `settings` 里不可区分。两个限额读数必须能区分
+   * （§6.7 SL-2/SL-4）：`resolveTurnTimeoutMinutes()` 靠「键不存在」回答「配没配」，
+   * `concurrencyPerRepoOf()` 靠「新键不存在」才回落到老键。喂解析后的对象会把这两条都判错。
+   * 见 `docs/audit/fix/WP7-REVIEW.md` F1 / F2。
+   *
+   * 可选是为了不打断既有 fake（缺省 = 当「什么都没配」处理，落在安全方向：
+   * 超时按命令默认、并发 2）。
+   */
+  readonly rawSettings?: unknown;
   /** 非法原因（面板展示） */
   readonly settingsError: string | null;
   readonly source: RepoSource | null;
@@ -242,6 +256,8 @@ export const UNKNOWN_REPO_POLICY: RepoPolicy = Object.freeze({
   dryRun: true,
   settingsValid: false,
   settings: null,
+  // 未知仓库没有任何原始配置：两个限额读数按「没配」处理（安全方向）
+  rawSettings: null,
   settingsError: null,
   source: null,
   installationId: null,
@@ -260,7 +276,9 @@ export async function readRepoPolicy(db: SqlRunner, repo: string): Promise<RepoP
   }
 
   const columnValid = row['settings_valid'] !== false;
-  const parsed = parseStoredSettings(row['settings']);
+  // 原始值一定要留一份：解析后的对象被契约补了默认值，限额读数不能拿它判「配没配」（F1/F2）
+  const rawSettings = row['settings'] ?? null;
+  const parsed = parseStoredSettings(rawSettings);
   const settingsValid = columnValid && parsed.ok;
 
   // 两种「不可用」：列被标成 false（面板/人写坏了），或列说合法但 JSON 解析不出来（手改库）
@@ -281,6 +299,7 @@ export async function readRepoPolicy(db: SqlRunner, repo: string): Promise<RepoP
     dryRun: row['dry_run'] !== false,
     settingsValid,
     settings,
+    rawSettings,
     settingsError,
     source: asSource(row['source']),
     installationId: asIdString(row['installation_id']),

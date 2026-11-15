@@ -1083,6 +1083,121 @@
         ],
         "additionalProperties": false
       },
+      "DeliveriesResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliveryRow"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore"
+        ],
+        "additionalProperties": false
+      },
+      "DeliveryRow": {
+        "type": "object",
+        "properties": {
+          "deliveryId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "event": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "triggered",
+                  "ignored"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decisionReason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signatureValid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deliveryId",
+          "event",
+          "action",
+          "repo",
+          "receivedAt",
+          "decision",
+          "decisionReason",
+          "signatureValid"
+        ],
+        "additionalProperties": false
+      },
       "ErrorBody": {
         "type": "object",
         "properties": {
@@ -1125,6 +1240,121 @@
         },
         "required": [
           "error"
+        ],
+        "additionalProperties": false
+      },
+      "IdentityCheckResponse": {
+        "type": "object",
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/PanelIdentity"
+          },
+          "remote_checked": {
+            "type": "boolean"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "identity",
+          "remote_checked",
+          "generated_at"
+        ],
+        "additionalProperties": false
+      },
+      "IdentityFallbackRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "login": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "missing",
+              "insufficient-scope",
+              "expired",
+              "unchecked"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "state",
+          "operation",
+          "target",
+          "reason",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "IdentityFallbacksResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IdentityFallbackRow"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore"
         ],
         "additionalProperties": false
       },
@@ -1194,86 +1424,6 @@
         ],
         "additionalProperties": false
       },
-      "IssueLabelDecisionSummary": {
-        "type": "object",
-        "properties": {
-          "lastAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "desired": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 50,
-              "pattern": "^[^\\p{Cc}]+$"
-            }
-          },
-          "applied": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 50,
-              "pattern": "^[^\\p{Cc}]+$"
-            }
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 500
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "blocked": {
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "reason": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 120
-                },
-                "count": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "reason",
-                "count"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "lastAt",
-          "desired",
-          "applied",
-          "reason",
-          "blocked"
-        ],
-        "additionalProperties": false
-      },
       "IssueSessionResponse": {
         "type": "object",
         "properties": {
@@ -1284,6 +1434,17 @@
           },
           "issue": {
             "$ref": "#/components/schemas/IssueSummary"
+          },
+          "systemPrompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200000
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "turns": {
             "maxItems": 500,
@@ -1296,7 +1457,586 @@
         "required": [
           "generatedAt",
           "issue",
+          "systemPrompt",
           "turns"
+        ],
+        "additionalProperties": false
+      },
+      "IssueTraceAction": {
+        "type": "object",
+        "properties": {
+          "actionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "comment",
+              "label",
+              "create_issue",
+              "push_branch",
+              "close_issue",
+              "reaction.add",
+              "reaction.remove"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "dry-run",
+              "skipped",
+              "rejected",
+              "failed"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "issue",
+                  "pr",
+                  "comment",
+                  "branch"
+                ]
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ref": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "url": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "number",
+              "ref",
+              "url"
+            ],
+            "additionalProperties": false
+          },
+          "externalRef": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "appliedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revertedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revertKind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "label-removed",
+                  "changes-requested",
+                  "pr-closed",
+                  "comment-deleted",
+                  "revert-commit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "actionId",
+          "intent",
+          "status",
+          "target",
+          "externalRef",
+          "appliedAt",
+          "revertedAt",
+          "revertKind"
+        ],
+        "additionalProperties": false
+      },
+      "IssueTraceResponse": {
+        "type": "object",
+        "properties": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "issue": {
+            "type": "object",
+            "properties": {
+              "repo": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "issue",
+                  "pr"
+                ]
+              },
+              "number": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "repo",
+              "kind",
+              "number"
+            ],
+            "additionalProperties": false
+          },
+          "deliveries": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliveryRow"
+            }
+          },
+          "runs": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueTraceRun"
+            }
+          },
+          "totals": {
+            "$ref": "#/components/schemas/IssueTraceTotals"
+          }
+        },
+        "required": [
+          "generatedAt",
+          "issue",
+          "deliveries",
+          "runs",
+          "totals"
+        ],
+        "additionalProperties": false
+      },
+      "IssueTraceRun": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "sessionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turnId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "success",
+                  "failed",
+                  "timed-out",
+                  "degenerate-output",
+                  "parse-failed",
+                  "interrupted"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failureClass": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "timeout",
+                  "interrupt",
+                  "degenerate-output",
+                  "sandbox-oom",
+                  "sandbox-crash",
+                  "auth",
+                  "rate-limit",
+                  "model",
+                  "parse",
+                  "github-api"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueTraceUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assistantText": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "toolCalls": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueTraceToolCall"
+            }
+          },
+          "toolCallsTruncated": {
+            "type": "boolean"
+          },
+          "actions": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssueTraceAction"
+            }
+          }
+        },
+        "required": [
+          "runId",
+          "taskId",
+          "attempt",
+          "command",
+          "sessionId",
+          "turnId",
+          "startedAt",
+          "endedAt",
+          "durationMs",
+          "outcome",
+          "failureClass",
+          "usage",
+          "assistantText",
+          "toolCalls",
+          "toolCallsTruncated",
+          "actions"
+        ],
+        "additionalProperties": false
+      },
+      "IssueTraceToolCall": {
+        "type": "object",
+        "properties": {
+          "toolCallId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "args": {
+            "anyOf": [
+              {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outputSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "exitCode": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "argv": {
+            "anyOf": [
+              {
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "toolCallId",
+          "name",
+          "args",
+          "outputSummary",
+          "startedAt",
+          "endedAt",
+          "durationMs",
+          "ok",
+          "exitCode",
+          "argv"
+        ],
+        "additionalProperties": false
+      },
+      "IssueTraceTotals": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "inputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "outputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "costUsd": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "runs",
+          "inputTokens",
+          "outputTokens",
+          "costUsd"
+        ],
+        "additionalProperties": false
+      },
+      "IssueTraceUsage": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "outputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "costUsd": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "model",
+          "inputTokens",
+          "outputTokens",
+          "costUsd"
         ],
         "additionalProperties": false
       },
@@ -1328,13 +2068,260 @@
           },
           "hasMore": {
             "type": "boolean"
+          },
+          "totalEstimate": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "generatedAt",
           "issues",
           "nextCursor",
-          "hasMore"
+          "hasMore",
+          "totalEstimate"
+        ],
+        "additionalProperties": false
+      },
+      "ModelProvider": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "key_mask": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "models": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelCatalogEntry"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "fail",
+              "unknown"
+            ]
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_error": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "base_url",
+          "key_configured",
+          "key_mask",
+          "models",
+          "enabled",
+          "status",
+          "latency_ms",
+          "checked_at",
+          "check_error",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "ModelProvidersResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelProvider"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "ModelRoleRow": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "format",
+              "classify",
+              "fallback"
+            ]
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelPrice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "configured",
+          "provider_id",
+          "provider_name",
+          "model",
+          "price",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "ModelRolesResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 4,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelRoleRow"
+            }
+          }
+        },
+        "required": [
+          "items"
         ],
         "additionalProperties": false
       },
@@ -1401,6 +2388,214 @@
           "trend",
           "outcomeDistribution",
           "failureTop"
+        ],
+        "additionalProperties": false
+      },
+      "PanelIdentity": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+          },
+          "token_mask": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "missing",
+              "insufficient-scope",
+              "expired",
+              "unchecked"
+            ]
+          },
+          "state_reason": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "missing_scopes": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "token_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "login",
+          "token_mask",
+          "state",
+          "state_reason",
+          "scopes",
+          "missing_scopes",
+          "token_expires_at",
+          "checked_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "PanelIdentityResponse": {
+        "type": "object",
+        "properties": {
+          "effective": {
+            "type": "string",
+            "enum": [
+              "bot",
+              "user"
+            ]
+          },
+          "effective_reason": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PanelIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "effective",
+          "effective_reason",
+          "identity",
+          "generated_at"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderCheckResponse": {
+        "type": "object",
+        "properties": {
+          "provider_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "fail",
+              "unknown"
+            ]
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "models": {
+            "anyOf": [
+              {
+                "maxItems": 100,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "provider_id",
+          "status",
+          "latency_ms",
+          "checked_at",
+          "error",
+          "models"
         ],
         "additionalProperties": false
       },
@@ -1522,6 +2717,85 @@
           "map",
           "missing",
           "max_per_issue"
+        ],
+        "additionalProperties": false
+      },
+      "RepoModelRoleRow": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "format",
+              "classify",
+              "fallback"
+            ]
+          },
+          "selection": {
+            "$ref": "#/components/schemas/ModelRoleSelection"
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelPrice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "selection",
+          "effective",
+          "effective_price",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "RepoModelRolesResponse": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+          },
+          "items": {
+            "minItems": 4,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoModelRoleRow"
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "items"
         ],
         "additionalProperties": false
       },
@@ -1919,8 +3193,31 @@
                           "maxItems": 50,
                           "type": "array",
                           "items": {
-                            "type": "string",
-                            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "login": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                                  },
+                                  "id": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "login",
+                                  "id"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                              }
+                            ]
                           }
                         }
                       },
@@ -2131,7 +3428,7 @@
                 }
               },
               "on_opened": {
-                "default": "issue-format",
+                "default": "proposal-analysis",
                 "anyOf": [
                   {
                     "type": "string",
@@ -2144,7 +3441,7 @@
                 ]
               },
               "on_edited": {
-                "default": "issue-format",
+                "default": "proposal-analysis",
                 "anyOf": [
                   {
                     "type": "string",
@@ -2573,6 +3870,71 @@
         ],
         "additionalProperties": false
       },
+      "SaveModelProviderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 500
+          },
+          "clear_key": {
+            "type": "boolean"
+          },
+          "models": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelCatalogEntry"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SaveModelRoleRequest": {
+        "$ref": "#/components/schemas/ModelTarget"
+      },
+      "SavePanelIdentityRequest": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+          },
+          "token": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "login",
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "SaveRepoModelRoleRequest": {
+        "$ref": "#/components/schemas/ModelRoleSelection"
+      },
       "SaveRepoSettingsRequest": {
         "$ref": "#/components/schemas/RepoSettings"
       },
@@ -2590,7 +3952,7 @@
           },
           "allowed-tools": {
             "minItems": 1,
-            "maxItems": 6,
+            "maxItems": 25,
             "type": "array",
             "items": {
               "type": "string",
@@ -2600,7 +3962,26 @@
                 "Edit",
                 "Glob",
                 "Grep",
-                "Bash"
+                "Bash",
+                "IssueGet",
+                "IssueList",
+                "IssueCommentsList",
+                "IssueTimeline",
+                "IssueSearch",
+                "IssueCreate",
+                "IssueUpdate",
+                "IssueClose",
+                "IssueReopen",
+                "IssueCommentCreate",
+                "IssueCommentReply",
+                "IssueCommentUpdate",
+                "IssueCommentDelete",
+                "IssueReactionAdd",
+                "IssueReactionRemove",
+                "IssueLabelAdd",
+                "IssueLabelRemove",
+                "IssueLabelSet",
+                "IssueLink"
               ]
             }
           },
@@ -3031,13 +4412,6 @@
             "items": {
               "$ref": "#/components/schemas/SystemRepo"
             }
-          },
-          "skills": {
-            "maxItems": 64,
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SkillSummary"
-            }
           }
         },
         "required": [
@@ -3049,8 +4423,7 @@
           "queue",
           "retention",
           "flags",
-          "repos",
-          "skills"
+          "repos"
         ],
         "additionalProperties": false
       },
@@ -4365,16 +5738,6 @@
               }
             ]
           },
-          "labelDecisions": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/IssueLabelDecisionSummary"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "feedback": {
             "maxItems": 20,
             "type": "array",
@@ -4403,7 +5766,6 @@
           "outcomes",
           "lastPreview",
           "reactionState",
-          "labelDecisions",
           "feedback"
         ],
         "additionalProperties": false
@@ -4470,6 +5832,41 @@
               "pattern": "^[^\\p{Cc}]+$"
             }
           },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "participants": {
             "maxItems": 100,
             "type": "array",
@@ -4506,6 +5903,9 @@
           "state",
           "stateStale",
           "labels",
+          "body",
+          "author",
+          "createdAt",
           "participants",
           "reactionState",
           "pendingFeedback"
@@ -4696,6 +6096,68 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "array",
+                    "items": {}
+                  },
+                  {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actions": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "array",
+                    "items": {}
+                  },
+                  {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {}
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -4713,7 +6175,107 @@
           "taskId",
           "attempts",
           "toolCalls",
-          "truncated"
+          "truncated",
+          "verdict",
+          "actions"
+        ],
+        "additionalProperties": false
+      },
+      "ModelCatalogEntry": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "price": {
+            "$ref": "#/components/schemas/ModelPrice"
+          }
+        },
+        "required": [
+          "model",
+          "price"
+        ],
+        "additionalProperties": false
+      },
+      "ModelPrice": {
+        "type": "object",
+        "properties": {
+          "input_usd_per_mtok": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "output_usd_per_mtok": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        },
+        "required": [
+          "input_usd_per_mtok",
+          "output_usd_per_mtok"
+        ],
+        "additionalProperties": false
+      },
+      "ModelRoleSelection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "inherit"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "override"
+              },
+              "provider_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              }
+            },
+            "required": [
+              "mode",
+              "provider_id",
+              "model"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ModelTarget": {
+        "type": "object",
+        "properties": {
+          "provider_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,39}$"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "provider_id",
+          "model"
         ],
         "additionalProperties": false
       },
@@ -5285,64 +6847,6 @@
         ],
         "additionalProperties": false
       },
-      "SkillSummary": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 33
-          },
-          "source": {
-            "type": "string",
-            "enum": [
-              "builtin",
-              "repo"
-            ]
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "disabledReason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 200
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "outputs": {
-            "maxItems": 4,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "comment",
-                "labels",
-                "issue",
-                "pr"
-              ]
-            }
-          },
-          "timeoutMs": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          }
-        },
-        "required": [
-          "name",
-          "source",
-          "enabled",
-          "disabledReason",
-          "outputs",
-          "timeoutMs"
-        ],
-        "additionalProperties": false
-      },
       "TaskDiff": {
         "type": "object",
         "properties": {
@@ -5493,7 +6997,8 @@
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                "minLength": 1,
+                "maxLength": 100
               },
               {
                 "type": "null"

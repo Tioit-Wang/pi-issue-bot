@@ -122,12 +122,25 @@ export function helpText(): string {
 }
 
 /**
+ * 摘掉 pnpm 的分隔符：`pnpm cli -- migrate` 会把 `--` 原样传进来（README、快速开始、
+ * `doctor` 的 fixHint 都是这么写的），它不是命令的一部分。文档怎么写，命令就怎么用；
+ * `pnpm run cli -- migrate` 由 pnpm 自己吃掉 `--`，两种写法都落在同一份参数上。
+ */
+export function normalizeArgv(argv: readonly string[]): readonly string[] {
+  let index = 0;
+  while (index < argv.length && argv[index] === '--') {
+    index += 1;
+  }
+  return argv.slice(index);
+}
+
+/**
  * 同步解析通道。**保持既有语义**：`test/cli.test.ts` 里逐条断言了它的返回值，
  * 真正的执行在 `runCli()`。参数解析与执行分离的理由见文件头。
  */
-export function main(argv: readonly string[], io: CliIo = processIo): number {
+export function main(rawArgv: readonly string[], io: CliIo = processIo): number {
+  const argv = normalizeArgv(rawArgv);
   const head = argv[0];
-
   if (head === undefined) {
     io.err(`${CLI_NAME}: 缺少命令\n\n${helpText()}`);
     return EXIT_USAGE;
@@ -391,10 +404,25 @@ async function runDelegated(
   }
 }
 
+/**
+ * `doctor` / `bootstrap-host` 的 DSN：与 `serve` 同一份解析（`PI_BOT_PG_DSN` 优先，回退旧名）。
+ *
+ * 为什么不能直接读 `PI_BOT_DATABASE_URL`：README 与环境变量清单把 `PI_BOT_PG_DSN` 写成本名，
+ * 只认旧名会让按文档配好的机器在 doctor 上判 `fail postgres`（§6.4 是「不通过拒绝启动」）。
+ * 缺配置时给 `undefined`：doctor 自己报「未配置」，bootstrap-host 由 runtime 侧报错。
+ */
+function databaseUrlOf(env: EnvLike): string | undefined {
+  try {
+    return readDatabaseUrl(env);
+  } catch {
+    return undefined;
+  }
+}
+
 async function runBootstrapHost(runtime: CommandRuntime, argv: readonly string[], loader: ModuleLoader): Promise<number> {
   const repair = argv.includes('--repair');
   const bundleDir = runtime.env['PI_BOT_BUNDLE_DIR'];
-  const databaseUrl = runtime.env['PI_BOT_DATABASE_URL'];
+  const databaseUrl = databaseUrlOf(runtime.env);
   return runDelegated(runtime, {
     command: 'bootstrap-host',
     specifier: new URL('./runtime/bootstrap.ts', import.meta.url).href,
@@ -421,7 +449,7 @@ async function runBootstrapHost(runtime: CommandRuntime, argv: readonly string[]
 }
 
 async function runDoctor(runtime: CommandRuntime, loader: ModuleLoader): Promise<number> {
-  const databaseUrl = runtime.env['PI_BOT_DATABASE_URL'];
+  const databaseUrl = databaseUrlOf(runtime.env);
   return runDelegated(runtime, {
     command: 'doctor',
     specifier: new URL('./doctor/index.ts', import.meta.url).href,
@@ -440,7 +468,8 @@ async function runDoctor(runtime: CommandRuntime, loader: ModuleLoader): Promise
  *  - 执行失败（数据库连不上、迁移报错、投递不存在）→ `EXIT_FAILURE`
  *  - `ConfigError` 也走 `EXIT_USAGE`：它属于「环境配错了」，不是程序 bug
  */
-export async function runCli(argv: readonly string[], options: RunCliOptions = {}): Promise<number> {
+export async function runCli(rawArgv: readonly string[], options: RunCliOptions = {}): Promise<number> {
+  const argv = normalizeArgv(rawArgv);
   const io = options.io ?? processIo;
   const runtime: CommandRuntime = {
     env: options.env ?? (process.env as EnvLike),

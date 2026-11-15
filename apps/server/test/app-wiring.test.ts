@@ -8,7 +8,9 @@
  *     （词表外的标签被拦 → `label_decisions.blocked_reason` 有值）+ 终态 `rocket`；
  *  2. 人工通道（`tasks.source='command'`）：写回**恰好一条**最终回答；
  *  3. 反馈注入后终态 reaction 真的被调用（成功 rocket / 失败 confused）；
- *  4. `settings.limits.concurrency_per_repo` 真的生效（同仓库串行、另一仓库并行）；
+ *  4. `settings.agent.limits.concurrency` 真的生效（同仓库串行、另一仓库并行）；
+ *  5. 限额读数吃**原始 jsonb**：空配置时 `/review-pr` 仍是 30 分钟、老键在装配层仍生效
+ *     （`docs/audit/fix/WP7-REVIEW.md` F1 / F2 的回归钉）；
  * P1 项目提示词那一层（`prompt_versions` → 装配统计 `assemble:prompt:stats`）已随提示词子系统退役，
  *
  * 为什么必须走 `createApplication().executeTask()`：这些依赖（feedback / labelPolicy /
@@ -17,10 +19,16 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { createApplication } from '../src/app/index.ts';
+import { createApplication, executionLimitsOf } from '../src/app/index.ts';
 import type { Application } from '../src/app/index.ts';
+import { readRepoPolicy } from '../src/config/index.ts';
 import type { GithubReactionApi } from '../src/github/index.ts';
+import { concurrencyPerRepoOf } from '../src/queue/repo-concurrency.ts';
+import { turnTimeoutMsFor } from '../src/queue/definitions.ts';
 import { createPgRunStore } from '../src/worker/index.ts';
+import { planLabelTargetState } from '../src/writeback/v21/labels.ts';
+import type { CatalogEntry } from '../src/writeback/v21/labels.ts';
+import { readFile } from 'node:fs/promises';
 import {
   FakeRacpHost,
   createCountingGithubApi,
@@ -156,11 +164,19 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
       parseValidSettings({
         labels: {
           // `role` 自 §4.5 / Q4 起必填（`缺陷` → defect）。
-          vocabulary: vocabularyWithRoles([{ name: '缺陷', meaning: '功能不符合预期', group: '类型' }]),
+          // 两个标签都是**必须的**：`缺陷` 是「目标态要加的」，`需求` 用来测
+          // 「GitHub 实况有、台账没有 → 必须被撤」（FR-5.4 根因回归，见用例 ①b）。
+          vocabulary: vocabularyWithRoles([
+            { name: '缺陷', meaning: '功能不符合预期', group: '类型' },
+            { name: '需求', meaning: '新增能力请求', group: '类型' },
+          ]),
           map: {},
           missing: 'warn',
         },
-        limits: { concurrency_per_repo: 1 },
+        // 并发上限的**唯一真相**是 `agent.limits.concurrency`（§6.7 SL-2）；
+        // 老的 `limits.concurrency_per_repo` 已 deprecated（settings 一旦过 `repoSettingsSchema`
+        // 就会被补上默认值 2，老键从此不可区分，所以这里直接配新键）。
+        agent: { limits: { concurrency: 1 } },
       }),
     );
     await seedRepo(REPO_PLAIN, parseValidSettings());
@@ -185,7 +201,7 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
       // reaction 写面注入：终态反馈与 `confused` 端口都用它（断言「真的被调用」）
       reactions: reactions.api,
       // 仓库标签目录：`labels.missing` 需要它，否则一律不判 missing
-      labelCatalog: { list: async () => ['缺陷'] },
+      labelCatalog: { list: async () => [{ name: '缺陷', color: 'd73a4a', description: '功能不符合预期' }] },
       skipSchedules: true,
     });
     await app.start();
@@ -261,6 +277,62 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
     expect(reactions.calls.map((call) => call.content)).toContain('rocket');
   }, 60_000);
 
+  it('①b 台账只用于归属（BR-10），`current` 必须来自 GitHub 实况（FR-5.4 根因）', async () => {
+    // 这条钉的是**装配层的取舍**：`compose.ts` 必须把「实况」与「台账」喂给不同的字段。
+    // 本用例的 e2e 配置没有 GitHub 凭据（`baseGithubClient === null`），所以实况恒为空 ——
+    // 那正是改前「只读台账」在测试里看不出来的原因（所有假件的 `getIssue` 也都返回空）。
+    // 因此这里直接读装配源码断言这段契约，同时用纯函数验证差集语义：
+    // 只有 `current` 里有的标签才可能进 `remove`，台账里的标签一个都进不去。
+    const source = await readFile(new URL('../src/app/compose.ts', import.meta.url), 'utf8');
+    // `currentLabels` 必须由 `liveLabels` 得来。**不能用宽松正则**：`readAppliedLabels(...)`
+    // 里也含有 `AppliedLabels` 子串，松正则对「改回读台账」照样通过（实测过）。
+    expect(source).toContain('const currentLabels = liveLabels ?? [];');
+    expect(source).toContain('const liveLabels = await readLiveLabels(baseGithubClient');
+    expect(source).toContain('const botLabels = await readAppliedLabels(');
+    // 反向：装配层不许出现「把台账读成 currentLabels」的三处变体
+    expect(source).not.toContain('const currentLabels = await readAppliedLabels(');
+    // P1-1：读失败必须返回 `null`（「没读到」），不是 `[]`（「真的没有」）。
+    // 两者在提示词侧后果不同：`[]` 会让模型对着空基线输出目标态，下一轮照它删 ——
+    // 那正是 FR-5.4 `:1049` 禁止的「看不到全量就输出目标态，等于瞎删」。
+    expect(source).toContain('): Promise<string[] | null> {');
+    expect(source).toMatch(/catch \(error\) \{\s*\n\s*\/\/[^\n]*\n\s*onWarn\?\.\(error\);\s*\n\s*return null;/u);
+
+    const entry = (name: string): CatalogEntry => ({
+      name,
+      meaning: `${name} 的含义`,
+      managed: true,
+      status: 'active',
+    });
+    const catalog = [entry('缺陷'), entry('需求')];
+
+    // 实况有「需求」、目标态只要「缺陷」→ 「需求」必须进 remove。
+    // 改前 `current` 读台账（台账里没有「需求」）→ remove 恒为空 → 这条会红。
+    const plan = planLabelTargetState({
+      current: ['需求'],
+      desired: ['缺陷'],
+      catalog,
+      maxPerIssue: 10,
+      // `botLabels` 在**本函数里不参与任何过滤**（只有 `deletionOwner()` 用它判归属）。
+      // 这里给个非空值顺便钉住这一点：如果将来有人拿它当 `current`，下面 `remove` 会变空。
+      botLabels: ['需求'],
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.remove).toEqual(['需求']);
+
+    // 反向：`current` 为空时不可能删任何东西（空 `current` 只会「只加不删」）
+    const empty = planLabelTargetState({
+      current: [],
+      desired: ['缺陷'],
+      catalog,
+      maxPerIssue: 10,
+      botLabels: [],
+    });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) return;
+    expect(empty.remove).toEqual([]);
+  }, 60_000);
+
   it('② 人工通道：写回恰好一条最终回答', async () => {
     await seedTask({
       id: 't-manual-wiring',
@@ -324,7 +396,11 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
     expect(feedback[0]?.['content']).toBe('confused');
   }, 60_000);
 
-  it('④ `settings.limits.concurrency_per_repo` 真的生效（同仓库串行、另一仓库并行）', async () => {
+  it('④ `settings.agent.limits.concurrency` 真的生效（同仓库串行、另一仓库并行）', async () => {
+    // 本用例用**新键**（`agent.limits.concurrency`）：settings 会过一次 `repoSettingsSchema`，
+    // 老键一旦过契约就会被补上 `agent.limits.concurrency: 2`，此后两者不可区分 —— 所以
+    // 「老键仍然生效」这件事只能作为纯函数单测钉在 `test/queue-concurrency-limit.test.ts`
+    // （旧键 = 1、新键缺失 → 得 1；旧键非法值 → 回落 2），本文件不再重复一条会被默认值掩盖的 e2e。
     // `registerTaskWorker` 注册的是 pg-boss 的**批量** handler：`(jobs) => …`（`queue/boss.ts`）。
     const handler = queue.record.handlers['run-task'] as
       | ((jobs: Array<{ id: string; data: { taskId: string; repo: string } }>) => Promise<void>)
@@ -388,6 +464,46 @@ describe('装配级接线（真 PG + 假 host / 假 GitHub）', () => {
     await waitFor(() => fakePorts.record.worktrees.length === beforePlain + 2);
     await Promise.all([third, fourth]);
     expect(fakePorts.record.worktrees.length).toBe(beforePlain + 2);
+  }, 60_000);
+
+  /**
+   * F1 / F2 的装配级回归钉（`docs/audit/fix/WP7-REVIEW.md`）。
+   *
+   * 为什么不看行为而看读数：这两个缺陷**只存在于装配层喂错入参**这一步 ——
+   * `resolveTurnTimeoutMinutes()` 与 `concurrencyPerRepoOf()` 的纯函数行为一直是对的，
+   * 错的是「把过了契约（已被 prefault 补默认值）的 `policy.settings` 喂进去」。
+   * 所以这里走**真库 → `readRepoPolicy()` → `executionLimitsOf()`**这条线上链路，
+   * 而 `executionLimitsOf()` 正是 `timeoutForCommand` 与 `gate.limitFor` 的唯一实现。
+   */
+  it('⑤ 限额读数喂的是原始 jsonb（空配置 /review-pr=30min；老键在装配层仍生效）', async () => {
+    const REPO_LEGACY_ONLY = 'acme/legacy-only';
+    const REPO_EMPTY = 'acme/empty-config';
+    const REPO_FIVE_MIN = 'acme/five-minutes';
+    await seedRepo(REPO_LEGACY_ONLY, { limits: { concurrency_per_repo: 1 } });
+    await seedRepo(REPO_EMPTY, {});
+    await seedRepo(REPO_FIVE_MIN, { agent: { limits: { turn_timeout_minutes: 5 } } });
+
+    // ── F2：同一行，两种口径必须不同，装配层取「原始」那一个 ──────────────────
+    const legacy = await readRepoPolicy(db.pool, REPO_LEGACY_ONLY);
+    // 解析后的对象被契约 prefault 补了 `agent.limits.concurrency: 2` → 老键被遮蔽（这就是 F2）
+    expect(concurrencyPerRepoOf(legacy.settings)).toBe(2);
+    // 原始 jsonb 里只有老键 → 1（与 `QUEUE_GATE_SQL` 读同一份数据时的结论一致）
+    expect(concurrencyPerRepoOf(legacy.rawSettings)).toBe(1);
+    // 装配层真正用的是后者
+    expect(executionLimitsOf(legacy).concurrency).toBe(1);
+
+    // ── F1：什么都没配 → 没有「显式值」，交给命令默认表 ────────────────────────
+    const empty = await readRepoPolicy(db.pool, REPO_EMPTY);
+    expect(empty.rawSettings).toEqual({});
+    expect(executionLimitsOf(empty).turnTimeoutMinutes).toBeUndefined();
+    expect(turnTimeoutMsFor('/review-pr', executionLimitsOf(empty).turnTimeoutMinutes)).toBe(30 * 60_000);
+    expect(turnTimeoutMsFor('auto:triage', executionLimitsOf(empty).turnTimeoutMinutes)).toBe(20 * 60_000);
+
+    // ── 配了 5 分钟 → 两条命令都按 5（项目值压过命令默认）────────────────────
+    const five = await readRepoPolicy(db.pool, REPO_FIVE_MIN);
+    expect(executionLimitsOf(five).turnTimeoutMinutes).toBe(5);
+    expect(turnTimeoutMsFor('/review-pr', executionLimitsOf(five).turnTimeoutMinutes)).toBe(5 * 60_000);
+    expect(turnTimeoutMsFor('auto:triage', executionLimitsOf(five).turnTimeoutMinutes)).toBe(5 * 60_000);
   }, 60_000);
 
 });

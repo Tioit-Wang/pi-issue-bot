@@ -3,14 +3,15 @@
  *
  * 这里集中三件事，别的文件不许再各写一份：
  *  1. **队列名与并发**：`QUEUES`。并发 2–4（§7.1 的规模：<100 事件/天）。
- *  2. **`expireIn`（执行期硬上限）**：默认 20min，`/review-pr` 30min（plan §9.1、§4.7）。
- *     注意它**只**表示「job 处于 active 的最长时间」，绝不是「排队等了多久」——
- *     排队闸门是独立定时任务 + `tasks.queued_at`（§4.7 F5，见 queue-gate.ts）。
+ *  2. **`expireIn`（pg-boss 的执行期硬上限）**：固定取区间**上界**（`MAX_TURN_TIMEOUT_MINUTES` = 30min，
+ *     见 `EXPIRE_IN_SECONDS_MAX`）。它**只**表示「job 处于 active 的最长时间」，不是业务闸门 ——
+ *     单轮超时是任务级 deadline（项目值，`turnTimeoutMsFor()`）；排队闸门是独立定时任务 +
+ *     `tasks.queued_at`（§4.7 F5，见 queue-gate.ts）。取上界是为了让 pg-boss 永远不早于项目配置动手。
  *  3. **定时任务**：排队闸门每分钟、生命周期清理每分钟、metrics 聚合每天 00:10、
  *     改回 reconcile 每小时、保留期清理每天（§7.5、§7.6）。
  *
  * pg-boss 12 的选项名与 v9/v10 不同（`expireIn` → `expireInSeconds`，分钟变秒）。
- * 本仓库内部统一用 `expireInSeconds`，注释里保留 §4.7 的「20min / 30min」口径。
+ * 本仓库内部统一用 `expireInSeconds`。
  */
 
 /** 队列名常量。字符串写死在这里，别的模块只准引用常量。 */
@@ -37,27 +38,82 @@ export const QUEUE = {
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];
 
-/** `/review-pr` 这条命令的时间闸比别处长（plan §9.1） */
+/** `/review-pr` 这条命令的名字（单轮超时比别处长的那一条，plan §9.1） */
 export const REVIEW_PR_COMMAND = '/review-pr';
 
-/** 默认执行期硬上限：20min（§4.7 第二行） */
-export const EXPIRE_IN_SECONDS_DEFAULT = 20 * 60;
+/**
+ * 单轮执行的默认最长时长（分钟）：20。
+ *
+ * 与契约 `agentExecutionSchema.turn_timeout_minutes` 的默认值**必须相等**（等值性由
+ * `test/queue-turn-timeout.test.ts` 断言）：一处是「项目没配置时的默认」，一处是
+ * 「配置项缺省值」，两者不同步就是「面板显示 20、实际跑 30」这类最难查的偏差。
+ */
+export const DEFAULT_TURN_TIMEOUT_MINUTES = 20;
 
-/** `/review-pr` 的执行期硬上限：30min */
-export const EXPIRE_IN_SECONDS_REVIEW_PR = 30 * 60;
+/** `/review-pr` 的单轮上限（分钟）：30。项目显式配置了 `turn_timeout_minutes` 时以项目为准。 */
+export const REVIEW_PR_TURN_TIMEOUT_MINUTES = 30;
+
+/** 契约允许的单轮超时区间（`agentExecutionSchema.turn_timeout_minutes` 的 1–30）。 */
+export const MIN_TURN_TIMEOUT_MINUTES = 1;
+export const MAX_TURN_TIMEOUT_MINUTES = 30;
 
 /**
- * 按命令取执行期硬上限。webhook handler 入队时用它填 `expireInSeconds`（§5.3 第 7 步）。
- * 未知命令一律走默认值：宁可早杀，也不让一个卡住的容器占 30 分钟。
+ * `expireInSeconds` 的唯一取值：区间**上界** 1800s = 30min（`MAX_TURN_TIMEOUT_MINUTES × 60`）。
  *
- * v0.3 删掉了 `pipeline:format|classify|notice` 三档（三段流水线退役），只剩「默认」与
- * 「`/review-pr` 30min」两档。
+ * 为什么入队点不再「按命令分 20/30」、也不读项目配置（需求 §6.7 SL-4 的收口结论）：
+ *  - 入队点（`http/webhook.ts::createQueueEnqueuer`、`jobs/agent-dispatch`）手里**没有**仓库 settings，
+ *    硬要在那里读库，只是把同一份配置读成第二个「入队时刻的快照」；读错了反而更糟。
+ *  - 更要紧的是方向性：`expireIn` 一旦小于项目配置，pg-boss 会在项目值还没到的时候把 job 判成过期 ——
+ *    「项目配了 30 分钟却被平台在第 20 分钟杀掉」是最难查的一类偏差。
+ *  - 真正的闸门只有一处：任务级 deadline（`turnTimeoutMsFor(command, 项目显式值)`，被
+ *    `worker/run-task.ts` / `runtime/turn-driver.ts` 消费）。项目配 5 分钟就是 5 分钟终止、
+ *    记 `timed-out`，而 `run-task.retryLimit` 恒为 0（不自动重试）。
+ *
+ * 所以这一层的语义是「**绝不早于任何合法项目配置**」：取合法区间上界，平台层不做业务判定。
  */
-export function expireInSecondsForCommand(command: string): number {
-  if (command === REVIEW_PR_COMMAND) {
-    return EXPIRE_IN_SECONDS_REVIEW_PR;
+export const EXPIRE_IN_SECONDS_MAX = MAX_TURN_TIMEOUT_MINUTES * 60;
+
+/** 命令是否就是 `/review-pr`（大小写与尾随参数都容忍，与 `worker/run-task.ts` 同口径）。 */
+function isReviewPr(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return normalized === REVIEW_PR_COMMAND || normalized.startsWith(`${REVIEW_PR_COMMAND} `);
+}
+
+/**
+ * 单轮超时的生效分钟数（需求 §6.7 SL-4「单轮超时」，**唯一事实源**）。
+ *
+ * 裁决顺序：
+ *  1. `configuredMinutes` 有值（项目在 `agent.limits.turn_timeout_minutes` 里显式配了 1–30）
+ *     → 用它。需求把这个旋钮定义成**项目级**的，所以它连 `/review-pr` 的 30 分钟也要能压下去；
+ *  2. 没配 → 按命令给默认值：`/review-pr` 30 分钟、其余 20 分钟。
+ *
+ * 为什么「有没有显式配置」要由调用方传 `undefined` 而不是传契约默认值：契约那一份永远有值
+ * （`.default(20)`），拿它来判「配没配」就永远为真，`/review-pr` 的 30 分钟会静默消失。
+ * 读取显式值用 `config/v21-settings.ts::resolveTurnTimeoutMinutes()`。
+ */
+export function turnTimeoutMinutesFor(command: string, configuredMinutes?: number): number {
+  if (typeof configuredMinutes === 'number' && Number.isFinite(configuredMinutes)) {
+    return Math.min(
+      MAX_TURN_TIMEOUT_MINUTES,
+      Math.max(MIN_TURN_TIMEOUT_MINUTES, Math.trunc(configuredMinutes)),
+    );
   }
-  return EXPIRE_IN_SECONDS_DEFAULT;
+  return isReviewPr(command) ? REVIEW_PR_TURN_TIMEOUT_MINUTES : DEFAULT_TURN_TIMEOUT_MINUTES;
+}
+
+/** 单轮超时（毫秒）——`turn-driver` 的任务级 deadline 用它。 */
+export function turnTimeoutMsFor(command: string, configuredMinutes?: number): number {
+  return turnTimeoutMinutesFor(command, configuredMinutes) * 60_000;
+}
+
+/**
+ * 入队时用的 `expireInSeconds`（**不**接受命令参数，见 `EXPIRE_IN_SECONDS_MAX` 的说明）。
+ *
+ * 保留成函数而不是让调用方直接引常量：入队点有两处（webhook / agent-dispatch），
+ * 让它们都经这里能保证「不存在第二种取值」，也便于单测直接钉住这个口径。
+ */
+export function enqueueExpireInSeconds(): number {
+  return EXPIRE_IN_SECONDS_MAX;
 }
 
 /** 一个队列的完整定义。 */
@@ -92,7 +148,7 @@ export const QUEUES: readonly QueueSpec[] = [
   {
     name: QUEUE.runTask,
     concurrency: 3,
-    expireInSeconds: EXPIRE_IN_SECONDS_DEFAULT,
+    expireInSeconds: EXPIRE_IN_SECONDS_MAX,
     retryLimit: 0,
     retryDelaySeconds: 0,
     retryBackoff: false,

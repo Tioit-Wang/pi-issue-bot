@@ -66,7 +66,9 @@ describe('createPromptEnricher：技能真的进了提示词', () => {
     });
     expect(prompt).toContain('## 可用技能');
     expect(prompt).toContain('- `/label-triage`：');
-    expect(prompt).toContain('- `/issue-format`：');
+    // 内置技能里没有 `/issue-format`（v2.1 起由 `/issue-triage` 承担「看格式 / 归类」）；
+    // 这条只钉「目录里每个技能都带 description」，不复述具体清单（清单在 `skills-registry.test.ts`）。
+    expect(prompt).toContain('- `/issue-triage`：');
     expect(prompt).toContain('只能从上面这份清单里选');
   });
 

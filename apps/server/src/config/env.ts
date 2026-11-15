@@ -28,6 +28,8 @@ export const ENV_KEYS = {
   logLevel: 'PI_BOT_LOG_LEVEL',
   openapi: 'PI_BOT_OPENAPI',
   migrationsDir: 'PI_BOT_MIGRATIONS_DIR',
+  /** 面板构建产物目录（`vite build` → `apps/panel/dist`）；`off` = 不由本进程托管。 */
+  panelDir: 'PI_BOT_PANEL_DIR',
 } as const;
 
 /** 与 tech-plan §3.2/§10.1 对齐的默认值。 */
@@ -154,4 +156,14 @@ export function readServeConfig(env: EnvLike): ServeConfig {
  */
 export function defaultMigrationsDir(): string {
   return fileURLToPath(new URL('../../../../migrations/', import.meta.url));
+}
+
+/**
+ * 面板构建产物的默认位置（仓库根 `apps/panel/dist`）。
+ *
+ * 与 `defaultMigrationsDir()` 同一个推导方式与理由：`serve` 的启动目录不一定是仓库根
+ * （systemd 的 `WorkingDirectory`、`node --env-file` 从别处启动），路径不能靠 cwd 猜。
+ */
+export function defaultPanelDistDir(): string {
+  return fileURLToPath(new URL('../../../../apps/panel/dist/', import.meta.url));
 }

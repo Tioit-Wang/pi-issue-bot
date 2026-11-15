@@ -21,6 +21,8 @@ import {
 } from '../../db/index.ts';
 import type { AppliedMigration, MigrationFile, SqlExecutor } from '../../db/index.ts';
 import { QUEUES } from '../../queue/index.ts';
+import { readDatabaseUrl } from '../../config/env.ts';
+import type { EnvLike } from '../../config/env.ts';
 import { describeError } from '../deps.ts';
 import type { CheckContext, CheckDefinition } from '../deps.ts';
 
@@ -83,6 +85,21 @@ async function readQueueNames(
   return { present: true, names: listed.rows.map((row) => String(asRecord(row)['name'])) };
 }
 
+/**
+ * 取 DSN：与 `serve` 用同一份解析（`PI_BOT_PG_DSN` 优先，回退旧名 `PI_BOT_DATABASE_URL`）。
+ *
+ * doctor 是只读预检，**不抛**：两个名字都没配就返回空串，交给上层给出 fixHint。
+ * 这条不能自己再读一遍旧名 —— 那会让「按 README 配了 PI_BOT_PG_DSN」的部署判 fail，
+ * 而 §6.4 的语义是「doctor 不通过就拒绝启动」。
+ */
+function databaseUrlOf(env: EnvLike): string {
+  try {
+    return readDatabaseUrl(env);
+  } catch {
+    return '';
+  }
+}
+
 export const postgresCheck: CheckDefinition = {
   id: 'postgres',
   title: 'Postgres 可连 + 迁移已到最新',
@@ -91,11 +108,13 @@ export const postgresCheck: CheckDefinition = {
     if (pool === undefined) {
       return {
         status: 'fail',
-        detail: 'PI_BOT_DATABASE_URL 未配置，无法连库',
-        fixHint: 'export PI_BOT_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/pi_issue_bot（tech-plan §7.1）',
+        detail: 'PI_BOT_PG_DSN（或旧名 PI_BOT_DATABASE_URL）未配置，无法连库',
+        fixHint: 'export PI_BOT_PG_DSN=postgres://user:pass@127.0.0.1:5432/pi_issue_bot（tech-plan §7.1）',
       };
     }
-    const dsn = ctx.env['PI_BOT_DATABASE_URL'] ?? '';
+    // 两个名字都认，且与 `serve` 用同一份解析（`config/env.ts::readDatabaseUrl`）：
+    // 只认旧名会让「按 README 配了 PI_BOT_PG_DSN」的部署在 doctor 上判 fail，而 §6.4 是「不通过拒绝启动」。
+    const dsn = databaseUrlOf(ctx.env);
     const target = dsn === '' ? '<injected-pool>' : describeTarget(dsn);
 
     let latencyMs: number;

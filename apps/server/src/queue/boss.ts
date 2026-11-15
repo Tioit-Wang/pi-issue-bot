@@ -13,7 +13,7 @@
  */
 import { PgBoss } from 'pg-boss';
 import type { SendOptions } from 'pg-boss';
-import { QUEUE, expireInSecondsForCommand, ensureQueues, queueSpecOf, registerSchedules } from './definitions.ts';
+import { QUEUE, ensureQueues, enqueueExpireInSeconds, queueSpecOf, registerSchedules } from './definitions.ts';
 import type { QueueAdminBoss, ScheduleAdminBoss } from './definitions.ts';
 import { toSendOptions } from './retry-policy.ts';
 import type { RetryDecision } from './retry-policy.ts';
@@ -73,7 +73,7 @@ export async function bootstrapQueue(
 export type RunTaskJobData = {
   /** `tasks.id`，同时是 pg-boss 的 `singletonKey` */
   readonly taskId: string;
-  /** 命令名，决定 `expireInSeconds`（20min / 30min） */
+  /** 命令名，只用于日志/排查；**不再决定** `expireInSeconds`（见 `enqueueExpireInSeconds()`） */
   readonly command: string;
   readonly repo: string;
   /** 已完成的尝试次数（重投时 +1，与 `retry-policy.ts` 的 `attempt` 同口径） */
@@ -108,20 +108,23 @@ export type WorkBoss = {
 /**
  * 入队选项（§5.3 第 7 步）：
  *  - `singletonKey = taskId`：任务已在队列里就不再入队，覆盖「第 3 步之后、第 6 步之前崩溃」的窗口
- *  - `expireInSeconds`：执行期硬上限（默认 20min，`/review-pr` 30min）
+ *  - `expireInSeconds`：pg-boss 的**部署兜底**，固定取区间上界（30min，`enqueueExpireInSeconds()`）。
+ *    它不是单轮闸门 —— 单轮超时由任务级 deadline 按**项目值**决定（`turnTimeoutMsFor()`）。
+ *    入队点拿不到仓库 settings，若在这里按命令拍一个 20/30 的猜测值，项目配 30 分钟的任务
+ *    就会在第 20 分钟被 pg-boss 判过期；取上界让平台永远不早于项目配置动手。
  *  - `retryLimit: 0`：自动重试一律关掉，重试由 `decideRetry()` 显式决定（§7.3 F6）
  */
-export function queueJobOptions(taskId: string, command: string): SendOptions {
+export function queueJobOptions(taskId: string): SendOptions {
   return {
     singletonKey: taskId,
-    expireInSeconds: expireInSecondsForCommand(command),
+    expireInSeconds: enqueueExpireInSeconds(),
     retryLimit: 0,
   };
 }
 
 /** 入队一个任务 job。返回 job id；被 `singletonKey` 去重时返回 null（调用方按「已在队列」处理）。 */
 export async function enqueueTask(boss: QueueBoss, data: RunTaskJobData): Promise<string | null> {
-  return boss.send(QUEUE.runTask, data, queueJobOptions(data.taskId, data.command));
+  return boss.send(QUEUE.runTask, data, queueJobOptions(data.taskId));
 }
 
 /**
@@ -143,7 +146,7 @@ export async function enqueueRetry(
     return null;
   }
   const options: SendOptions = {
-    ...queueJobOptions(data.taskId, data.command),
+    ...queueJobOptions(data.taskId),
     ...toSendOptions(decision),
   };
   // 重投的载荷里 attempt +1（`attempt` 缺省视为第一次已跑完）

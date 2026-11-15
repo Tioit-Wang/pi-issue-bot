@@ -2,7 +2,7 @@
  * `workflows/` 的公开出口。
  *
  * 分工（每个文件只回答一个问题）：
- *  - `normalize.ts`       打标归一化（词表 / 1:N / 互斥组 / 上限 / 人工否决）——纯函数
+ *  - `normalize.ts`       打标归一化（词表 / 1:N / 互斥组 / 上限）——纯函数
  *  - `label-decisions.ts` `label_decisions` 的写入面（每轮一行）
  *  - `bot-labels.ts`      `bot_labels` 的记账实现（`BotLabelLedger` 的 PG 版 + 归因列）
  *  - `ports.ts`           注入面（worker 的窄接口 + SQL / reaction / 标签目录端口）
@@ -26,9 +26,7 @@ export {
   BOT_LABEL_SQL,
   createAttributedBotLabelLedger,
   createPgBotLabelLedger,
-  listBotLabelHistory,
   listBotLabels,
-  loadHumanVetoed,
 } from './bot-labels.ts';
 export type { BotLabelAttribution } from './bot-labels.ts';
 export {
@@ -40,7 +38,7 @@ export {
   summarizeBlockedReason,
 } from './label-decisions.ts';
 export type { LabelDecisionRecord, LabelDecisionRecorder } from './label-decisions.ts';
-export { humanVetoedFrom, normalizeDesired, toLabelTargets, vocabularyIndex } from './normalize.ts';
+export { normalizeDesired, toLabelTargets, vocabularyIndex } from './normalize.ts';
 export type {
   BlockedLabel,
   LabelBlockedReason,

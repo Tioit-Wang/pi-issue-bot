@@ -47,3 +47,19 @@ export function eventFingerprint(input: {
     input.issueUpdatedAt.trim(),
   ]);
 }
+
+/**
+ * 评论消息的 fingerprint（FR-3.5 的**内容级**去重）。
+ *
+ * 为什么不能复用 `eventFingerprint`：事件级键是「模板 + `issue.updated_at`」，对评论来说
+ * `updated_at` 只在评论落库时变一次、精度到秒 —— 同一秒里的两条不同评论会撞成同一条
+ * （第二条被静默丢弃），而同一段话被重投时若 `updated_at` 已变又会重复消费。
+ * 需求 §5 把「同一 issue 内评论正文（规范化后）」定为内容级键，与作者无关、不跨 issue。
+ */
+export function commentFingerprint(input: {
+  readonly repo: string;
+  readonly issueNumber: number;
+  readonly text: string;
+}): string {
+  return digest([input.repo, String(input.issueNumber), 'comment', normalizeForIdempotency(input.text)]);
+}

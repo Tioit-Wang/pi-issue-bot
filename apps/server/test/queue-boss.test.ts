@@ -3,7 +3,7 @@
  *
  * 全部用假 boss：**不连库、不 start()、不拉起 pg-boss 的后台线程**（dev-plan §13.4 第 5 条）。
  * 断言的是「传给 pg-boss 的参数对不对」——这正是 F6/F9 落地的地方：
- * `singletonKey = taskId`、`expireInSeconds` 两档、429 用 `startAfter`、其余 `retryLimit: 0`。
+ * `singletonKey = taskId`、`expireInSeconds` 统一取区间上界、429 用 `startAfter`、其余 `retryLimit: 0`。
  */
 import { describe, expect, it } from 'vitest';
 import type { SendOptions } from 'pg-boss';
@@ -16,7 +16,7 @@ import {
   queueJobOptions,
 } from '../src/queue/boss.ts';
 import type { QueueBoss, QueueJob, RunTaskJobData, TaskJob, WorkBoss } from '../src/queue/boss.ts';
-import { QUEUE } from '../src/queue/definitions.ts';
+import { EXPIRE_IN_SECONDS_MAX, QUEUE } from '../src/queue/definitions.ts';
 import { decideRetry } from '../src/queue/retry-policy.ts';
 import { signalFromHttp } from '../src/queue/failure-class.ts';
 
@@ -53,13 +53,14 @@ const data: RunTaskJobData = {
 };
 
 describe('queueJobOptions / enqueueTask', () => {
-  it('singletonKey = taskId，expireInSeconds 按命令分档，retryLimit 0', () => {
-    expect(queueJobOptions('task-9', '/review-pr')).toEqual({
+  it('singletonKey = taskId，expireInSeconds 统一取区间上界（命令不参与），retryLimit 0', () => {
+    expect(queueJobOptions('task-9')).toEqual({
       singletonKey: 'task-9',
-      expireInSeconds: 30 * 60,
+      expireInSeconds: EXPIRE_IN_SECONDS_MAX,
       retryLimit: 0,
     });
-    expect(queueJobOptions('task-9', 'auto:triage').expireInSeconds).toBe(20 * 60);
+    // 30min 上界：项目配 30 分钟也不会被 pg-boss 在 20 分钟判过期（真正的闸门是任务级 deadline）
+    expect(EXPIRE_IN_SECONDS_MAX).toBe(30 * 60);
   });
 
   it('入队打到 run-task 队列，载荷与选项都对', async () => {
@@ -72,7 +73,7 @@ describe('queueJobOptions / enqueueTask', () => {
     expect(boss.sends[0]?.data).toEqual(data);
     expect(boss.sends[0]?.options).toEqual({
       singletonKey: 'task-9',
-      expireInSeconds: 1800,
+      expireInSeconds: EXPIRE_IN_SECONDS_MAX,
       retryLimit: 0,
     });
   });

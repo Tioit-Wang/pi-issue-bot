@@ -274,15 +274,30 @@ export const FAILURE_CLASS_ORDER = [
   'github-api',
 ] as const;
 
-/** `runs.outcome` → 契约的 6 个取值；契约外为 `null`。 */
+/**
+ * `runs.outcome` → 契约的 6 个取值；契约外为 `null`。
+ *
+ * **两个域必须都认**：写入侧（`worker/types.ts:215` 的 `RUN_OUTCOMES`）写的是
+ * `succeeded` / `failed` / `timed-out` / `cancelled` / `degenerate-output`，
+ * 而契约（`enums.ts:58` 的 `OUTCOMES`）是 `success` / … / `interrupted`。
+ * 只认契约拼写会让**真实 run 全部变成 `null`**：结果分布少掉成功与取消两类
+ * （`/api/overview` 的 `outcomeDistribution` 直接不出现它们），任务列表与详情页的
+ * `outcome` 恒为空。FR-6「失败与超时都有可查记录」在这里断掉。
+ *
+ * 语义对齐（不是随便映射）：写入侧的 `cancelled` 就是契约的 `interrupted`
+ * （`enums.ts:64` 注释：`interrupted` = turn/interrupt 或人工取消），契约里没有
+ * 单独的 `cancelled`；`success` 与 `succeeded` 是同义。
+ */
 export function sqlOutcome(column: string): string {
   return `case ${column}
+    when 'succeeded' then 'success'
     when 'success' then 'success'
     when 'failed' then 'failed'
     when 'timed-out' then 'timed-out'
     when 'degenerate-output' then 'degenerate-output'
     when 'parse-failed' then 'parse-failed'
     when 'interrupted' then 'interrupted'
+    when 'cancelled' then 'interrupted'
     else null end`;
 }
 

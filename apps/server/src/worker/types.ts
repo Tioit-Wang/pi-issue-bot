@@ -19,7 +19,7 @@ import type { BotLabelLedger, GithubWriteApi } from '../github/index.ts';
 import type { LabelWritebackPolicy } from './writeback.ts';
 import type { FailureClass, FailureSignal, RetryDecision } from '../queue/index.ts';
 import type { SessionPlan, TurnDriverOps } from '../runtime/turn-driver.ts';
-import type { TurnUsageReader } from '../cost/index.ts';
+import type { PriceResolver, TurnUsageReader } from '../cost/index.ts';
 import type {
   ContainerStateSnapshot,
   DisposeResult,
@@ -362,6 +362,14 @@ export interface TaskRunnerDeps {
    * 不注入就表示「这个部署拿不到用量」，`usage_costs` 也就不写。
    */
   readonly usage?: TurnUsageReader;
+  /**
+   * 单价来源（CFG-8.2）：模型名 → 输入/输出单价；不注入 = 用代码里的官方价目表兜底。
+   *
+   * 装配层注入 `cost/price-resolver.ts` 的实现（读「全局设置」里的供应商模型目录）。
+   * 为什么挂在 `TaskRunnerDeps` 而不是 worker 自己去查库：单价是**配置**，
+   * 而 worker 不认识 `model_providers`（那是配置层的表）。
+   */
+  readonly resolvePrice?: PriceResolver;
   /** worker 镜像（`pi-worker:node22` 等）。 */
   readonly image: string;
   /**

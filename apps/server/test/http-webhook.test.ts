@@ -2,7 +2,7 @@
  * webhook 管线（`http/webhook.ts`）的测试 —— **真 PostgreSQL**（dev-plan §13.1/§13.4 第 5 条）。
  *
  * 覆盖任务书点名的七件事：
- *  1. 验签失败 → 401，且落一条 `signature_valid=false` 的审计行
+ *  1. 验签失败 / 缺签名 → 401，且都落一条 `signature_valid=false` 的审计行（FR-1.2）
  *  2. 同一 `X-GitHub-Delivery` 重复 20 次 → `webhook_deliveries` 1 行、`tasks` 1 行、入队 1 次
  *  3. 非白名单事件 → 200 但不建任务
  *  4. **10 秒应答在 handler 内**：reaction 在 `boss.send` 之后、且在 handler 返回之前发生
@@ -220,7 +220,7 @@ describe('webhook 九步管线（真 PG）', () => {
     expect(h.sends).toHaveLength(0);
   });
 
-  it('缺签名头：401 且不写任何行', async () => {
+  it('缺签名头：401，但仍要落一行审计（FR-1.2 的「校验失败仍要落库留痕」）', async () => {
     await enableRepo({ dryRun: false });
     const h = harness();
     const result = await handleWebhook(h.deps, {
@@ -231,7 +231,18 @@ describe('webhook 九步管线（真 PG）', () => {
       source: 'live',
     });
     expect(result.status).toBe(401);
-    expect(await countRows('webhook_deliveries')).toBe(0);
+    // 需求 `:741` 原话：「校验失败返回 401，但**仍要落库留痕**，便于排查配置错误」。
+    // 以前这条路径直接 401、连行都没有。本文件不注入 v21，所以 `decision` 两列留空是**正确**的
+    // （旧路径逐字节不变）；判定原因由新建的 `test/v21-webhook-trace.test.ts` 钉住。
+    const rows = await db.sql(
+      'select delivery_id, signature_valid from webhook_deliveries where delivery_id = $1',
+      ['dlv-no-sig'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ delivery_id: 'dlv-no-sig', signature_valid: false });
+    // 只落痕，不进业务分支：不建任务、不入队
+    expect(await countRows('tasks')).toBe(0);
+    expect(h.sends).toHaveLength(0);
   });
 
   it('同一 delivery 重投 20 次：投递 1 行、任务 1 行、入队 1 次', async () => {

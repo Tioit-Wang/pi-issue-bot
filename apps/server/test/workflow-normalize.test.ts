@@ -1,13 +1,13 @@
 /**
  * 打标归一化（`workflows/normalize.ts`）：纯函数，规则逐条钉死。
  *
- * 为什么值得单独一个文件：这五条规则（映射 / 词表 / 白名单 / 互斥组 / 上限 / 人工否决）
+ * 为什么值得单独一个文件：这五条规则（映射 / 词表 / 白名单 / 互斥组 / 上限）
  * 的顺序本身就是语义——顺序错了不会报错，只会「少一个标签」或「多一个标签」，
  * 而那种错误在集成测试里极难看出来。这里把每条规则与**拦截原因**都断言到。
  */
 import { describe, expect, it } from 'vitest';
 
-import { humanVetoedFrom, normalizeDesired, toLabelTargets, vocabularyIndex } from '../src/workflows/normalize.ts';
+import { normalizeDesired, toLabelTargets, vocabularyIndex } from '../src/workflows/normalize.ts';
 import type { LabelsConfig } from '../../../packages/contract/src/index.ts';
 import { labelsConfigSchema } from '../../../packages/contract/src/index.ts';
 import { vocabularyWithRoles } from './helpers/repo-settings.ts';
@@ -115,25 +115,34 @@ describe('normalizeDesired：互斥组与上限', () => {
   });
 });
 
-describe('normalizeDesired：人工否决', () => {
-  it('人撤下过的标签不再自动加回', () => {
+/**
+ * FR-5.4 / BR-11 / AC-15：**人工删除不构成永久否决**。
+ *
+ * 这里断言的是「归一化完全不看历史」：同一条判定键无论人删过多少次、删得多新，
+ * 下一轮照样得出同一个 desired。旧实现有一个 `human-veto` 原因会把它剔掉，
+ * 而那条规则的证据来自**我们自己的撤标动作**——把「我们删的」当成「人不要的」。
+ * 想表达「别动这个标签」只有目录里 `managed=false`（见 `writeback-v21-labels.test.ts`
+ * 的 `unmanaged` 用例），那是显式契约。
+ */
+describe('normalizeDesired：人工删除不构成永久否决（FR-5.4 / BR-11 / AC-15）', () => {
+  it('没有任何输入能表达「人删过」：同一条判定键永远得出同一个 desired', () => {
     const labels = labelsOf({ map: { 'needs-info': 'needs-info', bug: 'bug' } });
-    const result = normalizeDesired({ keys: ['needs-info', 'bug'], labels, humanVetoed: ['needs-info'] });
+    const first = normalizeDesired({ keys: ['needs-info', 'bug'], labels });
+    const again = normalizeDesired({ keys: ['needs-info', 'bug'], labels });
 
-    expect(result.desired).toEqual(['bug']);
-    expect(result.blocked.map((item) => [item.label, item.reason])).toEqual([['needs-info', 'human-veto']]);
-    expect(result.warnings.join('\n')).toContain('人工撤下');
+    expect(first.desired).toEqual(['needs-info', 'bug']);
+    // 第二次与第一次逐字段相同 —— 归一化是无状态的，不存在「删过就不加回」的记忆
+    expect(again).toEqual(first);
+    expect(first.blocked).toEqual([]);
   });
 
-  it('humanVetoedFrom：最后一条是撤标才算否决；之后重打过就不算', () => {
-    const vetoed = humanVetoedFrom([
-      { label: 'needs-info', appliedAt: new Date('2026-06-01T00:00:00Z'), removedAt: new Date('2026-06-01T01:00:00Z') },
-      // 又打了一次（opened_at 更新）→ 不再是否决
-      { label: 'bug', appliedAt: new Date('2026-06-01T02:00:00Z'), removedAt: null },
-      { label: 'bug', appliedAt: new Date('2026-06-01T00:00:00Z'), removedAt: new Date('2026-06-01T01:00:00Z') },
-    ]);
+  it('`human-veto` 不再是一个拦截原因（配置写不出它，代码也产不出它）', () => {
+    const labels = labelsOf({ map: { bug: 'bug' } });
+    const result = normalizeDesired({ keys: ['bug', '没映射过的键'], labels });
 
-    expect(vetoed).toEqual(['needs-info']);
+    const reasons = result.blocked.map((item) => item.reason);
+    expect(reasons).toEqual(['unmapped']);
+    expect(reasons).not.toContain('human-veto' as never);
   });
 });
 

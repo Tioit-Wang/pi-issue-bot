@@ -529,6 +529,8 @@ export function createCountingGithubApi(): CountingGithubApi {
     calls.push({ method, nonGet });
   };
   let nextId = 5_000;
+  /** issue 上的「GitHub 实况标签」。默认空（多数用例不关心）；可注入以钉住
+   * 「`current` 必须来自实况、不能来自 `bot_labels` 台账」这条根因（FR-5.4）。 */
 
   const api: GithubWriteApi = {
     async listIssueComments() {

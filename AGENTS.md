@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Policy-Sync: 2026-11-13.2
+Policy-Sync: 2026-11-15.1
 
 本仓库对 AI 编码 agent 与人类开发者的开发规范。产品行为以 [需求正文](docs/requirements.html) 为准，测试做法以 [测试规范](docs/testing-standards.html) 为准，工程约束以本文件为准。
 
@@ -62,7 +62,7 @@ shared ✗→ contract / envelope / racp-client
 | I1 | 代码里不存在 merge 能力 | `no-merge.test.ts` 红；这是安全边界 |
 | I2 | `PI_BOT_DRY_RUN` 默认 `true` | 安全变成「需要记得」 |
 | I3 | dry-run 零副作用（不写 `actions`） | 污染审计与改回统计 |
-| I4 | 标签只撤 `bot_labels` 记过的 | 撤掉人打的标签 |
+| I4 | 撤标只发生在「可管理集合」内：`remove = current ∩ 可管理目录 − desired`，其中 `current` 是 **GitHub 实况**（人的与我们的都算）；目录外 / `managed=false` / `retired` / 没填含义的标签一律不动，落 `skipped` 留痕 | 撤掉人打的、但**不属于自己管辖**的标签（组织标签、别人的工作流标签） |
 | I5 | 评论按 `(repo, issue, slot)` 覆盖 | 刷屏 |
 | I6 | 幂等三层且不靠内存（delivery → task key → `singletonKey`） | 重投重复执行 |
 | I7 | 会话状态只有 `active` / `idle` | 关单后无法重开复用 |
@@ -144,6 +144,16 @@ skip 规则：缺外部依赖（Docker daemon、真 git、宿主 `pi.sqlite`）�
 - 注释写**为什么**，文件头写职责与不可让渡的约束。
 - 新模块 ≤ 500 行；`worker/run-task.ts`、`github/octokit.ts`、`http/webhook.ts`、`app/compose.ts`、`skills/prompt.ts`、`writeback/v21/execute.ts` 不再加新职责。
 - 先抽取再实现的情况：违反依赖方向；规则会被复制成第二处真相；模块已混多职责；不抽纯逻辑就写不出测试。
+
+### 11.1 技能正文与提示词的分工
+
+- 三层各管一件事：**事实**（`owner/repo`、`issue#n`、当前标签、项目标签词表）由 `skills/prompt.ts` 用运行时真值渲染；
+  **方法**（先调哪个工具、传什么参数、判不出来怎么办）写在技能正文；**动作**（评论 / 打标 / 开 PR）走信封 `actions`。
+- 技能正文里不许出现 `{{...}}` 占位符：占位符既不是事实也不是工具，唯一效果是让模型以为「这里有人替它填值」。
+  要事实就引用段名（「标签名只看 `## 项目标签`」）。
+- 技能正文不许复制工具清单，只写「工具怎么用」——本场景特有的调用形式 + 何时用。工具目录由提示词按
+  `allowed-tools` 渲染，写在技能里就是第二处真相。
+- 这条由 `test/agent-skill-wiring.test.ts` 读本文件兜底：改措辞要让那两条断言仍然成立。
 
 ## 12. 提交与交付
 

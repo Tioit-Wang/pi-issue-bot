@@ -60,6 +60,13 @@ const SUMMARY_CHARS = 160;
 const TOOL_CALL_LIMIT = 50;
 /** 单侧正文上限（契约 `issueTurnSchema.text.max`）。 */
 const TEXT_CHARS = 40_000;
+/**
+ * 系统提示词上限（契约 `issueSessionResponseSchema.systemPrompt.max`）。
+ *
+ * 比 `TEXT_CHARS` 大一个量级：那是「一轮对话」的长度，系统提示词是「身份说明 + 硬约束 +
+ * 项目级片段」的合集，按对话长度截断会把硬约束整段切掉 —— 那比显示「已截断」更糟。
+ */
+const SYSTEM_PROMPT_CHARS = 200_000;
 /** 一次会话最多返回多少轮（契约 `turns.max(500)`）。 */
 const MAX_TURNS = 500;
 /** 工具名取不到时的占位（契约 `issueToolCallSchema.name` 非空，面板不用判空）。 */
@@ -407,6 +414,11 @@ function longText(raw: string | null | undefined): string | null {
   return raw.length > TEXT_CHARS ? raw.slice(0, TEXT_CHARS) : raw;
 }
 
+/** 按字符上限截断（不去空白、不把空串变 `null`：调用方自己决定空值语义）。 */
+function clip(text: string, maxChars: number): string {
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
 /** 结果分布 `{failed: 2}`：库里的 status 已在 SQL 里映射成契约取值。 */
 function outcomesOf(raw: unknown): IssueListItem['outcomes'] {
   const record = recordOf(raw);
@@ -486,29 +498,18 @@ function decodeIssueCursor(raw: string | undefined): IssueCursor | null {
 }
 
 /**
- * 列表：`lastActivityAt` 降序，keyset 分页（`(lastActivityAt, repo, kind, number)` 严格小于游标）。
+ * 列表的筛选谓词（不含游标）——**一页查询与全量计数共用这一份**。
  *
- * 没有 `q`：标题只在 jsonb 里，按 §0 的约定不做 jsonb 深挖（spec 已把标题搜索留给后续物化列）。
+ * 为什么抽出来：`totalEstimate` 必须与 `issues` 是同一个筛选的结果，否则会出现
+ * 「列表里 3 条、计数说 12 条」这种自相矛盾（同一个 `status` 参数）。分成两处写，
+ * 迟早只改一处。
+ *
+ * 派生状态的顺序必须与 `issueStatusFilterSchema` 的优先级一致（running → queued → failed …）：
+ * 那一条注释就是这份 WHERE 的规范来源。
  */
-export async function queryIssues(
-  runner: SqlRunner,
-  now: Date,
-  query: IssuesQuery,
-): Promise<IssuesListResponse> {
-  const limit = query.limit;
-  const params = new Params();
-  const cte = issueCte(params, query);
-
+function issueFilterClauses(params: Params, query: IssuesQuery): string[] {
   const where: string[] = [];
-  const cursor = decodeIssueCursor(query.cursor);
-  if (cursor !== null) {
-    const at = params.add(cursor.at, 'timestamptz');
-    const repo = params.add(cursor.repo);
-    const kind = params.add(cursor.kind);
-    const number = params.add(cursor.number, 'int');
-    where.push(`(a.last_activity_at, a.repo, a.kind, a.number) < (${at}, ${repo}, ${kind}, ${number})`);
-  }
-  // ── 派生状态筛选：顺序必须与 `issueStatusFilterSchema` 的优先级一致 ────────────
+
   const statusFilter = query.status;
   if (statusFilter !== undefined) {
     const n = (key: string): string => `coalesce((a.outcomes ->> '${key}')::int, 0)`;
@@ -546,6 +547,35 @@ export async function queryIssues(
   if (query.awaiting === 'true') {
     where.push('a.awaiting_reply');
   }
+
+  return where;
+}
+
+/**
+ * 列表：`lastActivityAt` 降序，keyset 分页（`(lastActivityAt, repo, kind, number)` 严格小于游标）。
+ *
+ * 没有 `q`：标题只在 jsonb 里，按 §0 的约定不做 jsonb 深挖（spec 已把标题搜索留给后续物化列）。
+ */
+export async function queryIssues(
+  runner: SqlRunner,
+  now: Date,
+  query: IssuesQuery,
+): Promise<IssuesListResponse> {
+  const limit = query.limit;
+  // 一页 + 计数是两条 SQL，各自一份参数：占位符是位置参数，混用会把 $n 对错行。
+  const params = new Params();
+  const cte = issueCte(params, query);
+
+  // ── 派生状态 / issue 状态 / 「欠一个回答」：与计数共用同一份谓词 ────────────────
+  const where = issueFilterClauses(params, query);
+  const cursor = decodeIssueCursor(query.cursor);
+  if (cursor !== null) {
+    const at = params.add(cursor.at, 'timestamptz');
+    const repo = params.add(cursor.repo);
+    const kind = params.add(cursor.kind);
+    const number = params.add(cursor.number, 'int');
+    where.push(`(a.last_activity_at, a.repo, a.kind, a.number) < (${at}, ${repo}, ${kind}, ${number})`);
+  }
   const whereSql = where.length === 0 ? '' : `\n  where ${where.join('\n    and ')}`;
   const limitParam = params.add(limit + 1, 'int');
 
@@ -562,6 +592,21 @@ limit ${limitParam}`,
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
   const last = page[page.length - 1];
+
+  /*
+   * 全量计数（`FR-7.4` 队列头部的计数）：与上一条**同一份谓词**，只是不带游标 ——
+   * 游标是「下一页从哪开始」，把它算进总数会让总数随翻页变小。
+   * 口径与 `/api/tasks` 相同（MVP 规模直接 `count(*)`）：两张表都只有几十万行的量级，
+   * 加一个物化计数列换来的是「两个数字可能对不上」，不值得。
+   */
+  const countParams = new Params();
+  const countCte = issueCte(countParams, query);
+  const countWhere = issueFilterClauses(countParams, query);
+  const countWhereSql = countWhere.length === 0 ? '' : `\n  where ${countWhere.join('\n    and ')}`;
+  const countRows = (
+    await runner.query(`${countCte}\nselect count(*) as total from agg a${countWhereSql}`, countParams.list())
+  ).rows as Array<{ total: number | string }>;
+  const totalEstimate = countRows.length === 0 ? 0 : intOf(countRows[0]?.total);
   const lastAt = last === undefined ? null : isoOrNull(last.last_activity_at);
 
   return {
@@ -572,6 +617,7 @@ limit ${limitParam}`,
       hasMore && last !== undefined && lastAt !== null
         ? encodeIssueCursor(lastAt, last.repo, last.kind, intOf(last.number))
         : null,
+    totalEstimate,
   };
 }
 
@@ -585,6 +631,19 @@ type MetaRow = {
   labels: string[] | null;
   participants: string[] | null;
   bot_login: string | null;
+  /** issue 主贴正文（`payload.issue.body`）—— `AC-28` 原文卡的正文来源。 */
+  body: string | null;
+  /** 主贴作者 login（`payload.issue.user.login`）。 */
+  author: string | null;
+  /** 主贴创建时间（`payload.issue.created_at`）的 ISO 原文，Node 侧再归一。 */
+  created_at: string | null;
+  /**
+   * 这条会话实际用过的系统提示词（`agent_sessions.system_prompt`，WP7 落库的那一列）。
+   *
+   * 按 `(repo, domain, issue_number)` 取：主键是这三段（WP2 的 BR-5），少一段就会让
+   * PR #7 的身份说明出现在 issue #7 的会话页上 —— 那正是 BR-5 要消掉的串域。
+   */
+  system_prompt: string | null;
   /** `issue_feedback` 时间线（升序，最多 20 条）。 */
   feedback: unknown;
 };
@@ -615,6 +674,9 @@ type RunRow = {
   comment_intent: string | null;
   comment_ref: string | null;
   labels: string[] | null;
+  /** 该 run 信封里的 `verdict` / `actions` 原文（`envelopes` 一 run 一行；没有信封为 `null`）。 */
+  verdict: unknown;
+  actions: unknown;
 };
 
 type ToolCallRow = {
@@ -652,6 +714,9 @@ function toHumanTurn(row: TaskTurnRow): IssueTurn {
     attempts: 1,
     toolCalls: [],
     truncated: false,
+    // 人类轮没有信封：`null` = 没有这一项（不是「结论为空」，面板不能说成「空 verdict」）
+    verdict: null,
+    actions: null,
   };
 }
 
@@ -659,6 +724,22 @@ function toHumanTurn(row: TaskTurnRow): IssueTurn {
 function commentUrlOf(repo: string, number: number, ref: string | null): string | null {
   if (ref === null || ref === '') return null;
   return `https://github.com/${repo}/issues/${number}#issuecomment-${ref}`.slice(0, 500);
+}
+
+/**
+ * `envelopes.verdict` / `envelopes.actions` 的原文 → 契约的 JSON 值。
+ *
+ * 为什么只判「是不是 JSON 值」：这两列存的是模型的**原始产出**，库里同时存在 v1 的
+ * `{kind,labels,evidence}`、v2.1 的 `'pass'|'fail'` 以及各种坏产出（`valid=false` 的也照留一份）。
+ * 按其中一种建形状，另一种就会让整页 `parse()` 失败 —— 那是把「模型写坏了」变成「面板打不开」。
+ * 面板对这块只做折叠后原样显示（`AC-30`），所以这里只挡「字段缺失」与非法类型。
+ */
+function envelopeJsonOf(raw: unknown): IssueTurn['verdict'] {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return raw;
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'object') return raw as Record<string, unknown>;
+  return null;
 }
 
 /** 合并后的机器人轮（同一 task 的多次 attempt 只出一轮）。 */
@@ -673,6 +754,8 @@ type BotGroup = {
   body: string | null;
   commentRef: string | null;
   labels: string[] | null;
+  verdict: unknown;
+  actions: unknown;
   truncated: boolean;
 };
 
@@ -695,6 +778,10 @@ function groupBotRuns(rows: readonly RunRow[], truncatedByRun: ReadonlyMap<strin
     if (head === undefined) continue;
     const withBody = attempts.find((row) => longText(row.body) !== null);
     const withRef = attempts.find((row) => row.comment_ref !== null);
+    // 信封两列各自回退（不是「有 verdict 才取 actions」）：v2.1 的产出允许只给 actions 不给 verdict，
+    // 用一个判定同时决定两列会让「只判定不动作」/「只动作不判定」的轮次丢掉一半信息。
+    const withVerdict = attempts.find((row) => row.verdict !== null && row.verdict !== undefined);
+    const withActions = attempts.find((row) => row.actions !== null && row.actions !== undefined);
     out.push({
       taskId,
       runId: head.run_id,
@@ -705,6 +792,10 @@ function groupBotRuns(rows: readonly RunRow[], truncatedByRun: ReadonlyMap<strin
       failureClass: head.failure_class,
       body: withBody?.body ?? null,
       commentRef: withRef?.comment_ref ?? null,
+      // 信封同正文/评论 id 的取法：代表行（最后一次 attempt）有就用它，否则回退到同组里
+      // 更早那次尝试的信封 —— 重试时新 attempt 可能压根没交信封（例如 OOM）。
+      verdict: withVerdict?.verdict ?? null,
+      actions: withActions?.actions ?? null,
       labels: head.labels,
       truncated: truncatedByRun.get(head.run_id) === true,
     });
@@ -735,6 +826,8 @@ function toBotTurn(
     attempts: Math.max(1, group.attempts),
     toolCalls: [...toolCalls],
     truncated: group.truncated,
+    verdict: envelopeJsonOf(group.verdict),
+    actions: envelopeJsonOf(group.actions),
   };
 }
 
@@ -817,6 +910,10 @@ export async function queryIssueSession(
            ) x
          ) as participants,
          (select rp.config -> 'bot' ->> 'login' from repos rp where rp.repo_full_name = $1) as bot_login,
+        org.body,
+        org.author,
+        org.created_at,
+        ags.system_prompt,
         fbt.events as feedback
        from (select 1) z
       left join lateral (
@@ -835,6 +932,37 @@ export async function queryIssueSession(
         from issue_states s
         where s.repo = $1 and s.issue_number = $3
       ) st on true
+     /*
+      * issue 主贴原文（AC-28：作者 / 时间 / 正文）。
+      *
+      * 为什么不复用上面那条 iss：它取的是**最新**投递（标题与状态要最新的），而正文要的是
+      * 「带正文的那条」。真实载荷里 issues.closed 等事件也带完整 issue 对象，但历史行与
+      * 测试夹具可能只有标题 —— 排序把「有正文的」放前面，于是这一条 lateral 同时覆盖两种情形：
+      * 有正文 → 最新那条带正文的投递；没有正文 → 仍能给出最新投递里的作者与创建时间。
+      * 作者与正文取同一条投递，避免「第 3 次投递的作者 + 第 1 次投递的正文」拼出来的假原文。
+      */
+     left join lateral (
+       select
+         nullif(d.payload -> $4 ->> 'body', '') as body,
+         nullif(d.payload -> $4 -> 'user' ->> 'login', '') as author,
+         d.payload -> $4 ->> 'created_at' as created_at
+       from webhook_deliveries d
+       where d.payload -> 'repository' ->> 'full_name' = $1
+         and d.payload -> $4 ->> 'number' = $5
+       order by (nullif(d.payload -> $4 ->> 'body', '') is not null) desc,
+                d.received_at desc, d.delivery_id desc
+       limit 1
+     ) org on true
+     /*
+      * 系统提示词留痕（AC-29）：agent_sessions 的主键是 (repo, domain, issue_number)，
+      * 所以 domain 必须一起给 —— 直接传 $2（= target_kind，取值面与 AGENT_SESSION_DOMAIN 一致）。
+      * 少这一段就会把 PR #7 的身份说明显示成 issue #7 的（BR-5 要消掉的正是这种串域）。
+      */
+     left join lateral (
+       select s.system_prompt
+       from agent_sessions s
+       where s.repo = $1 and s.domain = $2 and s.issue_number = $3
+     ) ags on true
      /*
       * 无感反馈：时间线 + 待落地项（applied_at is null：dry-run 计划 / 排队中）。
       * 与列表同一条 SQL 形状，reactionState 由 Node 侧挑「最新终态」。
@@ -883,6 +1011,8 @@ export async function queryIssueSession(
          cm.body,
          ar.intent as comment_intent,
          ar.external_ref as comment_ref,
+        env.verdict,
+        env.actions,
          lab.labels
        from runs r
        join tasks t on t.id = r.task_id
@@ -913,6 +1043,17 @@ export async function queryIssueSession(
            and bl.applied_at >= coalesce(r.started_at, t.queued_at)
            and bl.applied_at <= coalesce(r.ended_at, 'infinity'::timestamptz)
        ) lab on true
+       /*
+        * 信封原文（AC-30 的「默认收起 verdict / actions」）。
+        * envelopes 在 run_id 上有唯一索引，所以这一条最多一行；用 lateral 而不是直接 join
+        * 是为了让「没有信封的 run」仍然出行（外壳是 runs，不是 envelopes）。
+        */
+      left join lateral (
+        select e.verdict, e.actions
+        from envelopes e
+        where e.run_id = r.id
+        limit 1
+      ) env on true
        where t.repo = $1 and t.target_kind = $2 and t.target_number = $3
        order by r.task_id, r.attempt desc, r.started_at desc, r.id desc`,
       [repo, kind, number],
@@ -1021,8 +1162,14 @@ export async function queryIssueSession(
 
   // 反馈时间线：`reactionState` = 最新终态；`pendingFeedback` = 记了台账但 `applied_at` 还空着的
   const feedback = feedbackTimelineOf(meta?.feedback);
+
   return {
     generatedAt: now.toISOString(),
+    /**
+     * 系统提示词原文（`AC-29`）。取 `null` 时面板会说「没有记录」，而不是拿当前配置拼一份。
+     * 超长按契约上限截断：`agent_sessions.system_prompt` 是 text，理论上可以无限长。
+     */
+    systemPrompt: meta?.system_prompt == null ? null : clip(meta.system_prompt, SYSTEM_PROMPT_CHARS),
     issue: {
       repo,
       kind,
@@ -1032,6 +1179,10 @@ export async function queryIssueSession(
       state: stateOf(meta?.state ?? null),
       stateStale: meta?.state_stale !== false,
       labels: labelsOf(meta?.labels),
+      // 主贴原文（`AC-28`）：正文保留换行（markdown 要按原文显示），作者与时间取同一条投递。
+      body: longText(meta?.body),
+      author: meta?.author == null ? null : meta.author.slice(0, 100),
+      createdAt: isoOrNull(meta?.created_at),
       participants: participants.slice(0, 100),
       reactionState: reactionStateOf(feedback),
       pendingFeedback: feedback.filter((event) => event.appliedAt === null),

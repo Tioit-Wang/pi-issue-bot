@@ -82,21 +82,25 @@ export type ReactionPort = {
 };
 
 /**
- * 标签目录端口（`labels.missing` 的策略需要它）。
+ * 标签目录端口（`labels.missing` 的判据 + 目标态的「目录即全量」范围）。
  *
- * 两件事都需要真实 GitHub 支持，但都不在 `GithubWriteApi` 里：
- *  - `list`：仓库里当前有哪些标签（判断「map 里映射到的标签其实不存在」）；
- *  - `create`：按词表的 `color` / `description` 建标签（`labels.missing: 'create'`）。
+ * **只读**：LD-1 / LD-2 规定名称、颜色、描述一律以 GitHub 为准，平台不单独维护、
+ * 也不反向创建。早先这里还有一个 `create`（`POST /repos/{o}/{r}/labels`），
+ * 那条路径已被删除——平台不发明标签，缺标签就报错（`missing-label`），由人先在仓库里建。
  *
- * 两个方法都可缺：缺 `list` 时按「词表就是事实」处理（不判 missing），
- * 缺 `create` 时 `create` 策略降级为 `warn` 并记进 `label_decisions.blocked_reason`。
+ * `list` 返回**名称 + 颜色 + 描述**（README：「颜色/描述来自 GitHub，平台不单独维护」）。
+ * 颜色与描述在这里一并带回来，是为了让同步能把 GitHub 的真值落到目录条目里；
+ * 它们只读，任何写入面都不许拿它们去 POST 回 GitHub。
+ *
+ * `list` 可缺：缺它时按「词表就是事实」处理（不判 missing），而不是每次都失败。
  */
 export type LabelCatalogPort = {
-  list?(input: { readonly repo: string }): Promise<readonly string[]>;
-  create?(input: {
-    readonly repo: string;
-    readonly name: string;
-    readonly color?: string;
-    readonly description?: string;
-  }): Promise<void>;
+  list?(input: { readonly repo: string }): Promise<readonly LabelCatalogEntry[]>;
+};
+
+/** 仓库里的一个标签（GitHub 侧的事实）。`color` 是 `RRGGBB`（不带 `#`）。 */
+export type LabelCatalogEntry = {
+  readonly name: string;
+  readonly color?: string | undefined;
+  readonly description?: string | undefined;
 };

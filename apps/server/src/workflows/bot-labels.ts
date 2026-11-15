@@ -1,9 +1,13 @@
 /**
  * `bot_labels` 的 PG 记账实现（`github/executor.ts` 的 `BotLabelLedger` 端口）。
  *
- * 这张表是「我打过哪些标签」的**唯一事实源**（tech-plan §7.2）。执行器只负责按计划调用它，
- * 于是「只增删自己打过的标签」（plan §6.1）就有了可核对的依据，而不是靠读 issue 现状反推——
- * 反推会把「人自己打的 bug」误判成「我们打的 bug」，然后在重算时把它删掉。
+ * 这张表是「我打过哪些标签」的**唯一事实源**（tech-plan §7.2），用途只剩一件：
+ * 回答**删除的归属**——这次撤标是我们收回自己的动作，还是替人做了决定（BR-10 的删除留痕）。
+ *
+ * 为什么它**不再**参与「当前标签」的判定（FR-5.4 / BR-11）：`current` 必须来自 GitHub 上
+ * 实际挂着的标签。用台账当 `current` 有两个方向都错：
+ *  - 人手动删了标、台账仍记 `applied` → 模型要求该标签时被判成「已经在」→ 永不补加；
+ *  - 人手动打了标、台账没有这一行 → 永远进不了 `remove` 集合 → 平台拿不到删除权。
  *
  * 三条不变式：
  *  1. 「当前持有」= `removed_at IS NULL` 的行；`bot_labels_active_uidx` 是 partial 唯一索引，
@@ -14,7 +18,6 @@
  *     所以老调用点（只给 `{now}`）行为不变。
  */
 import type { BotLabelLedger } from '../github/index.ts';
-import { humanVetoedFrom } from './normalize.ts';
 import type { SqlRunner } from './ports.ts';
 
 export const BOT_LABEL_SQL = {
@@ -31,13 +34,13 @@ WHERE "repo" = $1 AND "issue_number" = $2 AND "label" = ANY($3::text[]) AND "rem
   listActive: `SELECT "label" FROM "bot_labels"
 WHERE "repo" = $1 AND "issue_number" = $2 AND "removed_at" IS NULL
 ORDER BY "label"`,
-  /** $1 repo, $2 issue_number → 全历史（含已撤下的），「人工否决」从它的最后一条推 */
-  listHistory: `SELECT "label", "applied_at", "removed_at" FROM "bot_labels"
-WHERE "repo" = $1 AND "issue_number" = $2
-ORDER BY "label", "applied_at"`,
 } as const;
 
-/** 读「我们在该目标上当前持有的标签」。 */
+/**
+ * 读「我们在该目标上当前持有的标签」。
+ *
+ * **只用于审计归属**（`deletionOwner`），不是 `current`：`current` 来自 GitHub 实况。
+ */
 export async function listBotLabels(
   db: SqlRunner,
   input: { readonly repo: string; readonly issueNumber: number },
@@ -46,47 +49,6 @@ export async function listBotLabels(
   return result.rows
     .map((row) => (row as { label?: unknown }).label)
     .filter((label): label is string => typeof label === 'string');
-}
-
-/** 读全历史行（含已撤下的）；时间列已转成 `Date`。 */
-export async function listBotLabelHistory(
-  db: SqlRunner,
-  input: { readonly repo: string; readonly issueNumber: number },
-): Promise<ReadonlyArray<{ readonly label: string; readonly appliedAt: Date; readonly removedAt: Date | null }>> {
-  const result = await db.query(BOT_LABEL_SQL.listHistory, [input.repo, input.issueNumber]);
-  return result.rows.map((row) => {
-    const record = row as Record<string, unknown>;
-    return {
-      label: String(record['label'] ?? ''),
-      appliedAt: toDate(record['applied_at']) ?? new Date(0),
-      removedAt: toDate(record['removed_at']),
-    };
-  });
-}
-
-/**
- * 读「人工否决」集合（人把我们打过的标签撤了、之后我们没再打回来）。
- *
- * 用途（`docs/impl-multi-repo.md` §4 W2-E 第 1 条最后一步）：归一化时把这些标签剔除，
- * 否则重算一轮就会把用户刚撕掉的 `needs-info` 又贴回去——那是最招人烦的一种自动化。
- */
-export async function loadHumanVetoed(
-  db: SqlRunner,
-  input: { readonly repo: string; readonly issueNumber: number },
-): Promise<readonly string[]> {
-  const history = await listBotLabelHistory(db, input);
-  return humanVetoedFrom(history);
-}
-
-function toDate(value: unknown): Date | null {
-  if (value instanceof Date) {
-    return value;
-  }
-  if (typeof value === 'string' && value !== '') {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-  return null;
 }
 
 /** 单轮打标的归因（写进 `bot_labels` 的四列）。 */

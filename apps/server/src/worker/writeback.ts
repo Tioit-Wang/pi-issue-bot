@@ -109,13 +109,11 @@ export type LabelWritebackPolicy = {
   /** `repos.settings.labels`：词表 / 1:N 映射 / 白名单 / `missing` 策略 / 上限。 */
   readonly labels: LabelsConfig;
   /**
-   * 人工否决集合（`bot_labels` 历史里被撤下且之后没再打回来的名字）。
-   * 省略 = 不知道（不做人工否决那一条规则）。
+   * 仓库里**当前实际存在**的标签（GitHub 实况，只读）。
+   *
+   * LD-1 / LD-2：平台不发明标签、不反向创建，所以这里只有 `list`——缺标签就报错
+   * （`missing-label`），由人先在 GitHub 上建。省略 = 不判 missing（凭猜删建比漏标签贵）。
    */
-  readonly humanVetoed?:
-    | ((input: { readonly repo: string; readonly targetNumber: number }) => Promise<readonly string[]>)
-    | undefined;
-  /** 仓库已有标签 + 建标签（`labels.missing` 的判据）。省略 = 不判 missing。 */
   readonly catalog?: LabelCatalogPort | undefined;
   /** `label_decisions` 写入面。省略 = 只算不记。 */
   readonly decisions?: LabelDecisionRecorder | undefined;
@@ -155,10 +153,13 @@ function errorText(error: unknown): string {
  *     `verdict.labels` 里。所以补一层「名字 → 名字」的恒等映射（显式 `labels.map` 优先，
  *     它仍然承担改名与 1:N 展开）。不补的话，词表里明明有的标签会被判成 `unmapped`
  *     —— 那正是「生产一个标签都不打」的黑洞。
- *  2. **丢掉 `labels.missing` 不允许的标签**：仓库里没有的标签写上去只会 422，
- *     不如记进 `label_decisions` 让面板说人话；`create` 策略按词表的 color/description 建
- *     （缺这两项或没注入目录端口就降级成 `not-creatable`）。
+ *  2. **丢掉仓库里没有的标签**：写一个不存在的标签只会 422，不如记进 `label_decisions`
+ *     让面板说人话。**平台不建标签**（LD-2），所以这里只读 `list`；缺标签一律
+ *     `missing-label`，由人先在 GitHub 上建。
  *  3. **dry-run 不查仓库标签**：dry-run 的口径是「GitHub 零副作用」，一次 GET 也不该发生。
+ *
+ * 没有「人工否决」这一步（FR-5.4 / BR-11）：人删过一次不构成永久否决，下一轮按目标态
+ * 重新对齐。不想让平台碰某个标签，用目录里的 `managed=false`（那是显式契约）。
  */
 export async function planLabelWriteback(input: {
   /** 信封 `label` 动作的 `add`（模型想打的标签名 / 判定键）。 */
@@ -187,26 +188,14 @@ export async function planLabelWriteback(input: {
   const warnings: string[] = [];
   const blocked: BlockedLabel[] = [];
 
-  let vetoed: readonly string[] = [];
-  if (input.policy.humanVetoed !== undefined) {
-    try {
-      vetoed = await input.policy.humanVetoed({ repo: input.repo, targetNumber: input.targetNumber });
-    } catch (error) {
-      warnings.push(`读人工否决集合失败（本次不考虑否决）：${errorText(error)}`);
-    }
-  }
-
-  const normalized = normalizeDesired({ keys, labels, humanVetoed: vetoed });
+  const normalized = normalizeDesired({ keys, labels });
   warnings.push(...normalized.warnings);
   blocked.push(...normalized.blocked);
 
   const known = input.dryRun ? null : await knownLabelsOf(input.policy.catalog, input.repo, warnings);
-  const missing = await applyMissingPolicy({
+  const missing = applyMissingPolicy({
     policy: labels.missing,
-    catalog: input.policy.catalog,
-    repo: input.repo,
     desired: normalized.desired,
-    vocabulary: normalized.vocabulary,
     knownLabels: known,
     warnings,
   });
@@ -221,7 +210,12 @@ export async function planLabelWriteback(input: {
   };
 }
 
-/** 仓库里有哪些标签：没端口 / 读失败 → `null`（= 不判 missing，凭猜删建比漏打更贵）。 */
+/**
+ * 仓库里有哪些标签名：没端口 / 读失败 → `null`（= 不判 missing，凭猜删建比漏打更贵）。
+ *
+ * 只取名字：颜色/描述是 GitHub 的元数据（LD-1），写入面用不到它们，
+ * 拿回来只会让人误以为「平台可以改颜色」。
+ */
 async function knownLabelsOf(
   catalog: LabelCatalogPort | undefined,
   repo: string,
@@ -232,7 +226,8 @@ async function knownLabelsOf(
     return null;
   }
   try {
-    return await list.call(catalog, { repo });
+    const entries = await list.call(catalog, { repo });
+    return entries.map((entry) => entry.name);
   } catch (error) {
     warnings.push(`读仓库标签列表失败（本次不判 labels.missing）：${errorText(error)}`);
     return null;
@@ -240,21 +235,22 @@ async function knownLabelsOf(
 }
 
 /**
- * `labels.missing` 的三个策略（`warn` / `create` / `ignore`）。
+ * `labels.missing` 的两个策略（`warn` / `ignore`）。
+ *
+ * 第三个取值 `create`（自动建标签）**已经取消**：LD-2 规定平台不发明标签、不反向创建。
+ * 存量配置里残留的 `'create'` 按 `warn` 处理（缺标签报错，不建）—— 升级后行为只会
+ * 变保守，不会因为一份老 jsonb 突然开始往仓库里写新标签。
  *
  * 为什么这份逻辑在这里：旧 `triage.ts` 里的那一份随 S5 删死代码一起删掉了（它只服务于
  * 无调用者的判定通道），**这里是唯一实现**。两边共用的是 `normalizeDesired()` 与词表，
  * 策略本身只有十来行。
  */
-async function applyMissingPolicy(input: {
+function applyMissingPolicy(input: {
   readonly policy: 'warn' | 'create' | 'ignore';
-  readonly catalog: LabelCatalogPort | undefined;
-  readonly repo: string;
   readonly desired: readonly string[];
-  readonly vocabulary: Readonly<Record<string, { readonly color?: string; readonly description?: string }>>;
   readonly knownLabels: readonly string[] | null;
   readonly warnings: string[];
-}): Promise<{ readonly kept: readonly string[]; readonly blocked: readonly BlockedLabel[] }> {
+}): { readonly kept: readonly string[]; readonly blocked: readonly BlockedLabel[] } {
   const known = input.knownLabels;
   if (known === null) {
     return { kept: input.desired, blocked: [] };
@@ -268,59 +264,18 @@ async function applyMissingPolicy(input: {
       kept.push(label);
       continue;
     }
-    if (input.policy === 'ignore') {
-      blocked.push({
-        label,
-        reason: 'missing-label',
-        detail: `仓库里没有 \`${label}\` 这个标签；按 labels.missing=ignore 静默跳过`,
-        sourceKey: null,
-      });
-      continue;
-    }
-    if (input.policy === 'create') {
-      const entry = input.vocabulary[label];
-      const create = input.catalog?.create;
-      if (entry !== undefined && create !== undefined) {
-        try {
-          await create.call(input.catalog, {
-            repo: input.repo,
-            name: label,
-            ...(entry.color === undefined ? {} : { color: entry.color }),
-            ...(entry.description === undefined ? {} : { description: entry.description }),
-          });
-          kept.push(label);
-          input.warnings.push(`仓库里没有 \`${label}\`：已按词表（labels.missing=create）新建标签`);
-          continue;
-        } catch (error) {
-          blocked.push({
-            label,
-            reason: 'not-creatable',
-            detail: `\`${label}\` 建标签失败：${errorText(error)}`,
-            sourceKey: null,
-          });
-          input.warnings.push(`建标签 \`${label}\` 失败：${errorText(error)}`);
-          continue;
-        }
-      }
-      blocked.push({
-        label,
-        reason: 'not-creatable',
-        detail:
-          entry === undefined
-            ? `仓库里没有 \`${label}\`，且它不在 labels.vocabulary 里：labels.missing=create 也只建词表内的标签`
-            : `仓库里没有 \`${label}\`，词表里有它但没有 color/description（或未注入标签目录端口）：无法新建`,
-        sourceKey: null,
-      });
-      input.warnings.push(`仓库里没有 \`${label}\` 且无法新建：本轮不打`);
-      continue;
-    }
+    // `ignore` 与 `warn` 的区别只在 `detail` 的措辞（都记一行 `label_decisions`）：
+    // 面板要能回答「为什么这个标签没打上」，静默跳过就等于没有答案。
     blocked.push({
       label,
       reason: 'missing-label',
-      detail: `仓库里没有 \`${label}\` 这个标签；labels.missing=warn（只记台账，需要建标签请把策略改成 create）`,
+      detail:
+        input.policy === 'ignore'
+          ? `仓库里没有 \`${label}\` 这个标签；按 labels.missing=ignore 跳过（平台不建标签，见 LD-2）`
+          : `仓库里没有 \`${label}\` 这个标签：本轮不打。平台不反向创建标签（LD-2），请先在 GitHub 上建好`,
       sourceKey: null,
     });
-    input.warnings.push(`仓库里没有 \`${label}\` 这个标签：按 labels.missing=warn 只记台账`);
+    input.warnings.push(`仓库里没有 \`${label}\` 这个标签：本轮不打（平台不建标签，LD-2）`);
   }
 
   return { kept, blocked };

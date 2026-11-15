@@ -33,13 +33,17 @@ function makeContext(overrides: Partial<RenderContext> = {}): RenderContext {
     },
     comment: { author: 'bob', body: '这条和 #1942 是同一个问题吗' },
     repoIssues: '#1942 [open] 导出闪退',
+    // 增量投喂的两个取值（FR-4.2）：这里给「后续轮 + 有变更」的形态，
+    // 让逐占位符断言同时覆盖新占位符的取值口径
+    contentDelta: '+ 环境：Windows 11',
+    firstEvent: false,
     ...overrides,
   };
 }
 
-describe('12 个正式占位符（§6.3 表格）', () => {
-  it('清单就是 12 个，不多不少', () => {
-    expect(PLACEHOLDER_NAMES).toHaveLength(12);
+describe('14 个正式占位符（§6.3 表格）', () => {
+  it('清单就是 14 个，不多不少', () => {
+    expect(PLACEHOLDER_NAMES).toHaveLength(14);
   });
 
   it('每个占位符都能渲染出值（有评论、有 issue 索引的上下文）', () => {
@@ -67,6 +71,8 @@ describe('12 个正式占位符（§6.3 表格）', () => {
       ['repo', 'org/repo'],
       ['actor', 'carol'],
       ['event.action', 'opened'],
+      ['issue.contentDelta', '+ 环境：Windows 11'],
+      ['issue.isFirstEvent', 'false'],
     ];
     for (const [name, expected] of cases) {
       expect(renderTemplate(`{{${name}}}`, ctx).text, name).toBe(expected);

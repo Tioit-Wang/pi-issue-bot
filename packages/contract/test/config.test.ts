@@ -52,11 +52,13 @@ describe('repoSettingsSchema（repos.settings 的 jsonb 形状）', () => {
     // 触发体系只剩别名：不配就是 undefined（webhook 用部署默认）
     expect(settings.triggers.aliases).toBeUndefined();
     expect(settings.skills.project_skills).toBe(true);
-    // agent 段：没有 enabled、没有任何阈值；两个事件默认加载 issue-format（真实存在的技能）
+    // agent 段：没有 enabled、没有任何阈值；两个事件默认加载 proposal-analysis
+    // （`/issue-format` 已随 v2.1 的技能面退役，schema 默认值改成 `proposal-analysis`；
+    //  这里跟 `repo-config.ts` 的 `.default(...)` 保持一致，别再把旧技能名写回来）
     expect(settings.agent).toEqual({
       managers: ['alice'],
-      on_opened: 'issue-format',
-      on_edited: 'issue-format',
+      on_opened: 'proposal-analysis',
+      on_edited: 'proposal-analysis',
       auto_label_after_format_pass: false,
       project_prompt: '',
       // v2.1 新增：系统提示词（空串 = 用内置）、执行限额、后三类动作开关（默认全关）

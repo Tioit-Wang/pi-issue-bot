@@ -28,8 +28,8 @@ export {
 } from './constants.ts';
 export type { AgentMessageKind, AgentMessageStatus, AgentTemplateId } from './constants.ts';
 
-export { normalizeForIdempotency, stripAliases } from './canonical-text.ts';
-export { eventFingerprint, mentionFingerprint } from './fingerprint.ts';
+export { normalizeForIdempotency, stripAliasMentions, stripAliases } from './canonical-text.ts';
+export { commentFingerprint, eventFingerprint, mentionFingerprint } from './fingerprint.ts';
 
 export { AGENT_DENIAL_SQL, isManager, recordDenial } from './permission.ts';
 export type { AgentDenialKey, AgentManagerSettings } from './permission.ts';
@@ -41,8 +41,7 @@ export {
   AGENT_EMPTY_BODY,
   AGENT_EMPTY_MENTION,
   composeAgentMessage,
-  eventSkillsOf,
-  eventTemplateSkillOf,
+  // 没有 `eventSkillsOf` / `eventTemplateSkillOf`：平台不维护「事件 → 技能」映射表（Q-6 / FR-5.1）。
   renderCatalog,
   truncatedMarker,
 } from './message.ts';
@@ -55,6 +54,7 @@ export type {
 } from './message.ts';
 
 export {
+  AGENT_SESSION_DOMAINS,
   AGENT_SQL,
   AGENT_TASK_KEY_PREFIX,
   agentTaskCommand,
@@ -71,7 +71,13 @@ export {
   readMessage,
   saveSession,
 } from './store.ts';
-export type { AgentMessageKey, AgentMessageRow, AgentSessionRow } from './store.ts';
+export type {
+  AgentMessageKey,
+  AgentMessageRow,
+  AgentSessionDomain,
+  AgentSessionKey,
+  AgentSessionRow,
+} from './store.ts';
 
 export {
   dispatchAgentMessages,

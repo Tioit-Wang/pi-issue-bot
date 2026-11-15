@@ -17,15 +17,19 @@
  */
 import Fastify from 'fastify';
 import swagger from '@fastify/swagger';
+import fastifyStatic from '@fastify/static';
 import { jsonSchemaTransform, serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { FastifyRequest } from 'fastify';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import type { Pool } from 'pg';
 import { CONTRACT_VERSION } from '../../../../packages/contract/src/index.ts';
 import type { Logger } from '../../../../packages/shared/src/index.ts';
 import { ping } from '../db/index.ts';
 import { registerApiRoutes } from './api/index.ts';
 import type { ApiDeps } from './api/index.ts';
+import type { GithubUserLookup } from '../github/users.ts';
 import { registerErrorHandling } from './errors.ts';
 import type { Metrics } from './metrics.ts';
 import { registerWebhookRoute } from './webhook.ts';
@@ -49,6 +53,8 @@ export type BuildServerDeps = {
   readonly webhook: WebhookDeps;
   /** 技能管理（写面）；不注入 → `/api/skills` 整体不挂载（读路由的测试不需要它）。 */
   readonly skills?: ApiDeps['skills'];
+  /** 全局设置（供应商 / 模型角色 / 面板身份）；不注入 → 这一组路由整组不存在。 */
+  readonly settings?: ApiDeps['settings'];
   /** 不传则建一个内部的（`serve` 会传进来，测试也可以不传）。 */
   readonly metrics?: Metrics;
   readonly appVersion?: string;
@@ -61,10 +67,35 @@ export type BuildServerDeps = {
   /** doctor 摘要（W3 的 `doctor/`；不注入 → 标 `skip`，不是 fail）。 */
   readonly doctor?: HealthProvider;
   readonly now?: () => Date;
+  /**
+   * 面板构建产物目录（`vite build` → `apps/panel/dist`）。
+   *
+   * 给了就托管静态资源 + SPA 深链接兜底（`/issues`、`/costs` 这类前端路由回 `index.html`）；
+   * 不给（或目录不存在）就完全不挂，`/` 保持 404 —— 有的部署由 Caddy 直接发静态文件。
+   */
+  readonly panelDistDir?: string | undefined;
+  /**
+   * GitHub 账号查询端口（`GET /users/{login}`）：`PUT /api/repos/:owner/:name/settings`
+   * 用它校验角色成员账号存在并解析出用户 id（需求 §6.6 的两个坑）。
+   *
+   * 不注入 = 本部署没有 GitHub 凭据：带「指定成员」角色的保存请求会被显式拒绝（503），
+   * 这是有意的 —— 静默放行等于让拼错的 login 永久无法触发且没有任何报错。
+   */
+  readonly githubUsers?: GithubUserLookup | undefined;
 };
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 后端前缀：这些路径**永远**不回面板 `index.html`（否则前端路由会把 `/api/nope` 也吃掉，
+ * 面板拿到 200 + HTML 而不是契约错误体）。
+ */
+const BACKEND_PATH_PREFIXES = ['/api', '/webhook', '/healthz', '/openapi.json', '/metrics'] as const;
+
+function isBackendPath(pathname: string): boolean {
+  return BACKEND_PATH_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 /**
@@ -146,14 +177,45 @@ export function buildServer(deps: BuildServerDeps): ZodFastify {
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
-  registerErrorHandling(app, {
-    warn: (fields, message) => {
-      deps.logger.warn(fields, message);
+
+  // 面板静态资源（`vite build` 的产物）：只在自己真有 `index.html` 时才挂 ——
+  // 让 Caddy 直接发静态文件的部署保持「3000 只有 API」的现状，不因空目录改变行为。
+  const panelRoot =
+    deps.panelDistDir !== undefined && existsSync(path.join(deps.panelDistDir, 'index.html'))
+      ? deps.panelDistDir
+      : undefined;
+  if (panelRoot !== undefined) {
+    // `wildcard: false`：按磁盘上的真实文件逐个注册精确路由，静态文件永远抢不到
+    // `/api`、`/webhook`、`/healthz`（它们是后面注册的具名路由）。
+    app.register(fastifyStatic, { root: panelRoot, wildcard: false, index: false });
+  }
+
+  registerErrorHandling(
+    app,
+    {
+      warn: (fields, message) => {
+        deps.logger.warn(fields, message);
+      },
+      error: (fields, message) => {
+        deps.logger.error(fields, message);
+      },
     },
-    error: (fields, message) => {
-      deps.logger.error(fields, message);
-    },
-  });
+    // SPA 深链接（`/issues`、`/costs?window=7d`）：未命中任何文件时回 index.html，
+    // 由前端路由自己解析；后端前缀保持契约错误体，前端不会拿到 200 + HTML。
+    panelRoot === undefined
+      ? undefined
+      : (request, reply) => {
+          const pathname = request.url.split('?')[0] ?? '/';
+          if (request.method !== 'GET' && request.method !== 'HEAD') {
+            return false;
+          }
+          if (isBackendPath(pathname)) {
+            return false;
+          }
+          void reply.type('text/html; charset=utf-8').sendFile('index.html');
+          return true;
+        },
+  );
 
   if (deps.openapi === true) {
     app.register(swagger, {
@@ -226,8 +288,12 @@ export function buildServer(deps: BuildServerDeps): ZodFastify {
       // `/api/repos*`（仓库列表 / 读配置 / 写配置 / 手动添加）：**默认挂载**。
       // 不注入它这组路由就整组不存在，面板与「多仓库」的全流程都废掉（W1-A 的存储层已经就绪，
       // 这里只是把池子接上去；测试可以用 `repos: undefined` 之外的装配拿到同样行为）。
-      repos: { db: deps.pool },
+      //
+      // `users` 是「保存配置时校验角色成员账号」的 GitHub 查询端口（需求 §6.6 两个坑）；
+      // 没配 GitHub 凭据时保持不注入 —— 那样带成员角色的配置会被显式拒绝保存，而不是静默放行。
+      repos: { db: deps.pool, ...(deps.githubUsers === undefined ? {} : { users: deps.githubUsers }) },
       ...(deps.skills === undefined ? {} : { skills: deps.skills }),
+      ...(deps.settings === undefined ? {} : { settings: deps.settings }),
     });
   });
 

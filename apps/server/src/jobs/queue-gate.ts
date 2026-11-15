@@ -1,11 +1,13 @@
 /**
  * 排队闸门作业（`QUEUE.queueGate`，每分钟；tech-plan §4.7 第三行，F5）。
  *
- * 每分钟做四件事：
+ * 每分钟做五件事：
  *  1. 读每个仓库的 `settings.limits.queue_wait_minutes`（默认 10 分钟）；
  *  2. 用**最小的**阈值扫一遍 `tasks.status='queued'`（SQL 只做粗筛，走 `(status, queued_at)` 索引）；
  *  3. 在 JS 侧按**该仓库的**阈值精确判定（`isQueueTimedOut`），边界严格大于；
- *  4. 命中就 `status='cancelled_queue'` + 打一个 `confused` reaction（**零评论**，§0.4）。
+ *  4. 命中就 `status='cancelled_queue'` + 打一个 `confused` reaction（**零评论**，§0.4）；
+ *  5. 另外读一遍「因本仓库满载被排除、且已等超阈值」的仓库，只记结构化 warn（**不改行为**）——
+ *     满载时排队行受「不丢弃」保护不会被取消，若不报警就会无声卡住（需求 §6.7 SL-2）。
  *
  * 为什么阈值放在这里读而不是写死在 SQL 里：`queue_wait_minutes` 是仓库级配置，
  * 一条 SQL 只能带一个 interval。用「最小阈值粗筛 + JS 精筛」换「一条 SQL 服务所有仓库」，
@@ -21,13 +23,16 @@ import {
   QUEUE_GATE_BATCH_LIMIT,
   QUEUE_GATE_CANCEL_SQL,
   QUEUE_GATE_SQL,
+  QUEUE_GATE_STARVATION_BATCH_LIMIT,
+  QUEUE_GATE_STARVATION_SQL,
   QUEUE_WAIT_LIMIT_MINUTES,
   queueGateActions,
   queueWaitMinutesOf,
   smallestQueueWaitSeconds,
+  starvationWarningOf,
 } from '../queue/index.ts';
-import type { QueueGateCandidate, QueueGateReactionPort } from '../queue/index.ts';
-import { JOB_NULL_LOGGER, finishJob, rowCountOf, systemClock } from './types.ts';
+import type { QueueGateCandidate, QueueGateReactionPort, QueueGateStarvedRepo } from '../queue/index.ts';
+import { JOB_NULL_LOGGER, countOf, finishJob, rowCountOf, systemClock } from './types.ts';
 import type { JobClock, JobLogger, JobPool, JobResult } from './types.ts';
 
 /** 读所有仓库的 settings（只取闸门要的那一个数字，见文件头）。 */
@@ -56,6 +61,8 @@ export type QueueGateStats = {
   readonly jobsCancelled: number;
   /** 参与判定的仓库数 */
   readonly repos: number;
+  /** 被本仓库满载挡住、且已超过 `queue_wait_minutes` 的仓库数（**只记日志，不取消**） */
+  readonly starved: number;
 };
 
 /** 扫表结果的一行 → 判定用的候选（`pg` 给的是 snake_case）。 */
@@ -86,6 +93,39 @@ async function readQueueWaitMinutes(pool: JobPool): Promise<Map<string, number>>
     minutes.set(repo, queueWaitMinutesOf(row['settings']));
   }
   return minutes;
+}
+
+/**
+ * 读「因本仓库满载而被挡住、且已等待超过粗筛阈值」的仓库聚合。
+ *
+ * 只读：不取消、不改状态。真正的取消判定仍然是上面那条 `QUEUE_GATE_SQL`。
+ */
+async function readStarvedRepos(
+  pool: JobPool,
+  scanSeconds: number,
+  batchLimit: number,
+): Promise<QueueGateStarvedRepo[]> {
+  const result = await pool.query(QUEUE_GATE_STARVATION_SQL, [
+    TASK_STATUS.queued,
+    scanSeconds,
+    batchLimit,
+  ]);
+  const rows: QueueGateStarvedRepo[] = [];
+  for (const item of result.rows) {
+    const row = item as Record<string, unknown>;
+    const repo = row['repo'];
+    if (typeof repo !== 'string' || repo === '') {
+      continue;
+    }
+    rows.push({
+      repo,
+      waiting: countOf(row['waiting']),
+      maxWaitSeconds: countOf(row['max_wait_seconds']),
+      running: countOf(row['running']),
+      limit: countOf(row['limit_value']),
+    });
+  }
+  return rows;
 }
 
 /**
@@ -164,12 +204,48 @@ export async function queueGateSweep(
     warnings.push('未注入 reaction 端口：队列超时的任务只改了状态，没有打 confused 角标');
   }
 
+  /**
+   * 满载导致的**永久挂起**只做可观测（需求 §6.7 SL-2「排队等待、不丢弃」的代价，见
+   * `queue-gate.ts::QUEUE_GATE_STARVATION_SQL`）。刻意**不进 `warnings`**：
+   * 那是「本轮有一部分没做成」的语义，而满载排队是设计内的正常状态；
+   * 它要的是能被运维看到并被告警（结构化 warn），不是把每分钟的作业健康度打成 false。
+   */
+  let starved = 0;
+  try {
+    const starvedRepos = await readStarvedRepos(
+      deps.pool,
+      scanSeconds,
+      deps.batchLimit ?? QUEUE_GATE_STARVATION_BATCH_LIMIT,
+    );
+    for (const row of starvedRepos) {
+      const stuck = starvationWarningOf(row, limitOf(row.repo));
+      if (stuck === null) {
+        continue;
+      }
+      starved += 1;
+      logger.warn(
+        {
+          repo: stuck.repo,
+          waiting: stuck.waiting,
+          maxWaitSeconds: stuck.maxWaitSeconds,
+          running: stuck.running,
+          limit: stuck.limit,
+        },
+        '排队闸门：仓库满载，排队行已超过 queue_wait_minutes 但受「不丢弃」保护一直没被取消',
+      );
+    }
+  } catch (error) {
+    // 观测查询坏了不能让人以为「没有问题」，也不能回滚已经做完的取消动作
+    warnings.push(`满载观测查询失败（本轮取消判定不受影响）：${describeError(error)}`);
+  }
+
   const stats: QueueGateStats = {
     scanned: candidates.length,
     cancelled,
     reactions,
     jobsCancelled,
     repos: minutesByRepo.size,
+    starved,
   };
   if (cancelled > 0) {
     logger.info({ ...stats }, '排队闸门：取消排队超时的任务');

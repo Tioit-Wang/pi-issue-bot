@@ -22,8 +22,21 @@ export {
 export type { AppConfig } from './config.ts';
 
 export { resolveGithubAuth } from './github-auth.ts';
-export type { GithubAuthDeps, GithubAuthMode, GithubAuthResolution } from './github-auth.ts';
-export { HOST_MODEL_ENV_KEYS, describeModelEndpoint, hostModelEnv } from './model-env.ts';
+export type { GithubAuthDeps, GithubAuthMode, GithubAuthResolution, GithubIdentityProbe, IdentityProbePort } from './github-auth.ts';
+export { createGithubIdentityProbe, createPersonalGithubClient, parseScopesHeader } from './github-auth.ts';
+export {
+  HOST_MODEL_ENV_KEYS,
+  HOST_MODEL_ROLE_ENV_KEYS,
+  describeModelEndpoint,
+  hostEndpointEnv,
+  hostModelEnv,
+  hostModelRoleEnv,
+} from './model-env.ts';
+export type { ResolvedModelRole } from './model-env.ts';
+
+export { createGithubProviderProbe, createSettingsApiWiring } from './settings-deps.ts';
+export { createDbModelRoleResolver } from './model-role-resolver.ts';
+export type { ModelRoleResolver, ModelRoleResolverOptions } from './model-role-resolver.ts';
 
 export {
   APP_ERROR_CODES,
@@ -31,6 +44,8 @@ export {
   REQUIRED_TABLES,
   SHUTDOWN_STEPS,
   assertSchemaReady,
+  /** 限额读数的唯一入口（F1/F2 的回归点：必须喂原始 jsonb） */
+  executionLimitsOf,
   createApplication,
   createUnavailableWebhookAck,
 } from './compose.ts';

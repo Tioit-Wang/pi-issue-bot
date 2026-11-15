@@ -63,9 +63,14 @@ export type LabelRole = z.infer<typeof labelRoleSchema>;
  * 标签词表的一项：面板的候选来源 + 注入提示词（替掉 `worker-deps.ts` / `builtin.ts` 里的硬编码标签集）。
  * `name` 是仓库里的真实标签名。
  *
- * v2.1 补两个**可选**字段（`docs/v21-contract.md` §1 / FR-5.4）：
- * - `managed`（默认 `true`）：`false` = 不参与自动对齐（BR-11 的「不自动管理」标记）；
- * - `status`（默认 `active`）：`retired` = GitHub 上已删除的标签，不再进入目标态。
+ * 五个字段的来源**由需求 §6.5 固定**（LD-1），这里必须与之一致：
+ *  - `name` / `color` / `description` → **GitHub**：平台不单独维护，**也不反向下发**；
+ *  - `meaning` / `group` → 平台（GitHub 没有这两个概念）；
+ *  - `status` → 平台（`retired` = 仓库里已经没有了）。
+ *
+ * 为什么 `color` / `description` 仍留在 schema 里：它们是**从 GitHub 同步进来的只读快照**，
+ * 面板要展示、导出要带上。删字段会让存量 `repos.settings` 在 `.strict()` 下直接解析失败，
+ * 而「平台手填颜色并下发」那条路径已经删掉了（`LabelCatalogPort.create` 不再存在）。
  *
  * 为什么这里是 `.optional()` 而不是像 `settings-v21.ts` 的 `labelCatalogEntryV21Schema` 那样带默认值：
  * 词表条目还有大量**存量调用点**（`skills/prompt.ts`、`workflows/normalize.ts`、测试夹具）按
@@ -78,11 +83,17 @@ export const labelVocabularyEntrySchema = z
     name: z.string().min(1).max(50),
     /** 归到哪一类结论；**必填**（Q4：还是老配置、缺这个键的，一律解析失败，由面板重新配置）。 */
     role: labelRoleSchema,
-    /** 这个标签意味着什么（提示词里原样给出，模型据此判断）。 */
+    /** 这个标签意味着什么（提示词里原样给出，模型据此判断）。**平台维护**（GitHub 没有这个字段）。 */
     meaning: z.string().min(1).max(200).optional(),
-    /** `RRGGBB`，不带 `#`（与 GitHub 标签颜色口径一致）。 */
+    /**
+     * `RRGGBB`，不带 `#`。**来源是 GitHub**（LD-1）：平台不维护、不下发，
+     * 同步时原样落进来，面板只读展示。
+     */
     color: z.string().regex(/^[0-9A-Fa-f]{6}$/u, 'color 是 6 位十六进制，不带 #').optional(),
-    /** 面板展示用的说明。 */
+    /**
+     * 标签描述。**来源是 GitHub** 的标签 description（LD-1），平台不维护、不下发。
+     * 与 `meaning` 不是一回事：`meaning` 是给模型判定的语义，这里是给人在面板上看的仓库原文。
+     */
     description: z.string().min(1).max(500).optional(),
     /** 互斥组：同一组内只保留一个标签（由应用层裁剪）。 */
     group: z.string().min(1).max(40).optional(),
@@ -102,7 +113,13 @@ export const labelsConfigSchema = z
     map: labelMapSchema.default({}),
     /** 允许打的标签白名单；给定时，映射结果不在其中一律不打（防手滑写错标签名）。 */
     allow: z.array(z.string().min(1).max(50)).max(100).optional(),
-    /** 映射到仓库里不存在的标签时怎么办：`warn`（默认，只记日志）/ `create`（建标签）/ `ignore`。 */
+    /**
+     * 映射到仓库里不存在的标签时怎么办：`warn`（默认，记一行 `label_decisions`）/ `ignore`。
+     *
+     * **`create` 已移除**（LD-2）：平台不发明标签、不反向创建。这里仍然接受这个字面量，
+     * 只为让还写着 `'create'` 的存量 `repos.settings` 不因 `.strict()`/枚举收窄而整份解析失败；
+     * 写入面按 `warn` 处理（缺标签报错、**绝不建**）。
+     */
     missing: z.enum(['warn', 'create', 'ignore']).default('warn'),
     /** 一个 issue 上最多由我们打几个标签（互斥组裁剪之后的硬上限）。 */
     max_per_issue: z.number().int().min(1).max(20).default(6),
@@ -131,7 +148,13 @@ export const limitsConfigSchema = z
     max_actions_per_run: z.number().int().min(1).max(8).default(8),
     /** 单任务上限；技能可用自己的 `timeout` 覆盖，但不能超过 30m。 */
     max_task_minutes: z.number().int().min(1).max(30).default(20),
-    /** 单仓库同时跑几个任务（全局并发仍由部署常量兜底）。 */
+    /**
+     * 单仓库同时跑几个任务。
+     *
+     * @deprecated v2.1 起以 `agent.limits.concurrency`（需求 §6.7 的「并发数」）为准；
+     * 本键只在**存量配置没写新键**时兜底，两条路径都有值时新键永远赢。
+     * 保留而不删键：删掉会让已存的 `repos.settings` 直接解析失败（`strict()`）。
+     */
     concurrency_per_repo: z.number().int().min(1).max(8).default(2),
     /** 排队超过多少分钟就取消（`tasks.status='cancelled_queue'`）。 */
     queue_wait_minutes: z.number().int().min(1).max(120).default(10),

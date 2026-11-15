@@ -521,9 +521,12 @@ describe('信封与动作过滤（plan §5 / tech-plan §5.6）', () => {
     expect(harness.store.envelopes[0]?.valid).toBe(false);
     // 不合规信封的动作一条都不执行（`report.actions` 是「信封里被接受的动作」清单）。
     expect(report.actions).toHaveLength(0);
-    // `actions` 表里只允许出现**兜底评论**那一行（信封动作仍然 0 行）：
-    // 这一段文本是「产出如下：」+ 信封，摘掉信封后还剩人话，于是兜底路径会发一条评论。
-    expect(harness.store.actions.map((item) => item.intent)).toEqual(['fallback']);
+    // `actions` 表一行都没有：不合规信封的动作不执行，平台也不再补兜底评论（FR-5.1）。
+    expect(harness.store.actions).toHaveLength(0);
+    // 也不往 issue 上写任何东西 —— 「没拿到结论」不等于「判定为不合格」（FR-5.5）。
+    expect(harness.github.comments).toEqual([]);
+    // 但留痕齐全：后台能查到「产出不合契约，所以没写」
+    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback-skipped')).toBe(true);
     // 安全边界：不合规信封**不许打标**（标签只能来自合规信封）。
     expect(harness.github.calls).not.toContain('addLabels');
   });
@@ -552,7 +555,20 @@ describe('信封与动作过滤（plan §5 / tech-plan §5.6）', () => {
   });
 });
 
-describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts）', () => {
+describe('FR-5.1：平台不合成动作 —— 产出不合契约时一条评论都不发', () => {
+  /*
+    这里原来断言的是「兜底评论」：信封不可信、或信封合规但没给 comment 时，
+    平台取最后一条 assistant 文本自己发一条评论。
+
+    WP10 按需求原文把它移除了（裁决与证据见 `docs/audit/fix/WP10.md`）：
+      - FR-5.1：平台只做「交输入 / 校验产出 / 执行产出」，不替执行侧产出动作，
+        更不按事件类型（命令白名单）决定该不该发评论；
+      - FR-5.3：`actions: []` 是**合法**的「只判定不动作」，平台补评论等于给动作集合开旁路；
+      - FR-5.5：「执行侧没有产出时，标签与评论保持原状」。
+    BR-7 的「失败不得静默」由另一半满足：`failure_class` + `writeback.fallback-skipped` 事件。
+
+    所以本组断言整体反过来：**零评论、零 actions 行，但留痕齐全**。
+  */
   /** 不合规信封：`push_branch` 缺 `paths`（契约要求非空数组）。 */
   const invalidEnvelope = (): string =>
     JSON.stringify({
@@ -565,7 +581,7 @@ describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts�
       usage: { inputTokens: 900, outputTokens: 200, costUsd: 0.01 },
     });
 
-  it('信封不合规 + 有人话 → 发兜底评论（带隐藏标记），run 仍是 parse、不打标', async () => {
+  it('信封不合规 + 有人话 → 不发任何评论，run 仍是 parse，且留一条 fallback-skipped', async () => {
     const harness = createHarness({
       events: () =>
         asyncFrom([
@@ -580,26 +596,20 @@ describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts�
     expect(report.outcome).toBe('failed');
     expect(report.failureClass).toBe('parse');
     expect(report.retry.retry).toBe(false);
-    // 信封里的动作 0 条；兜底单独一栏
+    // 关键断言：平台没有替执行侧说话
+    expect(harness.github.comments).toEqual([]);
     expect(report.actions).toHaveLength(0);
-    expect(report.fallback?.intent).toBe('fallback');
-    expect(report.fallback?.status).toBe('applied');
-
-    // 评论正文 = 人话 + 兜底标记 + pi-bot 去重标记；机器段（信封）不许出现在评论里
-    expect(harness.github.comments).toHaveLength(1);
-    const body = harness.github.comments[0] ?? '';
-    expect(body).toContain('结论：这是权限问题。');
-    expect(body).toContain('<!-- pi-issue-bot:fallback -->');
-    expect(body).toContain('<!-- pi-bot:octo/demo#7:fallback:');
-    expect(body).not.toContain('verdict');
-
-    // 安全边界：不打标；`actions` 表只有兜底那一行；`run_events` 留痕
+    expect(harness.store.actions).toHaveLength(0);
+    expect(report.fallback).toBeNull();
+    // 但不静默：留痕写清「为什么没写」
+    const skipped = harness.store.runEvents.filter((item) => item.kind === 'writeback.fallback-skipped');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.['payload']).toMatchObject({ cause: 'invalid-envelope' });
+    // 安全边界：不打标
     expect(harness.github.calls).not.toContain('addLabels');
-    expect(harness.store.actions.map((item) => item.intent)).toEqual(['fallback']);
-    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback')).toBe(true);
   });
 
-  it('完全没有信封（missing-envelope）也兜底 —— 这条正是「@ 了没反应」的真实故障', async () => {
+  it('完全没有信封（missing-envelope）同样不发评论，但留下告警痕迹', async () => {
     const harness = createHarness({
       events: () =>
         asyncFrom([
@@ -612,11 +622,11 @@ describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts�
 
     expect(report.envelope?.errors[0]?.keyword).toBe('missing-envelope');
     expect(report.failureClass).toBe('parse');
-    expect(report.fallback?.status).toBe('applied');
-    expect(harness.github.comments[0]).toContain('EACCES 不是只读挂载造成的');
+    expect(harness.github.comments).toEqual([]);
+    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback-skipped')).toBe(true);
   });
 
-  it('真 pi-host 形状（payload.event.message.content）也能取出人话，且跳过 tool 消息', async () => {
+  it('真 pi-host 形状的人话也不发出去（人话不是动作）', async () => {
     const content = `结论：这是 uid 不匹配。\n\`\`\`json\n${invalidEnvelope()}\n\`\`\``;
     const harness = createHarness({
       events: () =>
@@ -644,26 +654,26 @@ describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts�
     // 信封现在能找到（不再退化成 missing-envelope），只是不合规 → 仍然是 parse
     expect(report.envelope?.errors[0]?.keyword).not.toBe('missing-envelope');
     expect(report.failureClass).toBe('parse');
-    const body = harness.github.comments[0] ?? '';
-    expect(body).toContain('结论：这是 uid 不匹配。');
-    expect(body).not.toContain('verdict');
-    expect(body).not.toContain('isError');
+    expect(harness.github.comments).toEqual([]);
   });
 
-  it('/review-pr 不兜底（不可信的审查结论不该发出去）', async () => {
+  it('信封合规但没有 comment 动作（actions:[]）→ 不补评论（那是合法的「只判定不动作」）', async () => {
     const harness = createHarness({
-      events: () => asyncFrom([env('item.completed', { text: '看起来没问题。' }, 0), env('turn.completed', {}, 1)]),
+      events: () => asyncFrom(successEvents([])),
     });
 
-    const report = await runTask(makeInput({ command: '/review-pr' }), harness.deps);
+    const report = await runTask(makeInput({ command: 'agent:mention' }), harness.deps);
 
-    expect(report.fallback).toBeNull();
+    expect(report.envelope?.valid).toBe(true);
     expect(harness.github.comments).toEqual([]);
-    expect(harness.store.actions).toHaveLength(0);
-    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback-skipped')).toBe(true);
+    expect(report.fallback).toBeNull();
+    // 留痕要能区分这种「合规但没动作」与「不合规」
+    const skipped = harness.store.runEvents.filter((item) => item.kind === 'writeback.fallback-skipped');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.['payload']).toMatchObject({ cause: 'no-comment-action' });
   });
 
-  it('dry-run 不兜底（零副作用 + actions 0 行）', async () => {
+  it('dry-run 下当然也不写（零副作用口径不变）', async () => {
     const harness = createHarness({
       events: () => asyncFrom([env('item.completed', { text: '结论：……' }, 0), env('turn.completed', {}, 1)]),
     });
@@ -676,24 +686,7 @@ describe('兜底回复（信封不可信 → 只发评论；worker/fallback.ts�
     expect(harness.store.actions).toHaveLength(0);
   });
 
-  it('只能看到信封、没有人话 → 兜不了（不凭空发明内容）', async () => {
-    const harness = createHarness({
-      events: () =>
-        asyncFrom([
-          env('item.completed', { text: `\`\`\`json\n${invalidEnvelope()}\n\`\`\`` }, 0),
-          env('turn.completed', {}, 1),
-        ]),
-    });
-
-    const report = await runTask(makeInput(), harness.deps);
-
-    expect(report.failureClass).toBe('parse');
-    expect(report.fallback).toBeNull();
-    expect(harness.github.comments).toEqual([]);
-    expect(harness.store.actions).toHaveLength(0);
-  });
-
-  it('信封合规 → 不兜底（正式动作照旧执行，只发那一条评论）', async () => {
+  it('信封合规 → 正式动作照旧执行（唯一写回路径是产出里的那条评论）', async () => {
     const harness = createHarness({
       events: () => asyncFrom(successEvents([{ intent: 'comment', body: '正式回复：缺复现步骤。' }])),
     });
@@ -1068,7 +1061,15 @@ describe('无感反馈：终态 reaction（W2-D）', () => {
   });
 });
 
-describe('兜底回复（信封合规但没给 comment 动作：v0.3「默认一条评论」）', () => {
+describe('FR-5.1：信封合规但没给 comment 动作（actions:[]）也不补评论', () => {
+  /*
+    v0.3 曾经在「信封合规但 `actions: []`」时补发第一段评论（依据：「默认产出一条评论」）。
+    那是平台替执行侧合成动作，与 FR-5.1 / FR-5.3 冲突，已随兜底评论一起移除。
+
+    现在的口径：`actions: []` 是**合法**的「只判定不动作」，run 记 succeeded，
+    issue 上不写任何东西，`writeback.fallback-skipped` 留一条 `no-comment-action` 痕迹
+    —— 这样「模型该发评论却没发」在后台可见，但不会变成平台自己发的一条评论。
+  */
   /** 合规信封，但 `actions` 是空数组 —— 实机上模型把结论写在第一段里就是这样。 */
   const verdictOnlyEnvelope = (): string =>
     JSON.stringify({
@@ -1081,7 +1082,7 @@ describe('兜底回复（信封合规但没给 comment 动作：v0.3「默认一
       usage: { inputTokens: 900, outputTokens: 200, costUsd: 0.01 },
     });
 
-  it('agent:mention 只给 verdict → 补发第一段评论，run 仍然 succeeded', async () => {
+  it('agent:mention 只给 verdict → run 仍然 succeeded，但一条评论都不发', async () => {
     const harness = createHarness({
       events: () =>
         asyncFrom([
@@ -1096,19 +1097,17 @@ describe('兜底回复（信封合规但没给 comment 动作：v0.3「默认一
     expect(report.outcome).toBe('succeeded');
     expect(report.failureClass).toBeNull();
     expect(report.actions).toHaveLength(0);
-    expect(report.fallback?.intent).toBe('fallback');
-    expect(report.fallback?.status).toBe('applied');
-
-    // 第一段原样补发，机器段（信封）不许出现在评论里
-    expect(harness.github.comments).toHaveLength(1);
-    const body = harness.github.comments[0] ?? '';
-    expect(body).toContain('结论：还缺复现步骤与版本号。');
-    expect(body).not.toContain('verdict');
-    const event = harness.store.runEvents.find((item) => item.kind === 'writeback.fallback');
-    expect(event?.payload).toMatchObject({ cause: 'no-comment-action' });
+    // 关键断言：平台不补评论
+    expect(harness.github.comments).toEqual([]);
+    expect(report.fallback).toBeNull();
+    expect(harness.store.actions).toHaveLength(0);
+    // 但后台看得出来「合规却没动作」
+    const skipped = harness.store.runEvents.filter((item) => item.kind === 'writeback.fallback-skipped');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.['payload']).toMatchObject({ cause: 'no-comment-action' });
   });
 
-  it('已经给了 comment 动作 → 不重复兜底（只发信封里那一条）', async () => {
+  it('已经给了 comment 动作 → 只发信封里那一条（没有第二条）', async () => {
     const harness = createHarness({
       events: () =>
         asyncFrom([
@@ -1136,5 +1135,7 @@ describe('兜底回复（信封合规但没给 comment 动作：v0.3「默认一
     expect(harness.github.comments).toHaveLength(1);
     expect(harness.github.comments[0]).toContain('信封里的正式回复');
     expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback')).toBe(false);
+    // 有 comment 动作时不该留「跳过」痕迹（那条事件只服务「本来会兜底」的情形）
+    expect(harness.store.runEvents.some((item) => item.kind === 'writeback.fallback-skipped')).toBe(false);
   });
 });

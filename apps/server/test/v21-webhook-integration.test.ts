@@ -41,6 +41,8 @@ type Captures = {
   readonly decisions: DecisionRow[];
   /** `insertMessage` 写进 `agent_messages.comment_body` 的正文（$6） */
   readonly messageBodies: string[];
+  /** `insertMessage` 用的幂等键（$3 = fingerprint），用来钉内容级去重口径 */
+  readonly messageFingerprints: string[];
   readonly enqueued: string[];
   readonly dispatched: string[];
   readonly reactions: string[];
@@ -53,6 +55,7 @@ function createCaptures(): Captures {
   return {
     decisions: [],
     messageBodies: [],
+    messageFingerprints: [],
     enqueued: [],
     dispatched: [],
     reactions: [],
@@ -97,9 +100,15 @@ function createFakeDb(settings: unknown, c: Captures, deliveryDuplicate = false)
         return { rows: [], rowCount: 1 };
       }
       if (text.startsWith('INSERT INTO "agent_messages"')) {
-        // AGENT_SQL.insertMessage 的第 6 个参数就是 comment_body（1-based $6）
+        // AGENT_SQL.insertMessage 的第 6 个参数就是 comment_body（1-based $6），第 3 个是幂等键
         c.messageBodies.push(typeof values[5] === 'string' ? values[5] : '');
+        c.messageFingerprints.push(typeof values[2] === 'string' ? values[2] : '');
         return { rows: [{ created_at: FIXED_NOW }], rowCount: 1 };
+      }
+      if (text.startsWith('INSERT INTO "quota_counters"')) {
+        // 日配额（需求 §6.7 SL-3）：假件按「今天还有额度」返回一行（`RETURNING "count"`）。
+        // 真值语义见 `queue/quota.ts`：拿到行 = 抢到格子；触顶时什么都不返回。
+        return { rows: [{ count: 1 }], rowCount: 1 };
       }
       return { rows: [], rowCount: 1 };
     },
@@ -329,6 +338,38 @@ describe('v2.1 webhook 集成（判定留痕 / 模板渲染 / 惰性接线）', 
     expect((result.body as unknown as Record<string, unknown>)['action']).toBe('duplicate');
     expect(c.decisions).toHaveLength(0);
     expect(c.messageBodies).toHaveLength(0);
+  });
+
+  it('①-D 内容级幂等（FR-3.5）：同 issue 同 updated_at 下，换说法是新消息、同一段话只算一次', async () => {
+    /*
+     * 回归的是「v2.1 用 `eventFingerprint`（模板 + issue.updated_at）给评论算键」这个缺陷：
+     * 同一秒里的两条不同评论会撞成同一个 fingerprint，第二条被当成 duplicate 静默丢掉。
+     * 需求 §5 的口径是「同一 issue 内评论正文（规范化后）」——措辞不同就是不同内容。
+     */
+    const settings = eventSettings('issue_comment.created', {
+      enabled: 'conditional',
+      prompt: null,
+      gates: { require_mention: true, require_role: false, allow_roles: [], ignore_bot: true, allow_closed: false },
+    });
+    const first = harness({ settings });
+    await deliver(first.deps, 'issue_comment', commentPayload({ body: '@pi-bot 打个标签' }), 'dlv-fp-1');
+    await deliver(first.deps, 'issue_comment', commentPayload({ body: '@pi-bot 帮我重新打标签' }), 'dlv-fp-2');
+    expect(first.c.messageFingerprints).toHaveLength(2);
+    expect(first.c.messageFingerprints[0]).not.toBe(first.c.messageFingerprints[1]);
+
+    // 同一句话再贴一次（只差首尾空白与连续空行）→ 规范化后是同一个键
+    const second = harness({ settings });
+    await deliver(second.deps, 'issue_comment', commentPayload({ body: '@pi-bot 打个标签' }), 'dlv-fp-3');
+    await deliver(second.deps, 'issue_comment', commentPayload({ body: '  @pi-bot 打个标签\n\n\n' }), 'dlv-fp-4');
+    expect(second.c.messageFingerprints).toHaveLength(2);
+    expect(second.c.messageFingerprints[1]).toBe(second.c.messageFingerprints[0]);
+
+    // 只改标点 → 不同内容（需求 §5：不做语义近似判断，宁可多处理一次）
+    const third = harness({ settings });
+    await deliver(third.deps, 'issue_comment', commentPayload({ body: '@pi-bot 打个标签' }), 'dlv-fp-5');
+    await deliver(third.deps, 'issue_comment', commentPayload({ body: '@pi-bot 打个标签！' }), 'dlv-fp-6');
+    expect(third.c.messageFingerprints).toHaveLength(2);
+    expect(third.c.messageFingerprints[1]).not.toBe(third.c.messageFingerprints[0]);
   });
 
   it('② 项目模板渲染结果进入 agent_messages.comment_body，四段顺序可断言', async () => {

@@ -42,10 +42,10 @@ import type { SkillPromptContext } from '../skills/prompt.ts';
 import { REPO_SKILLS_DIR, createSkillRegistry } from '../skills/registry.ts';
 import type { SkillRepoConfig } from '../skills/registry.ts';
 import type { SkillFile } from '../skills/types.ts';
-import { createPgBotLabelLedger, loadHumanVetoed } from '../workflows/bot-labels.ts';
+import { createPgBotLabelLedger, listBotLabels } from '../workflows/bot-labels.ts';
 import { createPgLabelDecisionRecorder } from '../workflows/label-decisions.ts';
 import { toSqlRunner } from '../workflows/ports.ts';
-import type { LabelCatalogPort, ReactionPort } from '../workflows/ports.ts';
+import type { LabelCatalogPort, LabelCatalogEntry, ReactionPort } from '../workflows/ports.ts';
 import {
   TASK_SOURCE_KINDS,
   createExecProxyPort,
@@ -69,8 +69,14 @@ import type { SandboxDocker, SandboxLogger } from '../sandbox/index.ts';
 import { createCompactor } from '../compact/engine.ts';
 import { createCompactionStore } from '../compact/store.ts';
 import type { CompactDeps, CompactInput, CompactResult, CompactStore } from '../compact/engine.ts';
+import type { ReminderLedger } from '../compact/remind.ts';
+import {
+  createTurnCompaction,
+  createUnavailableSummarize,
+  SUMMARIZE_UNAVAILABLE_CODE,
+} from '../compact/turn-compaction.ts';
+import type { TurnCompactionLogger, TurnCompactionPort } from '../compact/turn-compaction.ts';
 import type { SqlRunner as ConfigSqlRunner } from '../config/repo-config.ts';
-import { listBotLabels } from '../workflows/bot-labels.ts';
 import type { AppConfig } from './config.ts';
 
 /** worker 侧装配的错误码。 */
@@ -502,6 +508,8 @@ export function createWorkerBaseDeps(
     readonly config: AppConfig;
     readonly logger: Logger;
     readonly onStep?: TaskRunnerDeps['onStep'];
+    /** 单价来源（CFG-8.2）；不注入 = 用代码里的官方价目表兜底。 */
+    readonly resolvePrice?: TaskRunnerDeps['resolvePrice'];
   },
 ): WorkerBaseDeps {
   return {
@@ -517,6 +525,8 @@ export function createWorkerBaseDeps(
     allowPushBranch: options.config.worker.allowPushBranch,
     logger: options.logger,
     ...(options.onStep === undefined ? {} : { onStep: options.onStep }),
+    // CFG-8.2：单价来自「全局设置」的供应商模型目录（不注入则用代码里的官方价目表）
+    ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
   };
 }
 
@@ -560,10 +570,13 @@ export function createWorkerFeedbackDeps(options: {
 }
 
 /**
- * 打标策略的装配（W2-E）：`settings.labels` + 人工否决（`bot_labels`）+ `label_decisions`。
+ * 打标策略的装配（W2-E）：`settings.labels` + `label_decisions` + 只读的仓库标签目录。
  *
- * 每轮任务建一次（不是进程启动时）：`settings` 是**仓库级**的，人工否决与
- * `judgement_hash` 是**目标/轮次级**的，缓存在进程里只会读到上一个仓库的配置。
+ * 每轮任务建一次（不是进程启动时）：`settings` 是**仓库级**的，
+ * `judgement_hash` 是**轮次级**的，缓存在进程里只会读到上一个仓库的配置。
+ *
+ * **没有「人工否决」**：FR-5.4 / BR-11 —— 人工删除不构成永久否决，下一轮按目标态重新对齐。
+ * 想表达「别动这个标签」只有一条路：目录里 `managed=false`（显式契约）。
  */
 export function createLabelWritebackPolicy(options: {
   readonly pool: SqlExecutor;
@@ -576,10 +589,9 @@ export function createLabelWritebackPolicy(options: {
 }): LabelWritebackPolicy {
   const runner = toSqlRunner(options.pool);
   return {
-    // settings 读不出来时用契约默认值：宁可只按「上限 + 人工否决」打标，
+    // settings 读不出来时用契约默认值：宁可只按「词表 + 上限」打标，
     // 也不要因为一份坏 jsonb 让「所有仓库都不打标签」。
     labels: (options.settings ?? parseRepoSettings({})).labels,
-    humanVetoed: ({ repo, targetNumber }) => loadHumanVetoed(runner, { repo, issueNumber: targetNumber }),
     decisions: createPgLabelDecisionRecorder(runner),
     ...(options.judgementHash === undefined || options.judgementHash === null
       ? {}
@@ -592,43 +604,55 @@ export function createLabelWritebackPolicy(options: {
 /**
  * `bot_labels` 的记账器（W2-E 的归因表）。
  *
- * 为什么它必须被注入：`github/executor.ts` 的「只增删自己打过的标签」与
- * `normalizeDesired()` 的「人工否决」**都**以 `bot_labels` 为事实源。不注入 = 这张表
- * 永远是空的：重算时删不掉自己打过的标签，人撕掉的标签下一轮又会被贴回去。
+ * 为什么它必须被注入：`deletionOwner()`（「这个标签原主人是人还是机器」，BR-10）与
+ * `deletionOwner` 的审计列**都**以 `bot_labels` 为事实源。不注入 = 这张表永远是空的，
+ * 于是每次撤标都被记成「人打的」（审计失真），而 `bot_labels.removed_at` 也就没有出处。
+ *
+ * 注意它**不再是**「当前标签」的来源：`current` 来自 GitHub 实况（FR-5.4 / BR-11）。
  */
 export function createBotLabelLedger(pool: SqlExecutor): BotLabelLedger {
   return createPgBotLabelLedger(toSqlRunner(pool));
 }
 
 /**
- * 标签目录端口（`labels.missing` 的判据）：`GET/POST /repos/:o/:r/labels`。
+ * 标签目录端口：`GET /repos/:o/:r/labels`，**只读**。
  *
  * 为什么放在装配层而不是 `github/`：`GithubWriteApi` 刻意只含「写 issue」那几个动作，
- * 标签目录是**仓库元数据**，只有 `labels.missing` 需要它。放在这里也不给
- * `github/` 添第 7 个方法（那会让所有假实现一起改签名）。
+ * 标签目录是**仓库元数据**。放在这里也不给 `github/` 添第 7 个方法
+ * （那会让所有假实现一起改签名）。
+ *
+ * 这里**没有** `create`：LD-2 规定平台不发明标签、不反向创建。早先这里有一个
+ * `POST /repos/{owner}/{repo}/labels`，它让「颜色/描述由平台手填并下发」成为现实，
+ * 与 LD-1（颜色/描述来自 GitHub）正好相反 —— 两条都已删除。
+ *
+ * 返回名称 + 颜色 + 描述（GitHub 的原文）：颜色/描述是**只读同步值**，
+ * 平台只把它们展示出来，不会拿它们回写 GitHub。
  */
 export function createGithubLabelCatalog(client: GithubClient): LabelCatalogPort {
   return {
     async list(input) {
       const ref = splitRepo(input.repo);
-      const response = await client.request<readonly { readonly name?: unknown }[]>(
-        'GET /repos/{owner}/{repo}/labels',
-        { owner: ref.owner, repo: ref.repo, per_page: 100 },
-      );
+      const response = await client.request<
+        readonly { readonly name?: unknown; readonly color?: unknown; readonly description?: unknown }[]
+      >('GET /repos/{owner}/{repo}/labels', { owner: ref.owner, repo: ref.repo, per_page: 100 });
       const rows = Array.isArray(response.data) ? response.data : [];
-      return rows
-        .map((row) => row.name)
-        .filter((name): name is string => typeof name === 'string' && name !== '');
-    },
-    async create(input) {
-      const ref = splitRepo(input.repo);
-      await client.request('POST /repos/{owner}/{repo}/labels', {
-        owner: ref.owner,
-        repo: ref.repo,
-        name: input.name,
-        ...(input.color === undefined ? {} : { color: input.color }),
-        ...(input.description === undefined ? {} : { description: input.description }),
-      });
+      const entries: LabelCatalogEntry[] = [];
+      for (const row of rows) {
+        const name = row.name;
+        if (typeof name !== 'string' || name === '') {
+          continue;
+        }
+        // GitHub 的 color 不带 `#`；仍然做一次形状校验，避免把脏值带进目录。
+        const color = typeof row.color === 'string' && /^[0-9A-Fa-f]{6}$/u.test(row.color) ? row.color : undefined;
+        const description =
+          typeof row.description === 'string' && row.description.trim() !== '' ? row.description : undefined;
+        entries.push({
+          name,
+          ...(color === undefined ? {} : { color }),
+          ...(description === undefined ? {} : { description }),
+        });
+      }
+      return entries;
     },
   };
 }
@@ -1067,12 +1091,71 @@ export function createBoundV21Compactor(options: {
   });
 }
 
+/* ── FR-5.6 请求前压缩：真正的生产端口 ──────────────────────────────────────── */
+
+/** 只有「本进程没有摘要模型客户端」算致命（立刻走阶 5）；别的错误仍交给引擎默认判定。 */
+function isSummarizeUnavailable(error: unknown): boolean {
+  const record =
+    typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined;
+  return record?.['code'] === SUMMARIZE_UNAVAILABLE_CODE;
+}
+
 /**
- * `TaskRunnerDeps.targets` 的装配：`currentLabels` 由调用方给（compose 已从 `bot_labels`
- * 读过一次，不重复查库），`botLabels` 从**同一张台账表**读，避免一次多余的 GitHub GET。
+ * 造一个 `driveTurn()` 用的压缩端口（FR-5.6）。
+ *
+ * 为什么按**本次任务**造：`agent_compactions` 要落 `(repo, issue_number)`，而那两个字段
+ * 只有在装配点（`compose.ts` 的 `executeTask`，手里有 `row`）才知道。
+ *
+ * 为什么不在这里造台账（`ledger`）：台账承载「这一档提醒响过没有」，按任务造等于每轮都
+ * 重置一次，「每档只响一次」立刻失效。台账由装配层按进程建一份传进来。
+ *
+ * 摘要模型：`createUnavailableSummarize()` —— 见那里的 TODO(FR-5.6)。当前链路会稳定走到
+ * 阶 5 兜底 checkpoint（`fallback=true`），而不是伪造一份「模型摘要」。
+ */
+export function createV21TurnCompaction(options: {
+  readonly pool: SqlExecutor;
+  readonly repo: string;
+  readonly issueNumber: number;
+  /** 模型名（窗口靠它现算，见 `compact/window.ts`） */
+  readonly modelName?: string | null;
+  readonly ledger?: ReminderLedger;
+  readonly logger?: TurnCompactionLogger;
+}): TurnCompactionPort {
+  const compact = createCompactor({
+    summarize: createUnavailableSummarize(
+      'RACP 没有摘要操作，且 bot 不自己说模型协议（见 app/model-env.ts 的分工）',
+    ),
+    store: createV21CompactionStore(options.pool),
+    isFatal: isSummarizeUnavailable,
+  });
+
+  return createTurnCompaction({
+    repo: options.repo,
+    issueNumber: options.issueNumber,
+    compact,
+    ...(options.modelName === undefined ? {} : { modelName: options.modelName }),
+    ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
+  });
+}
+
+/**
+ * `TaskRunnerDeps.targets` 的装配。
+ *
+ * 两个字段的口径必须分开（FR-5.4 / BR-11 的根因就在这里）：
+ *  - `currentLabels`：**GitHub 上该 issue 实际挂着的标签**。目标态差集拿它当 `current`，
+ *    所以人手动打的标签也会被对齐（平台的删除权包含它们）。
+ *  - `botLabels`：`bot_labels` 台账里我们打过的那些。**只用来判删除归属**
+ *    （「原主人是人还是机器」，BR-10 留痕），不参与「要不要删」的判定。
+ *
+ * 早先两者都取台账，于是人删过的标签永远补不回来、人打的标签永远删不掉。
+ *
+ * `currentLabels` 由调用方（`compose.ts`）用一次 GitHub GET 读出来传进来：本文件不认识
+ * GitHub 客户端，而「同一个 issue 在一轮里读两次标签」既贵又可能自相矛盾。
  */
 export function createV21TargetContextPort(options: {
   readonly pool: SqlExecutor;
+  /** GitHub 实况（`github.getIssue().labels`）；读不到时给空数组（执行器按「只加不删」处理）。 */
   readonly currentLabels: readonly string[];
 }): TargetContextPort {
   const runner = toSqlRunner(options.pool);

@@ -20,7 +20,7 @@
  * 的快捷按钮，服务端要按同一份渲染。这里只做再导出，**不再另抄一份**——
  * 抄一份的后果是面板按钮插进去的是未知占位符，而两边各自的单测都是绿的。
  * 取值仍在下面 `resolvePlaceholder()` 的 switch 里，两边由单测绑定
- * （`prompt-render.test.ts` 断言 12 个名字逐个可渲染）。
+ * （`prompt-render.test.ts` 断言 14 个名字逐个可渲染）。
  */
 export {
   PLACEHOLDER_NAMES,
@@ -74,6 +74,20 @@ export type RenderContext = {
    * 而不是渲染成空串——空串会让模板看起来「正常但少了数据」，没人会发现漏取。
    */
   readonly repoIssues?: RepoIssuesSource | undefined;
+  /**
+   * 本轮变更内容（`{{issue.contentDelta}}`，FR-4.2）。
+   *
+   * 与 `issue.content`（全文快照）分工：首轮、或本次没有可表达为增删的变更时给空串
+   * （**已知但为空**，同 `comment.*` 的处理口径），绝不回落到「干脆给全文」——
+   * 那样后续事件又会退化成全量投喂。
+   */
+  readonly contentDelta?: string | undefined;
+  /**
+   * 该 issue 是否首轮（`{{issue.isFirstEvent}}`）。
+   *
+   * 缺省按 `true` 处理：调用方没能力判断时宁可多给全文，也不要让 agent 少了上下文。
+   */
+  readonly firstEvent?: boolean | undefined;
 };
 
 export type AsyncRenderContext = Omit<RenderContext, 'repoIssues'> & {
@@ -128,6 +142,7 @@ function resolveRepoIssues(source: RepoIssuesSource | undefined): string | null 
  *
  * `comment.*` 在没有评论（非评论事件）时是**已知但为空**：渲染成空串而不是未知，
  * 因为配置里写 `{{comment.author}}` 是合法模板，只是这次事件没有评论可填。
+ * `issue.contentDelta` 同理（首轮 / 无结构变更时为空串）。
  */
 function resolvePlaceholder(name: string, ctx: RenderContext): string | null {
   switch (name) {
@@ -146,7 +161,14 @@ function resolvePlaceholder(name: string, ctx: RenderContext): string | null {
     case 'issue.title':
       return stringify(ctx.issue.title);
     case 'issue.content':
+      // 语义从未变过：事件发生时的**全文快照**（FR-4.2 只约束「平台默认不再每次全量」，
+      // 项目自定义模板显式写它就必须拿到全文，否则是偷偷改契约）。
       return stringify(ctx.issue.content);
+    case 'issue.contentDelta':
+      return stringify(ctx.contentDelta);
+    case 'issue.isFirstEvent':
+      // 缺省 `true`：判断不了就按首轮（多给全文比少给强）
+      return ctx.firstEvent === false ? 'false' : 'true';
     case 'issue.labels':
       // 逗号 + 空格分隔；空集为空串（**不填「无」**，§6.3「格式」条）
       return (ctx.issue.labels ?? []).map((label) => stringify(label)).join(', ');

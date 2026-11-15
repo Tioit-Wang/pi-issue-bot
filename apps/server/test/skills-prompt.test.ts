@@ -15,7 +15,7 @@ import {
   ISSUE_TOOL_NAMES,
   ISSUE_TOOL_USAGE_NOTES,
 } from '../../../packages/contract/src/index.ts';
-import { OUTPUT_ACTION_TYPES } from '../../../packages/envelope/src/index.ts';
+import { OUTPUT_ACTION_TYPES, REMOVED_ACTION_TYPES } from '../../../packages/envelope/src/index.ts';
 import { createSkillRegistry } from '../src/skills/registry.ts';
 import {
   fenceUntrusted,
@@ -268,13 +268,14 @@ describe('renderToolCatalog：工具面与契约同源', () => {
     expect(text.indexOf('**使用规范**')).toBeLessThan(text.indexOf('平台代你执行'));
   });
 
-  it('产出动作词表与信封契约一一对应（12 类，顺序一致）', () => {
+  it('产出动作词表与信封契约一一对应（封闭七类，顺序一致）', () => {
     /*
       提示词里的动作形状是 `packages/envelope/src/v21.ts` 的**渲染**，不是第二份事实源。
       这条断言是那道闸：契约加了动作却没进提示词（模型写不出来），或者提示词里多了一个
       契约不认的动作（整份产出被拒），都会在这里红。
     */
     expect(ISSUE_ACTION_SHAPES.map((entry) => entry.action)).toEqual([...OUTPUT_ACTION_TYPES]);
+    expect(ISSUE_ACTION_SHAPES).toHaveLength(7);
     for (const entry of ISSUE_ACTION_SHAPES) {
       expect(entry.shape, entry.action).toContain(`"type":"${entry.action}"`);
     }
@@ -285,14 +286,21 @@ describe('renderToolCatalog：工具面与契约同源', () => {
     const actions = text.indexOf('**产出动作（`actions` 数组的写法）**');
     expect(actions).toBeGreaterThan(text.indexOf('**使用规范**'));
     expect(actions).toBeLessThan(text.indexOf('平台代你执行'));
-    // 5 个原先「没有落点」的工具，现在在提示词里都有对应动作
-    expect(text).toContain('"type":"update_issue"');
-    expect(text).toContain('"type":"reopen_issue"');
-    expect(text).toContain('"type":"update_comment"');
-    expect(text).toContain('"type":"delete_comment"');
-    expect(text).toContain('"type":"link"');
+    // 回复评论 / 贴评论表情仍然有落点 —— 收敛动作集合不等于砍掉这两项能力
     expect(text).toContain('"reply_to"');
     expect(text).toContain('"comment_id"');
+  });
+
+  it('提示词不再教那五类已被契约拒绝的动作（否则每份产出都会被整份拒）', () => {
+    /*
+      FR-5.3 的动作全集是封闭的七类；v2.2 加过五类，契约侧已改为整份拒绝。
+      提示词若继续说这是合法写法，模型就会一直写、平台一直拒 —— 这是最贵的一类故障
+      （看起来设施没问题，实际上每轮都白跑）。所以两侧必须同时收缩。
+    */
+    const text = renderToolCatalog([...ISSUE_TOOL_NAMES]);
+    for (const removed of REMOVED_ACTION_TYPES) {
+      expect(text, removed).not.toContain(`"type":"${removed}"`);
+    }
   });
 
   it('没有技能时用能力清单兜底：19 个工具全在里面，且带使用规范', () => {

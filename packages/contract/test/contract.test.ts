@@ -140,6 +140,16 @@ describe('8 个 GET 的响应 schema', () => {
     expect(tasksResponseSchema.safeParse({ ...body, items: [{ ...taskItem, status: 'done' }] }).success).toBe(false);
   });
 
+  it('/api/tasks 的 actorLogin 必须接受 App 机器人的 login（`xxx[bot]`）', () => {
+    // 实机回归：`tasks.actor_login` 存的就是触发方，可以是机器人自己
+    // （`pi-issue-bot-tioit[bot]`）。用严格的 `loginSchema` 会让整个列表序列化失败、
+    // `/api/tasks` 恒 500，面板运行页只显示「Response doesn't match the schema」。
+    for (const actorLogin of ['pi-issue-bot-tioit[bot]', 'Tioit-Wang', null]) {
+      const body = { items: [{ ...taskItem, actorLogin }], nextCursor: null, hasMore: false, totalEstimate: 1 };
+      expect(tasksResponseSchema.safeParse(body).success, `actorLogin=${String(actorLogin)}`).toBe(true);
+    }
+  });
+
   it('/api/tasks 的筛选参数（含 coerce 与默认 limit）', () => {
     const parsed = tasksQuerySchema.parse({ status: 'failed', failureClass: 'sandbox-oom', limit: '20' });
     expect(parsed.limit).toBe(20);
@@ -353,7 +363,14 @@ describe('多仓库改造后的契约（W3-H）', () => {
       reactionState: feedbackEvent,
       feedback: [{ ...feedbackEvent, stage: 'received', content: 'eyes' }, feedbackEvent],
     };
-    const list = { generatedAt: '2026-06-02T00:02:00Z', issues: [issue], hasMore: false, nextCursor: null };
+    const list = {
+      generatedAt: '2026-06-02T00:02:00Z',
+      issues: [issue],
+      hasMore: false,
+      nextCursor: null,
+      // `totalEstimate` 是必填但可空（服务端总会给出：全量计数或 null）
+      totalEstimate: 1,
+    };
     expect(issuesListResponseSchema.safeParse(list).success).toBe(true);
     // 新字段是必填（缺了就解析失败：面板不用判空）
     const { reactionState: _r, ...withoutReaction } = issue;
@@ -380,10 +397,16 @@ describe('多仓库改造后的契约（W3-H）', () => {
         state: 'open',
         stateStale: false,
         labels: ['bug'],
+        // 契约里这三个是**必填但可空**（服务端总会给出：取自同一条投递，取不到就是 null）
+        body: null,
+        author: null,
+        createdAt: null,
         participants: ['alice'],
         reactionState: feedbackEvent,
         pendingFeedback: [{ ...feedbackEvent, appliedAt: null }],
       },
+      // `systemPrompt` 必填但可空（服务端总会给出：`agent_sessions.system_prompt` 或 null）
+      systemPrompt: null,
       turns: [],
     };
     expect(issueSessionResponseSchema.safeParse(session).success).toBe(true);

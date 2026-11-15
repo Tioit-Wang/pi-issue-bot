@@ -6,6 +6,9 @@
  * 一旦有人把它换回 JSON parser，签名必然对不上，这条测试立刻红。
  */
 import { createHmac } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { auditQuerySchema, overviewResponseSchema, tasksResponseSchema } from '../../../packages/contract/src/index.ts';
 import { createNullLogger } from '../../../packages/shared/src/index.ts';
@@ -122,6 +125,10 @@ afterAll(async () => {
 beforeEach(async () => {
   // `issue_pipeline` 已随流水线退役删除，不在清理面里（agent 状态在 `agent_sessions`）。
   await db.pool.query('truncate table tasks, webhook_deliveries, repos, runtime_flags cascade');
+  // `agent_messages` 是 webhook 落消息的那张表（`issues.opened` 的事件级幂等键里只有
+  // 模板 + `issue.updated_at`，而载荷是固定值）：不清理的话第二次跑同一个文件必然命中
+  // 「duplicate」，测试就变成一次性的（2026-11-13 实机：重跑一次这个文件红了一条）。
+  await db.pool.query('truncate table agent_messages');
 });
 
 describe('/healthz', () => {
@@ -480,5 +487,85 @@ describe('/openapi.json（可选，tech-plan §8.3「由 zod 生成」）', () =
   it('默认不暴露 /openapi.json（内网也不白送路由清单）', async () => {
     const response = await app.inject({ method: 'GET', url: '/openapi.json' });
     expect(response.statusCode).toBe(404);
+  });
+});
+
+/*
+ * 面板静态资源：快速开始写着「3000 上有面板用的静态资源」，而 `@fastify/static` 一直是
+ * 声明了没接线（2026-11-13 实机：`GET /` → 404）。这组钉住三件事：
+ *  - `GET /` 与 SPA 深链接回 `index.html`（前端路由自己解析）；
+ *  - 真实文件按精确路径取；
+ *  - 后端前缀的未知路由仍是契约错误体（不能被前端兜底吃成 200 + HTML）。
+ */
+describe('面板静态资源（panelDistDir）', () => {
+  function panelServer(root: string): ZodFastify {
+    return buildServer({
+      logger: createNullLogger(),
+      pool: db.pool,
+      queries: db.queries,
+      requireAuth: createAllowAllAuth('tester') as never,
+      webhook: {
+        verify: createOctokitVerifier(SECRET),
+        db: db.pool,
+        enqueue: async () => 'job-1',
+        ack,
+        logger: createNullLogger(),
+      },
+      panelDistDir: root,
+    });
+  }
+
+  function makeDist(): string {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pi-bot-panel-'));
+    mkdirSync(path.join(dir, 'assets'));
+    writeFileSync(path.join(dir, 'index.html'), '<!doctype html><html><body><div id="root"></div></body></html>');
+    writeFileSync(path.join(dir, 'assets', 'app.js'), 'console.log("panel");');
+    return dir;
+  }
+
+  it('`/` 与深链接都回 index.html；真实资源按路径取；后端前缀仍是契约 404', async () => {
+    const dir = makeDist();
+    const panelApp = panelServer(dir);
+    try {
+      const root = await panelApp.inject({ method: 'GET', url: '/' });
+      expect(root.statusCode).toBe(200);
+      expect(root.body).toContain('id="root"');
+
+      // 深链接（带查询串）也回 index.html：刷新页面不会 404
+      const deep = await panelApp.inject({ method: 'GET', url: '/issues?mock=empty' });
+      expect(deep.statusCode).toBe(200);
+      expect(deep.body).toContain('id="root"');
+
+      const asset = await panelApp.inject({ method: 'GET', url: '/assets/app.js' });
+      expect(asset.statusCode).toBe(200);
+      expect(asset.body).toContain('console.log("panel")');
+
+      // 后端前缀不许被前端兜底吃掉
+      for (const url of ['/api/nope', '/webhook/nope', '/metrics/nope']) {
+        const miss = await panelApp.inject({ method: 'GET', url });
+        expect(miss.statusCode, url).toBe(404);
+        expect(miss.json()).toMatchObject({ error: { code: 'not-found' } });
+      }
+
+      // 非 GET 一律不回 HTML
+      const post = await panelApp.inject({ method: 'POST', url: '/issues' });
+      expect(post.statusCode).toBe(404);
+    } finally {
+      await panelApp.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('目录里没有 index.html → 不托管（`/` 保持 404，部署由 Caddy 发静态文件）', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pi-bot-panel-empty-'));
+    const panelApp = panelServer(dir);
+    try {
+      const root = await panelApp.inject({ method: 'GET', url: '/' });
+      expect(root.statusCode).toBe(404);
+      expect(root.json()).toMatchObject({ error: { code: 'not-found' } });
+    } finally {
+      await panelApp.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

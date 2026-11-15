@@ -89,6 +89,10 @@ function fakeDb(options: { readonly settings?: unknown; readonly dryRun?: boolea
       if (text.includes('agent_messages') && text.includes('INSERT')) {
         return { rows: [{ id: 'msg-1' }], rowCount: 1 };
       }
+      if (text.includes('INSERT INTO "quota_counters"')) {
+        // 日配额（需求 §6.7 SL-3）：假件按「今天还有额度」返回一行（`RETURNING "count"`）。
+        return { rows: [{ count: 1 }], rowCount: 1 };
+      }
       return { rows: [], rowCount: 1 };
     },
   };
@@ -474,7 +478,7 @@ describe('会话状态（FR-3.4 / AC-23）与压缩观测', () => {
     const db = fakeDb();
     const transition = await applyV21SessionOnEvent(
       { query: db.query },
-      { repo: REPO, issueNumber: 42, event: 'issues.closed', issueState: 'closed' },
+      { repo: REPO, domain: 'issue' as const, issueNumber: 42, event: 'issues.closed', issueState: 'closed' },
     );
     expect(transition.action).toBe('recycle-sandbox');
     expect(transition.state).toBe('idle');
@@ -487,7 +491,7 @@ describe('会话状态（FR-3.4 / AC-23）与压缩观测', () => {
     const db = fakeDb();
     const transition = await applyV21SessionOnEvent(
       { query: db.query },
-      { repo: REPO, issueNumber: 42, event: 'issues.opened', issueState: 'open' },
+      { repo: REPO, domain: 'issue' as const, issueNumber: 42, event: 'issues.opened', issueState: 'open' },
     );
     // 已有会话行时 `issues.opened` = 重开：复用会话、重建沙箱（FR-3.4 规则 ③）
     expect(transition.action).toBe('reuse');
@@ -496,7 +500,7 @@ describe('会话状态（FR-3.4 / AC-23）与压缩观测', () => {
 
     const reuse = await applyV21SessionOnEvent(
       { query: db.query },
-      { repo: REPO, issueNumber: 42, event: 'issue_comment.created', issueState: 'closed' },
+      { repo: REPO, domain: 'issue' as const, issueNumber: 42, event: 'issue_comment.created', issueState: 'closed' },
     );
     expect(reuse.action).toBe('reuse');
     expect(reuse.state).toBe('active');

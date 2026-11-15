@@ -12,9 +12,18 @@ import {
   auditResponseSchema,
   costsQuerySchema,
   costsResponseSchema,
+  deliveriesQuerySchema,
+  deliveriesResponseSchema,
+  deliveryRowSchema,
   issueFeedbackEventSchema,
   issueSessionParamsSchema,
   issueSessionResponseSchema,
+  issueTraceActionSchema,
+  issueTraceResponseSchema,
+  issueTraceRunSchema,
+  issueTraceToolCallSchema,
+  issueTraceTotalsSchema,
+  issueTraceUsageSchema,
   issuesListResponseSchema,
   issuesQuerySchema,
   overviewQuerySchema,
@@ -31,6 +40,23 @@ import {
   taskDetailResponseSchema,
   tasksQuerySchema,
   tasksResponseSchema,
+  identityCheckResponseSchema,
+  identityFallbackRowSchema,
+  identityFallbacksQuerySchema,
+  identityFallbacksResponseSchema,
+  modelProviderSchema,
+  modelProvidersResponseSchema,
+  modelRoleRowSchema,
+  modelRolesResponseSchema,
+  panelIdentityResponseSchema,
+  panelIdentitySchema,
+  providerCheckResponseSchema,
+  repoModelRoleRowSchema,
+  repoModelRolesResponseSchema,
+  saveModelProviderRequestSchema,
+  saveModelRoleRequestSchema,
+  savePanelIdentityRequestSchema,
+  saveRepoModelRoleRequestSchema,
   webhookAcceptedResponseSchema,
 } from './api.ts';
 import { errorBodySchema } from './common.ts';
@@ -73,6 +99,41 @@ export const responseSchemas = {
   AddRepoRequest: addRepoRequestSchema,
   /** `SystemResponse.repos[]` 的行（`repos` 表的投影 + 老字段别名）。 */
   SystemRepo: systemRepoSchema,
+  /**
+   * 投递判定留痕（BR-6 / FR-6.4③，`GET /api/repos/{owner}/{name}/deliveries`）。
+   * `DeliveryRow` 单列出来是因为面板的事件时间线要单独渲染一行，不必嵌进列表组件。
+   */
+  DeliveryRow: deliveryRowSchema,
+  DeliveriesResponse: deliveriesResponseSchema,
+  /**
+   * 一个 issue 的**完整链路**（FR-6.4③「投递 → 判定 → 执行 → 写回」+ FR-6.1/6.2/6.3 + NFR-6）：
+   * `GET /api/issues/{owner}/{name}/{kind}/{number}/trace`。
+   *
+   * 子形状单列出去（面板要单独渲染工具调用行与用量格，不必嵌进整份响应）。
+   */
+  IssueTraceResponse: issueTraceResponseSchema,
+  IssueTraceRun: issueTraceRunSchema,
+  IssueTraceToolCall: issueTraceToolCallSchema,
+  IssueTraceAction: issueTraceActionSchema,
+  IssueTraceUsage: issueTraceUsageSchema,
+  IssueTraceTotals: issueTraceTotalsSchema,
+  /* ── 供应商 / 模型角色 / 面板身份（§6.8、§6.9；AC-32 的契约面） ── */
+  ModelProvider: modelProviderSchema,
+  ModelProvidersResponse: modelProvidersResponseSchema,
+  SaveModelProviderRequest: saveModelProviderRequestSchema,
+  ProviderCheckResponse: providerCheckResponseSchema,
+  ModelRoleRow: modelRoleRowSchema,
+  ModelRolesResponse: modelRolesResponseSchema,
+  SaveModelRoleRequest: saveModelRoleRequestSchema,
+  RepoModelRoleRow: repoModelRoleRowSchema,
+  RepoModelRolesResponse: repoModelRolesResponseSchema,
+  SaveRepoModelRoleRequest: saveRepoModelRoleRequestSchema,
+  PanelIdentity: panelIdentitySchema,
+  PanelIdentityResponse: panelIdentityResponseSchema,
+  SavePanelIdentityRequest: savePanelIdentityRequestSchema,
+  IdentityCheckResponse: identityCheckResponseSchema,
+  IdentityFallbackRow: identityFallbackRowSchema,
+  IdentityFallbacksResponse: identityFallbacksResponseSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 /** 查询参数 schema（OpenAPI 的 `parameters` 由它推导，不手写第二份）。 */
@@ -84,8 +145,12 @@ export const querySchemas = {
   auditQuery: auditQuerySchema,
   /** `/api/issues` 的筛选与分页（`kind` 默认 `issue`、`limit` 默认 30）。 */
   issuesQuery: issuesQuerySchema,
+  /** `/api/repos/{owner}/{name}/deliveries` 的时间窗 / 判定 / 事件类型筛选与分页。 */
+  deliveriesQuery: deliveriesQuerySchema,
   /** `/api/system` 的 `?repo=`（只收窄 `repos` 与 `flags`）。 */
   systemQuery: systemQuerySchema,
+  /** `/api/settings/identity/fallbacks` 的时间窗 / 用户筛选与分页。 */
+  identityFallbacksQuery: identityFallbacksQuerySchema,
 } as const satisfies Record<string, z.ZodType>;
 
 /**

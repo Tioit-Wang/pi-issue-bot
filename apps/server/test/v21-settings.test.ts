@@ -137,14 +137,18 @@ describe('resolveCommentConfig：关键词与角色清单', () => {
     });
   });
 
-  it('角色清单原样透出（两种判别方式都在）', () => {
+  it('角色清单透出：association 原样、members 摊成 {login, id}（旧写法 id 为 null）', () => {
     const settings = {
       ...BASE,
       comment: {
         mentions: [{ keyword: 'pi-bot' }, { keyword: '小豆', case_sensitive: true }],
         roles: [
           { name: '维护者', by: 'association', any_of: ['OWNER', 'MEMBER'] },
+          // 旧写法（裸 login）：读侧必须摊成 `{login, id: null}` —— 缺 id 是一个显式值，
+          // 判定侧据此走「降级按 login 匹配」并留痕（§6.6 坑一），不许静默当成正常命中。
           { name: '值班同学', by: 'members', members: ['alice'] },
+          // 新写法：保存时已解析出用户 id，判定以它为准（login 仅显示 / 降级匹配用）。
+          { name: '值班同学2', by: 'members', members: [{ login: 'bob', id: 1002 }] },
         ],
       },
     };
@@ -155,7 +159,8 @@ describe('resolveCommentConfig：关键词与角色清单', () => {
     ]);
     expect(resolved.roles).toEqual([
       { name: '维护者', by: 'association', any_of: ['OWNER', 'MEMBER'] },
-      { name: '值班同学', by: 'members', members: ['alice'] },
+      { name: '值班同学', by: 'members', members: [{ login: 'alice', id: null }] },
+      { name: '值班同学2', by: 'members', members: [{ login: 'bob', id: 1002 }] },
     ]);
   });
 });

@@ -237,6 +237,16 @@ describe('queries/audit（真库）', () => {
     // r2 没有审批事件 → approval 为 null
     expect(byId.get('3')?.approval).toBeNull();
     expect(byId.get('3')?.actor.login).toBe('bob');
+
+    // ★ 生产写入口 `approval.audit` 也必须被读到：`r1` 那行是 `approval`（approval/respond
+    // 的约定），`r3` 这行才是 `worker/run-task.ts::appendEvent()` 实际写的 kind。
+    // 只认一种的实现会让这一条红（改前就是「审批列恒 null」）。
+    const production = response.items.find((row) => row.runId === 'r3');
+    expect(production?.approval).toEqual({
+      tool: 'Bash',
+      decision: 'allow',
+      rule: 'allow-read-only',
+    });
   });
 
   it('筛选 intent / repo 与分页', async () => {

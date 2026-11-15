@@ -85,7 +85,11 @@ describe('脱敏', () => {
 
     expect(described).not.toContain('ghp_secret');
     expect(described).not.toContain('pdt1.secret');
-    expect(described).not.toContain('secret'); // 连 DSN 里的口令也不能出现
+    // 连 DSN 里的口令也不能出现：匹配「口令位置」而不是裸 `secret` —— 字段名本身叫
+    // `webhookSecretSet` / `secretsKeyConfigured`（吐「配没配」正是本函数的职责），
+    // 用裸词会把「我按设计输出了布尔字段名」判成泄漏。
+    expect(described).not.toContain('pi:secret');
+    expect(described).not.toMatch(/:secret@/);
     expect(described).toContain('githubTokenConfigured');
     expect(described).toContain('deviceTokenConfigured');
   });

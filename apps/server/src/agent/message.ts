@@ -31,6 +31,11 @@ import { eventFingerprint, mentionFingerprint } from './fingerprint.ts';
  *
  * 占位符（`{名字}`）在一整行都只是它且解析为空时**整行消失** —— 于是「没有
  * `project_prompt` 的仓库」不会出现一个空标题，目录为空时也不会留下半截段落（X-03）。
+ *
+ * **事件模板里没有 `{skills}`**（Q-6 / FR-5.1）：那是「事件 → 技能」映射表的最后一处痕迹。
+ * 平台不决定这轮该加载哪套规则；事件模板只给事实（仓库、issue、正文、项目规范、技能目录），
+ * 要点名技能就在模板正文里写 `/名字`，那和项目维护者写进模板的一句话没有区别，
+ * 不经过任何平台侧的映射。`{skills}` 只保留在 `mention`（人点名是事实，不是预设）。
  */
 export const AGENT_MESSAGE_TEMPLATES = Object.freeze({
   opened: [
@@ -46,8 +51,6 @@ export const AGENT_MESSAGE_TEMPLATES = Object.freeze({
     '项目规范（由维护者配置）：',
     '{project_prompt}',
     '',
-    '{skills}',
-    '',
     '{catalog}',
   ].join('\n'),
   edited: [
@@ -62,8 +65,6 @@ export const AGENT_MESSAGE_TEMPLATES = Object.freeze({
     '',
     '项目规范（由维护者配置）：',
     '{project_prompt}',
-    '',
-    '{skills}',
     '',
     '{catalog}',
   ].join('\n'),
@@ -124,12 +125,20 @@ export type AgentIssueSnapshot = {
 };
 
 /** 组装只需要 `settings.agent` 的这几项（避免把整份 `RepoSettings` 拉进纯函数）。 */
+/**
+ * 组装只需要 `settings.agent` 的这几项（避免把整份 `RepoSettings` 拉进纯函数）。
+ *
+ * **没有 `on_opened` / `on_edited`**（Q-6 / FR-5.1）：平台不维护「事件 → 技能」映射表。
+ * 这两个键虽然还在契约里（删键会让存量 `repos.settings` 解析失败），但**不再被任何
+ * 组装或投递路径读取** —— 事件要不要投递由项目级事件开关说了算，投递哪份内容由
+ * 事件提示词模板说了算，技能由提示词正文里的 `/名字` 与技能目录自描述。
+ *
+ * 这条是 Q-6 的落地口径：一个事件对应一份提示词，平台不参与「这轮该加载哪套规则」。
+ */
 export type AgentMessageSettings =
   | {
       /** 管理员名单（权限判定用；`agent/message.ts` 自己不用，但 webhook 只解析一次 settings） */
       readonly managers?: readonly string[] | undefined;
-      readonly on_opened?: string | null | undefined;
-      readonly on_edited?: string | null | undefined;
       readonly project_prompt?: string | undefined;
     }
   | null
@@ -152,31 +161,18 @@ export type ComposedAgentMessage = {
   readonly templateId: AgentTemplateId | null;
   /** 进 `agent_messages.comment_body`（也就是 agent 真正看到的那条用户消息） */
   readonly text: string;
-  /** 这一条点名了哪些技能（事件消息来自 settings，人消息来自命中） */
+  /**
+   * 这一条点名了哪些技能。
+   *
+   * 人消息：来自正文里用户写的 `/名字`（事实，不是平台预设）。
+   * 事件消息：**恒为空**（Q-6 / FR-5.1）—— 平台没有「事件 → 技能」映射表。
+   */
   readonly skillIds: readonly string[];
   readonly fingerprint: string;
 };
 
 /* ── 组装 ────────────────────────────────────────────────────────────────── */
 
-/** `settings.agent.on_opened` / `on_edited` → 事件消息点名的技能（空/`null` = 不投递）。 */
-export function eventSkillsOf(settings: AgentMessageSettings, templateId: AgentTemplateId): readonly string[] {
-  const configured = templateId === 'opened' ? settings?.on_opened : settings?.on_edited;
-  if (configured === null || configured === undefined) {
-    return [];
-  }
-  const id = configured.trim();
-  return id === '' ? [] : [id];
-}
-
-/** 事件模板配了哪条技能（`null` = 该事件不投递，需求 §1.4 / CF-02 / CF-03）。 */
-export function eventTemplateSkillOf(
-  settings: AgentMessageSettings,
-  templateId: AgentTemplateId,
-): string | null {
-  const skills = eventSkillsOf(settings, templateId);
-  return skills[0] ?? null;
-}
 
 function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n\n${truncatedMarker(text.length, max)}`;
@@ -269,21 +265,25 @@ export function composeAgentMessage(input: ComposeAgentMessageInput): ComposedAg
 
   if (input.kind === 'event') {
     const templateId: AgentTemplateId = input.templateId ?? 'opened';
-    const skillIds = eventSkillsOf(input.settings, templateId);
+    /*
+      事件消息**不点名技能**（Q-6 / FR-5.1）：平台不维护「事件 → 技能」映射表。
+      要在这轮加载某套规则，就把它写进事件提示词模板正文（维护者的一句话），
+      或者由 `skills/prompt.ts` 渲染的技能目录让模型自己挑 —— 两条都不经过平台侧的映射表。
+      所以这里 `skillIds` 恒为空数组，`{skills}` 占位符也不在事件模板里。
+    */
     const text = renderTemplate(AGENT_MESSAGE_TEMPLATES[templateId], {
       repo: issue.repo,
       issue: String(issue.number),
       title: renderTitle(issue.title),
       body: renderBody(issue.body),
       project_prompt: clip((input.settings?.project_prompt ?? '').trim(), AGENT_MAX_PROJECT_PROMPT_CHARS),
-      skills: renderSkillDirective(skillIds),
       catalog,
     });
     return {
       kind: 'event',
       templateId,
       text,
-      skillIds,
+      skillIds: [],
       fingerprint: eventFingerprint({
         repo: issue.repo,
         issueNumber: issue.number,

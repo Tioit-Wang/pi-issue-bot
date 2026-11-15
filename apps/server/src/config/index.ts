@@ -17,6 +17,7 @@ export {
   ENV_KEYS,
   ConfigError,
   defaultMigrationsDir,
+  defaultPanelDistDir,
   readDatabaseUrl,
   readServeConfig,
 } from './env.ts';
@@ -61,6 +62,7 @@ export {
   resolveCommentGates,
   resolveEventTrigger,
   resolveManagedCatalog,
+  resolveTurnTimeoutMinutes,
 } from './v21-settings.ts';
 export type {
   ManagedCatalogEntry,

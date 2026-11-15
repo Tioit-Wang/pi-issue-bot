@@ -337,8 +337,8 @@ describe('向后兼容：v0.3 的老配置照样解析', () => {
 });
 
 describe('占位符清单（FR-2.3 / §6.3）：面板的快捷按钮与服务端渲染共用一份', () => {
-  it('正好 12 个，且逐个都有一句中文说明', () => {
-    expect(PROMPT_PLACEHOLDERS).toHaveLength(12);
+  it('正好 14 个，且逐个都有一句中文说明', () => {
+    expect(PROMPT_PLACEHOLDERS).toHaveLength(14);
     for (const placeholder of PROMPT_PLACEHOLDERS) {
       // 按钮上只显示 {{名字}}，含义全靠这句：空说明等于让人猜
       expect(placeholder.description.length, placeholder.name).toBeGreaterThan(0);
@@ -351,6 +351,7 @@ describe('占位符清单（FR-2.3 / §6.3）：面板的快捷按钮与服务�
       'issue.number',
       'issue.url',
       'issue.content',
+      'issue.contentDelta',
       'issue.labels',
       'issue.title',
       'repo.issues',
@@ -359,17 +360,18 @@ describe('占位符清单（FR-2.3 / §6.3）：面板的快捷按钮与服务�
       'repo',
       'actor',
       'event.action',
+      'issue.isFirstEvent',
     ]);
     expect(PLACEHOLDER_NAMES).toEqual(PROMPT_PLACEHOLDERS.map((entry) => entry.name));
-    expect(new Set(PLACEHOLDER_NAMES).size).toBe(12);
+    expect(new Set(PLACEHOLDER_NAMES).size).toBe(14);
   });
 
-  it('判断视图认得这 12 个，且不认别的（拼错要能判出来）', () => {
+  it('判断视图认得这 14 个，且不认别的（拼错要能判出来）', () => {
     for (const name of PLACEHOLDER_NAMES) {
       expect(PLACEHOLDER_NAME_SET.has(name), name).toBe(true);
     }
     expect(PLACEHOLDER_NAME_SET.has('issue.foo')).toBe(false);
-    expect(PLACEHOLDER_NAME_SET.size).toBe(12);
+    expect(PLACEHOLDER_NAME_SET.size).toBe(14);
   });
 });
 

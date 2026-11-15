@@ -6,12 +6,20 @@
  *  - R-02：幂等命中即「不建任务、不调模型」；
  *  - R-03 / X-14：同 issue 3 条消息**全部入队**（不是被 `singletonKey` 丢掉 2 条），按
  *    `created_at` 串行执行；
- *  - 会话复用：两次 @ 同一个 issue → 同一个 `session_id`，`agent_sessions.turns` 递增。
+ *  - 会话复用：两次 @ 同一个 issue → 同一个 `session_id`，`agent_sessions.turns` 递增；
+ *  - 需求「上次失败不参与去重」：`failed` 的同一 fingerprint 再投必须放行成 `queued`，
+ *    而 `queued` / `running` / `done` 仍然判 duplicate（否则一次故障会永久锁死这条内容）。
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createApplication } from '../src/app/index.ts';
 import type { Application } from '../src/app/index.ts';
+import {
+  claimNextForIssue,
+  insertAgentTask,
+  insertMessage,
+  markMessage,
+} from '../src/agent/index.ts';
 import { createPgRunStore } from '../src/worker/index.ts';
 import {
   E2E_WEBHOOK_SECRET,
@@ -160,11 +168,38 @@ describe('L-01 / R-02：人消息永久幂等', () => {
     expect(turnStarts()).toBe(1);
   });
 
-  it('L-02：归一化等价（多空格 / 标点 / 不同别名）→ 同一条消息', async () => {
+  it('L-02：标点 / 行内空白差异**不再**等价（口径收窄到「去首尾空白 + 合并连续空行」）', async () => {
+    /**
+     * 口径依据（`docs/requirements.html:915`）：「比较规范化后的正文：去首尾空白、合并连续空行；
+     * **不做语义近似判断**——措辞不同就是不同内容，宁可多处理一次，也不能把新问题误判成旧问题」。
+     *
+     * 旧实现在 normalize 里还额外做了「摘 `@别名` / 压行内空白 / 删全部标点 / 抹代码区」，
+     * 于是「打个标签」与「打个标签！」被判成同一句话，新问题会被永久吞掉 —— 这正是 P0-3 修的缺陷。
+     *
+     * 现在只有两种情况仍是同一条消息：正文**完全一致**，或者只差首尾空白 / 连续空行。
+     * v2.1 的评论路径直接拿评论原文算指纹（`webhook-v21.ts:903-915`，不经 `stripAliases`），
+     * 所以行内多个空格也算「不同内容」。
+     */
     await postMention('@pi-bot 打个标签', { commentId: 1101 });
-    const equivalent = await postMention('@pi-bot   打个标签！', { commentId: 1102 });
-    expect(equivalent.action).toBe('duplicate');
-    expect(await messages()).toHaveLength(1);
+
+    // 只多一个感叹号：按需求必须是**新**消息。
+    const punctuationOnly = await postMention('@pi-bot 打个标签！', { commentId: 1102 });
+    expect(punctuationOnly.action).toBe('enqueued');
+
+    // 行内多几个空格：同样是不同内容（differ 不是「首尾空白」）。
+    const extraSpaces = await postMention('@pi-bot    打个标签', { commentId: 1103 });
+    expect(extraSpaces.action).toBe('enqueued');
+    expect(await messages()).toHaveLength(3);
+
+    // 完全一致 → 真重复。
+    const identical = await postMention('@pi-bot 打个标签', { commentId: 1104 });
+    expect(identical.action).toBe('duplicate');
+    expect(await messages()).toHaveLength(3);
+
+    // 只差首尾空白 → 归一化后被 trim 掉，仍是同一条。
+    const trailingSpace = await postMention('  @pi-bot 打个标签  ', { commentId: 1105 });
+    expect(trailingSpace.action).toBe('duplicate');
+    expect(await messages()).toHaveLength(3);
   });
 
   it('换一种说法 → 新消息（P3 的已知副作用：同一句话只烧一次钱）', async () => {
@@ -265,5 +300,183 @@ describe('会话复用：一个 issue 一个持久会话', () => {
     expect(text).toContain('这次要做的事：处理');
     expect(text).not.toContain('你是 pi-bot');
     expect(text).toContain('```json');
+  });
+});
+
+/**
+ * 需求「上次失败不参与去重」（`docs/requirements.html` 第 917 行）在存储层的落地。
+ *
+ * 这一组用例直接打 `insertMessage` / `markMessage`（不起 RACP、不跑任务）：要断言的是
+ * **`agent_messages` 那一行的 status 与主键占用**，而不是上层返回体。
+ */
+describe('上次失败不参与去重（存储层）', () => {
+  const issue = 77;
+
+  /** 造一个本组用例专用的 fingerprint（跨用例靠 `beforeEach` 的清库隔开）。 */
+  function fp(name: string): string {
+    return `p02-${name}`;
+  }
+
+  /** 以「同一条内容」的姿态再投一次（kind / body / 评论 id 都一样）。 */
+  async function insertContent(fingerprint: string) {
+    return insertMessage(db.pool, {
+      key: { repo: REPO, issueNumber: issue, fingerprint },
+      kind: 'mention',
+      commentId: 9001,
+      body: '同一句话',
+      actorLogin: 'alice',
+    });
+  }
+
+  async function rowOf(fingerprint: string): Promise<Record<string, unknown> | undefined> {
+    const rows = await db.sql(
+      'select status, created_at, updated_at from agent_messages where repo = $1 and issue_number = $2 and fingerprint = $3',
+      [REPO, issue, fingerprint],
+    );
+    expect(rows.length).toBeLessThanOrEqual(1);
+    return rows[0];
+  }
+
+  /** 时间列 → 毫秒数：`pg` 给 `Date`（毫秒精度），`db.sql` 也可能给字符串，两种都收。 */
+  function msOf(value: unknown): number {
+    return value instanceof Date ? value.getTime() : Date.parse(String(value));
+  }
+
+  it('failed 之后同 fingerprint 再投 → inserted=true、status 回 queued、updated_at 刷新', async () => {
+    const fingerprint = fp('failed');
+    const first = await insertContent(fingerprint);
+    expect(first.inserted).toBe(true);
+    expect(first.row?.status).toBe('queued');
+    const createdAt = first.row?.createdAt;
+
+    await markMessage(db.pool, { repo: REPO, issueNumber: issue, fingerprint }, 'running');
+    await markMessage(db.pool, { repo: REPO, issueNumber: issue, fingerprint }, 'failed');
+    expect((await rowOf(fingerprint))?.['status']).toBe('failed');
+    // 把 updated_at 推到一小时前：同一毫秒内 `now()` 可能相等，不断言「变大」就测不出刷新。
+    await db.pool.query(
+      `update agent_messages set updated_at = now() - interval '1 hour'
+       where repo = $1 and issue_number = $2 and fingerprint = $3`,
+      [REPO, issue, fingerprint],
+    );
+
+    const retry = await insertContent(fingerprint);
+    expect(retry.inserted).toBe(true);
+    expect(retry.row?.status).toBe('queued');
+
+    const row = await rowOf(fingerprint);
+    expect(row?.['status']).toBe('queued');
+    // 重置必须刷新 updated_at（否则「什么时候重试过」就丢了；一小时前的那次更新证明它被写回）
+    expect(msOf(row?.['updated_at'])).toBeGreaterThan(msOf(createdAt));
+    expect(Date.now() - msOf(row?.['updated_at'])).toBeLessThan(60_000);
+    // created_at 不动：重试保留它在队列里的原始位置
+    expect(msOf(row?.['created_at'])).toBe(msOf(createdAt));
+  });
+
+  it('done 之后同 fingerprint 再投 → inserted=false，状态仍 done（幂等不放行）', async () => {
+    const fingerprint = fp('done');
+    await insertContent(fingerprint);
+    await markMessage(db.pool, { repo: REPO, issueNumber: issue, fingerprint }, 'running');
+    await markMessage(db.pool, { repo: REPO, issueNumber: issue, fingerprint }, 'done');
+
+    const again = await insertContent(fingerprint);
+    expect(again.inserted).toBe(false);
+    expect(again.row?.status).toBe('done');
+    expect((await rowOf(fingerprint))?.['status']).toBe('done');
+  });
+
+  it('queued / running 时同 fingerprint 再投 → inserted=false，状态不变', async () => {
+    const queuedFp = fp('queued');
+    await insertContent(queuedFp);
+    const againQueued = await insertContent(queuedFp);
+    expect(againQueued.inserted).toBe(false);
+    expect(againQueued.row?.status).toBe('queued');
+
+    const runningFp = fp('running');
+    await insertContent(runningFp);
+    await markMessage(db.pool, { repo: REPO, issueNumber: issue, fingerprint: runningFp }, 'running');
+    const againRunning = await insertContent(runningFp);
+    expect(againRunning.inserted).toBe(false);
+    expect(againRunning.row?.status).toBe('running');
+
+    expect((await rowOf(queuedFp))?.['status']).toBe('queued');
+    expect((await rowOf(runningFp))?.['status']).toBe('running');
+    // 两条都在，没有因为重投多出第三行
+    const all = await db.sql('select fingerprint from agent_messages where repo = $1 and issue_number = $2', [
+      REPO,
+      issue,
+    ]);
+    expect(all).toHaveLength(2);
+  });
+});
+
+describe('重试要真的再跑一次（任务面）', () => {
+  const issue = 78;
+
+  async function taskRows(): Promise<Array<Record<string, unknown>>> {
+    return db.sql('select id, status, queued_at from tasks where repo = $1 and target_number = $2', [
+      REPO,
+      issue,
+    ]);
+  }
+
+  function msOf(value: unknown): number {
+    return value instanceof Date ? value.getTime() : Date.parse(String(value));
+  }
+
+  it('上一轮任务 failed/timed-out 时重投 → 同一任务回到 queued（不新建行、queued_at 不变）', async () => {
+    const key = { repo: REPO, issueNumber: issue, fingerprint: 'p02-task' };
+    const agentTask = { taskId: 'p02-task-a', key, kind: 'mention' as const, body: '同一句话', actorLogin: 'alice' };
+
+    await insertMessage(db.pool, { key, kind: 'mention', commentId: 9101, body: '同一句话', actorLogin: 'alice' });
+    expect((await insertAgentTask(db.pool, agentTask)).taskId).toBe('p02-task-a');
+    // 上一轮跑失败（消息终态与任务终态一起写成失败）
+    await db.pool.query(`update tasks set status = 'failed' where id = $1`, ['p02-task-a']);
+    await markMessage(db.pool, key, 'running');
+    await markMessage(db.pool, key, 'failed');
+    const queuedAtBefore = (await taskRows())[0]?.['queued_at'];
+
+    // 同内容再投 → 消息放行；dispatcher 领走后要建任务
+    const retry = await insertMessage(db.pool, {
+      key,
+      kind: 'mention',
+      commentId: 9102,
+      body: '同一句话',
+      actorLogin: 'alice',
+    });
+    expect(retry.inserted).toBe(true);
+    expect((await claimNextForIssue(db.pool, { repo: REPO, issueNumber: issue }))?.status).toBe('running');
+
+    const again = await insertAgentTask(db.pool, { ...agentTask, taskId: 'p02-task-b' });
+    // 拿回上一轮的 id 才意味着「真的会重跑一次」；否则 dispatcher 会以为已投递，消息永远停在 running
+    expect(again.taskId).toBe('p02-task-a');
+    const rows = await taskRows();
+    expect(rows).toHaveLength(1);
+    /**
+     * 任务行**保持 `failed`**：P0-2 只负责「让同内容重新被处理一次」，
+     * 不负责改写 `tasks` 的状态机（`failed → queued` 的语义归重试策略 `decideRetry()` 与队列层，
+     * 见 AGENTS §9）。`run-task` 按 taskId 直接开跑、不看 `tasks.status`，所以这行停在 `failed`
+     * 不影响重跑；收尾时再被写成新的终态。
+     *
+     * 曾经把这里改成 `queued`（连 `insertTask` 一起 DO UPDATE），复核确认是多余改动：
+     * 既改了终态语义，又没解决任何真实问题（旧 id 本来就能回填、dispatcher 照常入队）。
+     */
+    expect(rows[0]?.['status']).toBe('failed');
+    // queued_at 是入队时写死的审计字段，任何路径都不改它（重跑次数记在 runs.attempt）
+    expect(msOf(rows[0]?.['queued_at'])).toBe(msOf(queuedAtBefore));
+  });
+
+  it('上一轮任务 succeeded 时重投不放行 → 状态仍 succeeded，不重跑', async () => {
+    const key = { repo: REPO, issueNumber: issue, fingerprint: 'p02-task-done' };
+    const agentTask = { taskId: 'p02-task-c', key, kind: 'mention' as const, body: '同一句话', actorLogin: 'alice' };
+
+    await insertMessage(db.pool, { key, kind: 'mention', commentId: 9201, body: '同一句话', actorLogin: 'alice' });
+    expect((await insertAgentTask(db.pool, agentTask)).taskId).toBe('p02-task-c');
+    await db.pool.query(`update tasks set status = 'succeeded' where id = $1`, ['p02-task-c']);
+    await markMessage(db.pool, key, 'running');
+    await markMessage(db.pool, key, 'done');
+
+    const again = await insertAgentTask(db.pool, { ...agentTask, taskId: 'p02-task-d' });
+    expect(again.taskId).toBe('p02-task-c');
+    expect((await taskRows()).map((row) => row['status'])).toEqual(['succeeded']);
   });
 });

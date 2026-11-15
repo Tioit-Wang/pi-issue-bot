@@ -47,7 +47,7 @@ pnpm lint</pre>
     <p>一个 PostgreSQL 同时存业务表和队列（pg-boss），不需要 Redis。DSN 从环境变量读，没有 <code>--dsn</code> 参数。</p>
     <pre class="code">$env:PI_BOT_PG_DSN = 'postgres://postgres:postgres@127.0.0.1:5432/pi_issue_bot'
 pnpm cli -- migrate</pre>
-    <p>迁移结束应看到 16 张初始表与 <code>schema_migrations</code> 账本；重复执行是幂等的。</p>
+<p>迁移结束应看到 28 张业务表与 <code>schema_migrations</code> 账本；重复执行是幂等的。</p>
   </section>
 
   <section id="s3">

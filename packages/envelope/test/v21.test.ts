@@ -11,17 +11,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ISSUE_READ_TOOL_NAMES,
-  LINK_RELATIONS,
   MAX_OUTPUT_ACTIONS,
   MAX_TOOL_CALLS_PER_OUTPUT,
   OUTPUT_ACTION_TYPES,
   REACTION_CONTENTS,
+  REMOVED_ACTION_TYPES,
   gatedActionOf,
   parseOutputV21Json,
   validateOutputV21,
 } from '../src/index.ts';
 
-/** 一份包含**全部动作类型**的产出（每类一条，顺序即 §4 的声明顺序）。 */
+/** 一份包含**封闭七类里每一类**的产出（顺序即 `OUTPUT_ACTION_TYPES` 的声明顺序）。 */
 function fullOutput(): unknown {
   return {
     verdict: 'fail',
@@ -34,11 +34,6 @@ function fullOutput(): unknown {
       { type: 'create_issue', payload: { title: '同类问题汇总', fingerprint: 'dup:abc123' } },
       { type: 'open_pr', payload: { branch: 'bot/fix-42', title: '修复 #42' } },
       { type: 'close_issue', payload: {} },
-      { type: 'reopen_issue', payload: {} },
-      { type: 'update_issue', payload: { title: '补上复现步骤' } },
-      { type: 'update_comment', payload: { comment_id: 9_000_001, body: '更正一处笔误。' } },
-      { type: 'delete_comment', payload: { comment_id: 9_000_002 } },
-      { type: 'link', payload: { relation: 'duplicate', target_number: 300 } },
     ],
   };
 }
@@ -186,24 +181,77 @@ describe('parseOutputV21Json：语法错误与形状错误同一个返回形状'
   });
 });
 
-describe('v2.2：v2.1 里没有落点的那 5 个工具', () => {
+describe('FR-5.3：封闭七类之外的写法一律整份拒绝', () => {
   /*
-    这 5 条正例对应 `docs/plan-issue-tools.md` §4 的「19 个工具」里原先只能写成
-    一句人话的那几个（改标题 / 重新打开 / 改删评论 / 建关联 / 给评论贴表情）。
-    契约层面没有位置，执行层面就永远不可能发生 —— 所以正例必须逐条列出。
+    v2.2 曾为「19 个 issue 工具都要有落点」补了五类动作（reopen_issue / update_issue /
+    update_comment / delete_comment / link），动作集合从需求的 7 类涨到 12 类。
+    需求 §5.5 的动作全集表只有七行，且明写「动作全集里的七种之一，其他值一律拒绝」，
+    所以这里要钉住的是**拒绝**，而不是「这些动作还能用」。
+
+    判定必须整份拒绝（不是跳过那一条）：一份产出里同时有合法的 comment 与被移除的
+    update_issue 时，一条都不许执行 —— 否则「执行了一半才发现格式错」正是需求要避免的。
   */
-  it('给某条评论贴表情：target=comment + comment_id', () => {
-    const result = validateOutputV21({
-      actions: [{ type: 'reaction', payload: { op: 'add', content: 'eyes', target: 'comment', comment_id: 42 } }],
-    });
-    expect(result.ok).toBe(true);
+  it('REMOVED_ACTION_TYPES 与 OUTPUT_ACTION_TYPES 不相交，且恰好是那五类', () => {
+    expect([...REMOVED_ACTION_TYPES]).toEqual([
+      'reopen_issue',
+      'update_issue',
+      'update_comment',
+      'delete_comment',
+      'link',
+    ]);
+    const overlap = REMOVED_ACTION_TYPES.filter((type) =>
+      (OUTPUT_ACTION_TYPES as readonly string[]).includes(type),
+    );
+    expect(overlap).toEqual([]);
   });
 
-  it('回复评论：comment.reply_to', () => {
+  it('封闭集合就是需求表的七类，顺序一致', () => {
+    expect([...OUTPUT_ACTION_TYPES]).toEqual([
+      'verdict',
+      'label',
+      'comment',
+      'reaction',
+      'create_issue',
+      'open_pr',
+      'close_issue',
+    ]);
+  });
+
+  it('五类已移除动作逐个被拒，错误写清「已不在封闭集合里」并指到 type', () => {
+    for (const type of REMOVED_ACTION_TYPES) {
+      const result = validateOutputV21({ actions: [{ type, payload: {} }] });
+      expect(result.ok, `${type} 应当被拒`).toBe(false);
+      if (result.ok) return;
+      expect(result.errors[0]?.path, type).toBe('/actions/0/type');
+      expect(result.errors[0]?.message, type).toContain('不在 FR-5.3 的封闭集合里');
+      expect(result.errors[0]?.message, type).toContain(type);
+    }
+  });
+
+  it('合法动作与被移除动作混在一份产出里 → 整份拒绝（一条都不执行）', () => {
     const result = validateOutputV21({
-      actions: [{ type: 'comment', payload: { slot: 'reply-42', body: '已修。', reply_to: 42 } }],
+      actions: [
+        { type: 'comment', payload: { slot: 'result', body: '好的' } },
+        { type: 'update_issue', payload: { title: '偷偷改标题' } },
+      ],
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0]?.path).toBe('/actions/1/type');
+  });
+
+  it('九类里剩下的那两类的合法用法仍旧成立（reply_to / target=comment）', () => {
+    // 「收敛集合」不等于「砍掉能力」：回复评论与给评论贴表情都落在 comment / reaction 里。
+    expect(
+      validateOutputV21({
+        actions: [{ type: 'comment', payload: { slot: 'reply-42', body: '已修。', reply_to: 42 } }],
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateOutputV21({
+        actions: [{ type: 'reaction', payload: { op: 'add', content: 'eyes', target: 'comment', comment_id: 42 } }],
+      }).ok,
+    ).toBe(true);
   });
 
   it('关单带原生理由与重复指向', () => {
@@ -211,17 +259,6 @@ describe('v2.2：v2.1 里没有落点的那 5 个工具', () => {
       actions: [{ type: 'close_issue', payload: { state_reason: 'duplicate', duplicate_of: 300 } }],
     });
     expect(result.ok).toBe(true);
-  });
-
-  it('五种 link 关系都合法', () => {
-    for (const relation of LINK_RELATIONS) {
-      const result = validateOutputV21({
-        actions: [{ type: 'link', payload: { relation, target_number: 301 } }],
-      });
-      expect(result.ok, `relation=${relation} 应当合法`).toBe(true);
-    }
-    const bad = validateOutputV21({ actions: [{ type: 'link', payload: { relation: 'depends', target_number: 1 } }] });
-    expect(bad.ok).toBe(false);
   });
 });
 
@@ -243,24 +280,26 @@ describe('v2.2：跨字段语义校验（整份拒绝，路径精确）', () => 
     if (result.ok) return;
     expect(result.errors[0]?.path).toBe('/actions/0/payload/duplicate_of');
   });
-
-  it('update_issue 一个字段都没给 → 拒绝', () => {
-    const result = validateOutputV21({ actions: [{ type: 'update_issue', payload: {} }] });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.errors[0]?.path).toBe('/actions/0/payload');
-  });
 });
 
-describe('v2.2：link 的 duplicate 归 close_issue 开关', () => {
+describe('项目开关只挂在封闭集合里的那三类上', () => {
   /*
-    只按 `type` 判开关会留一个后门：`agent.actions.close_issue=false` 的项目里，
-    模型把 `close_issue` 换成 `link{relation:'duplicate'}` 就能照样关单。
+    v2.2 曾为 `link{relation:'duplicate'}` 加过「等价于关单」的旁路判定 —— 那是给
+    一个不该存在的动作打补丁。`link` 移出集合后，`gatedActionOf()` 只剩一条判据：
+    `type` 在 `GATED_ACTION_TYPES` 里。这比「记得给每个新动作补开关」更难出错。
   */
-  it('duplicate 受 close_issue 约束，其余关系不受约束', () => {
-    expect(gatedActionOf({ type: 'link', payload: { relation: 'duplicate' } })).toBe('close_issue');
-    expect(gatedActionOf({ type: 'link', payload: { relation: 'relates' } })).toBeNull();
-    expect(gatedActionOf({ type: 'create_issue', payload: {} })).toBe('create_issue');
+  it('三类受开关约束，其余返回 null', () => {
+    expect(gatedActionOf({ type: 'create_issue' })).toBe('create_issue');
+    expect(gatedActionOf({ type: 'open_pr' })).toBe('open_pr');
+    expect(gatedActionOf({ type: 'close_issue' })).toBe('close_issue');
+    expect(gatedActionOf({ type: 'comment' })).toBeNull();
+    expect(gatedActionOf({ type: 'label' })).toBeNull();
+    expect(gatedActionOf({ type: 'reaction' })).toBeNull();
+    expect(gatedActionOf({ type: 'verdict' })).toBeNull();
+  });
+
+  it('已移除的 link 不再被当成关单（它连产出都过不去）', () => {
+    expect(gatedActionOf({ type: 'link' })).toBeNull();
   });
 });
 

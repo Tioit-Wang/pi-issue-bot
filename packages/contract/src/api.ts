@@ -8,11 +8,35 @@
  * 由 `src/schemas.ts` 给出「接口名 → schema」的注册表供 OpenAPI 生成与单测使用。
  */
 import { z } from 'zod';
-import { isoDateTimeSchema, isoDateSchema, usdAmountSchema, ratioSchema, countSchema, durationMsSchema, gitShaSchema, repoFullNameSchema, shortIdSchema, labelNameSchema, loginSchema, eventCursorSchema, pageInfoShape, pageLimitSchema, pageCursorSchema, timeRangeShape, timestamped, DEFAULT_PAGE_LIMIT } from './common.ts';
+import { isoDateTimeSchema, isoDateSchema, usdAmountSchema, ratioSchema, countSchema, durationMsSchema, gitShaSchema, repoFullNameSchema, shortIdSchema, labelNameSchema, loginSchema, eventCursorSchema, pageInfoShape, pageLimitSchema, pageCursorSchema, timeRangeShape, timestamped, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from './common.ts';
 import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, recordedActionIntentSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
 // 仓库配置的形状（`repos.settings`）：`PUT /api/repos/*/settings` 的请求体就是它，所以两边必须同源。
 import { repoSettingsSchema } from './repo-config.ts';
+// 供应商 / 模型角色 / 面板身份的词汇表（§6.8、§6.9）：Api 只引用，不另立第二套取舍。
+import {
+  MAX_PROVIDER_MODELS,
+  MODEL_NAME_MAX_CHARS,
+  MODEL_PROVIDER_NAME_MAX_CHARS,
+  MODEL_ROLE_KEYS,
+  modelCatalogEntrySchema,
+  modelPriceSchema,
+  modelProviderIdSchema,
+  modelProviderStatusSchema,
+  modelRoleKeySchema,
+  modelRoleSelectionSchema,
+  modelTargetSchema,
+  panelIdentityStateSchema,
+} from './settings-v21.ts';
 
+
+/**
+ * GitHub 参与者标识（触发人 / 作者 / 会话参与者）。**不能复用 `loginSchema`**：App 机器人是
+ * `xxx[bot]`，方括号不在 `loginSchema` 的正则里，而运行列表、会话视图都必须能显示机器人自己
+ * （spec §3.2 的 `participants: ["Tioit-Wang", "pi-issue-bot-tioit[bot]"]`）。
+ *
+ * 放宽的只是**读出来的展示值**；用户输入的 login 校验仍走 `loginSchema`。
+ */
+export const actorHandleSchema = z.string().min(1).max(100);
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // 可复用的响应片段
 // ══════════════════════════════════════════════════════════════════════════════════════════
@@ -189,8 +213,16 @@ export const taskListItemSchema = z
     failureClass: failureClassSchema.nullable(),
     /** run 结果维度；任务没跑到有 run 时为 `null`。 */
     outcome: outcomeSchema.nullable(),
-    /** 触发人 login；cron 任务为 `null`。 */
-    actorLogin: loginSchema.nullable(),
+    /**
+     * 触发人 login；cron 任务为 `null`。
+     *
+     * 用 `actorHandleSchema` 而不是 `loginSchema`：`tasks.actor_login` 里存的是**触发方**，
+     * 而触发方可以是机器人自己（`pi-issue-bot-tioit[bot]`）—— App 的 login 一定带 `[bot]` 后缀，
+     * 共同的 `loginSchema` 正则不接受方括号。用严格正则会让整页 `/api/tasks` 序列化失败返回 500
+     * （2026-11-15 实机：`/api/tasks` 恒 500，面板运行页只显示「Response doesn't match the schema」）。
+     * 这里放宽的只是**读出来的展示值**，用户输入的 login 校验仍走 `loginSchema`。
+     */
+    actorLogin: actorHandleSchema.nullable(),
     queuedAt: isoDateTimeSchema,
     startedAt: isoDateTimeSchema.nullable(),
     endedAt: isoDateTimeSchema.nullable(),
@@ -857,13 +889,6 @@ export const FAILURE_CLASS_DISPLAY_ORDER: readonly FailureClass[] = [
 //    事实源：`docs/spec/ux-issue-sessions.md` §3（字段名与语义照抄，别在这里发明）
 // ══════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * GitHub 参与者标识。**不能复用 `loginSchema`**：App 机器人是 `xxx[bot]`，
- * 方括号不在 `loginSchema` 的正则里，而会话视图必须能显示机器人自己
- * （spec §3.2 的 `participants: ["Tioit-Wang", "pi-issue-bot-tioit[bot]"]`）。
- */
-export const actorHandleSchema = z.string().min(1).max(100);
-
 /** issue / PR 的状态；payload 里取不到时为 `unknown`（不是 `null`，面板用一个 chip 显示）。 */
 export const issueStateSchema = z.enum(['open', 'closed', 'unknown']);
 export type IssueState = z.infer<typeof issueStateSchema>;
@@ -928,6 +953,24 @@ export type IssueToolCall = z.infer<typeof issueToolCallSchema>;
  * 字段是两种角色的并集（spec §3.2 的例子按角色各写了一部分）：没有意义的字段给 `null`
  * （bot 轮的 `channel`、human 轮的 `failureClass`/`taskId`），不用可选字段——契约 §0 的约定。
  */
+/**
+ * 该轮信封里 `verdict` / `actions` 的**原文 JSON**（`AC-30` 的「默认收起的 `verdict` / `actions` JSON」）。
+ *
+ * 为什么是「JSON 值」而不是逐字段建形状：这两列存的是**模型的原始产出**，库里同时存在两种契约
+ * （v1 的 `verdict: {kind, labels, evidence}`、v2.1 的 `verdict: 'pass'|'fail'` + `actions[]`），
+ * 校验失败的产出也照样原样留一份。把其中一种写成 schema，另一种与坏产出就会让整页 `parse()` 失败；
+ * 而面板对这块只做一件事——折叠起来原样显示，不解释、不摘要（`Q-8` 的理由）。
+ *
+ * 只约束「是 JSON」这一层（`z.json()` 会生成自指 `$defs`，这里手写有界并集避免污染 OpenAPI 组件）。
+ */
+export const envelopeJsonValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.array(z.unknown()),
+  z.record(z.string(), z.unknown()),
+]);
+
 export const issueTurnSchema = z
   .object({
     /** `task:<id>` 或 `run:<id>`（React key）。 */
@@ -958,6 +1001,18 @@ export const issueTurnSchema = z
     toolCalls: z.array(issueToolCallSchema).max(50),
     /** 该轮工具调用是否被截断（>50 条）。 */
     truncated: z.boolean(),
+    /**
+     * 该轮信封的 `verdict` 原文（`envelopes.verdict` 的 jsonb）；人类轮、没有信封、字段缺失时为 `null`。
+     * `null` 与「有值但是空对象」不同：前者表示**没有这一项**，面板不能说成「结论为空」。
+     */
+    verdict: envelopeJsonValueSchema.nullable(),
+    /**
+     * 该轮信封的 `actions` 原文（`envelopes.actions` 的 jsonb）；语义同 `verdict`。
+     *
+     * 注意它**不是**执行结果：真正落地了哪几条要看 `actions` 表（`/api/issues/:.../trace`）。
+     * 这里是「模型想做什么」，dry-run 也有值。
+     */
+    actions: envelopeJsonValueSchema.nullable(),
   })
   .strict()
   .meta({ id: 'IssueTurn' });
@@ -1058,9 +1113,22 @@ export const issuesQuerySchema = z
   })
   .strict();
 
+/**
+ * 列表响应。
+ *
+ * `totalEstimate` 是**全量口径**的计数字段（`FR-7.4` 队列头部「计数」的依据）：
+ * 游标分页下 `issues.length` 只代表「这一页」，面板拿它当总数会把 300 条显示成 30 条。
+ * 与 `/api/tasks` 同一条口径（同一字段名、同一个 `countSchema.nullable()` 语义）：
+ * 统计不到时给 `null`，面板显示「—」而不是「0」。
+ */
 export const issuesListResponseSchema = timestamped({
   issues: z.array(issueListItemSchema).max(100),
   ...pageInfoShape,
+  /**
+   * 满足同一组筛选条件的 `(repo, kind, number)` 总数（不只是本页）。
+   * `null` = 未统计（本实现总会算，留给将来关掉聚合的部署）。
+   */
+  totalEstimate: countSchema.nullable(),
 })
   .strict()
   .meta({ id: 'IssuesListResponse' });
@@ -1078,6 +1146,24 @@ export const issueSummarySchema = z
     /** 同 `IssueListItem.stateStale`。 */
     stateStale: z.boolean(),
     labels: z.array(labelNameSchema).max(50),
+    /**
+     * issue 主贴正文（原始 markdown）——面板原文卡要显示它（`AC-28`）。
+     *
+     * 来源是**投递里的 issue 对象**（`payload.issue.body`；PR 为 `payload.pull_request.body`），
+     * 不是评论正文：评论属会话流，两者不能互相顶替（`FR-7.3` 末段「评论只出现在消息流里」）。
+     * 取不到（历史投递没带正文 / 正文为空）为 `null`：面板要说「没有正文」，不能编一份。
+     */
+    body: z.string().max(40_000).nullable(),
+    /** 主贴作者 login（`payload.issue.user.login`）；取不到为 `null`。 */
+    author: actorHandleSchema.nullable(),
+    /** 主贴创建时间（`payload.issue.created_at`）；取不到为 `null`（不是投递时间）。 */
+    createdAt: isoDateTimeSchema.nullable(),
+    /*
+     * 上面三个字段为什么带 `.optional()`（与契约 §0「不用可选字段」的唯一一处偏离）：
+     * 服务端**总是**给出这三个键（有值或 `null`），可省只是为了 `apps/panel` 的 mock 夹具
+     * 还能编译 —— 那份夹具由面板 owner 维护（本包不改 `apps/panel/**`），它按旧形状字面量
+     * 构造响应。夹具补上这三个键之后，把 `.optional()` 去掉即可（一处一行）。
+     */
     /** 参与者：人类触发者，以及能解析到的机器人自身（`repos.config.bot.login`，取不到就不列）。 */
     participants: z.array(actorHandleSchema).max(100),
     /** 同 `IssueListItem.reactionState`：这个 issue 当前的 reaction 状态。 */
@@ -1091,6 +1177,21 @@ export type IssueSummary = z.infer<typeof issueSummarySchema>;
 
 export const issueSessionResponseSchema = timestamped({
   issue: issueSummarySchema,
+  /**
+   * 这次会话**实际使用**的系统提示词原文（`agent_sessions.system_prompt` 的快照）。
+   *
+   * `AC-29` 要的是「系统通道下发的那段 markdown 原文」，所以只能来自服务端落库的那一份：
+   * 配置随时会改，历史会话不会跟着变，拿当前项目配置拼一份就是编造。
+   * `null` = 这条会话还没有任何一次触发记录过（例如只有被拒绝的投递），面板要说「没有记录」。
+   *
+   * `.optional()` 的理由同 `IssueSummary.body`：服务端总会给这个键，可省只为了让
+   * `apps/panel` 的既有 mock 夹具（面板 owner 的面）继续编译。
+   */
+  systemPrompt: z.string().max(200_000).nullable(),
+  /*
+   * 没有「提示词落库时刻」这个字段：`agent_sessions.updated_at` 同时被会话轮次推进与状态变更
+   * 刷新，把它当「这份提示词是什么时候落的」就是编造。宁可不给副标题，也不给一个会骗人的时间。
+   */
   /** 全部轮次（`at` 升序；同一时刻人类在前）。 */
   turns: z.array(issueTurnSchema).max(500),
 })
@@ -1113,3 +1214,502 @@ export const issueSessionParamsSchema = z
   })
   .strict();
 export type IssueSessionParams = z.infer<typeof issueSessionParamsSchema>;
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 12. GET /api/repos/{owner}/{name}/deliveries —— 投递判定留痕（BR-6 / FR-6.4③）
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 一次投递的判定结论（`webhook_deliveries.decision` 的去向）。
+ *
+ * 为什么是一个枚举而不是 `boolean`：面板的事件时间线要画「投递 → 判定」两段，
+ * 而 `ignored`（已判定为不触发）与 `null`（**还没判定**：v2.1 之前的历史行，或正在处理中的投递）
+ * 必须可区分 —— 前者是终态，后者还会重试/待补（与 `db/schema.ts` 的列注释同一口径）。
+ */
+export const deliveryDecisionSchema = z.enum(['triggered', 'ignored']);
+export type DeliveryDecision = z.infer<typeof deliveryDecisionSchema>;
+
+/** 查询参数里的判定筛选：比行内枚举多一个 `pending`（= `decision is null`，还没判定）。 */
+export const deliveryDecisionFilterSchema = z.enum(['triggered', 'ignored', 'pending']);
+export type DeliveryDecisionFilter = z.infer<typeof deliveryDecisionFilterSchema>;
+
+/**
+ * 一条投递的留痕行（BR-6：「未通过开关或闸门的事件」必须能在后台查到判定结果与原因）。
+ *
+ * `decisionReason` 用**字符串**而不是 `z.enum`，是有意的取舍：原因取值的事实源是
+ * `apps/server/src/trigger/decide.ts` 的 `TriggeredReason | SkippedReason`。当前全集（20 个）：
+ *
+ *  - 触发侧（2）：`enabled` / `conditional-met`
+ *  - 未触发（12）：`switch-off` / `body-unchanged` / `label-not-matched` /
+ *    `not-mentioned` / `role-denied` / `bot-self` / `closed-not-allowed` / `pr-ignored` /
+ *    `content-duplicate` / `daily-quota` / `repo-disabled` / `out-of-scope`
+ *  - 验签（2）：`signature-invalid`（有签名但对不上）/ `signature-missing`（**没有**签名头）
+ *  - 早退病因（4）：`paused` / `installation-event` / `installation-mismatch` /
+ *    `repo-missing` / `repo-read-failed` / `unknown-repo`
+ *
+ * 后两类是刻意分开的：都「不入队」，但病因不同（配置问题 vs 仓库真的停用 vs 我们读不到），
+ * 混成一个会让排查绕路 —— 实测踩过：issue #30 被 401 拒了，审计里却写 `repo-disabled`，
+ * 而 `repos.enabled` 是 `true`。
+ * 若在此复制一份枚举，将来加一个原因就会让 `parse()` 整页失败 —— 而留痕接口的用途恰恰是
+ * 「出问题时来查」，它不该因为多了一种新原因而打不开。未知取值原样返回，由面板兜底展示。
+ */
+export const deliveryRowSchema = z
+  .object({
+    /** GitHub 投递 id（`X-GitHub-Delivery`），主幂等键。 */
+    deliveryId: z.string().min(1).max(128),
+    /** `X-GitHub-Event`，如 `issues`。 */
+    event: z.string().min(1).max(64),
+    /** payload 里的 `action`，如 `opened`；部分事件没有。 */
+    action: z.string().min(1).max(64).nullable(),
+    /** 投递属于哪个仓库；载荷里没有仓库时为 `null`（未知仓库的投递同样留痕）。 */
+    repo: repoFullNameSchema.nullable(),
+    receivedAt: isoDateTimeSchema,
+    /** `null` = 还没判定（见 `deliveryDecisionSchema`）。 */
+    decision: deliveryDecisionSchema.nullable(),
+    /** 判定原因（见本 schema 上方说明）；`null` = 还没判定。 */
+    decisionReason: z.string().min(1).max(64).nullable(),
+    /** 验签结果（FR-1.2：验签失败也落库留痕，只是不入队）。 */
+    signatureValid: z.boolean(),
+  })
+  .strict()
+  .meta({ id: 'DeliveryRow' });
+export type DeliveryRow = z.infer<typeof deliveryRowSchema>;
+
+/** `GET /api/repos/{owner}/{name}/deliveries` 的查询参数（仓库在路径里，不重复一个 `repo` 参数）。 */
+export const deliveriesQuerySchema = z
+  .object({
+    ...timeRangeShape,
+    /** 只看某一类判定；`pending` = 还没判定。 */
+    decision: deliveryDecisionFilterSchema.optional(),
+    /** 按事件类型收窄（`X-GitHub-Event`）。 */
+    event: z.string().min(1).max(64).optional(),
+    cursor: pageCursorSchema,
+    limit: pageLimitSchema,
+  })
+  .strict();
+
+/** 投递留痕列表：`receivedAt` 倒序 + `deliveryId` 倒序的 keyset 分页（游标语义见 `queries/sql.ts`）。 */
+export const deliveriesResponseSchema = z
+  .object({
+    items: z.array(deliveryRowSchema).max(200),
+    ...pageInfoShape,
+  })
+  .strict()
+  .meta({ id: 'DeliveriesResponse' });
+export type DeliveriesResponse = z.infer<typeof deliveriesResponseSchema>;
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 13. 供应商 / 模型角色 / 面板身份（需求 §6.8、§6.9：CFG-8.1~8.3、CFG-9.1/9.2、AC-32）
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 一个供应商的一行（CFG-8.1）：名称 / base URL / key 掩码 / 连通性 / 可用 model 列表。
+ *
+ * **没有 `key` 字段，也没有 `key_enc`**：真值只在宿主进程里解密使用（需求 §6.8「安全」），
+ * 面板只需要 `key_configured` + `key_mask` 就能画出「已存 / 未配置」与掩码。
+ */
+export const modelProviderSchema = z
+  .object({
+    id: modelProviderIdSchema,
+    name: z.string().trim().min(1).max(MODEL_PROVIDER_NAME_MAX_CHARS),
+    /** OpenAI 兼容端点；`null` = 用 pi-host 默认端点。 */
+    base_url: z.string().max(500).nullable(),
+    /** 是否已存 key（真值永不返回）。 */
+    key_configured: z.boolean(),
+    /** 可显示掩码（`sk-1…a1b2`）；未配置为 `null`。 */
+    key_mask: z.string().max(64).nullable(),
+    /** 该家可用的 model 列表 + 单价（面板下拉与单价列的数据源）。 */
+    models: z.array(modelCatalogEntrySchema).max(MAX_PROVIDER_MODELS),
+    enabled: z.boolean(),
+    /** 连通性状态点（CFG-8.1「状态点 + 延迟」）。 */
+    status: modelProviderStatusSchema,
+    /** 最近一次测定的往返延迟；没测过为 `null`。 */
+    latency_ms: countSchema.nullable(),
+    checked_at: isoDateTimeSchema.nullable(),
+    /** 测定失败原因（不含 key）；成功或没测过为 `null`。 */
+    check_error: z.string().max(500).nullable(),
+    updated_at: isoDateTimeSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'ModelProvider' });
+export type ModelProvider = z.infer<typeof modelProviderSchema>;
+
+/** `GET /api/settings/providers`：一家一条行，顺序按 `id` 升序。 */
+export const modelProvidersResponseSchema = z
+  .object({
+    items: z.array(modelProviderSchema).max(50),
+  })
+  .strict()
+  .meta({ id: 'ModelProvidersResponse' });
+export type ModelProvidersResponse = z.infer<typeof modelProvidersResponseSchema>;
+
+/**
+ * `PUT /api/settings/providers/:id` 的请求体：只给要改的字段（其余原样保留）。
+ *
+ * `key` 是**明文入参**（只在这一次请求里存在，落库前加密）；`key: null` = 保持不变，
+ * 想清空请给 `clear_key: true`——「没传」与「传空」必须能区分，否则面板一次保存就会把 key 抹掉。
+ */
+export const saveModelProviderRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(MODEL_PROVIDER_NAME_MAX_CHARS).optional(),
+    base_url: z.string().max(500).nullable().optional(),
+    /** 明文 key（落库前 AES-256-GCM 加密，只存密文与掩码）。 */
+    key: z.string().min(8).max(500).optional(),
+    /** `true` = 显式清空已存的 key。 */
+    clear_key: z.boolean().optional(),
+    models: z.array(modelCatalogEntrySchema).max(MAX_PROVIDER_MODELS).optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict()
+  .meta({ id: 'SaveModelProviderRequest' });
+export type SaveModelProviderRequest = z.infer<typeof saveModelProviderRequestSchema>;
+
+/** `POST /api/settings/providers/:id/check` 的结果：状态点 + 延迟 + 原因。 */
+export const providerCheckResponseSchema = z
+  .object({
+    provider_id: modelProviderIdSchema,
+    status: modelProviderStatusSchema,
+    /** 往返延迟（毫秒）；失败时为 `null`（失败的时间不是「延迟」）。 */
+    latency_ms: countSchema.nullable(),
+    checked_at: isoDateTimeSchema,
+    /** 失败原因；成功为 `null`。 */
+    error: z.string().max(500).nullable(),
+    /** 可用 model 列表（探测成功时用 `/models` 的真实返回覆盖目录）。 */
+    models: z.array(z.string().min(1).max(MODEL_NAME_MAX_CHARS)).max(MAX_PROVIDER_MODELS).nullable(),
+  })
+  .strict()
+  .meta({ id: 'ProviderCheckResponse' });
+export type ProviderCheckResponse = z.infer<typeof providerCheckResponseSchema>;
+
+/** `GET /api/settings/models`：四档角色各一行（CFG-8.2 / AC-32）。固定回四行，缺的那档 `configured: false`。 */
+export const modelRoleRowSchema = z
+  .object({
+    role: modelRoleKeySchema,
+    /** 是否已绑定（没配的档面板显示「未配置」而不是隐藏——四档必须都在）。 */
+    configured: z.boolean(),
+    /** 绑定的供应商；未配置为 `null`。 */
+    provider_id: modelProviderIdSchema.nullable(),
+    provider_name: z.string().max(MODEL_PROVIDER_NAME_MAX_CHARS).nullable(),
+    model: z.string().max(MODEL_NAME_MAX_CHARS).nullable(),
+    /** 从供应商模型目录解析出的单价；目录里没有这个模型时为 `null`（不明说就会变成「花了 0 元」）。 */
+    price: modelPriceSchema.nullable(),
+    updated_at: isoDateTimeSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'ModelRoleRow' });
+export type ModelRoleRow = z.infer<typeof modelRoleRowSchema>;
+
+export const modelRolesResponseSchema = z
+  .object({
+    /** 固定四行，顺序同 `MODEL_ROLE_KEYS`。 */
+    items: z.array(modelRoleRowSchema).length(MODEL_ROLE_KEYS.length),
+  })
+  .strict()
+  .meta({ id: 'ModelRolesResponse' });
+export type ModelRolesResponse = z.infer<typeof modelRolesResponseSchema>;
+
+/** `PUT /api/settings/models/:role` 的请求体：全局绑定（角色 → 供应商 + 模型）。 */
+export const saveModelRoleRequestSchema = modelTargetSchema;
+export type SaveModelRoleRequest = z.infer<typeof saveModelRoleRequestSchema>;
+
+/**
+ * 项目级「执行」里的模型选择（CFG-8.3）：`inherit` = 跟着全局（面板显示「继承全局（模型名）」），
+ * `override` = 覆盖；两处**不并列**摆放可直接选的下拉由面板实现，契约这边只保证两种状态可表达。
+ */
+export const repoModelRoleRowSchema = z
+  .object({
+    role: modelRoleKeySchema,
+    selection: modelRoleSelectionSchema,
+    /** 生效中的供应商 + 模型（`inherit` 时来自全局，`override` 时来自项目行）；全局与项目都没配为 `null`。 */
+    effective: modelTargetSchema.nullable(),
+    /** 生效中的单价；模型不在目录里为 `null`。 */
+    effective_price: modelPriceSchema.nullable(),
+    updated_at: isoDateTimeSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'RepoModelRoleRow' });
+export type RepoModelRoleRow = z.infer<typeof repoModelRoleRowSchema>;
+
+export const repoModelRolesResponseSchema = z
+  .object({
+    repo: repoFullNameSchema,
+    /** 固定四行（四档各一行）。 */
+    items: z.array(repoModelRoleRowSchema).length(MODEL_ROLE_KEYS.length),
+  })
+  .strict()
+  .meta({ id: 'RepoModelRolesResponse' });
+export type RepoModelRolesResponse = z.infer<typeof repoModelRolesResponseSchema>;
+
+/** `PUT /api/repos/:owner/:name/models/:role` 的请求体：继承（删行）或覆盖（写行）。 */
+export const saveRepoModelRoleRequestSchema = modelRoleSelectionSchema;
+export type SaveRepoModelRoleRequest = z.infer<typeof saveRepoModelRoleRequestSchema>;
+
+/** 一个身份的一行（CFG-9.1 / CFG-9.2）：掩码 + 三态 + scope + 过期时刻，**永不含明文**。 */
+export const panelIdentitySchema = z
+  .object({
+    login: loginSchema,
+    /** 可显示掩码。 */
+    token_mask: z.string().max(64),
+    /** 三态 + `ok` / `unchecked`（见 `classifyIdentityState`）。 */
+    state: panelIdentityStateSchema,
+    /** 面向人的一句话（缺哪个 scope / 何时过期）。 */
+    state_reason: z.string().max(500),
+    /** 最近一次读到的 scope 清单；还没检查过为 `null`。 */
+    scopes: z.array(z.string().min(1).max(64)).max(50).nullable(),
+    /** 必需 scope 还缺哪些（`state='insufficient-scope'` 时非空）。 */
+    missing_scopes: z.array(z.string().min(1).max(64)).max(20),
+    /** token 过期时刻；GitHub 说不过期时为 `null`。 */
+    token_expires_at: isoDateTimeSchema.nullable(),
+    checked_at: isoDateTimeSchema.nullable(),
+    updated_at: isoDateTimeSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'PanelIdentity' });
+export type PanelIdentity = z.infer<typeof panelIdentitySchema>;
+
+/**
+ * `GET /api/settings/identity`：当前面板身份。
+ *
+ * `effective: 'bot'` 是合法默认（未配个人 PAT 时一切写回以 bot 署名）；`effective: 'user'` 才以该用户提交。
+ * 这两个取值就是 CFG-9.2 要求的「显式呈现」：面板一眼能看出这条评论会以谁的身份发出去。
+ */
+export const panelIdentityResponseSchema = z
+  .object({
+    /** 生效身份。 */
+    effective: z.enum(['bot', 'user']),
+    /** 生效身份的一句话说明（含退回原因）。 */
+    effective_reason: z.string().max(500),
+    /** 个人身份；未配置为 `null`。 */
+    identity: panelIdentitySchema.nullable(),
+    generated_at: isoDateTimeSchema,
+  })
+  .strict()
+  .meta({ id: 'PanelIdentityResponse' });
+export type PanelIdentityResponse = z.infer<typeof panelIdentityResponseSchema>;
+
+/** `PUT /api/settings/identity` 的请求体：手动填 PAT（需求明确不做 OAuth device flow）。 */
+export const savePanelIdentityRequestSchema = z
+  .object({
+    login: loginSchema,
+    /** 明文 PAT；落库前加密。 */
+    token: z.string().min(8).max(500),
+  })
+  .strict()
+  .meta({ id: 'SavePanelIdentityRequest' });
+export type SavePanelIdentityRequest = z.infer<typeof savePanelIdentityRequestSchema>;
+
+/** 「检查权限」的结果（CFG-9.1「提供检查权限校验 scope 与过期时间」）。 */
+export const identityCheckResponseSchema = z
+  .object({
+    identity: panelIdentitySchema,
+    /** 这次请求真的打到了 GitHub（`false` = 本地就能判定，例如已过期）。 */
+    remote_checked: z.boolean(),
+    generated_at: isoDateTimeSchema,
+  })
+  .strict()
+  .meta({ id: 'IdentityCheckResponse' });
+export type IdentityCheckResponse = z.infer<typeof identityCheckResponseSchema>;
+
+/**
+ * 「退回 bot」的一条留痕（CFG-9.2：不得静默成功，也不得静默失败）。
+ *
+ * `state` 就是三态：`missing` / `insufficient-scope` / `expired`（另加 `invalid` = GitHub 直接拒了令牌）。
+ */
+export const identityFallbackRowSchema = z
+  .object({
+    id: countSchema,
+    login: loginSchema.nullable(),
+    state: panelIdentityStateSchema,
+    /** 被退回的写动作（`comment` / `label` / `create_issue` …）。 */
+    operation: z.string().min(1).max(64),
+    target: z.string().min(1).max(200),
+    reason: z.string().min(1).max(500),
+    created_at: isoDateTimeSchema,
+  })
+  .strict()
+  .meta({ id: 'IdentityFallbackRow' });
+export type IdentityFallbackRow = z.infer<typeof identityFallbackRowSchema>;
+
+export const identityFallbacksQuerySchema = z
+  .object({
+    ...timeRangeShape,
+    login: loginSchema.optional(),
+    cursor: pageCursorSchema,
+    limit: pageLimitSchema,
+  })
+  .strict();
+
+export const identityFallbacksResponseSchema = z
+  .object({
+    items: z.array(identityFallbackRowSchema).max(MAX_PAGE_LIMIT),
+    ...pageInfoShape,
+  })
+  .strict()
+  .meta({ id: 'IdentityFallbacksResponse' });
+export type IdentityFallbacksResponse = z.infer<typeof identityFallbacksResponseSchema>;
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// 13. GET /api/issues/{owner}/{name}/{kind}/{number}/trace —— 一个 issue 的完整链路
+//     （投递 → 判定 → 执行 → 写回）+ 逐次运行的用量与工具调用明细
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 一次工具调用的**完整留痕**（FR-6.2：「工具名、入参、返回摘要、耗时、成功与否；
+ * 命令类还要记录 argv、退出码」）。
+ *
+ * 为什么不复用 `issueToolCallSchema`：那是会话视图里的一行折叠摘要（`name` / `summary` /
+ * `at` / `ok`），入参被压成 160 字单行。这里要的是可展开的原始入参与耗时，字段意义不同，
+ * 硬塞进同一个 schema 会让会话视图被迫返回一堆它渲染不了的字段（面板两侧别的包在改）。
+ *
+ * `args` 是**原样 jsonb**（`payload.event.args`）：不同工具的参数结构不同（Bash 是
+ * `{command}`、Read 是 `{path}`），平台不在这里做字段白名单——白名单会把新工具的参数静默丢掉。
+ */
+export const issueTraceToolCallSchema = z
+  .object({
+    /** RACP 的 `toolCallId`；同一 id 的 `item.started` / `tool.progress` / `item.completed` 合并成这一条。 */
+    toolCallId: z.string().min(1).max(128),
+    /** 工具名（`item.started` 的 `payload.event.toolName`）；取不到为 `unknown`。 */
+    name: z.string().min(1).max(200),
+    /** 入参原文；Host 没报时为 `null`。 */
+    args: z.record(z.string(), z.unknown()).nullable(),
+    /** 返回摘要（最后一条 `tool.progress` 的首段文本，最多 2000 字）；没有为 `null`。 */
+    outputSummary: z.string().max(2_000).nullable(),
+    /** 该次调用最早一条事件时刻。 */
+    startedAt: isoDateTimeSchema,
+    /** 该次调用最晚一条事件时刻；只看到开始没看到结束为 `null`。 */
+    endedAt: isoDateTimeSchema.nullable(),
+    /** `endedAt - startedAt`；两端缺一为 `null`。 */
+    durationMs: durationMsSchema.nullable(),
+    /** 是否成功（`item.completed` 带 `error` / `isError=true` → false）。 */
+    ok: z.boolean(),
+    /**
+     * 命令类工具的退出码（FR-6.2）。只认 Host 真的报上来的值
+     * （`payload.event.exitCode` / `partialResult.exitCode` 等），没报就是 `null`——
+     * 平台不按「有没有报错」猜一个退出码出来。
+     */
+    exitCode: z.number().int().nullable(),
+    /**
+     * 命令类工具的 argv（FR-6.2）：只在 Host 把参数报成数组时才有值
+     * （`payload.event.args.argv` / `args.args`）。`Bash` 报的是 shell 命令行字符串，
+     * 那就落在 `args.command` 里，**不做字符串切分**——切出来的 argv 是猜的，不是记录。
+     */
+    argv: z.array(z.string().max(500)).max(64).nullable(),
+  })
+  .strict()
+  .meta({ id: 'IssueTraceToolCall' });
+export type IssueTraceToolCall = z.infer<typeof issueTraceToolCallSchema>;
+
+/** 一次写回（`actions` 一行）在链路里的样子：写了什么、有没有落地、有没有被改回。 */
+export const issueTraceActionSchema = z
+  .object({
+    actionId: shortIdSchema,
+    intent: recordedActionIntentSchema,
+    status: actionStatusSchema,
+    /** 写操作指向的对象（结构化）。 */
+    target: z
+      .object({
+        kind: z.enum(['issue', 'pr', 'comment', 'branch']),
+        number: z.number().int().positive().nullable(),
+        ref: z.string().min(1).max(200).nullable(),
+        url: z.string().min(1).max(500).nullable(),
+      })
+      .strict(),
+    /** 外部引用（评论 id / commit sha / PR 号）；未落地为 `null`。 */
+    externalRef: z.string().min(1).max(200).nullable(),
+    appliedAt: isoDateTimeSchema.nullable(),
+    revertedAt: isoDateTimeSchema.nullable(),
+    revertKind: revertKindSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'IssueTraceAction' });
+export type IssueTraceAction = z.infer<typeof issueTraceActionSchema>;
+
+/** 一段用量（`usage_costs` 按 run 汇总）。没有记账行为 `null`——「没跑」与「跑了但免费」要可区分。 */
+export const issueTraceUsageSchema = z
+  .object({
+    model: z.string().min(1).max(200).nullable(),
+    inputTokens: countSchema,
+    outputTokens: countSchema,
+    costUsd: usdAmountSchema,
+  })
+  .strict()
+  .meta({ id: 'IssueTraceUsage' });
+export type IssueTraceUsage = z.infer<typeof issueTraceUsageSchema>;
+
+/**
+ * 一次执行（`runs` 一行 = 一次 turn）在链路里的样子：结局、用量、工具调用、写回。
+ *
+ * `outcome` 用契约枚举，**失败与超时都是终态值**（`failed` / `timed-out` / `interrupted`），
+ * 不存在「失败了就查不到记录」的分支：`runs` 行在任务开始时就插入，收尾时补 `outcome`。
+ * 收尾没跑完（进程被杀）的 run `endedAt` / `outcome` 都为 `null`，面板据此显示「未收尾」。
+ */
+export const issueTraceRunSchema = z
+  .object({
+    runId: shortIdSchema,
+    taskId: shortIdSchema,
+    attempt: countSchema,
+    /** 任务命令（`/review-pr` / `auto:triage`）。 */
+    command: z.string().min(1).max(64),
+    sessionId: z.string().min(1).max(128).nullable(),
+    turnId: z.string().min(1).max(128).nullable(),
+    startedAt: isoDateTimeSchema.nullable(),
+    endedAt: isoDateTimeSchema.nullable(),
+    durationMs: durationMsSchema.nullable(),
+    /** `runs.outcome` 映射后的契约取值；未收尾为 `null`。 */
+    outcome: outcomeSchema.nullable(),
+    failureClass: failureClassSchema.nullable(),
+    /** 这次运行的用量（FR-6.3 的「按轮次」）；没有记账行为 `null`。 */
+    usage: issueTraceUsageSchema.nullable(),
+    /**
+     * 助手这轮的输出原文，**取自执行侧事件流**（`run_events` 里 `item.completed` 的
+     * `payload.event.message.content`），不是 agent 自述的信封字段（FR-6.1 的来源要求）。
+     * 取不到为 `null`。
+     */
+    assistantText: z.string().max(40_000).nullable(),
+    /** 工具调用明细（按 `toolCallId` 合并，最多 100 条）。 */
+    toolCalls: z.array(issueTraceToolCallSchema).max(100),
+    /** 工具调用是否被截断（> 100 条）。 */
+    toolCallsTruncated: z.boolean(),
+    /** 这次运行真正落地的写回（`actions`）；dry-run 仓库为空。 */
+    actions: z.array(issueTraceActionSchema).max(100),
+  })
+  .strict()
+  .meta({ id: 'IssueTraceRun' });
+export type IssueTraceRun = z.infer<typeof issueTraceRunSchema>;
+
+/** 这条 issue 的用量合计（FR-6.3 的 issue 维度）。没有记账时 token / 金额为 0、`runs` 仍计数。 */
+export const issueTraceTotalsSchema = z
+  .object({
+    runs: countSchema,
+    inputTokens: countSchema,
+    outputTokens: countSchema,
+    costUsd: usdAmountSchema,
+  })
+  .strict()
+  .meta({ id: 'IssueTraceTotals' });
+export type IssueTraceTotals = z.infer<typeof issueTraceTotalsSchema>;
+
+/**
+ * `GET /api/issues/{owner}/{name}/{kind}/{number}/trace` 的完整链路响应。
+ *
+ * 四段对应需求 §5.6 FR-6.4③ 的事件时间线「投递 → 判定 → 执行 → 写回」：
+ * `deliveries`（投递 + 判定，含未触发的 `decisionReason`）、`runs`（执行 + 用量 + 工具）、
+ * `runs[].actions`（写回）。一次请求即可回放整条链，不必在三个接口之间对 id。
+ */
+export const issueTraceResponseSchema = timestamped({
+  issue: z
+    .object({
+      repo: repoFullNameSchema,
+      kind: targetKindSchema,
+      number: z.number().int().positive(),
+    })
+    .strict(),
+  /** 该 issue 的投递（含判定结论与原因），`receivedAt` 倒序。 */
+  deliveries: z.array(deliveryRowSchema).max(200),
+  /** 该 issue 的执行（`startedAt` 升序，同任务按 attempt 升序）。 */
+  runs: z.array(issueTraceRunSchema).max(200),
+  totals: issueTraceTotalsSchema,
+})
+  .strict()
+  .meta({ id: 'IssueTraceResponse' });
+export type IssueTraceResponse = z.infer<typeof issueTraceResponseSchema>;

@@ -6,13 +6,15 @@
  *     精确判定在 JS 侧按仓库各自的上限做；
  *  2. 命中后写 `tasks.status='cancelled_queue'`（带 `status='queued'` 守卫），
  *     并对 `target_number` 打一个 `confused` reaction ——**不发评论**（§0.4）；
- *  3. reaction / cancelJob 端口缺失或失败时降级成 warning，不推翻「任务已被取消」的事实。
+ *  3. reaction / cancelJob 端口缺失或失败时降级成 warning，不推翻「任务已被取消」的事实；
+ *  4. 满载导致的永久挂起只记**结构化 warn**（需求 §6.7 SL-2「排队等待、不丢弃」的代价）：
+ *     查询只读、不取消，未超阈值的不报，观测查询自己坏了也不推翻本轮取消。
  */
 import { describe, expect, it } from 'vitest';
 import { QUEUE_GATE_REPO_SETTINGS_SQL, queueGateSweep } from '../src/jobs/queue-gate.ts';
 import type { QueueGateDeps } from '../src/jobs/queue-gate.ts';
-import type { JobPool } from '../src/jobs/types.ts';
-import { QUEUE_GATE_CANCEL_SQL, QUEUE_GATE_SQL } from '../src/queue/queue-gate.ts';
+import type { JobLogger, JobPool } from '../src/jobs/types.ts';
+import { QUEUE_GATE_CANCEL_SQL, QUEUE_GATE_SQL, QUEUE_GATE_STARVATION_SQL } from '../src/queue/queue-gate.ts';
 
 const NOW = new Date('2026-06-01T12:00:00.000Z');
 
@@ -29,6 +31,16 @@ function createFakePool(input: {
     targetKind?: string;
     command?: string;
   }>;
+  /** 满载观测查询的返回行（默认空 = 没有仓库被挡住） */
+  readonly starved?: ReadonlyArray<{
+    repo: string;
+    waiting: number;
+    maxWaitSeconds: number;
+    running: number;
+    limit: number;
+  }>;
+  /** 让满载观测查询抛错（验证「观测坏了不能推翻取消」） */
+  readonly starvationError?: string;
   /** 取消语句的 rowCount（默认 1 = 真的改到了行） */
   readonly cancelRowCount?: number;
 }): { pool: JobPool; calls: QueryCall[] } {
@@ -43,6 +55,22 @@ function createFakePool(input: {
             settings: repo.settings ?? {},
           })),
           rowCount: (input.repos ?? []).length,
+        };
+      }
+      if (text === QUEUE_GATE_STARVATION_SQL) {
+        if (input.starvationError !== undefined) {
+          throw new Error(input.starvationError);
+        }
+        const starved = input.starved ?? [];
+        return {
+          rows: starved.map((row) => ({
+            repo: row.repo,
+            waiting: row.waiting,
+            max_wait_seconds: row.maxWaitSeconds,
+            running: row.running,
+            limit_value: row.limit,
+          })),
+          rowCount: starved.length,
         };
       }
       if (text === QUEUE_GATE_SQL) {
@@ -242,5 +270,83 @@ describe('queueGateSweep：落库与降级', () => {
     );
     expect(result.stats).toMatchObject({ cancelled: 1, jobsCancelled: 0 });
     expect(result.ok).toBe(true);
+  });
+});
+
+type WarnCall = { readonly fields: Record<string, unknown> | string; readonly message?: string };
+
+/** 只抓 warn 的假 logger：结构化告警本身就是这一组要断言的可观察事实。 */
+function createCapturingLogger(): { logger: JobLogger; warns: WarnCall[] } {
+  const warns: WarnCall[] = [];
+  const logger: JobLogger = {
+    info: () => {},
+    warn: (fields, message) => {
+      warns.push(message === undefined ? { fields } : { fields, message });
+    },
+    error: () => {},
+  };
+  return { logger, warns };
+}
+
+describe('queueGateSweep：满载导致的永久挂起要可观测（不改行为）', () => {
+  it('满载且已超过 queue_wait_minutes → 一条结构化 warn，字段齐全，且一行都不取消', async () => {
+    const { pool, calls } = createFakePool({
+      repos: [{ repo: 'full/repo', settings: { limits: { queue_wait_minutes: 10 } } }],
+      // 排队行不出现在候选里：正是 `QUEUE_GATE_SQL` 的 `NOT EXISTS` 把它们挡住的现场
+      queued: [],
+      starved: [{ repo: 'full/repo', waiting: 3, maxWaitSeconds: 3600, running: 2, limit: 2 }],
+    });
+    const { logger, warns } = createCapturingLogger();
+
+    const result = await queueGateSweep(depsOf(pool, { logger }), { now: NOW });
+
+    expect(result.stats).toMatchObject({ cancelled: 0, starved: 1 });
+    expect(warns).toHaveLength(1);
+    // 运维需要的四个数字都在字段里（repo / 等待行数 / 最长等待 / running 行数），另带上限便于判断满载
+    expect(warns[0]?.fields).toEqual({
+      repo: 'full/repo',
+      waiting: 3,
+      maxWaitSeconds: 3600,
+      running: 2,
+      limit: 2,
+    });
+    expect(warns[0]?.message).toContain('满载');
+    // 只观测：没有任何取消动作（「排队等待、不丢弃」的语义没被改动）
+    expect(calls.filter((call) => call.text === QUEUE_GATE_CANCEL_SQL)).toEqual([]);
+    // 它是设计内的状态，不该把作业健康度打成 false
+    expect(result.ok).toBe(true);
+  });
+
+  it('刚好等于阈值不报（与取消判据同为「严格大于」）', async () => {
+    const { pool } = createFakePool({
+      repos: [{ repo: 'busy/repo', settings: { limits: { queue_wait_minutes: 10 } } }],
+      queued: [],
+      // 600s 整 = 10 分钟，不算超
+      starved: [{ repo: 'busy/repo', waiting: 1, maxWaitSeconds: 600, running: 2, limit: 2 }],
+    });
+    const { logger, warns } = createCapturingLogger();
+
+    const result = await queueGateSweep(depsOf(pool, { logger }), { now: NOW });
+
+    expect(warns).toEqual([]);
+    expect(result.stats.starved).toBe(0);
+  });
+
+  it('观测查询自己坏了：记一条 warning，但本轮取消照旧完成', async () => {
+    const { pool } = createFakePool({
+      repos: [{ repo: 'acme/a', settings: { limits: { queue_wait_minutes: 5 } } }],
+      queued: [{ id: 'stale', repo: 'acme/a', targetNumber: 9, minutesAgo: 42 }],
+      starvationError: 'permission denied for table tasks',
+    });
+
+    const result = await queueGateSweep(
+      depsOf(pool, { ack: { addReaction: async () => undefined } }),
+      { now: NOW },
+    );
+
+    expect(result.stats).toMatchObject({ cancelled: 1, starved: 0 });
+    expect(result.warnings.join('\n')).toContain('满载观测查询失败');
+    expect(result.warnings.join('\n')).toContain('permission denied');
+    expect(result.ok).toBe(false);
   });
 });

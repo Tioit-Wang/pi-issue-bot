@@ -26,16 +26,22 @@ import { z } from 'zod';
 /* ── 0. 封闭枚举与阈值（改动即契约变更）──────────────────────────────────── */
 
 /**
- * v2 产出的动作类型（`docs/v21-contract.md` §4 的 `ActionV21`）。顺序即面板展示顺序。
+ * v2 产出的动作类型：**需求 FR-5.3 的封闭七类**（`docs/requirements.html` §5.5 动作全集表）。
+ * 顺序即需求表的顺序，也是面板展示顺序。
  *
- * **前七类**是 v2.0 就冻结的那七类；**后五类**是 v2.2 补的（`docs/plan-issue-tools.md` §5）。
- * 补的理由是可核对的：issue 工具面 19 个里有 5 个在动作词表里**没有落点** ——
- * 工具名、入参、使用规范都对，模型也说得出「改标题」「重新打开」「删掉那条评论」，
- * 但产出里没有任何位置能表达它，平台于是只能当没听见。
+ * 四类默认开放（`verdict` / `label` / `comment` / `reaction`），三类默认关闭
+ * （`create_issue` / `open_pr` / `close_issue`，见 `GATED_ACTION_TYPES`）。
  *
- * 为什么一工具一动作、而不是加一个通用 `issue_op` + `op` 字段：通用动作会把
- * 项目开关（`GATED_ACTION_TYPES`）、dry-run、审计、错误码全部退化成
- * 「payload 里的字符串判断」，闸门与词表就不再一一对应，面板也没法按动作类型分组。
+ * **集合外一律拒绝**（FR-5.3 校验第 1 条）。这一条曾经被破坏过：v2.2 为「让 19 个 issue
+ * 工具都有落点」补了五类（`reopen_issue` / `update_issue` / `update_comment` /
+ * `delete_comment` / `link`），于是动作集合从 7 涨到 12，其中四类是**直接改 GitHub 状态
+ * 却没有项目开关**的写动作 —— 「集合外拒绝」变成了「集合内有四个无闸门的写」。
+ * 现在这五类不在集合里，产出里出现就整份拒绝（`REMOVED_ACTION_TYPES`）。
+ *
+ * 它们的 schema 形状仍然留在本文件里（`REMOVED_ACTION_TYPES` 那一组），原因只有一个：
+ * 执行器（`writeback/v21/execute.ts`）的 `switch` 按 `OutputV21Action` 收窄，把成员从
+ * 联合类型里去掉会让那边出现不可达 `case` 的编译错误。**形状留着，闸门在 `validateOutputV21()`**：
+ * 任何走生产入口的产出都过不去，执行器里那几支是死代码。
  */
 export const OUTPUT_ACTION_TYPES = [
   'verdict',
@@ -45,6 +51,22 @@ export const OUTPUT_ACTION_TYPES = [
   'create_issue',
   'open_pr',
   'close_issue',
+] as const;
+
+export type OutputActionType = (typeof OUTPUT_ACTION_TYPES)[number];
+
+/**
+ * v2.2 加过、但**不在 FR-5.3 封闭集合里**的五类动作。
+ *
+ * 判断依据是需求原文（`docs/requirements.html` §5.5 的「动作全集」表只有七行），
+ * 不是「这五类不好用」：`update_issue` / `reopen_issue` / `update_comment` /
+ * `delete_comment` 会直接改仓库可见状态且没有项目级开关，`link` 的 `duplicate`
+ * 又等价于关单 —— 它们合起来把「七类里三类受开关约束」这条边界掏空了。
+ *
+ * 保留形状是为了不改执行器的类型收窄（见 `OUTPUT_ACTION_TYPES` 的说明）；
+ * 校验层对它们的处置与「未知类型」一样：整份拒绝，错误里写清是本版移除的。
+ */
+export const REMOVED_ACTION_TYPES = [
   'reopen_issue',
   'update_issue',
   'update_comment',
@@ -52,7 +74,7 @@ export const OUTPUT_ACTION_TYPES = [
   'link',
 ] as const;
 
-export type OutputActionType = (typeof OUTPUT_ACTION_TYPES)[number];
+export type RemovedActionType = (typeof REMOVED_ACTION_TYPES)[number];
 
 /**
  * 需要项目级开关的三类动作（§4 校验第 5 条）。
@@ -67,30 +89,16 @@ export type GatedActionType = (typeof GATED_ACTION_TYPES)[number];
 /**
  * 一条动作实际受哪个项目开关约束（§4 校验第 5 条）。
  *
- * 为什么不是「`type` 在 `GATED_ACTION_TYPES` 里」这么一句：`link` 的 `duplicate`
- * **等价于关闭 issue**（GitHub 侧就是 `state_reason=duplicate` + 关闭）。若只按 `type`
- * 判，`agent.actions.close_issue=false` 的项目会留一个关单后门 —— 模型换个工具名就能关。
- * 其余三个 relation（blocks / blocked_by / parent / relates）是纯关联，不受开关约束。
+ * 现在只剩「`type` 在 `GATED_ACTION_TYPES` 里」这一条判据：v2.2 曾为 `link{relation:'duplicate'}`
+ * 加过一条「等价于关单」的旁路判定，而 `link` 已不在封闭集合里（`REMOVED_ACTION_TYPES`），
+ * 那段特例随类型一起失效 —— 留着它会暗示「还有一个关单后门需要考虑」，正是要消掉的那种暗示。
  *
  * 放在契约包而不是执行器里：面板要按同一份口径解释「哪个开关管哪些动作」，
  * 两处各写一遍必然漂移。
  */
-export function gatedActionOf(action: {
-  readonly type: string;
-  readonly payload?: unknown;
-}): GatedActionType | null {
+export function gatedActionOf(action: { readonly type: string }): GatedActionType | null {
   if ((GATED_ACTION_TYPES as readonly string[]).includes(action.type)) {
     return action.type as GatedActionType;
-  }
-  if (action.type === 'link') {
-    const payload = action.payload;
-    if (
-      typeof payload === 'object' &&
-      payload !== null &&
-      (payload as Record<string, unknown>)['relation'] === 'duplicate'
-    ) {
-      return 'close_issue';
-    }
   }
   return null;
 }
@@ -217,6 +225,7 @@ const labelName = z
   .string()
   .min(1)
   .max(MAX_LABEL_NAME)
+  // eslint-disable-next-line no-control-regex -- 这里就是要拒绝控制字符（U+0000–U+001F、U+007F），属于规则的正确用法
   .regex(/^[^\u0000-\u001f\u007f]+$/u, '标签名不得包含控制字符');
 
 /** 判定依据/理由的一条文本（进 `run_events` 与面板详情，所以有长度上界）。 */
@@ -233,7 +242,7 @@ const branchName = z
   .string()
   .regex(new RegExp(BOT_BRANCH_PATTERN), `分支名必须匹配 ${BOT_BRANCH_PATTERN}（只允许 bot/*）`);
 
-/* ── 2. 七类动作 ─────────────────────────────────────────────────────────── */
+/* ── 2. 封闭七类动作（FR-5.3）───────────────────────────────────────────── */
 
 /**
  * `verdict`：给结论。它**不写任何东西**，存在的意义是让「只判定」的一轮产出
@@ -357,6 +366,21 @@ export const closeIssueActionSchema = z.strictObject({
   }),
 });
 
+/* ── 2b. 已移出封闭集合的五类（v2.2 加过；形状留作类型收窄，校验层一律拒绝）───── */
+
+/**
+ * 下面五条 schema **不在 `OUTPUT_ACTION_TYPES` 里**。
+ *
+ * 它们被保留的唯一理由是类型：执行器 `runAction()` 对这五类各有一支 `case`，
+ * 把成员从 `OutputV21Action` 联合里删掉会让那些 `case` 变成「不可比较的类型」而编译失败。
+ * 于是形状留着、闸门放在最前面 —— `preflightDiscriminator()` 用 `REMOVED_ACTION_TYPES`
+ * 把它们直接判死，生产入口（`parseOutputV21Json` / `validateOutputV21`）不可能放行。
+ *
+ * 为什么不是「留着但警告」：FR-5.3 要求「集合外一律拒绝，不执行任何一条」。
+ * 一条 `update_issue` 会直接改 issue 正文且没有项目开关，放行它就等于让模型靠产出
+ * 绕过「三类写动作默认关闭」这条边界。
+ */
+
 /** `reopen_issue`：重新打开（`IssueReopen`，v2.2）。无参数 —— 目标由执行上下文决定。 */
 export const reopenIssueActionSchema = z.strictObject({
   type: z.literal('reopen_issue'),
@@ -405,10 +429,8 @@ export const deleteCommentActionSchema = z.strictObject({
 });
 
 /**
- * `link`：与另一个 issue / PR 的结构关系（`IssueLink`，v2.2）。
- *
- * `duplicate` **等价于关单**，因此受 `agent.actions.close_issue` 开关约束
- * （`gatedActionOf()`）；其余 relation 是纯关联，不受开关约束。
+ * `link`：与另一个 issue / PR 的结构关系（`IssueLink`，v2.2）。**已不在封闭集合里**，
+ * 产出里出现即整份拒绝（见 §2b 的说明）。
  */
 export const linkActionSchema = z.strictObject({
   type: z.literal('link'),
@@ -418,7 +440,7 @@ export const linkActionSchema = z.strictObject({
   }),
 });
 
-/** 全部动作的判别联合（`type` 是判别键；前七类 + v2.2 的五类）。 */
+/** 全部动作的判别联合（`type` 是判别键；七类封闭集合 + 五类已移除的形状，后者由预检拒绝）。 */
 export const outputActionSchema = z.discriminatedUnion('type', [
   verdictActionSchema,
   labelActionSchema,
@@ -488,9 +510,20 @@ export type OutputV21Validation =
   | { readonly ok: true; readonly output: OutputV21 }
   | { readonly ok: false; readonly errors: readonly OutputV21Issue[] };
 
-/** 是不是 `OUTPUT_ACTION_TYPES` 里的一类（导出给执行侧做「运行期再确认一次」用）。 */
+/** 是不是封闭集合 `OUTPUT_ACTION_TYPES` 里的一类（导出给执行侧做「运行期再确认一次」用）。 */
 export function isOutputActionType(value: unknown): value is OutputActionType {
   return typeof value === 'string' && (OUTPUT_ACTION_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * 是不是 v2.2 加过、现已移出封闭集合的那五类。
+ *
+ * 单列一个判定而不是把它们混进「未知类型」的错误文案：面板与日志要能一眼区分
+ * 「模型自创了一个类型」（拼写错误，改提示词即可）与「用了本版已移除的类型」
+ * （提示词还在教它写这个 —— 那是平台侧的漂移，要改的是 `skills/prompt.ts`）。
+ */
+export function isRemovedActionType(value: unknown): value is RemovedActionType {
+  return typeof value === 'string' && (REMOVED_ACTION_TYPES as readonly string[]).includes(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -535,6 +568,17 @@ function preflightDiscriminator(value: unknown): OutputV21Issue[] {
       return;
     }
     const type = raw['type'];
+    /*
+      已移除的类型单独报一条：它和「模型自创了一个类型」是两种不同的漂移
+      （见 `isRemovedActionType()`），面板上要能分开看。
+    */
+    if (isRemovedActionType(type)) {
+      issues.push({
+        path: `${at}/type`,
+        message: `动作类型 ${type} 已不在 FR-5.3 的封闭集合里（只剩 ${OUTPUT_ACTION_TYPES.join(' / ')}），整份产出拒绝`,
+      });
+      return;
+    }
     if (!isOutputActionType(type)) {
       issues.push({
         path: `${at}/type`,

@@ -18,8 +18,11 @@ import {
   auditResponseSchema,
   costsQuerySchema,
   costsResponseSchema,
+  deliveriesQuerySchema,
+  deliveriesResponseSchema,
   issueSessionParamsSchema,
   issueSessionResponseSchema,
+  issueTraceResponseSchema,
   issuesListResponseSchema,
   issuesQuerySchema,
   loginSchema,
@@ -41,15 +44,33 @@ import { z } from 'zod';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Logger } from '../../../../../packages/shared/src/index.ts';
 import type { RepoSettingsResponse } from '../../../../../packages/contract/src/index.ts';
-import { listRepos, readRepoPolicy, updateRepoSettings, upsertRepo } from '../../config/repo-config.ts';
+import { listRepos, readRepoPolicy, updateRepoSettings, upsertRepo, validateRepoSettings } from '../../config/repo-config.ts';
 import type { RepoPolicy, SqlRunner } from '../../config/repo-config.ts';
+import { verifyCommentRoleMembers } from '../../config/comment-members.ts';
+import type { GithubUserLookup } from '../../config/comment-members.ts';
 import type { RequireAuth } from './auth.ts';
 import type { Queries } from './queries.ts';
 import type { SkillStore } from '../../skills/store.ts';
-import { registerSkillRoutes } from './skills.ts';
+import { createApiGuards, registerSkillRoutes } from './skills.ts';
 import type { SkillWriteMode } from './skills.ts';
+import { registerSettingsRoutes } from './settings.ts';
+import type { SettingsApiDeps } from './settings.ts';
 import { httpError } from '../errors.ts';
 import type { ZodFastify } from '../types.ts';
+
+/** 写入依赖（读接口只要 `queries`）。 */
+export type ApiWriteWiring = {
+  /** 真实实现是 `pg.Pool`，测试实现是几行假函数。 */
+  readonly db: SqlRunner;
+  /** AES-256 的 32 字节密钥（供应商 key 与个人 PAT 的加解密）。 */
+  readonly secretKey: Uint8Array;
+  /** 供应商连通性探测；不注入 → `/check` 明确 503。 */
+  readonly providerProbe?: SettingsApiDeps['providerProbe'];
+  /** 个人身份探测（`GET /user` 读 scope 与过期时间）。 */
+  readonly identityProbe: SettingsApiDeps['identityProbe'];
+  /** 写面策略（与 `/api/skills` 的写面同一份口径）；缺省 `loopback`。 */
+  readonly writeMode?: SkillWriteMode;
+};
 
 /** 技能写面的依赖（不注入 = 技能接口整体不挂载，`serve` 一定注入）。 */
 export type SkillApiWiring = {
@@ -66,6 +87,14 @@ export type SkillApiWiring = {
 export type RepoApiWiring = {
   /** 真实实现是 `pg.Pool`，测试实现是几行假函数。 */
   readonly db: SqlRunner;
+  /**
+   * GitHub 账号查询端口（`GET /users/{login}`）：保存配置时用它**校验角色成员存在**并把 login 换成 id
+   * （需求 §6.6 的两个坑）。
+   *
+   * 不注入 = 本部署没有 GitHub 凭据：带「指定成员」角色的配置会被**拒绝保存**（503 + 原因），
+   * 不做静默放行——放行的后果正是「拼错一个字母，那个人永远触发不了且没有任何报错」。
+   */
+  readonly users?: GithubUserLookup | undefined;
 };
 
 /**
@@ -78,6 +107,8 @@ export type ApiDeps = {
   readonly logger?: Logger;
   readonly skills?: SkillApiWiring;
   readonly repos?: RepoApiWiring;
+  /** 全局设置（供应商 / 模型角色 / 面板身份）；不注入这组路由就整组不存在。 */
+  readonly settings?: ApiWriteWiring;
 };
 
 /** `/api/tasks/:id` 的路径参数。`shortIdSchema` 的长度上限是 64（`common.ts`）。 */
@@ -246,6 +277,66 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
     });
   }
 
+  // ── 13. GET /api/repos/:owner/:name/deliveries（BR-6：未触发的投递也要能查到原因）──
+  // 为什么走这里而不是 `/api/audit`：这条链路回答的是「**投递**有没有进判定、没进的原因」，
+  // 数据源是 `webhook_deliveries`（判定留痕），与 `actions` 为骨架的审计是两套事实。
+  // 路径是 `:owner/:name` 两段而不是 `:repo`：`repo` 含 `/`，`:repo` 会吞掉后面的段。
+  // 只挂在「查询面」上（`deps.queries`），不依赖 `deps.repos`：读留痕不需要仓库写权限。
+  app.get(
+    '/api/repos/:owner/:name/deliveries',
+    {
+      schema: {
+        params: repoParamsSchema,
+        querystring: deliveriesQuerySchema,
+        response: { 200: deliveriesResponseSchema },
+      },
+      preHandler: guard,
+    },
+    async (request) =>
+      deps.queries.deliveries(
+        { repo: `${request.params.owner}/${request.params.name}` },
+        request.query,
+      ),
+  );
+
+  // ── 14. GET /api/issues/:owner/:name/:kind/:number/trace（一个 issue 的完整链路）──
+  // 「投递 → 判定 → 执行 → 写回」四段一次给全（FR-6.4③ + FR-6.1/6.2/6.3 + NFR-6）。
+  // 为什么入口是 issue 而不是 taskId：运维手里只有 issue 号；按 taskId 查要先翻一次列表，
+  // 回放一个早期 issue 时链路就断了。
+  // 路径四段而不是 `:repo`：`repo` 含 `/`，`:repo` 会吞掉后面的段（同第 10 条）。
+  // 不存在时不 404：投递可能存在（被闸门拦下、没入队），空数组表达「查到但为空」。
+  app.get(
+    '/api/issues/:owner/:name/:kind/:number/trace',
+    {
+      schema: { params: issueSessionParamsSchema, response: { 200: issueTraceResponseSchema } },
+      preHandler: guard,
+    },
+    async (request) => {
+      const { owner, name, kind, number } = request.params;
+      return deps.queries.issueTrace({ owner, name, kind, number });
+    },
+  );
+
+  // ── 15. /api/settings/*（供应商 / 模型角色 / 面板身份；需求 §6.8、§6.9）──────────
+  // 不注入 `deps.settings` 就不挂载：只读测试不需要密钥与探测端口。写面**必须**过写守卫
+  // （鉴权 + PI_BOT_PANEL_WRITE + 来源 + X-Pi-Bot-CSRF）——它改的是模型端点、key 与人身份。
+  if (deps.settings !== undefined) {
+    const { writeGuard } = createApiGuards({
+      requireAuth: deps.requireAuth,
+      ...(deps.settings.writeMode === undefined ? {} : { writeMode: deps.settings.writeMode }),
+    });
+    registerSettingsRoutes(
+      app,
+      {
+        db: deps.settings.db,
+        key: deps.settings.secretKey,
+        identityProbe: deps.settings.identityProbe,
+        ...(deps.settings.providerProbe === undefined ? {} : { providerProbe: deps.settings.providerProbe }),
+      },
+      guard,
+      writeGuard,
+    );
+  }
 }
 
 /* ── 仓库配置路由（`/api/repos/*`）────────────────────────────────────────────── */
@@ -328,7 +419,23 @@ function registerRepoRoutes(app: ZodFastify, deps: RepoApiWiring, guard: RouteGu
     },
     async (request) => {
       const repo = `${request.params.owner}/${request.params.name}`;
-      const result = await updateRepoSettings(deps.db, repo, request.body);
+      // ① 先跑一遍 zod：形状 + 跨字段约束与 `updateRepoSettings()` 内部同一份校验器，
+      //    这里只是为了拿到「可以送去查 GitHub」的解析值（拿不到就没有校验成员的前提）。
+      const validated = validateRepoSettings(request.body);
+      if (!validated.ok) {
+        throw httpError('bad-request', validated.error, { issues: validated.issues });
+      }
+      // ② 角色成员的 login 必须**真的存在**，且要换成用户 id 一起存（需求 §6.6 的两个坑）。
+      //    校验不过就拒绝保存：先存下再「以后校验」等于让拼错的成员永久无法触发且没有报错。
+      const verified = await verifyCommentRoleMembers(validated.settings, deps.users);
+      if (!verified.ok) {
+        // 账号不存在 = 用户写错了（400）；查不了（没凭据 / GitHub 请求失败）= 服务端暂时做不到（503）。
+        // 两者都**不写库**：库里继续留着 last-known-good，webhook 行为不变。
+        throw verified.kind === 'unknown-user'
+          ? httpError('bad-request', verified.error, { issues: verified.issues })
+          : httpError('unavailable', verified.error, { issues: verified.issues });
+      }
+      const result = await updateRepoSettings(deps.db, repo, verified.settings);
       if (!result.ok) {
         // 非法配置不写库（last-known-good 继续生效），错误原因回给面板
         throw result.notFound

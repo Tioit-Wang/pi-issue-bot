@@ -331,9 +331,15 @@ export type IssueToolUsageNote = (typeof ISSUE_TOOL_USAGE_NOTES)[number];
  * 还绕开了「agent 不能自己发评论」这条从 v0.3 就立下的边界。所以这里在审批时扫一遍命令，
  * 命中就 deny 并把理由写进审计（模型能看到「该用哪个工具」）。
  *
- * 判据刻意保守（宁可误拒）：命令里出现 `gh` 子命令、或直接打 GitHub REST 即可疑。
- * 只拒绝明确的 issue/PR 写读动作组，不拦 `gh auth status` 这类本地状态查询之外的东西——
- * 但 `gh issue` / `gh pr` / `gh api` / `gh search` 一律拒，因为它们就是这条捷径本身。
+ * 判据刻意保守（宁可误拒）：需求那一行写的是「命令里出现 `gh issue` / `gh pr` / `gh api` /
+ * `gh search` / **直接请求 `api.github.com`** 时一律 deny」。前四组是 `gh` 子命令，
+ * 第五组**不是**「某个 HTTP 客户端 + api.github.com」——`curl` 会被拦，`python -c ... urllib`、
+ * `node -e fetch(...)`、`nc api.github.com 443` 都是绕过办法。
+ * 所以判据收成：**命令里出现 `api.github.com` 这个主机名就拒**，不区分用什么客户端发的。
+ *
+ * 误拒面是可接受的：这个主机名出现在命令里，除了「访问 GitHub API」没有别的合理解释
+ * （测试夹具里要写它，用引号拼字符串同样会被拒 —— 那也该由 Issue* 工具完成，不该在 Bash 里做）。
+ * 不拦 `gh auth status` 这类本地状态查询：那是 `gh` 自身凭证检查，不碰 issue/API 数据。
  */
 export const SHELL_ISSUE_DENY_PATTERNS = [
   // gh issue list / view / create / comment / close / edit …
@@ -344,10 +350,16 @@ export const SHELL_ISSUE_DENY_PATTERNS = [
   /\bgh\s+api\b/i,
   // gh search issues
   /\bgh\s+search\b/i,
-  // 直接打 GitHub REST（curl/wget/xh + api.github.com）
-  /\b(?:curl|wget|xh|http)\b[^\n]*api\.github\.com/i,
-  // 直接打 GitHub GraphQL
-  /\bapi\.github\.com\/(?:graphql|repos)\b/i,
+  /*
+    直接请求 GitHub API：**只认主机名**，不认客户端。
+    原来的「curl|wget|xh|http + api.github.com」组合能被任意别的客户端绕过
+    （`python -c` / `node -e` / `nc`），而需求原文是「直接请求 api.github.com 一律 deny」。
+    带 `/\b` 前缀是为了不误伤 `api.github.com.evil.example` 这类子域名玩笑——那种写法里
+    主机是 `evil.example`，但命令里仍有 `api.github.com` 字样，按「宁可误拒」也算命中。
+  */
+  /\bapi\.github\.com\b/i,
+  // 直接打 GitHub GraphQL / REST 的裸路径（没有主机名，例如 `${GH_HOST}/graphql` 之外的字面写法）
+  /\bapi\.githubusercontent\.com\b/i,
 ] as const;
 
 /**

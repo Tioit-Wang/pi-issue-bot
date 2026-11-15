@@ -16,7 +16,7 @@
  * | 3 | 白名单 | `labels.allow` 给定时只允许其中的名字 | `not-allowed` |
  * | 4 | 互斥组 | `vocabulary[].group` 相同的只留**输入顺序**里第一个 | `group-conflict` |
  * | 5 | 上限截断 | `labels.max_per_issue` | `max-per-issue` |
- * | 6 | 人工否决 | 人把我们的标签撤了（`bot_labels.removed_at` 非空） | `human-veto` |
+ * | 6 | 仓库里有没有 | `labels.missing` 的策略（只读，**不建**） | `missing-label` |
  *
  * 两处刻意的口径：
  *  - **第 1 步必须在第 2 步之前**：词表里存的是**仓库标签名**（`LabelVocabularyEntry.name`），
@@ -24,6 +24,14 @@
  *    `needs-info → ['needs-info','triage']` 这类 1:N 映射里的第二个名字判成非法。
  *  - **去重是静默的**：两个判定键映射到同一个标签名时只留一份、不记 blocked——
  *    那不是「被拦」，而是同一件事说了两遍。
+ *
+ * 已经删掉的规则（**不要接回来**）：
+ *  - **人工否决**（`human-veto`）：旧实现是「人删过一次就永久不加回」，而它的证据来自
+ *    **我们自己的撤标动作**（`bot_labels.removed_at`），真正的 `issues.unlabeled` 事件从未
+ *    被接收过。FR-5.4 / BR-11 要的是相反的方向：**人工删除不构成永久否决**，下一轮按目标态
+ *    重新对齐；不想让平台碰某个标签，用目录里的 `managed=false` 显式标记。
+ *  - **反向创建标签**（`not-creatable`）：LD-2 规定平台**不发明标签、不反向创建**。
+ *    仓库里缺标签时只报错（`missing-label`），由人先在 GitHub 上建。
  */
 import type { LabelVocabularyEntry, LabelsConfig } from '../../../../packages/contract/src/index.ts';
 
@@ -39,12 +47,13 @@ export type LabelBlockedReason =
   | 'group-conflict'
   /** 超过 `labels.max_per_issue`。 */
   | 'max-per-issue'
-  /** 人把这个标签撤了（且之后我们没有重新打过）。 */
-  | 'human-veto'
-  /** 仓库里暂时没有这个标签，而 `labels.missing` 的策略不允许建。 */
-  | 'missing-label'
-  /** `labels.missing: 'create'` 但词表里没有它的 color/description（或没有创建端口）。 */
-  | 'not-creatable';
+  /**
+   * 仓库里没有这个标签。
+   *
+   * 只有这一种「缺标签」原因：平台**不建标签**（LD-2），所以不再区分
+   * 「策略不允许建」与「建失败」—— 两种都是「仓库里没有，本轮不打」。
+   */
+  | 'missing-label';
 
 /** 一条被拦下的标签 + 原因（`detail` 是给人看的一句话）。 */
 export type BlockedLabel = {
@@ -60,22 +69,15 @@ export type NormalizeDesiredInput = {
   readonly keys: readonly string[];
   /** `settings.labels`（词表 / 1:N 映射 / 白名单 / 上限）。 */
   readonly labels: LabelsConfig;
-  /**
-   * 人撤下过的标签（`bot_labels` 里 `removed_at` 非空、且之后没有被我们重新打过的名字）。
-   * 「之后没被重打」由调用方判定：本函数只做纯计算，不读库。
-   */
-  readonly humanVetoed?: readonly string[];
 };
 
 export type NormalizeDesiredResult = {
-  /** 真正想打的标签（有序、去重），可直接喂 `planLabelDelta(current, botLabels, desired)`。 */
+  /** 真正想打的标签（有序、去重），可直接喂 `planLabelTargetState()`。 */
   readonly desired: readonly string[];
   /** 被拦下的（顺序同判定过程），`reason` 进 `label_decisions.blocked_reason`。 */
   readonly blocked: readonly BlockedLabel[];
   /** 标签 → 判定键（1:N 展开时取第一个命中键）：`bot_labels.source_key` 用它。 */
   readonly sourceKeys: Readonly<Record<string, string>>;
-  /** 标签 → 词表条目（`labels.missing: 'create'` 需要 color/description）。 */
-  readonly vocabulary: Readonly<Record<string, LabelVocabularyEntry>>;
   /** 需要记进日志/`label_decisions.reason` 的人读提示（不参与判定）。 */
   readonly warnings: readonly string[];
 };
@@ -113,7 +115,6 @@ export function normalizeDesired(input: NormalizeDesiredInput): NormalizeDesired
   const vocabNames = new Set(Object.keys(vocab));
   const hasVocabulary = labels.vocabulary.length > 0;
   const allow = labels.allow === undefined ? null : new Set(labels.allow);
-  const vetoed = new Set(input.humanVetoed ?? []);
 
   const blocked: BlockedLabel[] = [];
   const warnings: string[] = [];
@@ -209,56 +210,5 @@ export function normalizeDesired(input: NormalizeDesiredInput): NormalizeDesired
     warnings.push(`标签数超过上限 ${String(max)}：\`${item.label}\` 本轮不打`);
   }
 
-  /* ── 6. 人工否决：人撤下的不再自动加回 ───────────────────────────────────── */
-  const desired: string[] = [];
-  for (const item of afterMax) {
-    if (vetoed.has(item.label)) {
-      blocked.push({
-        label: item.label,
-        reason: 'human-veto',
-        detail: `\`${item.label}\` 曾被人工撤下且之后没有重新打：不再自动加回（人说了算）`,
-        sourceKey: item.sourceKey,
-      });
-      warnings.push(`\`${item.label}\` 是人工撤下的：本轮不加回`);
-      continue;
-    }
-    desired.push(item.label);
-  }
-
-  return { desired, blocked, sourceKeys, vocabulary: vocab, warnings };
-}
-
-/**
- * 从 `bot_labels` 的历史行里算出「人工否决」集合。
- *
- * 判定口径：某标签**最后一次**记录是 `removed_at` 非空 → 人（或我们的撤标）把它撤了。
- * 「之后没被我们重打」在这里等价于「没有一条更晚的 `removed_at IS NULL` 行」——
- * 因为活跃行是 partial 唯一索引（同一标签同时最多一条），所以「有活跃行」就代表当前仍持有。
- *
- * 为什么不让 SQL 直接算：这条规则要在单测里被逐条摆位（含相等时间戳），
- * 而纯函数能构造任何历史；SQL 只能靠造数据。
- */
-export function humanVetoedFrom(
-  rows: readonly {
-    readonly label: string;
-    readonly removedAt: Date | null;
-    readonly appliedAt?: Date | null;
-  }[],
-): readonly string[] {
-  const latest = new Map<string, { removedAt: Date | null; appliedAt: Date | null }>();
-  for (const row of rows) {
-    const current = latest.get(row.label);
-    const stamp = (row.appliedAt ?? row.removedAt)?.getTime() ?? 0;
-    const currentStamp = (current?.appliedAt ?? current?.removedAt)?.getTime() ?? -1;
-    if (current === undefined || stamp >= currentStamp) {
-      latest.set(row.label, { removedAt: row.removedAt, appliedAt: row.appliedAt ?? null });
-    }
-  }
-  const vetoed: string[] = [];
-  for (const [label, state] of latest) {
-    if (state.removedAt !== null) {
-      vetoed.push(label);
-    }
-  }
-  return vetoed.sort();
+  return { desired: afterMax.map((item) => item.label), blocked, sourceKeys, warnings };
 }

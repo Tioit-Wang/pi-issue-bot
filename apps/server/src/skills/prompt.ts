@@ -331,13 +331,23 @@ function issueToolSignature(tool: IssueToolSpec): string {
 }
 
 /**
- * `actions` 的动作词表（**镜像** `packages/envelope/src/v21.ts` 的 12 类，顺序一致）。
+ * `actions` 的动作词表（**镜像** `packages/envelope/src/v21.ts` 的封闭七类，顺序一致）。
  *
  * 为什么必须渲染进提示词：工具清单说的是「平台能做什么」，而模型真正交出去的是一份
  * `actions` 数组 —— 只给工具名不给动作形状，等于给了它一张能力清单却没有语法。
- * v2.1 之前这件事的后果是具体的：19 个工具里有 5 个（改标题 / 重新打开 / 改删评论 /
- * 建关联）连动作位置都不存在，模型只能把它们写成评论里的一句话，于是「说做了」和
- * 「真做了」在审计里长得一样。
+ *
+ * **为什么这里从 12 类回到 7 类**（FR-5.3）：v2.2 为「让 19 个 issue 工具都有落点」补了
+ * 五类动作，提示词随之把五类写法教给了模型。但需求的动作全集是封闭的七类，
+ * 那五类在契约里已被拒绝 —— 两边不一致的后果是模型按提示词写、每份产出整份被拒。
+ * 所以提示词这一份必须跟着收缩：**提示词教什么，契约就必须收什么**。
+ *
+ * 能力没有跟着丢：回复评论仍是 `comment.reply_to`，给评论贴表情仍是
+ * `reaction.target=comment`，关单仍走 `close_issue`。改标题/正文/重新打开这三件事
+ * 目前没有动作落点 —— 这是 FR-5.3 封闭集合的直接后果，写在交付报告的残余风险里，
+ * 不在提示词里编一个契约不认的写法。
+ *
+ * 「默认关闭」的三类在 `tools` 列显式标注：模型知道它们存在、也知道要项目开关，
+ * 就不会把它当默认能力用，也不会因为整份被拒而反复重试。
  *
  * 与契约的一致性由单测盯住（`skills-prompt.test.ts` 断言这里的第一列等于
  * `OUTPUT_ACTION_TYPES`）：这不是第二份事实源，而是同一份事实的渲染。
@@ -371,46 +381,19 @@ export const ISSUE_ACTION_SHAPES: readonly {
   },
   {
     action: 'create_issue',
-    tools: 'IssueCreate',
+    tools: 'IssueCreate（**默认关闭**，需项目显式开启）',
     shape: '{"type":"create_issue","payload":{"title":"<标题>","body":"<正文>","labels":["<标签>"],"fingerprint":"<去重键>"}}',
   },
   {
     action: 'open_pr',
-    tools: '（代码改动的出口）',
+    tools: '（代码改动的出口；**默认关闭**，需项目显式开启）',
     shape: '{"type":"open_pr","payload":{"branch":"bot/<分支>","title":"<标题>","body":"<正文>"}}',
   },
   {
     action: 'close_issue',
-    tools: 'IssueClose',
+    tools: 'IssueClose（**默认关闭**，需项目显式开启）',
     shape:
       '{"type":"close_issue","payload":{"state_reason":"completed|not_planned|duplicate","duplicate_of":<原 issue 号>,"comment":"<一句话>"}}（只允许在 verdict=fail 的产出里）',
-  },
-  {
-    action: 'reopen_issue',
-    tools: 'IssueReopen',
-    shape: '{"type":"reopen_issue","payload":{}}',
-  },
-  {
-    action: 'update_issue',
-    tools: 'IssueUpdate',
-    shape:
-      '{"type":"update_issue","payload":{"title":"<新标题>","body":"<新正文>","expected_updated_at":"<读到的 updated_at>"}}（四个字段至少给一个）',
-  },
-  {
-    action: 'update_comment',
-    tools: 'IssueCommentUpdate',
-    shape: '{"type":"update_comment","payload":{"comment_id":<id>,"body":"<新正文>"}}（只能改本机器人写的）',
-  },
-  {
-    action: 'delete_comment',
-    tools: 'IssueCommentDelete',
-    shape: '{"type":"delete_comment","payload":{"comment_id":<id>}}（只能删本机器人写的）',
-  },
-  {
-    action: 'link',
-    tools: 'IssueLink',
-    shape:
-      '{"type":"link","payload":{"relation":"duplicate|blocks|blocked_by|parent|relates","target_number":<另一个 issue 号>}}',
   },
 ];
 

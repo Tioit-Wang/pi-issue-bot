@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { COMMANDS, EXIT_NOT_IMPLEMENTED, EXIT_OK, EXIT_USAGE, helpText, main } from '../src/cli.ts';
+import {
+  COMMANDS,
+  EXIT_NOT_IMPLEMENTED,
+  EXIT_OK,
+  EXIT_USAGE,
+  helpText,
+  main,
+  normalizeArgv,
+} from '../src/cli.ts';
 
 type Captured = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
@@ -22,6 +30,21 @@ describe('pi-bot CLI 骨架', () => {
       expect(result.stdout).toContain(command.name);
     }
     expect(result.stdout).toContain('用法:');
+  });
+
+  it('pnpm 的 `--` 分隔符不是命令：`pnpm cli -- migrate` 与 `pnpm cli migrate` 等价', () => {
+    // README / 快速开始 / doctor 的 fixHint 都写 `pnpm cli -- migrate`：pnpm 会把 `--` 原样传进来，
+    // 于是文档里的写法在 2026-11-13 实机测试里报「未知命令 "--"」（退出码 1）。
+    expect(normalizeArgv(['--', 'migrate'])).toEqual(['migrate']);
+    expect(normalizeArgv(['--', '--', 'migrate'])).toEqual(['migrate']);
+    expect(normalizeArgv(['migrate'])).toEqual(['migrate']);
+    expect(normalizeArgv(['--'])).toEqual([]);
+
+    // 走一遍解析通道：带 `--` 不再落到「未知命令」
+    const withSeparator = capture(['--', 'migrate']);
+    const withoutSeparator = capture(['migrate']);
+    expect(withSeparator.code).toBe(withoutSeparator.code);
+    expect(withSeparator.stderr).toBe(withoutSeparator.stderr);
   });
 
   it('helpText() 覆盖 tech-plan §8.4 的五个子命令', () => {

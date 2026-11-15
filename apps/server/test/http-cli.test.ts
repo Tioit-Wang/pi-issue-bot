@@ -147,6 +147,24 @@ describe('runCli bootstrap-host / doctor（动态 import）', () => {
     expect(received).toMatchObject({ databaseUrl: testDsn() });
   });
 
+  it('doctor 认 `PI_BOT_PG_DSN`（README 的本名），不是只认旧名', async () => {
+    // 2026-11-13 实机：按 README 配了 PI_BOT_PG_DSN 的机器跑 `pnpm cli -- doctor` 判 `fail postgres`，
+    // 原因是 CLI 委派时只读了 PI_BOT_DATABASE_URL —— 与 serve 的解析不是同一份。
+    let received: unknown;
+    const loader: ModuleLoader = async () => ({
+      runDoctor: async (options: unknown) => {
+        received = options;
+        return { exitCode: 0 };
+      },
+    });
+    const result = await capture(['doctor'], {
+      env: { PI_BOT_PG_DSN: testDsn() },
+      moduleLoader: loader,
+    });
+    expect(result.code).toBe(EXIT_OK);
+    expect(received).toMatchObject({ databaseUrl: testDsn() });
+  });
+
   it('被委派的模块抛错 → EXIT_FAILURE', async () => {
     const loader: ModuleLoader = async () => ({
       bootstrapHost: async () => {

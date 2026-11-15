@@ -15,6 +15,9 @@ import type {
   auditResponseSchema,
   costsQuerySchema,
   costsResponseSchema,
+  deliveriesQuerySchema,
+  deliveriesResponseSchema,
+  issueTraceResponseSchema,
   overviewQuerySchema,
   overviewResponseSchema,
   qualityQuerySchema,
@@ -35,6 +38,18 @@ export type AuditQuery = z.infer<typeof auditQuerySchema>;
 /** `/api/system` 的查询参数（`repo` 只收窄 repos / flags）。 */
 export type SystemQuery = z.infer<typeof systemQuerySchema>;
 
+/**
+ * `/api/repos/{owner}/{name}/deliveries` 的筛选与分页（仓库在路径里）。
+ *
+ * 索引签名与 `*QuerySchema` 一一对应，**唯一放宽的字段是 `limit`**：`pageLimitSchema` 带
+ * `.default(50)`，`z.infer`（输出类型）把它变成必填，而「调用方没传就按默认值」本来就是契约的意思。
+ * 放宽后 http 路由（Fastify 校验后的 query 是输出类型，可赋给这个类型）与测试都能只给关心的字段；
+ * 实现里用 `query.limit ?? 50` 兜底，不依赖调用方补齐。
+ */
+export type DeliveriesQuery = Omit<z.infer<typeof deliveriesQuerySchema>, 'limit'> & {
+  readonly limit?: number | undefined;
+};
+
 /* ── 响应类型（返回值必须能被同名 `*ResponseSchema.parse()` 通过） ──────────────── */
 export type OverviewResponse = z.infer<typeof overviewResponseSchema>;
 export type TasksResponse = z.infer<typeof tasksResponseSchema>;
@@ -43,6 +58,8 @@ export type CostsResponse = z.infer<typeof costsResponseSchema>;
 export type RevertsResponse = z.infer<typeof revertsResponseSchema>;
 export type AuditResponse = z.infer<typeof auditResponseSchema>;
 export type SystemResponse = z.infer<typeof systemResponseSchema>;
+/** 投递留痕列表（BR-6：未触发的投递也要能在后台查到原因）。 */
+export type DeliveriesResponse = z.infer<typeof deliveriesResponseSchema>;
 
 /* ── 响应里被反复引用的子类型 ──────────────────────────────────────────────── */
 export type TaskListItem = TaskDetailResponse['task'];
@@ -54,3 +71,9 @@ export type TaskDiff = TaskDetailResponse['diff'];
 export type AuditRow = AuditResponse['items'][number];
 export type CostBucket = CostsResponse['byRepo'][number];
 export type RevertBucket = RevertsResponse['byCommand'][number];
+export type DeliveryRow = DeliveriesResponse['items'][number];
+/** 一个 issue 的完整链路响应（FR-6.1/6.2/6.3 + FR-6.4③ + NFR-6）。 */
+export type IssueTraceResponse = z.infer<typeof issueTraceResponseSchema>;
+export type IssueTraceRun = IssueTraceResponse['runs'][number];
+export type IssueTraceToolCall = IssueTraceRun['toolCalls'][number];
+export type IssueTraceAction = IssueTraceRun['actions'][number];

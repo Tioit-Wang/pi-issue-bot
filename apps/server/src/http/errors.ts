@@ -150,6 +150,14 @@ export type ErrorLogger = {
 export function registerErrorHandling(
   app: FastifyInstance,
   log?: ErrorLogger,
+  /**
+   * 面板 SPA 的「未命中」兜底：给了就由它决定要不要回 `index.html`，
+   * 返回 `false` 表示「这个路径不是前端路由」，继续走契约 404。
+   *
+   * 为什么放在这里而不是 `server.ts`：Fastify 每个作用域只能有一个 not-found handler，
+   * 再 `setNotFoundHandler` 一次会直接抛 `Not found handler already set`。
+   */
+  notFoundFallback?: ((request: FastifyRequest, reply: FastifyReply) => boolean) | undefined,
 ): void {
   app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
     const mapped = mapErrorToResponse(error);
@@ -169,6 +177,9 @@ export function registerErrorHandling(
   });
 
   app.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {
+    if (notFoundFallback?.(request, reply) === true) {
+      return reply;
+    }
     const body = errorBodyOf('not-found', `没有这个路由：${request.method} ${request.url}`);
     return reply.status(statusOfCode('not-found')).send(body);
   });

@@ -1,0 +1,41 @@
+﻿# v2 核查基线快照
+
+- 记录时间：2026-11-14T01:51:07+08:00
+- HEAD：fbfa02983d36d4923c0647f4c18aacd041d83375
+- 分支：main（origin/main）
+- 说明：以下为执行开始时的工作区状态，结论须对应此内容
+
+## git status --short
+
+```
+ M AGENTS.md
+ M README.md
+ M apps/server/src/agent/canonical-text.ts
+ M apps/server/src/agent/fingerprint.ts
+ M apps/server/src/agent/index.ts
+ M apps/server/src/app/compose.ts
+ M apps/server/src/app/config.ts
+ M apps/server/src/app/worker-deps.ts
+ M apps/server/src/cli.ts
+ M apps/server/src/config/env.ts
+ M apps/server/src/config/index.ts
+ M apps/server/src/doctor/checks/postgres.ts
+ M apps/server/src/http/errors.ts
+ M apps/server/src/http/server.ts
+ M apps/server/src/http/webhook-v21.ts
+ M apps/server/src/http/webhook.ts
+ M apps/server/src/skills/builtin.ts
+ M apps/server/test/agent-skill-wiring.test.ts
+ M apps/server/test/app-prompt-enricher.test.ts
+ M apps/server/test/cli.test.ts
+ M apps/server/test/doctor-checks.test.ts
+ M apps/server/test/http-cli.test.ts
+ M apps/server/test/http-server.test.ts
+ M apps/server/test/v21-webhook-integration.test.ts
+ M apps/server/test/v21-worker-integration.test.ts
+ M docs/quickstart.html
+ M eslint.config.js
+ M packages/contract/test/config.test.ts
+ M packages/envelope/src/v21.ts
+?? docs/audit/
+```

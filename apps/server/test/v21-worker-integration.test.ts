@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { EventEnvelope } from '../src/worker/deps.ts';
-import type { GithubWriteApi } from '../src/github/index.ts';
+import type { GithubRequest, GithubWriteApi } from '../src/github/index.ts';
 import type { TurnDriverOps } from '../src/runtime/turn-driver.ts';
 import { retentionForOutcome } from '../src/sandbox/index.ts';
 import type { SandboxDocker } from '../src/sandbox/index.ts';
@@ -47,7 +47,6 @@ import {
 } from '../src/app/worker-deps.ts';
 import { SESSION_ACTIONS } from '../src/agent/session-state.ts';
 import { createV21Executor, createV21OpenPullRequest } from '../src/http/webhook-v21.ts';
-import type { GithubRequest } from '../src/github/index.ts';
 import type { V21PortSources } from '../src/writeback/v21/execute.ts';
 import { listCompactions } from '../src/compact/store.ts';
 
@@ -633,6 +632,7 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
   it('⑤ issues.closed 只回收沙箱（state=idle / sandbox_id 清空 / closed_at），不删会话行、不 archive；reopen 复用', () => {
     const closed = planV21SessionOnEvent({
       repo: REPO,
+      domain: 'issue' as const,
       issueNumber: ISSUE,
       session: existingSession,
       event: 'issues.closed',
@@ -658,6 +658,7 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
 
     const reopened = planV21SessionOnEvent({
       repo: REPO,
+      domain: 'issue' as const,
       issueNumber: ISSUE,
       session: { ...existingSession, state: 'idle', sandboxId: null },
       event: 'issues.opened',
@@ -672,6 +673,7 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
     // 关闭后的其它触发（评论打到已关闭 issue 上）同样复用、不删行
     const commentOnClosed = planV21SessionOnEvent({
       repo: REPO,
+      domain: 'issue' as const,
       issueNumber: ISSUE,
       session: { ...existingSession, state: 'idle', sandboxId: null },
       event: 'issue_comment.created',
@@ -708,7 +710,7 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
     let created = 0;
     const applied = await applyV21SessionTransition(
       db,
-      { repo: REPO, issueNumber: ISSUE, event: 'issues.opened', issueState: 'open' },
+      { repo: REPO, domain: 'issue' as const, issueNumber: ISSUE, event: 'issues.opened', issueState: 'open' },
       {
         createSandbox: async () => {
           created += 1;
@@ -721,8 +723,8 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
     expect(applied.transition.rebuildSandbox).toBe(true);
     expect(applied.rebuildSandbox).toBe(true);
     expect(created).toBe(1);
-    // reuse 的第三个参数就是新沙箱 id
-    expect(queries[1]?.values).toEqual([REPO, ISSUE, 'sandbox-rebuilt']);
+    // 参数序：repo、domain（BR-5）、编号、新沙箱 id（域在第二段，和读语句一致）
+    expect(queries[1]?.values).toEqual([REPO, 'issue', ISSUE, 'sandbox-rebuilt']);
     expect(queries.every((item) => !item.text.toUpperCase().includes('DELETE'))).toBe(true);
   });
 
@@ -751,6 +753,7 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
 
     const applied = await applyV21SessionTransition(db, {
       repo: REPO,
+      domain: 'issue' as const,
       issueNumber: ISSUE,
       event: 'issues.closed',
       issueState: 'closed',
@@ -773,7 +776,7 @@ describe('WS6-B 会话状态（FR-3.4 / AC-23）', () => {
         turns: 3,
         cursor: 9,
       },
-      { repo: REPO, issueNumber: ISSUE },
+      { repo: REPO, domain: 'issue' as const, issueNumber: ISSUE },
     ) : null;
     expect(row?.sessionId).toBe(SESSION_ID);
   });

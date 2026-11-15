@@ -162,6 +162,59 @@ export const associationSchema = z.enum(ASSOCIATIONS);
 export const roleNameSchema = z.string().trim().min(1).max(ROLE_NAME_MAX_CHARS);
 
 /**
+ * 角色成员 —— **一条成员必须同时带上 GitHub 用户 id**（§6.6「两个坑」的坑一）。
+ *
+ * 为什么不能只存 login：GitHub 允许改名，改名后**旧 login 会被释放给任何人注册**。
+ * 只按 login 比对的后果是「换了个名字，陌生人自动拿到这个角色」——闸门从此放行外人。
+ * 所以保存配置时把 login 解析成用户 id 一起存（`config/comment-members.ts`），判定以 id 为准
+ * （`trigger/roles.ts`）；`login` 只用于显示与「id 缺失时的降级匹配」（降级必须留痕）。
+ */
+export const roleMemberSchema = z
+  .object({
+    /** GitHub 个人账号 login（含当时大小写，仅显示与降级匹配用）。 */
+    login: z.string().regex(MEMBER_LOGIN_RE, '成员必须是 GitHub login（不支持 org/team）'),
+    /** GitHub 用户 id：**跨改名的稳定标识**，判定以它为准。 */
+    id: z.number().int().positive(),
+  })
+  .strict();
+
+export type RoleMember = z.infer<typeof roleMemberSchema>;
+
+/**
+ * 旧配置的成员写法：裸 login 字符串（v2.1 早期只存 login，库里与部署默认里都可能有）。
+ *
+ * 为什么接受它：`repos.settings` 是 jsonb，老行里存的就是 `members: ['alice']`；
+ * 直接收紧成对象会让「打开面板就会 400」——配置读不出来比降级匹配更糟。
+ * 读侧一律经 `resolveRoleMembers()` 摊成 `{login, id: null}`，于是「缺 id」是一个**显式值**，
+ * 判定侧必须为它留痕（`trigger/roles.ts` 的 `loginFallbacks`），不会静默当成正常匹配。
+ */
+export const legacyRoleMemberSchema = z
+  .string()
+  .regex(MEMBER_LOGIN_RE, '成员必须是 GitHub login（不支持 org/team）');
+
+/** 成员的一格：新写法 `{login, id}` 或旧写法裸 login。 */
+export const roleMemberEntrySchema = z.union([roleMemberSchema, legacyRoleMemberSchema]);
+
+export type RoleMemberEntry = z.infer<typeof roleMemberEntrySchema>;
+
+/** 判定侧成员视图：`id: null` = 旧配置，只能按 login 降级匹配（会留痕）。 */
+export type ResolvedRoleMember = {
+  readonly login: string;
+  readonly id: number | null;
+};
+
+/**
+ * 把配置里的成员摊成判定视图。
+ *
+ * 只做形状归一，**不猜 id**：缺 id 就是 `null`，绝不拿 login 去拼一个假 id
+ * （那会让「降级匹配」永远看起来像「按 id 命中」，坑一就再也查不出来了）。
+ */
+export function resolveRoleMembers(members: readonly RoleMemberEntry[]): ResolvedRoleMember[] {
+  return members.map((member) =>
+    typeof member === 'string' ? { login: member, id: null } : { login: member.login, id: member.id },
+  );
+}
+/**
  * 角色清单的一项：**判别联合**（按 `by` 二选一）。
  *
  * 刻意不是「两个可选字段取其一」：那样能写出「既没给 any_of 也没给 members」的空壳角色，
@@ -180,8 +233,8 @@ export const commentRoleSchema = z.discriminatedUnion('by', [
     .object({
       name: roleNameSchema,
       by: z.literal('members'),
-      /** GitHub 个人账号 login；**不支持组织与团队**（§6.6）。 */
-      members: z.array(z.string().regex(MEMBER_LOGIN_RE, '成员必须是 GitHub login（不支持 org/team）')).min(1).max(MAX_ROLE_MEMBERS),
+      /** 角色成员：**必须同时存 GitHub 用户 id**，见 `roleMemberSchema` 的注释（§6.6 的两个坑之一）。 */
+      members: z.array(roleMemberEntrySchema).min(1).max(MAX_ROLE_MEMBERS),
     })
     .strict(),
 ]);
@@ -264,9 +317,14 @@ export const labelCatalogRoleSchema = z.enum(['requirement', 'defect', 'other'])
 export type LabelCatalogRole = z.infer<typeof labelCatalogRoleSchema>;
 
 /**
- * v2.1 的标签目录条目：**词表条目的超集**，多两个带默认值的字段（FR-5.4 / BR-11）。
+ * v2.1 的标签目录条目：`repos.settings.labels.vocabulary` 的**判定视图**（FR-5.4 / BR-11）。
  *
- * - `managed: false` = 这个标签**不参与自动对齐**（人明确要自己管）；
+ * 只保留**平台维护**的字段（LD-1）：`meaning` / `group` / `managed` / `status`。
+ * `color` 与 `description` **刻意的没有**——它们的来源是 GitHub，平台不单独维护；
+ * 放进判定视图会诱使调用方拿它们去反向下发（`POST /repos/{o}/{r}/labels` 那条路径已删）。
+ * 面板要展示颜色/描述时读同步快照（`labelVocabularyEntrySchema` 里的那两个只读字段）。
+ *
+ * - `managed: false` = 这个标签**不参与自动对齐**（人明确要自己管，BR-11 的显式契约）；
  * - `status: 'retired'` = GitHub 上已删除，留在目录里只为让历史记录仍能解释。
  *
  * 「目录即全量」的判定读这两个字段，所以它们必须有默认值：老配置（没有这两个键）
@@ -278,10 +336,6 @@ export const labelCatalogEntryV21Schema = z
     role: labelCatalogRoleSchema,
     /** 含义；为空 = 执行侧不知道它是什么意思，**不进自动对齐范围**（§6.5 的保护）。 */
     meaning: z.string().min(1).max(LABEL_MEANING_MAX_CHARS).optional(),
-    /** `RRGGBB`，不带 `#`（与 GitHub 标签颜色口径一致）。 */
-    color: z.string().regex(/^[0-9A-Fa-f]{6}$/u, 'color 是 6 位十六进制，不带 #').optional(),
-    /** 面板展示用的说明。 */
-    description: z.string().min(1).max(500).optional(),
     /** 互斥组（同组只留一个）。 */
     group: z.string().min(1).max(40).optional(),
     /** `false` = 不自动管理（BR-11）。 */
@@ -407,7 +461,7 @@ export function findDuplicateRoleNames(comment: Pick<CommentConfig, 'roles'>): r
 /* ── 9. 占位符清单（FR-2.3 / §6.3） ─────────────────────────────────────────── */
 
 /**
- * 模板里能写的 12 个占位符，带一句人话说明。
+ * 模板里能写的 14 个占位符，带一句人话说明。
  *
  * 为什么放在契约里：面板要在模板输入框下方渲染「点一下插入」的快捷按钮，
  * 服务端要按同一份清单渲染。各写一份就会出现「面板给的按钮点下去是未知占位符」——
@@ -416,12 +470,18 @@ export function findDuplicateRoleNames(comment: Pick<CommentConfig, 'roles'>): r
  *
  * 顺序照 `docs/requirements.html` §6.3 的表格排（issue 族 → repo → actor/event → comment），
  * 面板上按钮的排列顺序就是这条顺序。
+ *
+ * `issue.content` 与 `issue.contentDelta` 的分工是 FR-4.2（见 §10 的两套默认模板）：
+ *  - `issue.content` = 事件发生时的**全文快照**，语义从未变过（自定义模板写它照样拿到全文）；
+ *  - `issue.contentDelta` = **本轮变更**（`issues.edited` 的行级增删、`issues.labeled` 的新标签等），
+ *    首轮与「本次没有可表达为增删的变更」时是空串（已知但为空，不是未知占位符）。
  */
 export const PROMPT_PLACEHOLDERS = [
   { name: 'issue.author', description: '发起 issue 的人的 GitHub 账号' },
   { name: 'issue.number', description: 'issue 编号（不带 #）' },
   { name: 'issue.url', description: 'issue 链接' },
-  { name: 'issue.content', description: 'issue 正文快照' },
+  { name: 'issue.content', description: 'issue 正文快照（全文）' },
+  { name: 'issue.contentDelta', description: '本轮变更内容（首轮为空串；edited 只列新增/删除的行）' },
   { name: 'issue.labels', description: '当前标签，逗号分隔（空集为空串）' },
   { name: 'issue.title', description: 'issue 标题' },
   { name: 'repo.issues', description: '仓库现有 issue 索引（会多跑一次请求，按需用）' },
@@ -430,6 +490,7 @@ export const PROMPT_PLACEHOLDERS = [
   { name: 'repo', description: '仓库全名 owner/name' },
   { name: 'actor', description: '触发这次事件的账号' },
   { name: 'event.action', description: '本次事件的动作（opened / edited / labeled / closed / created）' },
+  { name: 'issue.isFirstEvent', description: '该 issue 是否首轮（true / false），首轮才会下发全文' },
 ] as const satisfies readonly { readonly name: string; readonly description: string }[];
 
 export type PromptPlaceholder = (typeof PROMPT_PLACEHOLDERS)[number];
@@ -449,7 +510,7 @@ export const PLACEHOLDER_NAMES: readonly PlaceholderName[] = PROMPT_PLACEHOLDERS
  * 「这个名字是不是正式占位符」的判断视图。
  *
  * 为什么不直接 `PLACEHOLDER_NAMES.includes(name)`：上面是**字面量类型**的数组，
- * `includes()` 的参数被收窄成那 12 个字面量的联合，传一个普通 `string` 会编译不过。
+ * `includes()` 的参数被收窄成那 14 个字面量的联合，传一个普通 `string` 会编译不过。
  * 面板做「未知占位符提示」时拿到的是普通字符串，所以给一份 `ReadonlySet<string>`。
  */
 export const PLACEHOLDER_NAME_SET: ReadonlySet<string> = new Set<string>(PLACEHOLDER_NAMES);
@@ -548,9 +609,91 @@ export const DEFAULT_EVENT_TEMPLATES: Readonly<Record<EventKey, string>> = Objec
   ].join('\n'),
 });
 
-/** 取某事件的内置默认模板（面板「恢复默认」与服务端渲染共用）。 */
-export function defaultEventTemplate(event: EventKey): string {
-  return DEFAULT_EVENT_TEMPLATES[event];
+/**
+ * 五个事件的**后续轮默认模板**（FR-4.2 / BR-4：增量投喂）。
+ *
+ * 需求口径：issue 的**首个事件**下发完整正文；**后续事件只下发变更内容与本轮指令**，
+ * 不重复整篇正文——历史由会话承担。`DEFAULT_EVENT_TEMPLATES` 是「首轮 / 项目要全文」那一套，
+ * 这里是「后续轮」那一套：不写 `{{issue.content}}`，只写 `{{issue.contentDelta}}`。
+ *
+ * 与上一套的分工是**模板选择**，不是渲染分支：
+ *  - 平台决定用哪一套只发生在「项目没自定义模板」时（`pickEventTemplate()`）；
+ *  - 项目自定义模板（哪怕逐字照抄默认模板）一律**原样使用**，写 `{{issue.content}}` 就照旧给全文
+ *    —— 需求允许显式要求全文，不允许的是平台强制每次全量。
+ *  - `issues.opened` 沿用全文那套：它只会是首轮（issue 重开走的是 `reopened`，本期不投递）。
+ *
+ * **`{{issue.contentDelta}}` 一律包在 ``` 围栏里**（AGENTS.md I10「外部文本永远是数据」）：
+ * 增量内容是 issue 正文的行级差异与标签名，都是外部可控文本。不给围栏，作者就能在正文里写
+ * 「忽略之前的指令」这类话，而它会被当成模板正文的一部分 —— 全文模板早就围了（见上面那一套），
+ * 增量模板不能因为「短」就省掉这一层。
+ */
+export const DEFAULT_EVENT_DELTA_TEMPLATES: Readonly<Record<EventKey, string>> = Object.freeze({
+  'issues.opened': DEFAULT_EVENT_TEMPLATES['issues.opened'],
+  'issues.edited': [
+    '/proposal-analysis',
+    '',
+    '分析当前issue（正文刚被编辑过，本轮只给变更；完整正文历史在会话里，不重复下发）：① 先判类型（bug / 需求 / 无关 / 滥用）② 需求按最小 RFC 看能否决策 ③ 一条评论 + 一个标签',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '作者：{{issue.author}}',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    '本轮变更：',
+    '```',
+    '{{issue.contentDelta}}',
+    '```',
+  ].join('\n'),
+  'issues.labeled': [
+    '/label-triage',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    '本轮变更：',
+    '```',
+    '{{issue.contentDelta}}',
+    '```',
+  ].join('\n'),
+  'issues.closed': [
+    '/issue-analysis',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+    '',
+    'issue 已关闭，请做一次收尾复盘（正文历史在会话里，不重复下发）。',
+    '',
+    '本轮变更：',
+    '```',
+    '{{issue.contentDelta}}',
+    '```',
+  ].join('\n'),
+  'issue_comment.created': [
+    '/issue-analysis',
+    '',
+    '#{{issue.number}} {{issue.url}}',
+    '',
+    '{{comment.author}} 在 {{repo}} 的这条 issue 下提到了你：',
+    '```',
+    '{{comment.body}}',
+    '```',
+    '',
+    'issue 标题：{{issue.title}}',
+    '当前标签：{{issue.labels}}',
+  ].join('\n'),
+});
+
+/** 默认模板的两个变体：`full` = 全文（首轮 / 未指定），`delta` = 增量（后续轮）。 */
+export type EventTemplateVariant = 'full' | 'delta';
+
+/** 取某事件的内置默认模板（面板「恢复默认」与服务端渲染共用）；`delta` 见上面的两套说明。 */
+export function defaultEventTemplate(event: EventKey, variant: EventTemplateVariant = 'full'): string {
+  return variant === 'delta' ? DEFAULT_EVENT_DELTA_TEMPLATES[event] : DEFAULT_EVENT_TEMPLATES[event];
 }
 
 /**
@@ -558,6 +701,225 @@ export function defaultEventTemplate(event: EventKey): string {
  *
  * 放契约的理由同事件模板：面板要在输入框里显示「现在到底带的什么」，服务端要用同一份下发。
  */
+/* ── 11. 供应商与模型角色（需求 §6.8 CFG-8.1/8.2/8.3） ─────────────────────── */
+
+/**
+ * 模型角色四档（CFG-8.2）：`agent`（执行）/ `format`（快速，格式检查与短分类）/
+ * `classify`（分类判定）/ `fallback`（主模型 429 或超时后降级）。
+ *
+ * 顺序即界面上从上到下的顺序，也是「谁最贵、谁最便宜」的直觉顺序。
+ */
+export const MODEL_ROLE_KEYS = ['agent', 'format', 'classify', 'fallback'] as const;
+
+export type ModelRoleKey = (typeof MODEL_ROLE_KEYS)[number];
+
+export const modelRoleKeySchema = z.enum(MODEL_ROLE_KEYS);
+
+/** 供应商 id：小写字母数字起头，面板的路由片段（`/api/settings/providers/:id`）。 */
+export const MODEL_PROVIDER_ID_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/;
+
+export const modelProviderIdSchema = z
+  .string()
+  .regex(MODEL_PROVIDER_ID_RE, '供应商 id 用小写字母数字与 . _ -（≤40 字符）');
+
+/** 供应商显示名上限。 */
+export const MODEL_PROVIDER_NAME_MAX_CHARS = 60;
+
+/** 模型名上限（`deepseek-v4.1-flash`、`gpt-5`、自建端点的任意名字都塞得下）。 */
+export const MODEL_NAME_MAX_CHARS = 120;
+
+/** 一家供应商最多登记多少个可用 model（面板下拉一次最多这么多项）。 */
+export const MAX_PROVIDER_MODELS = 100;
+
+/** 单价上限（USD / 1M tokens）。GT-4o 级别也不会超过它；超过基本是把「每 token 价」直接填进来了。 */
+export const MAX_PRICE_USD_PER_MTOK = 10_000;
+
+/**
+ * 单价（USD / 1M tokens，输入与输出各一个）。
+ *
+ * 为什么单位是「每百万 token」：成本页已随面板改版删除，单价是界面上唯一能解释
+ * 「这次为什么花了 $0.112」的依据（需求 CFG-8.2 的 note），而各家供应商都是按
+ * 每百万 token 报价——换单位就等于换一套换算口径。
+ */
+export const modelPriceSchema = z
+  .object({
+    input_usd_per_mtok: z.number().min(0).max(MAX_PRICE_USD_PER_MTOK),
+    output_usd_per_mtok: z.number().min(0).max(MAX_PRICE_USD_PER_MTOK),
+  })
+  .strict()
+  .meta({ id: 'ModelPrice' });
+export type ModelPrice = z.infer<typeof modelPriceSchema>;
+
+/**
+ * 模型目录的一项（CFG-8.1「该家可用的 model 列表」+ CFG-8.2「每档显示输入/输出单价」）。
+ *
+ * 单价挂在**模型**上而不是角色上：同一个模型被两档共用时单价必须一致，
+ * 而项目级覆盖换模型之后单价仍然查得到（挂在角色上，覆盖行的单价就没有来源了）。
+ */
+export const modelCatalogEntrySchema = z
+  .object({
+    model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
+    price: modelPriceSchema,
+  })
+  .strict()
+  .meta({ id: 'ModelCatalogEntry' });
+export type ModelCatalogEntry = z.infer<typeof modelCatalogEntrySchema>;
+
+/** 「供应商 + 模型」这一对（角色绑定的目标）。 */
+export const modelTargetSchema = z
+  .object({
+    provider_id: modelProviderIdSchema,
+    model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
+  })
+  .strict()
+  .meta({ id: 'ModelTarget' });
+export type ModelTarget = z.infer<typeof modelTargetSchema>;
+
+/**
+ * 一档角色的全局绑定：目标 + 单价（CFG-8.2 一档一行「各显示输入/输出单价」）。
+ *
+ * `price` 是**从所属供应商的模型目录解析出来的**，可能是 `null`：
+ * 目录里没有这个模型（手改库 / 供应商换价没同步）时必须明说「单价未知」，
+ * 不能编一个 0 冒充——那会让人以为「这次没花钱」。
+ */
+export const modelRoleBindingSchema = z
+  .object({
+    role: modelRoleKeySchema,
+    provider_id: modelProviderIdSchema,
+    model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
+    price: modelPriceSchema.nullable(),
+  })
+  .strict()
+  .meta({ id: 'ModelRoleBinding' });
+export type ModelRoleBinding = z.infer<typeof modelRoleBindingSchema>;
+
+/**
+ * 项目级选择（CFG-8.3）：**继承全局**还是**覆盖**。
+ *
+ * 为什么是判别联合而不是「provider_id 可选」：可空字段能写出「既没继承也没覆盖」的空壳，
+ * 于是面板要猜「空着到底是跟着全局还是没配」——这正是需求点名的「两处不并列摆放」问题的反面。
+ * `inherit` 表示**不写行**（删掉覆盖行），`override` 表示写一行。
+ */
+export const modelRoleSelectionSchema = z
+  .discriminatedUnion('mode', [
+    z
+      .object({
+        mode: z.literal('inherit'),
+      })
+      .strict(),
+    z
+      .object({
+        mode: z.literal('override'),
+        provider_id: modelProviderIdSchema,
+        model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
+      })
+      .strict(),
+  ])
+  // `meta.id`：判别联合不加它生成不出 `$ref`，OpenAPI 里就没有这个组件
+  // （`contract.test.ts` 要求每个注册的响应 schema 顶层是对象或 `$ref`）。
+  .meta({ id: 'ModelRoleSelection' });
+export type ModelRoleSelection = z.infer<typeof modelRoleSelectionSchema>;
+
+/** 供应商连通性状态点（CFG-8.1「状态点 + 延迟，可手动测试」）。 */
+export const MODEL_PROVIDER_STATUSES = ['ok', 'fail', 'unknown'] as const;
+
+export type ModelProviderStatus = (typeof MODEL_PROVIDER_STATUSES)[number];
+
+export const modelProviderStatusSchema = z.enum(MODEL_PROVIDER_STATUSES);
+
+/** 连通性测定的整体超时上限（毫秒）：面板点一下不能挂住 30 秒。 */
+export const PROVIDER_CHECK_TIMEOUT_MS = 5_000;
+
+/* ── 12. 面板身份（需求 §6.9 CFG-9.1/9.2） ─────────────────────────────────── */
+
+/**
+ * 身份判定态（CFG-9.2 的三态 + 两个中间态）。
+ *
+ * 三态是**显式契约取值**：`missing`（没配个人 PAT，一切写回以 bot 署名，合法默认）、
+ * `insufficient-scope`（有令牌缺 `issues:write`）、`expired`（有令牌已过期）。
+ * `ok` = 可以用该用户身份；`unchecked` = 存了但还没点「检查权限」。
+ */
+export const PANEL_IDENTITY_STATES = ['ok', 'missing', 'insufficient-scope', 'expired', 'unchecked'] as const;
+
+export type PanelIdentityState = (typeof PANEL_IDENTITY_STATES)[number];
+
+export const panelIdentityStateSchema = z.enum(PANEL_IDENTITY_STATES);
+
+/**
+ * 以个人身份提交评论必须有的权限（CFG-9.1「需要 `issues: write` 权限」）。
+ *
+ * 为什么同时认经典 scope：细粒度 PAT 报 `issues:write`，而经典 PAT 的 `repo` 已经包含
+ * issues 读写（`X-OAuth-Scopes` 里根本不出现 `issues:write`）。只认前者会把
+ * 「用经典 PAT 配好了」误判成 scope 不足——那是**假阴性**，比不检查更糟。
+ */
+export const REQUIRED_PANEL_IDENTITY_SCOPES = ['issues:write'] as const;
+
+/** 细粒度 scope → 经典 scope 的等价集（等价即视为满足）。 */
+export const CLASSIC_SCOPE_EQUIVALENTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'issues:write': ['repo'],
+});
+
+/** 令牌掩码：只留头 4 与尾 4，中间打点。太短的直接全打点（不泄露长度）。 */
+export function maskSecret(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 12) {
+    return '…';
+  }
+  return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
+}
+
+/**
+ * 给出的 scope 清单是否满足必需 scope（等价集也算）。
+ *
+ * 返回**缺哪些**而不是布尔：面板要能说清「缺 issues:write」，只说「权限不足」等于让人去猜。
+ */
+export function missingRequiredScopes(scopes: readonly string[]): readonly string[] {
+  const present = new Set(scopes.map((item) => item.trim().toLowerCase()).filter((item) => item !== ''));
+  return REQUIRED_PANEL_IDENTITY_SCOPES.filter((required) => {
+    if (present.has(required.toLowerCase())) {
+      return false;
+    }
+    const equivalents = CLASSIC_SCOPE_EQUIVALENTS[required] ?? [];
+    return !equivalents.some((item) => present.has(item.toLowerCase()));
+  });
+}
+
+/**
+ * 三态判定的**唯一实现**（CFG-9.2）：配置缺失 / scope 不足 / 过期，任一成立就不能以个人身份写回。
+ *
+ * @param configured 是否存了个人 PAT（密文存在）
+ * @param scopes 最近一次读到的 scope（未知时传 `null`）
+ * @param expiresAt token 过期时刻（无过期时间传 `null`）
+ * @param at 判定时刻（**注入**：三态里有一个是时间比较，测试必须能摆位）
+ */
+export function classifyIdentityState(input: {
+  readonly configured: boolean;
+  readonly scopes: readonly string[] | null;
+  readonly expiresAt: string | null;
+  readonly at: Date;
+}): { readonly state: PanelIdentityState; readonly reason: string } {
+  if (!input.configured) {
+    return { state: 'missing', reason: '未配置个人 PAT：一切写回以 bot 身份署名' };
+  }
+  if (input.expiresAt !== null && input.expiresAt !== '') {
+    const expiresAt = new Date(input.expiresAt);
+    if (!Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() <= input.at.getTime()) {
+      return { state: 'expired', reason: `个人 PAT 已于 ${input.expiresAt} 过期，已退回 bot 身份` };
+    }
+  }
+  if (input.scopes === null) {
+    return { state: 'unchecked', reason: '已存个人 PAT，但还没检查过权限（点「检查权限」读 scope）' };
+  }
+  const missing = missingRequiredScopes(input.scopes);
+  if (missing.length > 0) {
+    return {
+      state: 'insufficient-scope',
+      reason: `个人 PAT 缺 ${missing.join('、')} 权限，已退回 bot 身份`,
+    };
+  }
+  return { state: 'ok', reason: '个人 PAT 可用（scope 满足且未过期）' };
+}
+
 export const DEFAULT_SYSTEM_PROMPT = [
   '你是这个仓库的 issue 助手。',
   '',

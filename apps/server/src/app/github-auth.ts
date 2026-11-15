@@ -109,3 +109,72 @@ export function resolveGithubAuth(config: AppConfig, deps: GithubAuthDeps = {}):
     detail: '未配置 GitHub 认证：webhook 仍可验签与去重，但 10 秒应答与所有写操作都不可用（dry-run 合法）',
   };
 }
+
+/* ── 个人身份（CFG-9.1 / CFG-9.2）───────────────────────────────────────────── */
+
+/**
+ * `GET /user` 的作答：只取「这枚令牌是谁、有什么权限、什么时候过期」三件事。
+ *
+ * `scopes` 取自响应头 `X-OAuth-Scopes`（**只有经典 PAT 会带**）；细粒度 PAT 不带这个头，
+ * 此时 `scopes` 为 `null` = 「读不到」，与「读到了但一个都没有」必须可区分。
+ */
+export type GithubIdentityProbe = {
+  /** `GET /user` 的 `login`；拿不到就是 `null`（令牌被拒时连这步都过不去）。 */
+  readonly login: string | null;
+  /** `X-OAuth-Scopes` 拆好的清单；头不存在 → `null`。 */
+  readonly scopes: readonly string[] | null;
+  /** `github-authentication-token-expiration` 的原始值（ISO）；无该头 → `null`。 */
+  readonly expiresAt: string | null;
+};
+
+/** 个人身份探测端口（注入：测试不碰真网络）。 */
+export type IdentityProbePort = (token: string) => Promise<GithubIdentityProbe>;
+
+/**
+ * 生成一个「以该用户身份说话」的客户端（CFG-9.1：配置了个人 PAT 后以该用户身份提交评论）。
+ *
+ * 与 `resolveGithubAuth()` 的关系：那个决定「bot 用什么身份」，这个是「人用什么身份」；
+ * 两者**互不影响**——个人令牌失效时 bot 身份照旧可用，这正是 CFG-9.2 要求的「退回 bot」。
+ */
+export function createPersonalGithubClient(token: string): GithubClient {
+  return createGithubClient({ authToken: token });
+}
+
+/** 把一个 scope 头拆成清单：`'repo, issues:write'` → `['repo', 'issues:write']`。 */
+export function parseScopesHeader(raw: string | undefined): readonly string[] | null {
+  if (raw === undefined) return null;
+  return raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+}
+
+/**
+ * 真实实现：`GET /user`，从响应头读 scope 与过期时间。
+ *
+ * 为什么用注入的客户端而不是直接 new 一个 Octokit：本仓 `github/` 已经是唯一出口，
+ * 这里只需要「一次 GET + 两个响应头」，用 `createGithubClient()` 就够了。
+ */
+export function createGithubIdentityProbe(options: {
+  readonly createClient?: (token: string) => GithubClient;
+  /** 头名大小写由 `readHeader()` 归一化，但这里直接小写读，避免多引一层。 */
+} = {}): IdentityProbePort {
+  const createClient = options.createClient ?? createPersonalGithubClient;
+  return async (token: string): Promise<GithubIdentityProbe> => {
+    const client = createClient(token);
+    const response = await client.request<{ login?: unknown }>('GET /user');
+    const login = typeof response.data?.login === 'string' ? response.data.login : null;
+    const scopesHeader = response.headers['x-oauth-scopes'];
+    const scopeText = Array.isArray(scopesHeader)
+      ? scopesHeader.join(',')
+      : typeof scopesHeader === 'string'
+        ? scopesHeader
+        : undefined;
+    const expiration = response.headers['github-authentication-token-expiration'];
+    return {
+      login,
+      scopes: parseScopesHeader(scopeText),
+      expiresAt: typeof expiration === 'string' && expiration !== '' ? expiration : null,
+    };
+  };
+}

@@ -117,6 +117,60 @@ describe('issue 工具集：覆盖 issue 全生命周期', () => {
     }
   });
 
+  /**
+   * 需求 §5.5 工具表**逐个列出的 16 个工具名**（`docs/requirements.html` 的「issue 工具集」表）。
+   *
+   * 这张表是需求原文，不是实现清单：TOOL-3 要的是「需求点名的每一个都存在」。
+   * 它同时是 TOOL-2 口径失配的证据基础（需求 16 / 契约 19，多出的 3 个见下面那条断言）。
+   */
+  const REQUIRED_BY_REQUIREMENT = [
+    'IssueGet',
+    'IssueList',
+    'IssueCommentsList',
+    'IssueTimeline',
+    'IssueSearch',
+    'IssueCreate',
+    'IssueUpdate',
+    'IssueClose',
+    'IssueReopen',
+    'IssueCommentCreate',
+    'IssueCommentUpdate',
+    'IssueCommentDelete',
+    'IssueLabelAdd',
+    'IssueLabelRemove',
+    'IssueLabelSet',
+    'IssueLink',
+  ] as const;
+
+  it('TOOL-3：需求逐个点名的 16 个工具全在契约里，且都有入参声明', () => {
+    const byName = new Map(ISSUE_TOOLS.map((tool) => [tool.name as string, tool]));
+    for (const required of REQUIRED_BY_REQUIREMENT) {
+      const tool = byName.get(required);
+      expect(tool, `${required} 不在契约里`).toBeDefined();
+      expect(tool?.description.trim().length, required).toBeGreaterThan(0);
+      expect(Array.isArray(tool?.required), required).toBe(true);
+    }
+    // 16 个都是「契约认识的 issue 工具」
+    for (const required of REQUIRED_BY_REQUIREMENT) {
+      expect(isIssueTool(required), required).toBe(true);
+    }
+  });
+
+  it('TOOL-3：契约比需求多出的 3 个是扩展（记录差异，不假装相等）', () => {
+    /*
+      需求表 16 个，契约 19 个。多出来的三个是 v2.2 补的、需求表没写的扩展：
+      `IssueCommentReply`（回复评论）/ `IssueReactionAdd` / `IssueReactionRemove`（表情）。
+
+      这条不判「谁对」，只把差异钉成可观察事实：以后有人再加工具，这里会红，
+      提醒去同步 TOOL-2 的文档表格，而不是让「契约 19 / 需求 16」这个数悄悄漂成 20 / 16。
+    */
+    const extra = ISSUE_TOOL_NAMES.filter(
+      (name) => !(REQUIRED_BY_REQUIREMENT as readonly string[]).includes(name),
+    );
+    expect([...extra].sort()).toEqual(['IssueCommentReply', 'IssueReactionAdd', 'IssueReactionRemove']);
+    expect(ISSUE_TOOL_NAMES).toHaveLength(REQUIRED_BY_REQUIREMENT.length + 3);
+  });
+
   it('写类工具正好是那 14 个（读类 5 个不改状态）', () => {
     expect(ISSUE_WRITE_TOOL_NAMES.length).toBe(14);
     expect(ISSUE_WRITE_TOOL_NAMES).toContain('IssueCommentCreate');
@@ -196,6 +250,25 @@ describe('issue 操作不得走 shell', () => {
     expect(findShellIssueViolation("curl -X POST https://api.github.com/repos/a/b/issues/1/comments -d '{...}'")).toBeDefined();
     expect(findShellIssueViolation('wget -q https://api.github.com/repos/a/b/issues')).toBeDefined();
     expect(findShellIssueViolation('curl https://api.github.com/graphql -d ...')).toBeDefined();
+  });
+
+  it('换客户端不是绕过办法：命令里出现 api.github.com 就拒（TOOL-5）', () => {
+    /*
+      需求原文是「直接请求 api.github.com 时一律 deny」，没有限定用哪个客户端。
+      原来的判据是 `curl|wget|xh|http` + `api.github.com`，于是下面这些全都能过 ——
+      而它们正是把 issue 操作搬出治理链路的同一条捷径，只是换了个 HTTP 客户端。
+    */
+    const bypasses = [
+      `node -e "fetch('https://api.github.com/user')"`,
+      `python -c "import urllib.request; urllib.request.urlopen('https://api.github.com/repos/a/b/issues')"`,
+      `printf '' | nc api.github.com 443`,
+      `ruby -rnet/http -e 'Net::HTTP.get(URI("https://api.github.com/user"))'`,
+      `deno eval "await fetch('https://api.github.com/x')"`,
+      `openssl s_client -connect api.github.com:443`,
+    ];
+    for (const command of bypasses) {
+      expect(findShellIssueViolation(command), command).toBe('api.github.com');
+    }
   });
 
   it('返回命中的那段，便于写进拒绝理由', () => {

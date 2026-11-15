@@ -67,7 +67,7 @@ import {
   ackReceived,
   agentTaskIdempotencyKey,
   composeAgentMessage,
-  eventTemplateSkillOf,
+  // 不再 import `eventTemplateSkillOf`：投递闸门已删（Q-6），事件→技能映射表不存在了。
   findTaskIdByKey,
   insertMessage,
   isManager,
@@ -78,12 +78,16 @@ import { errorBodyOf } from './errors.ts';
 import {
   V21_DECISION_SQL,
   applyV21SessionOnEvent,
-  decideV21Delivery,
+  // 日配额（§6.7 SL-3）：判定 + 原子占额度是同一件事，用带配额的入口，别再调裸的 `decideV21Delivery()`。
+  decideV21DeliveryWithQuota,
   handleV21Webhook,
   v21EventKeyOf,
+  v21SessionDomainOf,
   writeV21Decision,
 } from './webhook-v21.ts';
-import type { V21Trace, V21WebhookDeps } from './webhook-v21.ts';
+import type { V21DecisionRowInput, V21Trace, V21WebhookDeps } from './webhook-v21.ts';
+// BR-6 的「只知道原因」出口：外层兜底分支不该自己拼 `{triggered:false, reason}`（第二处真值）
+import { reasonOnlyDecision } from '../trigger/decide.ts';
 import type { ZodFastify } from './types.ts';
 
 export const WEBHOOK_SQL = {
@@ -969,63 +973,88 @@ function installationMismatch(policy: RepoPolicy, incoming: string | null): stri
 }
 
 /**
- * 跑一次投递（九步）。
+ * 跑一次投递（九步）+ v2.1 的判定留痕（BR-6）。
  *
  * 失败形态（都用契约错误体）：
- *  - 缺请求头 / 验签失败 → 401 `unauthorized`（验签失败会落审计行，但不入队）
- *  - body 不是 JSON → 400 `bad-request`
+ *  - 缺请求头 / 验签失败 → 401 `unauthorized`。**先落投递行再判 401**：FR-1.2 原话是
+ *    「校验失败返回 401，但**仍要落库留痕**，便于排查配置错误」——先 401 再落行等于
+ *    这条需求在缺签名 / 验签失败两条路径上都不成立；
+ *  - body 不是 JSON → 400 `bad-request`（没有能归属的投递行：`payload` 列是 jsonb）。
  * 其余业务判定（重复、忽略、暂停、门禁不过）一律 **200**：GitHub 只看 2xx 决定是否重投。
- */
-/**
- * 跑一次投递（九步）+ v2.1 的判定留痕（BR-6）。
  *
  * 为什么做成「外层包装 + 内层 `runWebhookPipeline()`」：判定要写进**每一条**投递行，
  * 包括验签失败、暂停、未知仓库、开关关闭这些早早 return 的分支。逐个 return 点补一句
  * `UPDATE` 会漏，也会把旧路径改得面目全非；包一层之后，内层一个字都不用改语义，
  * 外层统一在返回前落一次 `decision / decision_reason`。
+ *
+ * 病因由**内层**记进 `trace.earlyExit`（`V21Trace` 注释写了为什么不能让外层从状态码反推）：
+ * 暂停记 `paused`、安装事件记 `installation-event`、未知仓库记 `unknown-repo`、读策略失败记
+ * `repo-read-failed`、安装不匹配记 `installation-mismatch`、缺签名记 `signature-missing`。
+ * 与 `decide.ts` 的 issue #30 教训同一条：病因必须分开记，否则运维照着错误的原因排查。
  */
 export async function handleWebhook(deps: WebhookDeps, input: WebhookInput): Promise<WebhookResult> {
-  const trace: V21Trace = { decision: null, payload: null, action: null, skipDecision: false };
+  const trace: V21Trace = {
+    decision: null,
+    payload: null,
+    action: null,
+    skipDecision: false,
+    earlyExit: null,
+    contentDuplicate: false,
+    // replay 的投递行早就存在（`skipDeliveryDedup`），只是这一轮不重插
+    deliveryRecorded: input.skipDeliveryDedup === true,
+  };
   const result = await runWebhookPipeline(deps, input, trace);
   if (deps.v21 === undefined || trace.skipDecision) {
     // 投递级重复：原投递行已有判定，不覆盖（BR-6 的判定属于「第一次收到这条事件」）。
     return result;
   }
 
-  let decision = trace.decision;
-  if (decision === null && trace.payload !== null) {
-    /*
-      内层在读到 `repos.settings` 之前就返回了（暂停 / 未知仓库 / 安装事件 / 验签失败…）。
-      这些投递仍然要留痕，但**病因必须分开记**：
-       - 验签失败是「secret 对不上」，与仓库开不开无关；
-       - 其余是「仓库不可用」（禁用 / 未登记 / 配置非法）。
-      实测教训（issue #30）：401 被记成 `repo-disabled`，而 `repos.enabled = true`，
-      排查时先去查仓库开关，白绕一圈。这里按 401 单独记 `signature-invalid`。
-    */
-    decision = decideV21Delivery({
-      event: input.event,
-      action: trace.action,
-      payload: trace.payload,
-      settings: null,
-      repoDisabled: true,
-      ...(result.status === 401 ? { signatureInvalid: true } : {}),
-    });
+  const decision = resolveTraceDecision(trace);
+  if (decision === null) {
+    return result;
   }
-  if (decision !== null) {
-    try {
-      // 不触发也写：BR-6 的「每次判定写 decision + decision_reason」是审计要求，不是成功路径的装饰。
-      await writeV21Decision(deps.v21.db, input.deliveryId, decision);
-    } catch (error) {
-      // 留痕失败不该让 GitHub 重投一次（幂等行已经写好了），只记 warn。
-      deps.logger.child({ deliveryId: input.deliveryId }).warn(
-        { err: describeError(error) },
-        'v2.1 判定留痕失败（不影响应答）',
-      );
-    }
+  try {
+    // 不触发也写：BR-6 的「每次判定写 decision + decision_reason」是审计要求，不是成功路径的装饰。
+    await writeV21Decision(deps.v21.db, input.deliveryId, decision);
+  } catch (error) {
+    // 留痕失败不该让 GitHub 重投一次（幂等行已经写好了），只记 warn。
+    // `writeV21Decision()` 在 0 行更新时会抛错，于是「算出了结论却写不进去」从静默变成可观测。
+    // 消息里带上 deliveryId 与那条结论：日志被采集后只看一行也知道丢的是哪条判定的什么原因。
+    deps.logger.child({ deliveryId: input.deliveryId }).warn(
+      { err: describeError(error), deliveryId: input.deliveryId, reason: decision.reason },
+      `v2.1 判定留痕失败（不影响应答）：delivery_id=${input.deliveryId} reason=${decision.reason}`,
+    );
   }
   return result;
 }
 
+/**
+ * 把轨迹收敛成「这一行该写什么」（纯函数，`handleWebhook()` 的唯一留痕出口）。
+ *
+ * 三条口径，顺序有讲究：
+ *  1. **内容级去重优先**（FR-3.5）：去重结论只有 `insertMessage()` 之后才知道，而
+ *     `trace.decision` 在那之前就已经是 `triggered` / `enabled`。不在这里覆盖，一条
+ *     「因为重复内容什么都没跑」的投递就会被记成「已触发」——需求 `:918` 要的恰恰是
+ *     「因重复内容跳过」这条留痕。
+ *  2. 内层已算出判定 → 照写（含 PR 的 `pr-ignored`、`switch-off`、`daily-quota`）。
+ *  3. 没算出判定 → 内层给的病因（`earlyExit`）；没有病因就是「不在本期判定范围」
+ *     （`push` / `issues.reopened|assigned` / `issue_comment.edited|deleted`…）。
+ *     为什么必须给原因而不是留 `null`：`null` 会被面板当成「还没判定」塞进 `pending`，
+ *     而组织级 webhook 上 `push` 的量远大于 issue 事件，那一列就废了（BR-6 / FR-6.4③）。
+ */
+function resolveTraceDecision(trace: V21Trace): V21DecisionRowInput | null {
+  if (trace.contentDuplicate) {
+    return reasonOnlyDecision('content-duplicate');
+  }
+  if (trace.decision !== null) {
+    return trace.decision;
+  }
+  if (!trace.deliveryRecorded) {
+    // body 不是 JSON（400）：连投递行都没有，没有可写的对象
+    return null;
+  }
+  return reasonOnlyDecision(trace.earlyExit ?? 'out-of-scope');
+}
 /**
  * 九步管线本体（v0.3 行为）。`trace` 只被 v2 包装读取，不注入 v21 时没人看它。
  */
@@ -1064,8 +1093,23 @@ async function runWebhookPipeline(
   if (input.source === 'live') {
     const signature = input.signature;
     if (signature === null) {
-      // 缺签名 = 未授权（契约 §0.2 最后一行：不设宽容模式）
+      /*
+        缺签名 = 未授权（契约 §0.2 最后一行：不设宽容模式），但**先落投递行再 401**：
+        FR-1.2（需求 `:741`）原话是「校验失败返回 401，但**仍要落库留痕**，便于排查配置错误」。
+        这条路径以前直接 401、连行都没有 —— 而外层明明已经算出「签名有问题」，
+        却因为 UPDATE 打空行而静默丢掉（复审实测 `status=401 row=undefined`）。
+
+        安全边界不放宽：这里只落一行审计（`signature_valid=false`），
+        验签失败的请求依旧进不了任何业务分支，应答依旧是 401。
+      */
+      await recordUnauthenticatedDelivery(deps, input, trace, {
+        action,
+        project,
+        payload,
+        signaturePresent: false,
+      });
       log.warn('缺少 X-Hub-Signature-256');
+      trace.earlyExit = 'signature-missing';
       return finish(401, errorBodyOf('unauthorized', '缺少 X-Hub-Signature-256 请求头'));
     }
     // 验签实现可能抛错（网络/依赖库），抛错一律按「验签失败」处理：不设宽容模式
@@ -1083,15 +1127,14 @@ async function runWebhookPipeline(
     }
     if (!valid) {
       // 记审计：验签失败也落库，但不入队（§5.3 第 3 步 / 第二段「七要点」最后一条）
-      await deps.db.query(WEBHOOK_SQL.insertDelivery, [
-        input.deliveryId,
-        input.event,
+      await recordUnauthenticatedDelivery(deps, input, trace, {
         action,
-        project.repo,
+        project,
         payload,
-        false,
-      ]);
+        signaturePresent: true,
+      });
       log.warn('webhook 验签失败');
+      trace.earlyExit = 'signature-invalid';
       return finish(401, errorBodyOf('unauthorized', '签名校验失败'));
     }
   }
@@ -1106,13 +1149,14 @@ async function runWebhookPipeline(
       payload,
       true,
     ]);
+    // 行已经在库里（新插入成功）。记下来，外层据此判断「有没有可写的对象」。
+    trace.deliveryRecorded = true;
     if ((inserted.rowCount ?? 0) === 0) {
       const existing = await deps.db.query(WEBHOOK_SQL.readDelivery, [input.deliveryId]);
       const row = existing.rows[0] as Record<string, unknown> | undefined;
       const signatureValid = row?.['signature_valid'] === true;
       if (signatureValid) {
         log.info('重复投递，直接回 200');
-        // 别让外层包装把这行的原判定覆写成 repo-disabled（见 V21Trace.skipDecision 注释）
         trace.skipDecision = true;
         return finish(200, accepted({ deliveryId: input.deliveryId, action: 'duplicate', taskId: null, duplicate: true, ackComment: null }));
       }
@@ -1136,6 +1180,7 @@ async function runWebhookPipeline(
     // 契约的响应枚举里没有「installation」一档：安装事件统一回 200 `ignored`
     // （它确实没建任务），审计靠 `webhook_deliveries` 与日志里的 detail。
     log.info({ action, detail: outcome.detail, changed: outcome.changed }, '安装事件已处理');
+    trace.earlyExit = 'installation-event';
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
@@ -1149,6 +1194,7 @@ async function runWebhookPipeline(
   if (pauseScope !== null) {
     // 不丢事件、不占并发（契约 §9）：投递已落库，恢复后可用 replay 重放
     log.warn({ repo: project.repo, scope: pauseScope }, '熔断/暂停中，本次只记投递不入队');
+    trace.earlyExit = 'paused';
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'paused', taskId: null, duplicate: false, ackComment: null }));
   }
 
@@ -1156,6 +1202,7 @@ async function runWebhookPipeline(
   const repo = project.repo;
   if (repo === null) {
     log.warn({ event: input.event, action }, '载荷缺少 repository.full_name（且不是安装事件），忽略');
+    trace.earlyExit = 'repo-missing';
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
@@ -1164,6 +1211,7 @@ async function runWebhookPipeline(
     policy = await readRepoPolicy(deps.db, repo);
   } catch (error) {
     log.error({ repo, err: describeError(error) }, '读取仓库策略失败');
+    trace.earlyExit = 'repo-read-failed';
     return finish(500, errorBodyOf('internal', '读取仓库配置失败'));
   }
 
@@ -1171,6 +1219,7 @@ async function runWebhookPipeline(
   // 这里再记一条 warn，运维照 `delivery_id` 就能找到「哪次投递没被处理、属于哪个仓库」。
   if (!policy.known) {
     log.warn({ repo, reason: 'unknown-repo' }, '未知仓库（repos 没有这一行）：已记审计，忽略本次投递');
+    trace.earlyExit = 'unknown-repo';
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
@@ -1186,23 +1235,32 @@ async function runWebhookPipeline(
       },
       mismatch,
     );
+    trace.earlyExit = 'installation-mismatch';
     return finish(200, accepted({ deliveryId: input.deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }));
   }
 
   if (deps.v21 !== undefined) {
     // 判定发生在「仓库可用性 → 事件开关」这一层：仓库禁用/配置非法时直接给 repo-disabled，
-    // 其余交给 decideEvent() 按 §2 的固定顺序判（开关 → 条件 → 闸门 → 去重 → 配额）。
-    trace.decision = decideV21Delivery({
+    // 其余交给 decideEvent() 按 §2 的固定顺序判（开关 → 条件 → 闸门 → 去重）。
+    // **日配额（§6.7 SL-3）在这一步之后原子占格**：只有「要处理」的事件吃额度，
+    // 占不到就改判 `daily-quota`，由外层 `handleWebhook()` 写进投递行的 `decision_reason`。
+    trace.decision = await decideV21DeliveryWithQuota(deps.v21.db, {
       event: input.event,
       action,
       payload,
       settings: policy.settings,
+      repo,
       repoDisabled: !policy.enabled || !policy.settingsValid,
+      now,
+      logger: log,
     });
 
     // 会话状态（FR-3.4 / AC-23）：事件与 issue 状态的**权威来源**就在这一份载荷里，
     // 所以迁移在这里做，而不是等 worker 跑起来再猜「这条任务属于哪个事件」。
     // 只 UPDATE / INSERT，永不 DELETE 会话行。
+    //
+    // 域必须一起传（BR-5）：`issue_comment` 事件在 PR 上同样会走到这里，而 PR 与同号 issue
+    // 是两个会话。判据统一走 `v21SessionDomainOf()`（事件名 + `issue.pull_request`）。
     const sessionEvent = v21EventKeyOf(input.event, action);
     const issue = asRecord(asRecord(payload)?.['issue']);
     const issueNumber = readNumber(issue, 'number');
@@ -1211,6 +1269,7 @@ async function runWebhookPipeline(
       try {
         await applyV21SessionOnEvent(deps.v21.db, {
           repo,
+          domain: v21SessionDomainOf({ event: input.event, payload }),
           issueNumber,
           event: sessionEvent,
           issueState: issueState === 'closed' ? 'closed' : 'open',
@@ -1256,7 +1315,15 @@ async function runWebhookPipeline(
     deps.v21 === undefined
       ? null
       : (trace.decision ??
-        decideV21Delivery({ event: input.event, action, payload, settings: policy.settings }));
+        (await decideV21DeliveryWithQuota(deps.v21.db, {
+          event: input.event,
+          action,
+          payload,
+          settings: policy.settings,
+          repo,
+          now,
+          logger: log,
+        })));
   if (deps.v21 !== undefined && v21Decision !== null) {
     const legacyCommand = decision.action === 'task' && decision.plan.source === 'command';
     const outcome = await handleV21Webhook({
@@ -1271,6 +1338,7 @@ async function runWebhookPipeline(
       dryRun,
       decision: v21Decision,
       legacyCommand,
+      aliases,
       ...(deps.dispatchAgent === undefined ? {} : { dispatchAgent: deps.dispatchAgent }),
       addEyesReaction: async (call): Promise<void> => {
         await deps.ack.addEyesReaction({
@@ -1281,6 +1349,21 @@ async function runWebhookPipeline(
       },
     });
     if (outcome !== null) {
+      /*
+        内容级去重（FR-3.5 = 需求 `:918`「跳过要留痕：判定为重复时不静默丢弃，
+        记一条「因重复内容跳过」，后台可查」）。
+
+        为什么要在这里回头改判定：去重结论只有 `insertMessage()` 之后才知道
+        （`agent_messages` 的 `(repo, issue_number, fingerprint)` 唯一键），而判定
+        （`triggered` / `enabled`）早在那之前就落进了 `trace.decision`。
+        不覆盖的话，一条「因为重复内容什么都没跑」的投递会被记成「已触发 / enabled」——
+        不是漏记，是**主动记错**：面板上会显示成「这条事件处理过了」。
+        所以这里以最终结论为准，`resolveTraceDecision()` 会把 `content-duplicate` 排在第一位。
+      */
+      // `outcome.body` 是 `WebhookAcceptedResponse | ErrorBody`，只有 accepted 那侧才有 `duplicate`
+      if ('status' in outcome.body && outcome.body.status === 'accepted' && outcome.body.duplicate) {
+        trace.contentDuplicate = true;
+      }
       return finish(outcome.status, outcome.body);
     }
   }
@@ -1319,6 +1402,68 @@ async function runWebhookPipeline(
     dryRun,
     log,
   });
+}
+
+/**
+ * 未通过验签的投递也要落一行（FR-1.2 / BR-6）。
+ *
+ * 两种调用场景：缺签名头（`signaturePresent:false`）与验签失败（`signaturePresent:true`）。
+ * 都写 `signature_valid = false`；`decision / decision_reason` 由外层 `handleWebhook()` 统一落
+ * （`signature-missing` / `signature-invalid`）——这里只保证**行存在**，判定只写在一条出口上，
+ * 免得两个调用点各写一份口径。
+ *
+ * 安全边界：只落库，**不进入任何业务分支**；调用点随即 `return finish(401, …)`。
+ *
+ * 为什么不覆盖既有行：`insertDelivery` 是 `ON CONFLICT (delivery_id) DO NOTHING`。
+ * 若这条 delivery 之前已经验签通过并处理过（`signature_valid = true`），那么这次未验签的重投
+ * **不能**把它的 `decision` 覆写成 `signature-missing` —— 那是人为抹掉一次合法处理的审计。
+ * 所以只有「刚插入的新行」或「原本就是 signature_valid=false 的行」才交给外层写判定。
+ *
+ * 同时置 `trace.deliveryRecorded`：外层据此知道「这一条有行可写」，
+ * 否则 401 的投递会落行却永远拿不到 `decision_reason`（复审实测的正是这个组合）。
+ */
+async function recordUnauthenticatedDelivery(
+  deps: WebhookDeps,
+  input: WebhookInput,
+  trace: V21Trace,
+  args: {
+    readonly action: string | null;
+    readonly project: ProjectRef;
+    readonly payload: unknown;
+    readonly signaturePresent: boolean;
+  },
+): Promise<void> {
+  const inserted = await deps.db.query(WEBHOOK_SQL.insertDelivery, [
+    input.deliveryId,
+    input.event,
+    args.action,
+    args.project.repo,
+    args.payload,
+    false,
+  ]);
+  if ((inserted.rowCount ?? 0) > 0) {
+    trace.deliveryRecorded = true;
+  } else {
+    // 行已存在：只有「本来就是未验签」的那一行才轮得到本次结论覆盖它
+    const existing = await deps.db.query(WEBHOOK_SQL.readDelivery, [input.deliveryId]);
+    const row = existing.rows[0] as Record<string, unknown> | undefined;
+    const signatureValid = row?.['signature_valid'] === true;
+    trace.deliveryRecorded = !signatureValid;
+    if (signatureValid) {
+      deps.logger.child({ deliveryId: input.deliveryId, event: input.event }).warn(
+        { repo: args.project.repo },
+        '未通过验签的重投命中了已验签通过的同一条投递：保留原判定，不覆写审计',
+      );
+    }
+  }
+  if (!args.signaturePresent) {
+    // 缺签名时另留一句结构化日志：`signature-invalid` 与 `signature-missing` 在库里只差一个
+    // reason，运维还要能一眼看出「是代理没透传请求头」而不是「secret 配错了」。
+    deps.logger.child({ deliveryId: input.deliveryId, event: input.event }).warn(
+      { signaturePresent: false, repo: args.project.repo },
+      '未通过验签的投递已留痕（decision_reason=signature-missing）',
+    );
+  }
 }
 
 /**
@@ -1531,17 +1676,20 @@ async function submitAgentMessage(
     body: accepted({ deliveryId, action: 'ignored', taskId: null, duplicate: false, ackComment: null }),
   });
 
-  // ── 1) 事件模板没点名技能 = 该事件不投递（CF-02 / CF-03）─────────────────────
-  if (agent.kind === 'event') {
-    const skillId = agent.templateId === null ? null : eventTemplateSkillOf(input.settings, agent.templateId);
-    if (skillId === null) {
-      log.info(
-        { repo, issue: issueNumber, template: agent.templateId },
-        '事件模板未配置技能（on_opened / on_edited 置空 = 不投递）',
-      );
-      return ignored();
-    }
-  }
+  /*
+    这里**没有**「事件模板没点名技能 → 不投递」这一档（Q-6 / FR-5.1）。
+
+    原来这一档读 `settings.agent.on_opened / on_edited`，用它当「该事件要不要投递」的开关，
+    并用它指定「这轮加载哪条技能」。那是两层平台预设：
+      - 投递条件错位：需求里「事件要不要处理」由项目级事件开关（`triggers.events`）与
+        评论闸门决定，不是由「有没有配技能」决定 —— 配了模板却因为没配技能而不投递，
+        在面板上表现为「模板写了但没反应」；
+      - 行为预设：平台替执行侧决定加载哪条技能，违反「平台不按事件类型硬编码行为」。
+
+    去掉之后口径更简单：**配了模板就投递，模板里写什么就是什么**。
+    要点名技能就在模板正文里写 `/名字`（维护者的显式选择），或由技能目录自描述。
+  */
+
 
   // ── 2) 权限：@ 仅管理员（拒绝独立记账，同 issue 同 actor 只回一次）────────────
   if (
@@ -1836,7 +1984,7 @@ export function createOctokitVerifier(secret: string): WebhookVerify {
   };
 }
 
-/** pg-boss 入队（`singletonKey = taskId`，`expireInSeconds` 按命令取值）。 */
+/** pg-boss 入队（`singletonKey = taskId`；`expireInSeconds` 取区间上界，不按命令分档，见 `queue/definitions.ts`）。 */
 export function createQueueEnqueuer(boss: QueueBoss): TaskEnqueuer {
   return (data) => enqueueTask(boss, data);
 }

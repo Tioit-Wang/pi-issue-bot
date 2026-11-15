@@ -4,18 +4,18 @@
  * 用假 boss（只记录调用）断言：
  *  - `ensureQueues` 只建缺失的队列，且把 §4.7 的 `expireInSeconds` 传下去；
  *  - `registerSchedules` 的 5 条 cron 与 UTC 时区；
- *  - `queueJobOptions` 的 `singletonKey = taskId` 与 20min/30min 两档执行期硬上限。
+ *  - `queueJobOptions` 的 `singletonKey = taskId` 与**统一的** `expireInSeconds`（区间上界，不按命令分档）。
  */
 import { describe, expect, it } from 'vitest';
 import {
-  EXPIRE_IN_SECONDS_DEFAULT,
-  EXPIRE_IN_SECONDS_REVIEW_PR,
+  EXPIRE_IN_SECONDS_MAX,
+  MAX_TURN_TIMEOUT_MINUTES,
   QUEUE,
   QUEUES,
-  REVIEW_PR_COMMAND,
+  REVIEW_PR_TURN_TIMEOUT_MINUTES,
   SCHEDULES,
   ensureQueues,
-  expireInSecondsForCommand,
+  enqueueExpireInSeconds,
   queueSpecOf,
   registerSchedules,
   validateDefinitions,
@@ -54,21 +54,24 @@ function fakeAdminBoss(): QueueAdminBoss & { readonly createCalls: CreateCall[];
 
 describe('queueJobOptions：singletonKey 与 expireInSeconds', () => {
   it('singletonKey 就是 taskId（任务已在队列就不再入队）', () => {
-    const options = queueJobOptions('task-1', 'auto:triage');
+    const options = queueJobOptions('task-1');
     expect(options.singletonKey).toBe('task-1');
   });
 
-  it('默认 20min，/review-pr 30min（§4.7 第二行）', () => {
-    expect(expireInSecondsForCommand('auto:compliance')).toBe(EXPIRE_IN_SECONDS_DEFAULT);
-    expect(expireInSecondsForCommand(REVIEW_PR_COMMAND)).toBe(EXPIRE_IN_SECONDS_REVIEW_PR);
-    expect(EXPIRE_IN_SECONDS_DEFAULT).toBe(20 * 60);
-    expect(EXPIRE_IN_SECONDS_REVIEW_PR).toBe(30 * 60);
-    expect(queueJobOptions('t', REVIEW_PR_COMMAND).expireInSeconds).toBe(30 * 60);
-    expect(queueJobOptions('t', 'auto:triage').expireInSeconds).toBe(20 * 60);
+  it('expireIn 统一取区间上界 30min（不按命令分 20/30，也不读项目配置）', () => {
+    // §6.7 SL-4 收口：pg-boss 的 `expireIn` 是部署兜底，它必须 ≥ 任何合法项目配置（1–30min），
+    // 否则「项目配了 30 分钟」会被平台在第 20 分钟判成过期。真正的闸门是任务级 deadline。
+    expect(EXPIRE_IN_SECONDS_MAX).toBe(MAX_TURN_TIMEOUT_MINUTES * 60);
+    expect(EXPIRE_IN_SECONDS_MAX).toBeGreaterThanOrEqual(REVIEW_PR_TURN_TIMEOUT_MINUTES * 60);
+    // 两条入队路径（webhook / agent-dispatch）都经 `enqueueExpireInSeconds()`，它不接受命令
+    expect(enqueueExpireInSeconds()).toBe(EXPIRE_IN_SECONDS_MAX);
+    expect(queueJobOptions('t').expireInSeconds).toBe(EXPIRE_IN_SECONDS_MAX);
+    // 队列级默认值也得在同一档，否则 createQueue 出来的 job 上限会短于入队时声明的
+    expect(queueSpecOf(QUEUE.runTask).expireInSeconds).toBe(EXPIRE_IN_SECONDS_MAX);
   });
 
   it('入队一律 retryLimit 0：自动重试会让超时任务被重跑（§7.3 F6）', () => {
-    expect(queueJobOptions('t', REVIEW_PR_COMMAND).retryLimit).toBe(0);
+    expect(queueJobOptions('t').retryLimit).toBe(0);
   });
 });
 
@@ -144,7 +147,7 @@ describe('ensureQueues：启动自检（队列不存在则 create）', () => {
     expect(result.existing).toEqual([]);
     const runTaskCall = boss.createCalls.find((call) => call.name === QUEUE.runTask);
     expect(runTaskCall?.options).toEqual({
-      expireInSeconds: EXPIRE_IN_SECONDS_DEFAULT,
+      expireInSeconds: EXPIRE_IN_SECONDS_MAX,
       retryLimit: 0,
       retryDelay: 0,
       retryBackoff: false,

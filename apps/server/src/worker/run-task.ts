@@ -38,12 +38,11 @@ import { createNullLogger, runWithDeadline, summarizeIssues } from './deps.ts';
 import type { EventEnvelope } from './deps.ts';
 import { envelopeRowOf, findEnvelopeText, prepareEnvelope } from './envelope.ts';
 import type { CapturedEvent } from './envelope.ts';
-import {
-  buildFallbackCommentBody,
-  findLastAgentText,
-  postFallbackComment,
-  supportsCommentFallback,
-} from './fallback.ts';
+/*
+  不再 import `worker/fallback.ts` 的任何东西：兜底评论按 FR-5.1 移除（理由见第 7→8 步之间那段）。
+  `worker/fallback.ts` 本身留着（`stripEnvelopeBlocks` 等纯函数仍被别的路径与单测使用），
+  只是 run-task 不再有「平台替执行侧发评论」这条写路径。
+*/
 import {
   isInterruptError,
   isTimeoutError,
@@ -85,6 +84,7 @@ import type {
 import type { CatalogEntry } from '../writeback/v21/labels.ts';
 import { readV21Settings, resolveAgentExecution, resolveManagedCatalog } from '../config/v21-settings.ts';
 import type { CompactionRecordInput, CompactStore } from '../compact/engine.ts';
+import type { TurnCompactionPort } from '../compact/turn-compaction.ts';
 // ── 只读工具轮（v2.3 `docs/plan-issue-tools.md` §3 B）────────────────────────
 // 为什么直接 import `runtime/` 的这两个文件：worker 从不自己实现「怎么跑一轮」
 // （那是 `turn-driver.ts` 的职责），而「读几条 / 读多少轮 / 结果怎么进提示词」是纯逻辑、
@@ -194,12 +194,16 @@ export interface V21RuntimeConfig {
       }) => Promise<void>)
     | undefined;
   /**
-   * 压缩引擎句柄（`createCompactor()` 的柯里化形态）。
+   * 请求前的压缩检查点端口（FR-5.6）。
    *
-   * 本轮**只暴露、不自动调用**：RACP 客户端没有 session/history 与 compact 操作，
-   * host 侧拿不到完整历史，「请求发出前自动压缩」仍是遗留项（见最终报告）。
+   * 与 `systemPrompt` 同一条注入路径（`deps.v21`），由装配层按**本次任务**绑好
+   * repo / issueNumber 后传进来（`agent_compactions` 要落这两个字段）。
+   *
+   * 它一路传到 `driveTurn()` 并在 `turn/start` **之前**被调用一次：过了硬边界就不发请求，
+   * 过自动线就先追加一条 checkpoint 再把摘要拼进本轮提示词。
+   * **不注入 = 老行为**（提示词逐字节不变，压缩完全不存在）。
    */
-  readonly compactor?: unknown | undefined;
+  readonly compaction?: TurnCompactionPort | undefined;
 }
 
 /** `runTask()` 的依赖：旧端口 + 可选 v2.1 注入。 */
@@ -342,6 +346,17 @@ export function probeV21Output(events: readonly CapturedEvent[]): V21Probe {
   return rejection === null
     ? { kind: 'not-v21' }
     : { kind: 'rejected', text: rejection.text, errors: rejection.errors };
+}
+
+/**
+ * 旧 4-intent 信封里有没有 `comment` 动作。
+ *
+ * 只服务于「留痕用哪条 cause」这一件事：产出合规但没给 `comment` 与「产出不合规」是两种
+ * 不同的漂移（前者是提示词没要求评论，后者是模型没按格式交），审计里要能分开看。
+ * 这里的判定不产生任何写回 —— 兜底评论已在 FR-5.1 的裁决下移除。
+ */
+function hasCommentActionOf(prepared: { readonly accepted: readonly { readonly intent: string }[] }): boolean {
+  return prepared.accepted.some((item) => item.intent === 'comment');
 }
 
 /* ── v2 执行端口：把既有写面接到 `createV21PortFromGithub()` ───────────────── */
@@ -836,6 +851,13 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
      * `session/create`**：第 2/3 轮复用的是同一个会话，不会重复发。
      */
     const systemPrompt = deps.v21?.systemPrompt;
+    /**
+     * 请求前的压缩检查点（FR-5.6）：装配层按本次任务绑好 repo / issueNumber。
+     *
+     * 每轮都交给 `driveTurn`（同一个端口），由它在 `turn/start` 之前决定「照发 / 拒发」；
+     * 不注入 = 提示词逐字节不变。
+     */
+    const compaction = deps.v21?.compaction;
     /** 任务级 deadline：`timeoutMs` 是**整个任务**的预算，不是每一轮的。 */
     const deadlineAt = clock() + timeoutMs;
     /** 每次只读调用至少要留的时间：低于它连一次完整握手都跑不完，不如不起这一轮。 */
@@ -914,6 +936,9 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
           prompt: turnPrompt,
           // 身份说明走 system 通道：只在新建会话时生效；不注入 = 老行为。
           ...(systemPrompt === undefined ? {} : { systemPrompt }),
+          // 请求前的压缩检查点（FR-5.6）：`driveTurn` 在 `turn/start` 之前调它；
+          // 过了硬边界它会拒发本轮（任务由 `runTask` 收成失败并留痕，不在这里处理）。
+          ...(compaction === undefined ? {} : { compaction }),
           // `messageId` 逐轮唯一：同一个会话里两次 `turn/start` 用同一个 id，Host 侧的去重
           // 会把第二轮当成重投（第二轮的结果就永远不来了）。
           messageId:
@@ -1212,83 +1237,41 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
     }
   }
 
-  // ── 兜底回复：信封不可信、或信封没给 comment 动作时**唯一**允许的写回 ─────────
+  // ── 产出不合契约时的处置：**不合成动作**，只留痕与告警（FR-5.1 / FR-5.3 / FR-5.5）──
   //
-  // 两个真实故障（都在实机出现过）：
-  //   a. `@answer` 的 turn 正常跑完（`turn.completed`、工具也跑了），事件流里没有能通过 Ajv
-  //      的信封 → 按「没有可信信封 → 不写回」的设计，用户看到「@ 了没反应」；
-  //   b. v0.3 agent：信封**合规**但 `actions` 是空数组（模型把结论写在第一段里），
-  //      run 记为 succeeded，issue 上同样一个字都没有。
-  // 信封校验是安全边界，一步都不能松；但「agent 已经写出面向人的答案」不该被一起丢掉。
+  // 这里原来是一层「兜底评论」：信封不合规、或信封合规但没给 `comment` 动作时，平台取事件流里
+  // 最后一条 assistant 文本，自己发一条评论。它被移除，理由是需求原文（不是取舍口味）：
   //
-  // 五个条件同时成立才兜底（缺一条就只留痕、不写任何东西）：
-  //   1. 信封不合规（`missing-envelope` 也算）、或合规但没有 `comment` 动作；
-  //   2. 命令是评论类（`agent:mention`、`agent:event`、`/issue-triage`、`/issue-repro`、`@answer`）——
-  //      `/review-pr` 的结论若不可信就不该发出去，push 类任务更没有可发的东西；
-  //   3. turn 正常收尾（`turn.completed`）：半路结束的 turn 没有「交付物」可言；
-  //   4. 不是 dry-run（零副作用是 M0 的验收口径，`actions` 也必须 0 行）；
-  //   5. 没有命中熔断（退化输出不值得发布）。
+  //  1. **FR-5.1「平台不决定处理内容」**：平台只做三件事——把输入交给执行侧、校验产出、
+  //     把产出执行出去。兜底评论是平台**替执行侧产出了一条动作**，而且判定依据是
+  //     「这条命令属于评论类事件」（`supportsCommentFallback()` 的白名单）——
+  //     「按事件类型硬编码行为」正是这一条明文禁止的东西。
+  //  2. **FR-5.3「封闭的动作集合」**：产出必须落在七类动作里，`actions: []` 是**合法**产出
+  //     （「空数组表示只判定不动作」）。兜底评论把「模型没声明评论」改写成「平台补一条评论」，
+  //     等于给动作集合开了一个平台侧的旁路。
+  //  3. **FR-5.5「执行侧没有产出时，标签与评论保持原状」**：输出不合契约时
+  //     「没拿到结论」不等于「判定为不合格」，也就不该往 issue 上写任何东西。
   //
-  // 兜底**不改结局**：信封不合规时 run 仍是 `failure_class=parse`；合规但缺 comment 时 run 照旧
-  //成功，只是把第一段补发成评论。打标与其它写回仍然只认合规信封。
-  let fallback: ActionOutcome | null = null;
-  // v0.3：**信封合法但没有 comment 动作**也要补发（需求 §1「默认产出一条评论」）。
-  // 实机 2026-11-11：模型把结论写在第一段、`actions` 给 `[]`，run 记为 succeeded，
-  // issue 上却一个字都没有 —— 用户视角就是「@ 了没反应」。
-  const envelopeValid = prepared !== null && prepared.valid;
-  const hasCommentAction =
-    prepared !== null && prepared.valid && prepared.accepted.some((item) => item.intent === 'comment');
-  // v2 分支**不发兜底评论**：它的 `comment` 是槽位写回（覆盖语义），再补一段人话会
-  // 在同一个 issue 上多出一条不可控的评论；v2 的 `actions: []` 也是「只判定不动作」的合法产出。
-  if (!v21Handled && prepared !== null && (!prepared.valid || !hasCommentAction)) {
-    const agentText =
-      turnResult !== undefined && terminal === 'turn.completed' ? findLastAgentText(captured) : null;
-    const body = agentText === null ? null : buildFallbackCommentBody(agentText);
-
-    let blocked: string | null = null;
-    if (dryRun) {
-      blocked = 'dry-run：兜底评论同样不写（零副作用口径）';
-    } else if (degeneracyHit !== null) {
-      blocked = '熔断命中：不发布退化输出';
-    } else if (!supportsCommentFallback(input.command)) {
-      blocked = `命令 ${input.command} 不在兜底白名单（仅 /issue-triage、/issue-repro、@answer、agent:mention、agent:event）`;
-    } else if (terminal !== 'turn.completed') {
-      blocked = `turn 未正常收尾（terminal=${String(terminal)}）`;
-    } else if (body === null) {
-      blocked = '事件流里没有面向人的 assistant 文本（只有信封或什么都没有）';
-    }
-
-    if (blocked !== null) {
-      logger.info({ reason: blocked, command: input.command }, '信封不可信，但不发兜底评论');
-      appendEvent('writeback.fallback-skipped', { reason: blocked, command: input.command });
-    } else if (body !== null) {
-      fallback = await postFallbackComment({
-        runId: input.runId,
-        repo: input.repo,
-        targetNumber: input.targetNumber,
-        command: input.command,
-        body,
-        // 兜底评论也要 @ 到提问人（与信封里的 comment 一致）
-        mention: input.actorLogin ?? null,
-        api: deps.github,
-        store: deps.store,
-        clock,
-      });
-      const cause = envelopeValid ? 'no-comment-action' : 'invalid-envelope';
-      appendEvent('writeback.fallback', {
-        status: fallback.status,
-        target: fallback.target,
-        reason: fallback.reason,
-        command: input.command,
-        cause,
-      });
-      logger.warn(
-        { status: fallback.status, target: fallback.target, cause },
-        cause === 'no-comment-action'
-          ? '信封没有 comment 动作，已按 last assistant 文本补发评论'
-          : '信封不可信，已按 last assistant 文本兜底发评论',
-      );
-    }
+  // BR-7 要求「失败必须有可见反馈（兜底评论**或**后台告警），不得静默」—— 这一条仍然满足，
+  // 而且只由**后台告警那一半**满足：`signalFromParse()` 把失败归类进 `failure_class`、
+  // 下面这条 `writeback.fallback-skipped` 进 `run_events`、面板与告警都能查到。
+  // 「可见反馈」不等于「必须发评论」；需求把两者写成「或」，就是留给这条边界用的。
+  //
+  // 由此也说明为什么 dry-run 开关曾经掩盖了这个问题：默认 `PI_BOT_DRY_RUN=true` 时兜底评论
+  // 被拦下，所以「平台在替执行侧说话」这件事只有关掉 dry-run 才看得见。
+  const fallback: ActionOutcome | null = null;
+  /*
+    只在「本来会兜底」的那几种情形下留一条痕迹，避免正常路径写噪音事件。
+    `cause` 与原来的两条同义：`invalid-envelope`（含 `missing-envelope`）/ `no-comment-action`。
+  */
+  if (!v21Handled && prepared !== null && (prepared.valid === false || !hasCommentActionOf(prepared))) {
+    const cause = prepared.valid ? 'no-comment-action' : 'invalid-envelope';
+    const reason =
+      cause === 'invalid-envelope'
+        ? '产出不合契约：按 FR-5.5 保持标签与评论原状，不发任何评论（失败经 failure_class + 本事件告警）'
+        : '产出合规但没有 comment 动作：`actions: []` 是合法的「只判定不动作」，平台不补发评论';
+    logger.info({ cause, command: input.command }, '平台不合成动作（FR-5.1）：本轮不写任何评论');
+    appendEvent('writeback.fallback-skipped', { reason, cause, command: input.command });
   }
 
   // ── 写执行器（第 8 步） ────────────────────────────────────────────────────
@@ -1596,7 +1579,13 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
     try {
       const usage = await deps.usage(usageTurnId);
       if (usage !== null) {
-        const cost = estimateDeepSeekCostUsd({ model: usage.modelId, tokens: usage, at: endedAt });
+        // CFG-8.2：单价优先取「全局设置」里的模型目录，取不到才用代码里的官方价目表
+        const cost = estimateDeepSeekCostUsd({
+          model: usage.modelId,
+          tokens: usage,
+          at: endedAt,
+          ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
+        });
         await deps.store.recordUsage({
           runId: input.runId,
           model: usage.modelId ?? 'unknown',
@@ -1714,11 +1703,13 @@ export async function runTask(input: TaskRunInput, deps: V21RunnerDeps): Promise
     dryRun,
     envelope: prepared === null ? null : { valid: prepared.valid, accepted: prepared.accepted.length, dropped: prepared.dropped.length },
     actions: actionOutcomes.map((item) => ({ intent: item.intent, status: item.status, target: item.target })),
-    // 兜底回复的留痕（`null` = 本轮没走兜底；原因看 `run_events` 的 `writeback.fallback*`）
-    fallback:
-      fallback === null
-        ? null
-        : { intent: fallback.intent, status: fallback.status, target: fallback.target, reason: fallback.reason },
+    /*
+      兜底回复字段恒为 `null`（FR-5.1：平台不合成动作，见第 7→8 步之间那段裁决）。
+      字段本身留着是因为 `TaskReport` 的形状被面板/查询读，删字段是另一件事；
+      这里写成字面量 `null` 而不是删掉，是为了让「这条路径已经不存在」在报告里可见。
+      想查本轮为什么不写评论，看 `run_events` 的 `writeback.fallback-skipped`。
+    */
+    fallback: null,
     retry,
     // 无感反馈的留痕（`null` = 没注入 feedback 端口；状态见 `FeedbackOutcome`）
     feedback:

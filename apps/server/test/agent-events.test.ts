@@ -63,7 +63,7 @@ async function taskCount(): Promise<number> {
 }
 
 describe('E-01 / E-10：issues.opened', () => {
-  it('非 bot 新 issue → 1 条 event 消息 + 1 个任务，模板点名配置的技能', async () => {
+  it('非 bot 新 issue → 1 条 event 消息 + 1 个任务（事件消息不点名技能）', async () => {
     const h = agentHarness(db, { skills: ['/format-check'] });
     const outcome = await deliver(h.deps, 'issues', issuesPayload({ action: 'opened' }));
 
@@ -73,8 +73,12 @@ describe('E-01 / E-10：issues.opened', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.['kind']).toBe('event');
     expect(String(rows[0]?.['comment_body'])).toContain('登录按钮没反应');
-    expect(String(rows[0]?.['comment_body'])).toContain('按技能');
-    expect(String(rows[0]?.['comment_body'])).toContain('format-check');
+    /*
+      Q-6 / FR-5.1：平台不替执行侧挑技能，所以正文里没有「按技能」指令段，
+      `skill_ids` 也是空数组。技能目录仍在（那是事实），只是不构成一个「选择」。
+    */
+    expect(String(rows[0]?.['comment_body'])).not.toContain('按技能');
+    expect(rows[0]?.['skill_ids']).toEqual([]);
     expect(await taskCount()).toBe(1);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]?.command).toBe('agent:event');
@@ -213,32 +217,42 @@ describe('E-08 / E-09：机器人账号', () => {
   });
 });
 
-describe('CF-02 / CF-03：事件模板置空 = 不投递', () => {
-  it('on_opened 为空串 → 新 issue 0 消息', async () => {
-    await seedAgentRepo(db, { agent: { on_opened: '' } });
-    const h = agentHarness(db, { skills: ['/format-check'] });
-    const outcome = await deliver(h.deps, 'issues', issuesPayload({ action: 'opened' }));
-    expect(outcome.action).toBe('ignored');
-    expect(await messages()).toHaveLength(0);
-  });
+describe('Q-6 / FR-5.1：投递不再看「有没有配技能」', () => {
+  /*
+    这三条原来是「事件模板置空 = 不投递」（CF-02 / CF-03）。那档闸门读的是
+    `settings.agent.on_opened / on_edited` —— 一张「事件 → 技能」映射表，也正是 Q-6 要拆的。
 
-  it('on_opened 为 null → 同样 0 消息（不是投一条没技能的模板）', async () => {
+    现在断言反过来了：**历史字段怎么配都不影响投递**，投递之后消息里也不点名技能。
+    事件要不要处理由项目级事件开关决定（`triggers.events`），处理什么由模板正文决定。
+  */
+  it('on_opened 为 null 也不影响投递：仍然产生 1 条事件消息，且不点名技能', async () => {
+    /*
+      用 `null` 而不是空串：契约里 `on_opened` 是 `z.string().min(1).nullable()`，
+      空串会让整份 settings 解析失败（`settings_valid=false`），那验的是「配置非法」，
+      不是「这个字段还管不管投递」。`null`（= 不配技能）才是原来那条闸门读的值。
+    */
     await seedAgentRepo(db, { agent: { on_opened: null } });
     const h = agentHarness(db, { skills: ['/format-check'] });
-    await deliver(h.deps, 'issues', issuesPayload({ action: 'opened' }));
-    expect(await messages()).toHaveLength(0);
+    const outcome = await deliver(h.deps, 'issues', issuesPayload({ action: 'opened' }));
+    expect(outcome.action).toBe('enqueued');
+    const rows = await messages();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['kind']).toBe('event');
+    // 平台没有替执行侧挑技能：`skill_ids` 是空数组，不是 `['format-check']`
+    expect(rows[0]?.['skill_ids']).toEqual([]);
   });
 
-  it('on_edited 为空串 → 编辑 0 消息', async () => {
-    await seedAgentRepo(db, { agent: { on_edited: '' } });
+
+  it('on_edited 为 null 也不拦编辑事件', async () => {
+    await seedAgentRepo(db, { agent: { on_edited: null } });
     const h = agentHarness(db);
     const outcome = await deliver(
       h.deps,
       'issues',
       issuesPayload({ action: 'edited', changes: { title: { from: '旧标题' } } }),
     );
-    expect(outcome.action).toBe('ignored');
-    expect(await messages()).toHaveLength(0);
+    expect(outcome.action).toBe('enqueued');
+    expect(await messages()).toHaveLength(1);
   });
 });
 

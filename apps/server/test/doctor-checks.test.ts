@@ -463,10 +463,31 @@ describe('cgroup 检查', () => {
 /* ── postgres ─────────────────────────────────────────────────────────── */
 
 describe('postgres 检查', () => {
-  it('没配 DSN → fail，给出 export 提示', async () => {
+  it('没配 DSN → fail，给出 export 提示（两个名字都点名）', async () => {
     const result = await postgresCheck.run(ctxOf());
     expect(result.status).toBe('fail');
-    expect(result.fixHint).toContain('PI_BOT_DATABASE_URL');
+    // README 与环境变量清单把 `PI_BOT_PG_DSN` 写成本名、`PI_BOT_DATABASE_URL` 写成兼容旧名，
+    // doctor 必须两个都认（2026-11-13 实机：只认旧名时按 README 配的部署被判 fail）。
+    expect(result.fixHint).toContain('PI_BOT_PG_DSN');
+    expect(result.detail).toContain('PI_BOT_PG_DSN');
+    expect(result.detail).toContain('PI_BOT_DATABASE_URL');
+  });
+
+  it('只配旧名也能取到 DSN：fail 时不会把「未配置」当成原因', async () => {
+    // 两个名字都在解析里：只配旧名时必须走到「连不上 / 迁移」那些分支，而不是「未配置」。
+    const result = await postgresCheck.run(
+      ctxOf({
+        env: { PI_BOT_DATABASE_URL: 'postgres://postgres:postgres@127.0.0.1:5999/none' },
+        pool: {
+          query: async () => {
+            throw new Error('ECONNREFUSED 127.0.0.1:5999');
+          },
+        },
+      }),
+    );
+    expect(result.status).toBe('fail');
+    expect(result.detail).not.toContain('未配置');
+    expect(result.detail).toContain('5999');
   });
 
   it('连不上 → fail', async () => {

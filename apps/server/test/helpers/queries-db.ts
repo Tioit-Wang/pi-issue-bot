@@ -155,6 +155,9 @@ export async function seedStandard(db: TestDb): Promise<void> {
       ('r5', 'anthropic/claude-x',  800, 200,  0.040000, '2026-05-31T13:30:00Z')
   `);
 
+  // `r1` 用的是 `approval`（`approval/respond` 的落库约定），`r3` 用的是 `approval.audit`
+  // （`worker/run-task.ts::appendEvent()` 的生产写入口）。两种都必须能读到 —— 只认一种的实现
+  // 就是「审批列恒 null」那个 bug，而它看起来像「没有审批」。
   await pool.query(`
     insert into run_events (run_id, cursor, kind, payload, created_at)
     values
@@ -162,6 +165,7 @@ export async function seedStandard(db: TestDb): Promise<void> {
       ('r1', 2, 'approval', '{"tool":"Bash","decision":"deny","rule":"deny-network"}'::jsonb, '2026-06-01T01:05:00Z'),
       ('r1', 3, 'notice', '{"diff":{"text":"diff --git a/src/a.ts b/src/a.ts\\n--- a\\n+++ b\\n","truncated":false,"baseSha":"abcdef1234567","headSha":"abcdef1234567"}}'::jsonb, '2026-06-01T01:06:00Z'),
       ('r1', 4, 'weird-custom', '{"x":1}'::jsonb, '2026-06-01T01:07:00Z'),
+      ('r3', 1, 'approval.audit', '{"tool":"Bash","decision":"allow","rule":"allow-read-only"}'::jsonb, '2026-06-01T03:05:00Z'),
       ('r2', 1, 'turn', '{"phase":"start"}'::jsonb, '2026-06-01T02:00:01Z')
   `);
 

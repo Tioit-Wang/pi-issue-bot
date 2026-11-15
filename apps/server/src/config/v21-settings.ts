@@ -19,15 +19,17 @@
 import {
   DEFAULT_REPO_SETTINGS,
   repoSettingsShapeSchema,
+  resolveRoleMembers,
 } from '../../../../packages/contract/src/index.ts';
 import type {
   AgentExecution,
-  CommentConfig,
+  Association,
   CommentGates,
   EventKey,
   EventSwitch,
   LabelStatus,
   RepoSettings,
+  ResolvedRoleMember,
 } from '../../../../packages/contract/src/index.ts';
 // 内置默认系统提示词住在 `skills/prompt.ts`（身份/工作方式那段文字的唯一一份）。
 // 让 config 反过来依赖 skills 是为了避免出现第二份身份说明：`resolveAgentExecution()` 是
@@ -143,8 +145,35 @@ export function resolveCommentGates(settings: unknown): ResolvedCommentGates {
   };
 }
 
-/** `comment` 段的生效值；`case_sensitive` 一律显式给布尔（缺省按 `false` 补齐）。 */
-export type ResolvedCommentConfig = CommentConfig & {
+/** 提及关键词的生效值：`case_sensitive` 一律显式给布尔（缺省按 `false` 补齐）。 */
+export type ResolvedCommentMention = {
+  readonly keyword: string;
+  readonly case_sensitive: boolean;
+};
+
+/**
+ * 角色的生效值：成员**摊成 `{login, id}`**（`id: null` = 旧配置，只能降级按 login 匹配）。
+ *
+ * 为什么不直接透出 `CommentRole`：配置里的成员有两种写法（新对象 / 旧裸字符串），
+ * 判定侧不该每次自己 `typeof member === 'string'`。归一化只在这里做一次，
+ * 于是「以 id 为准」这条在 `trigger/roles.ts` 只有一种输入形状要处理。
+ */
+export type ResolvedCommentRole =
+  | {
+      readonly name: string;
+      readonly by: 'members';
+      readonly members: readonly ResolvedRoleMember[];
+    }
+  | {
+      readonly name: string;
+      readonly by: 'association';
+      readonly any_of: readonly Association[];
+    };
+
+/** `comment` 段的生效值。 */
+export type ResolvedCommentConfig = {
+  readonly mentions: readonly ResolvedCommentMention[];
+  readonly roles: readonly ResolvedCommentRole[];
   readonly ok: boolean;
   readonly error: string | null;
 };
@@ -155,6 +184,9 @@ export type ResolvedCommentConfig = CommentConfig & {
  * 为什么在这里就把 `case_sensitive` 补成显式布尔：判定侧（`trigger/mention.ts`）不该再写
  * `?? false` —— 默认值只该有一处，否则「默认不区分大小写」这条会在两个地方各写一遍，
  * 迟早有一处写反。
+ *
+ * 为什么在这里就把成员摊成 `{login, id}`：坑一（login 会变）要求「匹配以 id 为准」，
+ * 而旧配置里的裸 login 必须能读出来。归一化放在这一层，判定侧就只有一种形状。
  */
 export function resolveCommentConfig(settings: unknown): ResolvedCommentConfig {
   const read = readV21Settings(settings);
@@ -166,7 +198,7 @@ export function resolveCommentConfig(settings: unknown): ResolvedCommentConfig {
     })),
     roles: comment.roles.map((role) =>
       role.by === 'members'
-        ? { name: role.name, by: 'members' as const, members: [...role.members] }
+        ? { name: role.name, by: 'members' as const, members: resolveRoleMembers(role.members) }
         : { name: role.name, by: 'association' as const, any_of: [...role.any_of] },
     ),
     ok: read.ok,
@@ -219,6 +251,45 @@ export function resolveAgentExecution(settings: unknown): ResolvedAgentExecution
     ok: read.ok,
     error: read.error,
   };
+}
+
+/* ── 3.1 单轮超时的「是否显式配置」 ─────────────────────────────────────────── */
+
+/**
+ * `agent.limits.turn_timeout_minutes` 的**显式**值（SL-4）。
+ *
+ * 为什么不用 `resolveAgentExecution().turn_timeout_minutes`：那一份永远有值（契约默认 20），
+ * 于是「项目没配置」和「项目配了 20」变得不可区分，`/review-pr` 的 30 分钟就会被无条件压到 20。
+ * 单轮闸门的默认值只能有**一处**（`queue/definitions.ts::turnTimeoutMinutesFor`），
+ * 这里只回答「项目到底有没有自己拧过这个旋钮」。
+ *
+ * **入参必须是 `repos.settings` 的原始 jsonb**（`readRepoPolicy().rawSettings`），
+ * 不能是 `readRepoPolicy().settings`：后者过了 `repoSettingsSchema`，契约的 prefault 会把
+ * `agent.limits.turn_timeout_minutes` 补成 20 —— 函数于是永远返回 20，「没配」被读成「配了 20」，
+ * `/review-pr` 的 30 分钟静默消失。这正是 `docs/audit/fix/WP7-REVIEW.md` F1 的现场；
+ * 装配层只经 `app/compose.ts::executionLimitsOf()` 一处调用本函数，那里喂的是 `rawSettings`。
+ *
+ * 判定口径：原始 jsonb 的 `agent.limits.turn_timeout_minutes` 是 1–30 的整数才算显式；
+ * 缺失、非数字、越界、整份 settings 解析失败一律返回 `undefined`（= 交给默认值表）。
+ */
+export function resolveTurnTimeoutMinutes(settings: unknown): number | undefined {
+  const read = readV21Settings(settings);
+  if (!read.ok) {
+    return undefined;
+  }
+  const raw = rawObject(rawObject(rawObject(settings, 'agent'), 'limits'), 'turn_timeout_minutes');
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > 30) {
+    return undefined;
+  }
+  return raw;
+}
+
+/** 安全地取一层对象（`unknown` → 对象或 `undefined`）。 */
+function rawObject(value: unknown, key: string): unknown {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  return (value as Record<string, unknown>)[key];
 }
 
 /* ── 4. 标签目录 ───────────────────────────────────────────────────────────── */
