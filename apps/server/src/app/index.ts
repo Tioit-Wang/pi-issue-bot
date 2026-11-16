@@ -26,17 +26,15 @@ export type { GithubAuthDeps, GithubAuthMode, GithubAuthResolution, GithubIdenti
 export { createGithubIdentityProbe, createPersonalGithubClient, parseScopesHeader } from './github-auth.ts';
 export {
   HOST_MODEL_ENV_KEYS,
-  HOST_MODEL_ROLE_ENV_KEYS,
   describeModelEndpoint,
   hostEndpointEnv,
   hostModelEnv,
-  hostModelRoleEnv,
+  hostModelNameEnv,
 } from './model-env.ts';
-export type { ResolvedModelRole } from './model-env.ts';
 
 export { createGithubProviderProbe, createSettingsApiWiring } from './settings-deps.ts';
-export { createDbModelRoleResolver } from './model-role-resolver.ts';
-export type { ModelRoleResolver, ModelRoleResolverOptions } from './model-role-resolver.ts';
+export { createDbModelResolver } from './model-resolver.ts';
+export type { ModelResolver, ModelResolverOptions, ResolvedModel } from './model-resolver.ts';
 
 export {
   APP_ERROR_CODES,

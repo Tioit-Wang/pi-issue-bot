@@ -1,11 +1,11 @@
 /**
- * `/api/settings/*` 与 `/api/repos/:owner/:name/models*` 的**路由**用例（真库 + 假探测端口）。
+ * `/api/settings/*` 与 `/api/repos/:owner/:name/model` 的**路由**用例（真库 + 假探测端口）。
  *
  * 钉五件事：
  *  1. 写接口**必须**过写守卫（缺 `X-Pi-Bot-CSRF` → 403，且不改库）；
  *  2. 读接口把 key 只暴露成 `key_configured` + `key_mask`（明文永不出响应）；
  *  3. 连通性测试**失败也回 200**（`status: 'fail'` + 原因），面板据此画状态点；
- *  4. 四档固定四行；项目级 `inherit` 时 `effective` 填的是全局值（面板显示「继承全局」）；
+ *  4. 执行模型只有一档；项目级 `inherit` 时 `effective` 填的是全局值（面板显示「继承全局」）；
  *  5. 身份「检查权限」把 scope / 过期落库，并在不可用时写一条退回留痕。
  *
  * 探测端口全部注入假实现：本用例不连 GitHub、不连真实模型端点。
@@ -84,7 +84,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.pool.query(
-    `truncate table model_providers, model_roles, repo_model_roles, panel_identities, identity_fallbacks cascade`,
+    `truncate table model_providers, model_default, repo_model_override, panel_identities, identity_fallbacks cascade`,
   );
   identityProbeResult = { login: 'alice', scopes: ['repo'], expiresAt: null };
   identityProbeCalls = 0;
@@ -186,13 +186,46 @@ describe('/api/settings/providers（CFG-8.1）', () => {
   });
 });
 
-describe('/api/settings/models 与项目级覆盖（CFG-8.2 / CFG-8.3）', () => {
-  it('四档固定四行，未配置的档 configured=false 且 price=null', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/settings/models' });
+describe('/api/settings/model 与项目级覆盖（CFG-8.2 / CFG-8.3）', () => {
+  it('没配时 configured=false、price=null（单档：不是一个 items 数组）', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/settings/model' });
     expect(response.statusCode).toBe(200);
-    const body = response.json() as { items: { role: string; configured: boolean }[] };
-    expect(body.items.map((item) => item.role)).toEqual(['agent', 'format', 'classify', 'fallback']);
-    expect(body.items.every((item) => !item.configured)).toBe(true);
+    expect(response.json()).toEqual({
+      configured: false,
+      provider_id: null,
+      provider_name: null,
+      model: null,
+      price: null,
+      updated_at: null,
+    });
+  });
+
+  it('配好之后回供应商名 + 模型 + 目录单价', async () => {
+    await saveProvider(
+      db.pool,
+      {
+        id: 'p1',
+        name: 'P1',
+        models: [{ model: 'm1', price: { input_usd_per_mtok: 1, output_usd_per_mtok: 2 } }],
+      },
+      KEY,
+    );
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/settings/model',
+      headers: CSRF,
+      payload: { provider_id: 'p1', model: 'm1' },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const response = await app.inject({ method: 'GET', url: '/api/settings/model' });
+    expect(response.json()).toMatchObject({
+      configured: true,
+      provider_id: 'p1',
+      provider_name: 'P1',
+      model: 'm1',
+      price: { input_usd_per_mtok: 1, output_usd_per_mtok: 2 },
+    });
   });
 
   it('项目页 inherit 时 effective 填全局值；override 后填项目值 + 各自单价', async () => {
@@ -210,35 +243,37 @@ describe('/api/settings/models 与项目级覆盖（CFG-8.2 / CFG-8.3）', () =>
     );
     await app.inject({
       method: 'PUT',
-      url: '/api/settings/models/agent',
+      url: '/api/settings/model',
       headers: CSRF,
       payload: { provider_id: 'p1', model: 'global-model' },
     });
 
-    const inherited = await app.inject({ method: 'GET', url: `/api/repos/${REPO}/models` });
+    const inherited = await app.inject({ method: 'GET', url: `/api/repos/${REPO}/model` });
     expect(inherited.statusCode).toBe(200);
     const inheritedBody = inherited.json() as {
       repo: string;
-      items: { role: string; selection: { mode: string }; effective: { model: string } | null; effective_price: unknown }[];
+      selection: { mode: string };
+      effective: { provider_id: string; model: string } | null;
+      effective_price: unknown;
     };
     expect(inheritedBody.repo).toBe(REPO);
-    const agentInherited = inheritedBody.items.find((item) => item.role === 'agent');
-    expect(agentInherited?.selection).toEqual({ mode: 'inherit' });
-    expect(agentInherited?.effective).toEqual({ provider_id: 'p1', model: 'global-model' });
-    expect(agentInherited?.effective_price).toEqual({ input_usd_per_mtok: 1, output_usd_per_mtok: 2 });
+    expect(inheritedBody.selection).toEqual({ mode: 'inherit' });
+    expect(inheritedBody.effective).toEqual({ provider_id: 'p1', model: 'global-model' });
+    expect(inheritedBody.effective_price).toEqual({ input_usd_per_mtok: 1, output_usd_per_mtok: 2 });
 
     const override = await app.inject({
       method: 'PUT',
-      url: `/api/repos/${REPO}/models/agent`,
+      url: `/api/repos/${REPO}/model`,
       headers: CSRF,
       payload: { mode: 'override', provider_id: 'p1', model: 'repo-model' },
     });
     expect(override.statusCode).toBe(200);
 
-    const afterOverride = await app.inject({ method: 'GET', url: `/api/repos/${REPO}/models` });
-    const agentOverridden = (afterOverride.json() as typeof inheritedBody).items.find((item) => item.role === 'agent');
-    expect(agentOverridden?.selection).toEqual({ mode: 'override', provider_id: 'p1', model: 'repo-model' });
-    expect(agentOverridden?.effective_price).toEqual({ input_usd_per_mtok: 3, output_usd_per_mtok: 9 });
+    const afterOverride = await app.inject({ method: 'GET', url: `/api/repos/${REPO}/model` });
+    const overridden = afterOverride.json() as typeof inheritedBody;
+    expect(overridden.selection).toEqual({ mode: 'override', provider_id: 'p1', model: 'repo-model' });
+    expect(overridden.effective).toEqual({ provider_id: 'p1', model: 'repo-model' });
+    expect(overridden.effective_price).toEqual({ input_usd_per_mtok: 3, output_usd_per_mtok: 9 });
   });
 
   it('绑不存在的模型 → 400（保存时拒，不留静默失效）', async () => {
@@ -249,7 +284,7 @@ describe('/api/settings/models 与项目级覆盖（CFG-8.2 / CFG-8.3）', () =>
     );
     const response = await app.inject({
       method: 'PUT',
-      url: '/api/settings/models/agent',
+      url: '/api/settings/model',
       headers: CSRF,
       payload: { provider_id: 'p1', model: 'm-typo' },
     });

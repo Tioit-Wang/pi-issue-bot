@@ -2091,6 +2091,119 @@
         ],
         "additionalProperties": false
       },
+      "ModelLookupResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelParameterLookup"
+            }
+          },
+          "fetched": {
+            "type": "string",
+            "enum": [
+              "openrouter",
+              "table"
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "fetched",
+          "note"
+        ],
+        "additionalProperties": false
+      },
+      "ModelParameterLookup": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "found": {
+            "type": "boolean"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "openrouter",
+              "table",
+              "none"
+            ]
+          },
+          "matched_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "found",
+          "context_window",
+          "max_output_tokens",
+          "source",
+          "matched_id",
+          "error"
+        ],
+        "additionalProperties": false
+      },
       "ModelProvider": {
         "type": "object",
         "properties": {
@@ -2226,18 +2339,9 @@
         ],
         "additionalProperties": false
       },
-      "ModelRoleRow": {
+      "ModelSetting": {
         "type": "object",
         "properties": {
-          "role": {
-            "type": "string",
-            "enum": [
-              "agent",
-              "format",
-              "classify",
-              "fallback"
-            ]
-          },
           "configured": {
             "type": "boolean"
           },
@@ -2298,30 +2402,12 @@
           }
         },
         "required": [
-          "role",
           "configured",
           "provider_id",
           "provider_name",
           "model",
           "price",
           "updated_at"
-        ],
-        "additionalProperties": false
-      },
-      "ModelRolesResponse": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "minItems": 4,
-            "maxItems": 4,
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ModelRoleRow"
-            }
-          }
-        },
-        "required": [
-          "items"
         ],
         "additionalProperties": false
       },
@@ -2720,20 +2806,15 @@
         ],
         "additionalProperties": false
       },
-      "RepoModelRoleRow": {
+      "RepoModel": {
         "type": "object",
         "properties": {
-          "role": {
+          "repo": {
             "type": "string",
-            "enum": [
-              "agent",
-              "format",
-              "classify",
-              "fallback"
-            ]
+            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
           },
           "selection": {
-            "$ref": "#/components/schemas/ModelRoleSelection"
+            "$ref": "#/components/schemas/ModelSelection"
           },
           "effective": {
             "anyOf": [
@@ -2769,33 +2850,11 @@
           }
         },
         "required": [
-          "role",
+          "repo",
           "selection",
           "effective",
           "effective_price",
           "updated_at"
-        ],
-        "additionalProperties": false
-      },
-      "RepoModelRolesResponse": {
-        "type": "object",
-        "properties": {
-          "repo": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
-          },
-          "items": {
-            "minItems": 4,
-            "maxItems": 4,
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RepoModelRoleRow"
-            }
-          }
-        },
-        "required": [
-          "repo",
-          "items"
         ],
         "additionalProperties": false
       },
@@ -3910,7 +3969,7 @@
         },
         "additionalProperties": false
       },
-      "SaveModelRoleRequest": {
+      "SaveModelRequest": {
         "$ref": "#/components/schemas/ModelTarget"
       },
       "SavePanelIdentityRequest": {
@@ -3932,8 +3991,8 @@
         ],
         "additionalProperties": false
       },
-      "SaveRepoModelRoleRequest": {
-        "$ref": "#/components/schemas/ModelRoleSelection"
+      "SaveRepoModelRequest": {
+        "$ref": "#/components/schemas/ModelSelection"
       },
       "SaveRepoSettingsRequest": {
         "$ref": "#/components/schemas/RepoSettings"
@@ -6191,6 +6250,16 @@
           },
           "price": {
             "$ref": "#/components/schemas/ModelPrice"
+          },
+          "context_window": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
           }
         },
         "required": [
@@ -6219,7 +6288,7 @@
         ],
         "additionalProperties": false
       },
-      "ModelRoleSelection": {
+      "ModelSelection": {
         "oneOf": [
           {
             "type": "object",

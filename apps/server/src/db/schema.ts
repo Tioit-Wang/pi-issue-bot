@@ -18,6 +18,7 @@ import {
   bigserial,
   boolean,
   date,
+  check,
   index,
   integer,
   jsonb,
@@ -857,7 +858,7 @@ export const agentCompactions = pgTable(
   ],
 );
 
-/* ── 供应商与模型角色（需求 §6.8 / 迁移 0013）──────────────────────────────── */
+/* ── 供应商与执行模型（需求 §6.8 / 迁移 0013、0016）────────────────────────── */
 
 /**
  * 一家供应商一条行（CFG-8.1）：名称 / base URL / key 掩码 / 连通性 / 可用 model 列表。
@@ -904,25 +905,33 @@ export const MODEL_PROVIDER_STATUS = {
   unknown: 'unknown',
 } as const;
 
-/** 模型角色四档（CFG-8.2）：`agent` 执行 / `format` 快速 / `classify` 分类 / `fallback` 兜底。 */
-export const MODEL_ROLE_KINDS = ['agent', 'format', 'classify', 'fallback'] as const;
-
 /**
- * 全局角色绑定（CFG-8.2）：**一档一行**，绑定「供应商 + 模型」。
+ * 全局**执行模型**（CFG-8.2）：`model_providers` 里选定的「供应商 + 模型」。
  *
- * 单价**不在这里**，而在供应商的模型目录（`model_providers.models`）上：角色是「哪一档用哪个模型」，
- * 单价是模型的属性。挂到角色上会出现两个问题——同一个模型被两档共用时单价要给两遍（迟早不一致），
- * 以及项目级覆盖换模型后单价查不到（覆盖行没有单价列）。
+ * 为什么是单行表而不是「按角色一行」：执行只有一档 —— pi-host 的 `session/create` 只带
+ * `systemPrompt`、`turn/start` 只带 `input.text`，没有 per-session 模型槽位，
+ * 所以「format / classify / fallback」三档即使配了也永远不生效。放一个单行表，
+ * 「配了但不生效」这种状态在数据层就不存在。
+ *
+ * `singleton` 是主键 + CHECK 恒真：数据库层面最多只有一行，写第二行直接报错，
+ * 不用靠「读侧只取第一行」的约定。
+ *
+ * 单价**不在这里**，而在供应商的模型目录（`model_providers.models`）上：
+ * 绑定行只回答「用哪个模型」，单价是模型的属性。
  */
-export const modelRoles = pgTable('model_roles', {
-  /** `MODEL_ROLE_KINDS` 之一（主键：四档各只能有一条全局绑定）。 */
-  role: text('role').primaryKey(),
-  /** 引用 `model_providers.id`（不建外键，见文件头；删供应商留下的孤儿由读侧兜底）。 */
-  providerId: text('provider_id').notNull(),
-  /** 模型名（供应商侧的原始名字，如 `deepseek-v4.1-flash`）。 */
-  model: text('model').notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const modelDefault = pgTable(
+  'model_default',
+  {
+    /** 恒为 `true`；只为把表钉成单行。 */
+    singleton: boolean('singleton').primaryKey().default(true),
+    /** 引用 `model_providers.id`（不建外键，见文件头；删供应商留下的孤儿由读侧兜底）。 */
+    providerId: text('provider_id').notNull(),
+    /** 模型名（供应商侧的原始名字，如 `deepseek-v4.1-flash`）。 */
+    model: text('model').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('model_default_singleton_chk', sql`${t.singleton}`)],
+);
 
 /**
  * 项目级覆盖（CFG-8.3）：**没有行 = 继承全局**，有行才覆盖。
@@ -930,22 +939,12 @@ export const modelRoles = pgTable('model_roles', {
  * 稀疏性是契约的一部分：面板在项目页显示「继承全局（模型名）」，点开覆盖才写一行；
  * 因此这里不 seed、也没有默认值——给一行默认值等于「所有项目都覆盖了」。
  */
-export const repoModelRoles = pgTable(
-  'repo_model_roles',
-  {
-    repo: text('repo').notNull(),
-    /** `MODEL_ROLE_KINDS` 之一。 */
-    role: text('role').notNull(),
-    providerId: text('provider_id').notNull(),
-    model: text('model').notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.repo, t.role] }),
-    // 项目配置页一次读全该项目的覆盖行
-    index('repo_model_roles_repo_idx').on(t.repo),
-  ],
-);
+export const repoModelOverrides = pgTable('repo_model_override', {
+  repo: text('repo').primaryKey(),
+  providerId: text('provider_id').notNull(),
+  model: text('model').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * 面板身份（CFG-9.1）：按用户存的个人 PAT，**密文 + 掩码 + scope 快照 + 过期时刻**。
@@ -1044,8 +1043,8 @@ export const ALL_TABLES = {
   commentSlots,
   agentCompactions,
   modelProviders,
-  modelRoles,
-  repoModelRoles,
+  modelDefault,
+  repoModelOverrides,
   panelIdentities,
   identityFallbacks,
 } as const;

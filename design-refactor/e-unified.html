@@ -1996,7 +1996,7 @@
   }
 
 
-  /* ══ 11. 全局设置里的「供应商」与「模型角色」 ═══════════════════════ */
+  /* ══ 11. 全局设置里的「供应商」与「执行模型」 ═══════════════════════ */
   .prow {
     display: grid;
     grid-template-columns: 78px minmax(0, 1fr) 124px 92px;
@@ -2651,43 +2651,25 @@
         </div>
       </div>
 
-      <!-- 模型角色：谁在什么场景用什么模型，单价用于成本解释 -->
+      <!-- 执行模型：只有一档——pi-host 的协议里没有 per-session 模型参数，单价用于成本解释 -->
       <div class="msec">
-        <div class="msec-h">模型角色<span class="r">全局默认 · 项目可在「执行」里覆盖</span></div>
+        <div class="msec-h">执行模型<span class="r">全局默认 · 项目可在「执行」里覆盖</span></div>
         <div class="msec-b">
           <table class="roles">
             <thead>
-              <tr><th>角色</th><th>供应商</th><th>模型</th><th>单价 in / out</th></tr>
+              <tr><th>用途</th><th>供应商</th><th>模型</th><th>单价 in / out</th></tr>
             </thead>
             <tbody>
               <tr>
-                <td>执行 <span class="xs faint">agent</span></td>
+                <td>执行 <span class="xs faint">唯一一档</span></td>
                 <td><select class="inp" aria-label="执行模型供应商"><option selected>anthropic</option><option>openai</option><option>internal</option></select></td>
                 <td><input class="inp" value="claude-x" aria-label="执行模型" /></td>
                 <td>$3 / $15</td>
               </tr>
-              <tr>
-                <td>快速 <span class="xs faint">format</span></td>
-                <td><select class="inp" aria-label="快速模型供应商"><option selected>anthropic</option><option>openai</option><option>internal</option></select></td>
-                <td><input class="inp" value="claude-small" aria-label="快速模型" /></td>
-                <td>$0.8 / $4</td>
-              </tr>
-              <tr>
-                <td>分类 <span class="xs faint">classify</span></td>
-                <td><select class="inp" aria-label="分类模型供应商"><option>anthropic</option><option selected>internal</option><option>openai</option></select></td>
-                <td><input class="inp" value="qwen-max" aria-label="分类模型" /></td>
-                <td>$0.4 / $1.2</td>
-              </tr>
-              <tr>
-                <td>兜底</td>
-                <td><select class="inp" aria-label="兜底模型供应商"><option selected>openai</option><option>anthropic</option></select></td>
-                <td><input class="inp" value="gpt-y" aria-label="兜底模型" /></td>
-                <td>$2.5 / $10</td>
-              </tr>
             </tbody>
           </table>
           <div class="mrow" style="padding-top:8px">
-            <span class="xs faint">成本页已删除，所以单价必须留在这里——否则没人能解释「这次为什么花了 $0.112」。</span>
+            <span class="xs faint">成本页已删除，所以单价必须留在这里——否则没人能解释「这次为什么花了 $0.112」。原先的「快速 / 分类 / 兜底」三档在 pi-host 的 RACP 协议里没有模型槽位，已撤掉。</span>
           </div>
         </div>
       </div>

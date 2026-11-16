@@ -402,9 +402,9 @@
       <p class="sub">以「一个 issue 一个会话」为核心，把 GitHub 上散落的事件收敛成可追溯的一次协作过程。</p>
 
       <div class="meta">
-        <div><div class="k">版本</div><div class="v">v2.1</div></div>
+        <div><div class="k">版本</div><div class="v">v2.3</div></div>
         <div><div class="k">状态</div><div class="v">评审中 · 决策已定</div></div>
-        <div><div class="k">日期</div><div class="v">2026-11-12</div></div>
+        <div><div class="k">日期</div><div class="v">2026-11-16</div></div>
         <div><div class="k">范围</div><div class="v">L0 功能范围</div></div>
       </div>
 
@@ -418,6 +418,12 @@
         <table>
           <thead><tr><th style="width:80px">版本</th><th style="width:110px">日期</th><th style="width:90px">作者</th><th>变更</th></tr></thead>
           <tbody>
+            <tr>
+              <td>v2.3</td>
+              <td>2026-11-16</td>
+              <td>小豆</td>
+              <td>模型角色四档收缩为<b>一档执行模型</b>（<a class="ref" href="#cfg-8-2">CFG-8.2</a>）：<code>format</code> / <code>classify</code> / 兜底三档在 pi-host 的 RACP 协议里没有模型槽位（<code>session/create</code> 只带 <code>systemPrompt</code>、<code>turn/start</code> 只带 <code>input.text</code>），配了也不生效；四档连同 <code>model_roles</code> / <code>repo_model_roles</code> 一并撤掉，改为单行 <code>model_default</code> + <code>repo_model_override</code>（迁移 0016）。<a class="ref" href="#cfg-8-3">CFG-8.3</a> 的「继承 / 覆盖」保留，<a class="ref" href="#ac-32">AC-32</a> 跟进。</td>
+            </tr>
             <tr>
               <td>v2.2</td>
               <td>2026-11-16</td>
@@ -1754,14 +1760,15 @@ https://github.com/org/repo/issues/1950
       </div>
 
       <div class="req rule" id="cfg-8-2">
-        <div class="hd"><span class="id">CFG-8.2</span><span class="ttl">模型角色四档，各自带单价</span><span class="pri">P0</span></div>
-        <p>四个角色各绑定「供应商 + 模型」：<code>agent</code>（执行）、<code>format</code>（快速，格式检查与短分类）、<code>classify</code>（分类判定）、兜底（主模型 429 或超时后降级）。每档显示输入 / 输出单价。</p>
+        <div class="hd"><span class="id">CFG-8.2</span><span class="ttl">执行模型只有一档，带单价</span><span class="pri">P0</span></div>
+        <p>全局配置<b>一个执行模型</b>：绑定「供应商 + 模型」，并显示该模型的输入 / 输出单价。</p>
+        <div class="note"><b>为什么只有一档：</b>pi-host 的 <code>session/create</code> 只带 <code>systemPrompt</code>、<code>turn/start</code> 只带 <code>input.text</code>，没有按会话选模型的槽位。原先的「<code>agent</code> 执行 / <code>format</code> 快速 / <code>classify</code> 分类 / 兜底」四档里只有执行档真的生效，多出来的三档等于「界面上有、实际没用」，所以撤掉。</div>
         <div class="note"><b>为什么单价必须在这里：</b>成本页已随面板改版删除，单价是界面上唯一能解释「这次为什么花了 $0.112」的依据。</div>
       </div>
 
       <div class="req rule" id="cfg-8-3">
         <div class="hd"><span class="id">CFG-8.3</span><span class="ttl">全局给默认值，项目可覆盖</span><span class="pri">P1</span></div>
-        <p>模型角色在全局配置；项目级「执行」里显示「继承全局（模型名）」，点开才允许覆盖。两处不并列摆放可直接选择的模型下拉。</p>
+        <p>执行模型在全局配置；项目级「执行」里显示「继承全局（模型名）」，点开才允许覆盖。两处不并列摆放可直接选择的模型下拉。</p>
       </div>
 
       <!-- 6.9 -->
@@ -1883,7 +1890,7 @@ https://github.com/org/repo/issues/1950
         <li id="ac-29"><span class="box"></span><span class="id">AC-29</span><span>展开系统提示词，看到的是完整 markdown 原文（含 <code># 角色</code>、<code>## 硬约束</code> 等标题），不是分层表格或摘要。</span></li>
         <li id="ac-30"><span class="box"></span><span class="id">AC-30</span><span>agent 的一轮里，工具调用可展开到「轮 → 组 → 单次调用」，失败的那一次有可见的失败标记；<code>verdict</code>/<code>actions</code> 默认收起。</span></li>
         <li id="ac-31"><span class="box"></span><span class="id">AC-31</span><span>三个左栏（Issue 队列 / 设置分区 / 技能列表）宽度一致、选中态一致；只有一个位置（<code>⋯</code> 或 dock）能触发页面切换以外的动作。</span></li>
-        <li id="ac-32"><span class="box"></span><span class="id">AC-32</span><span>全局设置里能看到每个供应商的 base URL、key 掩码、连通性与可用 model；四档模型角色各显示输入 / 输出单价；项目页显示「继承全局」而非并列的模型下拉。</span></li>
+        <li id="ac-32"><span class="box"></span><span class="id">AC-32</span><span>全局设置里能看到每个供应商的 base URL、key 掩码、连通性与可用 model；执行模型显示供应商、模型名与输入 / 输出单价；项目页显示「继承全局」而非并列的模型下拉。</span></li>
         <li id="ac-33"><span class="box"></span><span class="id">AC-33</span><span>所有缺少后端接口的动作（重跑、标记人工、面板内发送）都是禁用态，<code>title</code> 写明缺失的接口名；界面上没有任何「已完成」的假提示。</span></li>
       </ul>
     </section>

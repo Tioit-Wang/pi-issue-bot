@@ -24,11 +24,11 @@ import {
   issueStates,
   labelDecisions,
   agentSessions,
+  modelDefault,
   modelProviders,
-  modelRoles,
   panelIdentities,
   quotaCounters,
-  repoModelRoles,
+  repoModelOverrides,
   repos,
   runtimeFlags,
   tasks,
@@ -68,13 +68,13 @@ const AGENT_TABLES = ['agent_sessions', 'agent_messages', 'agent_denials'] as co
 const V21_TABLES = ['comment_slots', 'agent_compactions'] as const;
 
 /**
- * v2.1 修复新增的五张表（`migrations/0013_wp9_model_providers.sql`）：
- * 供应商 / 模型角色 / 项目覆盖 / 面板身份 / 退回留痕（需求 §6.8、§6.9）。
+ * v2.1 修复新增的五张表：0013 建供应商 / 面板身份 / 退回留痕（需求 §6.8、§6.9），
+ * 0016 把「模型角色四档」换成单行执行模型 + 项目覆盖（三档从未生效，一并撤掉）。
  */
 const WP9_TABLES = [
   'model_providers',
-  'model_roles',
-  'repo_model_roles',
+  'model_default',
+  'repo_model_override',
   'panel_identities',
   'identity_fallbacks',
 ] as const;
@@ -386,24 +386,32 @@ describe('v2.1 的增量列与两张新表（db/schema ↔ 0011_v21.sql）', () 
   });
 });
 
-describe('供应商 / 模型角色 / 面板身份的表与迁移（db/schema ↔ 0013 / 0015）', () => {
-  /** `0013_wp9_model_providers.sql`：五张表的建表语句（需求 §6.8、§6.9）。 */
+describe('供应商 / 执行模型 / 面板身份的表与迁移（db/schema ↔ 0013 / 0015 / 0016）', () => {
+  /** `0013_wp9_model_providers.sql`：供应商与身份三张表的建表语句（需求 §6.8、§6.9）。 */
   const MIGRATION_0013 = path.join(REPO_ROOT, 'migrations', '0013_wp9_model_providers.sql');
   /** `0015_panel_identity_scopes_nullable.sql`：`scopes` 放宽为可空（区分「未检查」与「没有 scope」）。 */
   const MIGRATION_0015 = path.join(REPO_ROOT, 'migrations', '0015_panel_identity_scopes_nullable.sql');
+  /** `0016_single_execution_model.sql`：撤掉模型角色四档，换成单行执行模型 + 项目覆盖。 */
+  const MIGRATION_0016 = path.join(REPO_ROOT, 'migrations', '0016_single_execution_model.sql');
 
-  it('五张新表都在 schema 里，且列与迁移一致', async () => {
+  it('供应商 / 身份由 0013 建，执行模型两表由 0016 建，且列与迁移一致', async () => {
     const sql = await readFile(MIGRATION_0013, 'utf8');
-    for (const table of [
-      'model_providers',
-      'model_roles',
-      'repo_model_roles',
-      'panel_identities',
-      'identity_fallbacks',
-    ]) {
+    for (const table of ['model_providers', 'panel_identities', 'identity_fallbacks']) {
       expect(sql).toContain(`CREATE TABLE IF NOT EXISTS "${table}"`);
       expect([...ALL_TABLE_NAMES]).toContain(table);
     }
+    const sql16 = await readFile(MIGRATION_0016, 'utf8');
+    for (const table of ['model_default', 'repo_model_override']) {
+      expect(sql16).toContain(`CREATE TABLE IF NOT EXISTS "${table}"`);
+      expect([...ALL_TABLE_NAMES]).toContain(table);
+    }
+    // 四档角色表撤掉了：旧表必须在新迁移里被删，也不再出现在 schema 里
+    expect(sql16).toContain('DROP TABLE IF EXISTS "model_roles"');
+    expect(sql16).toContain('DROP TABLE IF EXISTS "repo_model_roles"');
+    expect([...ALL_TABLE_NAMES]).not.toContain('model_roles');
+    expect([...ALL_TABLE_NAMES]).not.toContain('repo_model_roles');
+    // 搬迁只搬 agent 档（其余三档从未进过运行期）
+    expect(sql16).toContain(`WHERE "role" = 'agent'`);
     // 关键列：key 只存密文 + 掩码（真值永不落库）
     expect(sql).toContain('"key_enc" text');
     expect(sql).toContain('"key_mask" text');
@@ -412,11 +420,15 @@ describe('供应商 / 模型角色 / 面板身份的表与迁移（db/schema ↔
     expect(sql).toContain('"token_enc" text NOT NULL');
     expect(sql).toContain('"token_mask" text NOT NULL');
     expect(sql).toContain('"token_expires_at" timestamp with time zone');
-    // 时间列一律 timestamptz
-    expect(sql).not.toMatch(/"\w+" timestamp(?! with time zone)/);
+    // 时间列一律 timestamptz（两份迁移都要）
+    for (const text of [sql, sql16]) {
+      expect(text).not.toMatch(/"\w+" timestamp(?! with time zone)/);
+    }
     // 不建外键（AGENTS §7.4）
-    expect(sql).not.toMatch(/FOREIGN KEY|REFERENCES/i);
-    expect(sql).toContain('--> statement-breakpoint');
+    for (const text of [sql, sql16]) {
+      expect(text).not.toMatch(/FOREIGN KEY|REFERENCES/i);
+      expect(text).toContain('--> statement-breakpoint');
+    }
   });
 
   it('panel_identities.scopes 可空（NULL = 还没检查过；[] = 检查了但没 scope）', async () => {
@@ -427,19 +439,21 @@ describe('供应商 / 模型角色 / 面板身份的表与迁移（db/schema ↔
     expect(sql).toContain('--> statement-breakpoint');
   });
 
-  it('模型目录的单价不在角色表上（挂在模型上，项目覆盖后单价才查得到）', () => {
-    const roleColumns = getTableColumns(modelRoles);
-    expect(Object.keys(roleColumns)).toEqual(expect.arrayContaining(['role', 'providerId', 'model']));
-    expect(Object.keys(roleColumns)).not.toContain('inputPriceUsdPerMtok');
+  it('单价不在执行模型表上（挂在模型目录上，项目覆盖后单价才查得到）', () => {
+    const bindingColumns = getTableColumns(modelDefault);
+    expect(Object.keys(bindingColumns)).toEqual(expect.arrayContaining(['singleton', 'providerId', 'model']));
+    expect(Object.keys(bindingColumns)).not.toContain('inputPriceUsdPerMtok');
     // 目录本身是 provider 的 jsonb 列
     expect(Object.keys(getTableColumns(modelProviders))).toContain('models');
   });
 
-  it('项目级覆盖是「稀疏」的：主键 (repo, role)，没有默认行', () => {
-    const columns = getTableColumns(repoModelRoles);
-    expect(Object.keys(columns)).toEqual(expect.arrayContaining(['repo', 'role', 'providerId', 'model']));
+  it('执行模型是单行表（singleton 主键）；项目覆盖是稀疏的（没有行 = 继承）', () => {
+    expect(getTableColumns(modelDefault).singleton.primary).toBe(true);
+
+    const columns = getTableColumns(repoModelOverrides);
+    expect(Object.keys(columns)).toEqual(expect.arrayContaining(['repo', 'providerId', 'model']));
+    expect(Object.keys(columns)).not.toContain('role');
     expect(columns.repo.notNull).toBe(true);
-    expect(columns.role.notNull).toBe(true);
     // 没有「默认继承」这样的默认值：没有行就是继承（删行即继承）
     expect(columns.providerId.hasDefault).toBe(false);
   });

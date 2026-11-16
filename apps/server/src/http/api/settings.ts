@@ -13,7 +13,6 @@ import { z } from 'zod';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import {
-  MODEL_ROLE_KEYS,
   PANEL_IDENTITY_STATES,
   PROVIDER_CHECK_TIMEOUT_MS,
   classifyIdentityState,
@@ -21,18 +20,18 @@ import {
   identityFallbacksQuerySchema,
   identityFallbacksResponseSchema,
   loginSchema,
-  modelProvidersResponseSchema,
-  modelRoleRowSchema,
-  modelRolesResponseSchema,
+  modelLookupResponseSchema,
   modelProviderIdSchema,
+  modelProvidersResponseSchema,
+  modelSettingSchema,
   panelIdentityResponseSchema,
   panelIdentitySchema,
   providerCheckResponseSchema,
-  repoModelRoleRowSchema,
+  repoModelSchema,
   saveModelProviderRequestSchema,
-  saveModelRoleRequestSchema,
+  saveModelRequestSchema,
   savePanelIdentityRequestSchema,
-  saveRepoModelRoleRequestSchema,
+  saveRepoModelRequestSchema,
 } from '../../../../../packages/contract/src/index.ts';
 import type { ModelProvider, PanelIdentity, PanelIdentityState } from '../../../../../packages/contract/src/index.ts';
 import {
@@ -40,21 +39,22 @@ import {
   listFallbacks,
   listIdentities,
   listProviders,
-  listRepoRoleSelections,
-  listRoleBindings,
   priceOf,
   readIdentity,
   readIdentityToken,
+  readModelBinding,
   readProvider,
   readProviderKey,
+  readRepoModelSelection,
   recordFallback,
   recordIdentityCheck,
   recordProviderCheck,
   saveIdentity,
+  saveModelBinding,
   saveProvider,
-  saveRepoRoleSelection,
-  saveRoleBinding,
+  saveRepoModelSelection,
 } from '../../config/model-settings.ts';
+import { lookupModelParameters } from '../../config/model-catalog.ts';
 import type { IdentityView, ProviderView } from '../../config/model-settings.ts';
 import type { SqlRunner } from '../../config/repo-config.ts';
 import type { GithubIdentityProbe } from '../../app/github-auth.ts';
@@ -86,6 +86,14 @@ export type SettingsApiDeps = {
   readonly key: Uint8Array;
   readonly identityProbe: GithubIdentityProbePort;
   readonly providerProbe?: ProviderProbePort | undefined;
+  /**
+   * 「查参数」的联网取数端口（OpenRouter 公共模型库）。
+   *
+   * 不注入 / 抛错都**不算失败**：模型参数有内置答案（`config/model-catalog.ts` 的
+   * DeepSeek v4 / MiMo v2.6），面板会拿到 `fetched: 'table'` 与原因，而不是一个 503
+   * ——「这次没联网」与「这个模型没有参数」是两件事，不能混成同一种红字。
+   */
+  readonly modelCatalogFetch?: (() => Promise<unknown>) | undefined;
   /** 时间源（注入：身份三态里有一项是时间比较，测试必须能摆位）。 */
   readonly now?: () => Date;
 };
@@ -136,17 +144,13 @@ function fallbackStateOf(raw: string): PanelIdentityState {
 }
 
 const idParamsSchema = z.object({ id: modelProviderIdSchema }).strict();
-const roleParamsSchema = z.object({ role: z.enum(MODEL_ROLE_KEYS) }).strict();
 const loginParamsSchema = z.object({ login: loginSchema }).strict();
 const repoParamsSchema = z
   .object({ owner: loginSchema, name: z.string().min(1).max(100) })
   .strict();
-const repoRoleParamsSchema = z
-  .object({ owner: loginSchema, name: z.string().min(1).max(100), role: z.enum(MODEL_ROLE_KEYS) })
-  .strict();
 
 /**
- * 注册全局设置路由（`/api/settings/*` 与 `/api/repos/:owner/:name/models*`）。
+ * 注册全局设置路由（`/api/settings/*` 与 `/api/repos/:owner/:name/model`）。
  *
  * 挂载条件是注入 `deps.settings`：不注入就整组不存在（与 `/api/repos`、`/api/skills` 同一套路），
  * 老的只读装配与最小单测不需要密钥与探测端口。
@@ -238,103 +242,135 @@ export function registerSettingsRoutes(
     });
   });
 
-  /* ── 2. 模型角色四档（CFG-8.2 / AC-32） ──────────────────────────────── */
+  /**
+   * 「查参数」（`CFG-8.1` 模型目录扩展）：取每个模型的上下文窗口 / 输出上限。
+   *
+   * 三条语义要点：
+   * - **不写库**：结果回给面板，用户点「保存」才落 `models`。自动写 = 「看一眼就改了配置」。
+   * - 取数走注入的 `modelCatalogFetch`；不注入或抛错都**不是** 5xx —— 这两个数字有内置答案
+   *   （DeepSeek v4 / MiMo v2.6），面板用 `fetched` + `note` 说清「这组数字哪来的」，
+   *   而不是让人对着一个红字猜「到底是没网还是没这个模型」。
+   * - 目录为空直接回空 `items`：没有模型名就无从匹配，别去打扰外部库。
+   */
+  app.post('/api/settings/providers/:id/models/lookup', { preHandler: writeGuard }, async (request) => {
+    const id = idParamsSchema.parse(request.params).id;
+    const provider = await readProvider(deps.db, id);
+    if (provider === null) {
+      throw httpError('not-found', `供应商不存在：${id}`);
+    }
+    const models = provider.models.map((entry) => entry.model);
 
-  app.get(
-    '/api/settings/models',
-    { schema: { response: { 200: modelRolesResponseSchema } }, preHandler: guard },
-    async () => {
-      const providers = await listProviders(deps.db);
-      const bindings = await listRoleBindings(deps.db);
-      return {
-        items: bindings.map((binding) => {
-          const provider =
-            binding.providerId === null
-              ? null
-              : (providers.find((item) => item.id === binding.providerId) ?? null);
-          return modelRoleRowSchema.parse({
-            role: binding.role,
-            configured: binding.configured,
-            provider_id: binding.providerId,
-            provider_name: provider?.name ?? null,
-            model: binding.model,
-            price: provider === null ? null : priceOf(provider.models, binding.model),
-            updated_at: binding.updatedAt,
-          });
-        }),
-      };
-    },
-  );
-
-  app.put(
-    '/api/settings/models/:role',
-    { schema: { params: roleParamsSchema }, preHandler: writeGuard },
-    async (request) => {
-      const body = saveModelRoleRequestSchema.parse(request.body);
-      const result = await saveRoleBinding(deps.db, {
-        role: request.params.role,
-        providerId: body.provider_id,
-        model: body.model,
-      });
-      if (!result.ok) {
-        throw httpError('bad-request', result.error, { issues: result.issues });
+    let payload: unknown | null = null;
+    let note: string | null = null;
+    if (models.length === 0) {
+      note = '这个供应商的模型目录是空的：先加一行模型再查参数';
+    } else if (deps.modelCatalogFetch === undefined) {
+      note = '本进程没有注入联网查询端口：只用内置表（DeepSeek v4 / MiMo v2.6）';
+    } else {
+      try {
+        payload = await deps.modelCatalogFetch();
+      } catch (error) {
+        note = `联网查询失败（${error instanceof Error ? error.message : String(error)}）：用了内置表`;
       }
-      return { ok: true };
+    }
+
+    const items = lookupModelParameters(models, payload).map((item) => ({
+      model: item.model,
+      found: item.found,
+      context_window: item.contextWindow,
+      max_output_tokens: item.maxOutputTokens,
+      source: item.source,
+      matched_id: item.matchedId,
+      error: item.error,
+    }));
+    return modelLookupResponseSchema.parse({
+      items,
+      fetched: payload === null ? 'table' : 'openrouter',
+      note,
+    });
+  });
+
+  /* ── 2. 执行模型（CFG-8.2） ──────────────────────────────────────────── */
+
+  /**
+   * 全局执行模型：`configured: false` 时面板显示「未配置」而不是隐藏 ——
+   * 「现在到底用哪个模型」必须一直看得见。
+   */
+  app.get(
+    '/api/settings/model',
+    { schema: { response: { 200: modelSettingSchema } }, preHandler: guard },
+    async () => {
+      const binding = await readModelBinding(deps.db);
+      const provider =
+        binding.providerId === null
+          ? null
+          : ((await listProviders(deps.db)).find((item) => item.id === binding.providerId) ?? null);
+      return modelSettingSchema.parse({
+        configured: binding.configured,
+        provider_id: binding.providerId,
+        provider_name: provider?.name ?? null,
+        model: binding.model,
+        price: provider === null ? null : priceOf(provider.models, binding.model),
+        updated_at: binding.updatedAt,
+      });
     },
   );
+
+  app.put('/api/settings/model', { preHandler: writeGuard }, async (request) => {
+    const body = saveModelRequestSchema.parse(request.body);
+    const result = await saveModelBinding(deps.db, { providerId: body.provider_id, model: body.model });
+    if (!result.ok) {
+      throw httpError('bad-request', result.error, { issues: result.issues });
+    }
+    return { ok: true };
+  });
 
   /* ── 3. 项目级覆盖（CFG-8.3） ────────────────────────────────────────── */
 
   /**
-   * 一个项目的四档选择。
+   * 一个项目的执行模型选择。
    *
    * `inherit` 时 `effective` 填的是**全局值**：面板据此显示「继承全局（模型名）」，
    * 并且不需要自己再拉一次全局设置（两处各查一遍 = 两处可能不一致）。
    */
   app.get(
-    '/api/repos/:owner/:name/models',
-    { schema: { params: repoParamsSchema }, preHandler: guard },
+    '/api/repos/:owner/:name/model',
+    { schema: { params: repoParamsSchema, response: { 200: repoModelSchema } }, preHandler: guard },
     async (request) => {
       const repo = `${request.params.owner}/${request.params.name}`;
-      const providers = await listProviders(deps.db);
-      const bindings = await listRoleBindings(deps.db);
-      const selections = await listRepoRoleSelections(deps.db, repo);
-      const items = selections.map((selection) => {
-        const overridden = selection.overridden && selection.providerId !== null && selection.model !== null;
-        const global = bindings.find((item) => item.role === selection.role);
-        const effectiveTarget = overridden
-          ? { provider_id: selection.providerId as string, model: selection.model as string }
-          : global !== undefined && global.providerId !== null && global.model !== null
-            ? { provider_id: global.providerId, model: global.model }
-            : null;
-        const provider =
-          effectiveTarget === null
-            ? null
-            : (providers.find((item) => item.id === effectiveTarget.provider_id) ?? null);
-        return repoModelRoleRowSchema.parse({
-          role: selection.role,
-          selection: overridden
-            ? { mode: 'override', provider_id: selection.providerId as string, model: selection.model as string }
-            : { mode: 'inherit' },
-          effective: effectiveTarget,
-          effective_price:
-            provider === null || effectiveTarget === null
-              ? null
-              : priceOf(provider.models, effectiveTarget.model),
-          updated_at: selection.updatedAt,
-        });
+      const selection = await readRepoModelSelection(deps.db, repo);
+      const global = await readModelBinding(deps.db);
+      const overrideTarget =
+        selection.overridden && selection.providerId !== null && selection.model !== null
+          ? { provider_id: selection.providerId, model: selection.model }
+          : null;
+      const effective =
+        overrideTarget ??
+        (global.configured && global.providerId !== null && global.model !== null
+          ? { provider_id: global.providerId, model: global.model }
+          : null);
+      const provider =
+        effective === null
+          ? null
+          : ((await listProviders(deps.db)).find((item) => item.id === effective.provider_id) ?? null);
+      return repoModelSchema.parse({
+        repo,
+        selection: overrideTarget === null ? { mode: 'inherit' } : { mode: 'override', ...overrideTarget },
+        effective,
+        effective_price:
+          provider === null || effective === null ? null : priceOf(provider.models, effective.model),
+        updated_at: selection.updatedAt,
       });
-      return { repo, items };
     },
   );
 
   app.put(
-    '/api/repos/:owner/:name/models/:role',
-    { schema: { params: repoRoleParamsSchema }, preHandler: writeGuard },
+    '/api/repos/:owner/:name/model',
+    { schema: { params: repoParamsSchema }, preHandler: writeGuard },
     async (request) => {
       const repo = `${request.params.owner}/${request.params.name}`;
-      const body = saveRepoModelRoleRequestSchema.parse(request.body);
-      const result = await saveRepoRoleSelection(deps.db, { repo, role: request.params.role, selection: body });
+      const body = saveRepoModelRequestSchema.parse(request.body);
+      const result = await saveRepoModelSelection(deps.db, { repo, selection: body });
       if (!result.ok) {
         throw httpError('bad-request', result.error, { issues: result.issues });
       }

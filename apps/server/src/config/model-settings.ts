@@ -1,5 +1,5 @@
 /**
- * 供应商 / 模型角色 / 面板身份的**存储层**（需求 §6.8、§6.9）。
+ * 供应商 / 执行模型 / 面板身份的**存储层**（需求 §6.8、§6.9）。
  *
  * 为什么单独一个文件而不是塞进 `repo-config.ts`：
  *  - 这三件事是**全局**配置（不是某个仓库的 settings），读写口径与 `repos.settings` 完全不同；
@@ -18,17 +18,15 @@
 import { AppError } from '../runtime/deps.ts';
 import { decryptSecret, encryptSecret, looksEncrypted } from '../runtime/crypto.ts';
 import {
-  MODEL_ROLE_KEYS,
   classifyIdentityState,
   maskSecret,
   missingRequiredScopes,
-  modelProviderIdSchema,
-  modelRoleKeySchema,
   modelCatalogEntrySchema,
+  modelProviderIdSchema,
   type ModelCatalogEntry,
   type ModelPrice,
   type ModelProviderStatus,
-  type ModelRoleKey,
+  type ModelSelection,
   type PanelIdentityState,
 } from '../../../../packages/contract/src/index.ts';
 import type { SqlRunner } from './repo-config.ts';
@@ -50,16 +48,16 @@ type ProviderRow = {
   updated_at: Date | string | null;
 };
 
-type RoleRow = {
-  role: string;
+/** `model_default` 的一行（单行表：读不到就是没配）。 */
+type ModelRow = {
   provider_id: string;
   model: string;
   updated_at: Date | string | null;
 };
 
-type RepoRoleRow = {
+/** `repo_model_override` 的一行（没有行 = 继承全局）。 */
+type RepoModelRow = {
   repo: string;
-  role: string;
   provider_id: string;
   model: string;
   updated_at: Date | string | null;
@@ -105,18 +103,16 @@ export type ProviderView = {
   readonly updatedAt: string | null;
 };
 
-/** 一档角色的**全局**绑定（`configured: false` = 没配）。 */
-export type RoleBindingView = {
-  readonly role: ModelRoleKey;
+/** 全局执行模型（`configured: false` = 没配）。 */
+export type ModelBindingView = {
   readonly configured: boolean;
   readonly providerId: string | null;
   readonly model: string | null;
   readonly updatedAt: string | null;
 };
 
-/** 项目级一行：`inherit` = 没有覆盖行（跟全局），`override` = 有覆盖行。 */
-export type RepoRoleSelectionView = {
-  readonly role: ModelRoleKey;
+/** 项目级一行：`overridden: false` = 没有覆盖行（跟全局），`true` = 有覆盖行。 */
+export type RepoModelSelectionView = {
   readonly overridden: boolean;
   readonly providerId: string | null;
   readonly model: string | null;
@@ -357,45 +353,42 @@ export async function recordProviderCheck(
   }
 }
 
-/* ── 5. 角色四档（全局 + 项目覆盖） ────────────────────────────────────────── */
+/* ── 5. 执行模型（全局单行 + 项目覆盖） ────────────────────────────────────── */
 
-/** 全部供应商（供解析单价时用；内部复用 `listProviders` 的 SQL 结果）。 */
-async function providerCatalogOf(
-  db: SqlRunner,
-): Promise<ReadonlyMap<string, ProviderView>> {
-  const providers = await listProviders(db);
-  return new Map(providers.map((provider) => [provider.id, provider]));
+/**
+ * 全局执行模型（CFG-8.2）。没配时 `configured: false`。
+ *
+ * `model_default` 是单行表（主键 `singleton` 恒真），所以这里不按角色循环、也不「取第一行」：
+ * 数据库层面就只可能有一行。
+ */
+export async function readModelBinding(db: SqlRunner): Promise<ModelBindingView> {
+  const result = await db.query(`select provider_id, model, updated_at from model_default`);
+  const row = (result.rows as ModelRow[])[0];
+  return {
+    configured: row !== undefined,
+    providerId: row?.provider_id ?? null,
+    model: row?.model ?? null,
+    updatedAt: isoOrNull(row?.updated_at),
+  };
 }
 
-/** 四档的全局绑定（固定六顺序，缺的档 `configured: false`）。 */
-export async function listRoleBindings(db: SqlRunner): Promise<readonly RoleBindingView[]> {
-  const result = await db.query(`select role, provider_id, model, updated_at from model_roles`);
-  const rows = result.rows as RoleRow[];
-  const byRole = new Map(rows.map((row) => [row.role, row]));
-  return MODEL_ROLE_KEYS.map((role) => {
-    const row = byRole.get(role);
-    return {
-      role,
-      configured: row !== undefined,
-      providerId: row?.provider_id ?? null,
-      model: row?.model ?? null,
-      updatedAt: isoOrNull(row?.updated_at),
-    };
-  });
-}
+export type SaveModelResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: string; readonly issues: readonly string[] };
 
-/** 写一档全局绑定（`role` 必须是四档之一）。 */
-export async function saveRoleBinding(
+/**
+ * 写全局执行模型。
+ *
+ * 两道校验都不能省：
+ *  - 供应商必须存在：拼错一个字母就等于「永久静默失效」，而界面会显示「已配置」；
+ *  - 模型必须在供应商的目录里：单价是界面解释成本的唯一依据，目录里没有它就既跑不了也不算得出钱。
+ */
+export async function saveModelBinding(
   db: SqlRunner,
-  input: { readonly role: string; readonly providerId: string; readonly model: string },
-): Promise<saveRoleResultType> {
-  const roleParsed = modelRoleKeySchema.safeParse(input.role);
-  if (!roleParsed.success) {
-    return { ok: false, error: `角色只能是 ${MODEL_ROLE_KEYS.join(' / ')}`, issues: [roleParsed.error.message] };
-  }
+  input: { readonly providerId: string; readonly model: string },
+): Promise<SaveModelResult> {
   const provider = await readProvider(db, input.providerId);
   if (provider === null) {
-    // 保存时不校验供应商存在 = 拼错一个字母就永久静默失效（需求点名的坑）
     return { ok: false, error: `供应商不存在：${input.providerId}`, issues: ['provider_id'] };
   }
   const known = provider.models.some((entry) => entry.model === input.model);
@@ -407,51 +400,31 @@ export async function saveRoleBinding(
     };
   }
   await db.query(
-    `insert into model_roles (role, provider_id, model, updated_at)
-     values ($1, $2, $3, now())
-     on conflict (role) do update
-       set provider_id = $2, model = $3, updated_at = now()`,
-    [roleParsed.data, input.providerId, input.model],
+    `insert into model_default (singleton, provider_id, model, updated_at)
+     values (true, $1, $2, now())
+     on conflict (singleton) do update
+       set provider_id = $1, model = $2, updated_at = now()`,
+    [input.providerId, input.model],
   );
   return { ok: true };
 }
 
-export type saveRoleResultType =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly error: string; readonly issues: readonly string[] };
-
-/** 一档的单价（从全局绑定 + 供应商目录解析）；未配置为 `null`。 */
-export async function resolveRolePrice(
-  db: SqlRunner,
-  role: ModelRoleKey,
-): Promise<ModelPrice | null> {
-  const bindings = await listRoleBindings(db);
-  const binding = bindings.find((item) => item.role === role);
-  if (binding === undefined || binding.providerId === null || binding.model === null) return null;
-  const provider = await readProvider(db, binding.providerId);
-  return provider === null ? null : priceOf(provider.models, binding.model);
-}
-
-/** 项目级四档覆写（固定四行；没有覆盖行 = `overridden: false`）。 */
-export async function listRepoRoleSelections(
+/** 项目级覆盖（CFG-8.3）：没有覆盖行 = 继承全局。 */
+export async function readRepoModelSelection(
   db: SqlRunner,
   repo: string,
-): Promise<readonly RepoRoleSelectionView[]> {
+): Promise<RepoModelSelectionView> {
   const result = await db.query(
-    `select repo, role, provider_id, model, updated_at from repo_model_roles where repo = $1`,
+    `select repo, provider_id, model, updated_at from repo_model_override where repo = $1`,
     [repo],
   );
-  const byRole = new Map((result.rows as RepoRoleRow[]).map((row) => [row.role, row]));
-  return MODEL_ROLE_KEYS.map((role) => {
-    const row = byRole.get(role);
-    return {
-      role,
-      overridden: row !== undefined,
-      providerId: row?.provider_id ?? null,
-      model: row?.model ?? null,
-      updatedAt: isoOrNull(row?.updated_at),
-    };
-  });
+  const row = (result.rows as RepoModelRow[])[0];
+  return {
+    overridden: row !== undefined,
+    providerId: row?.provider_id ?? null,
+    model: row?.model ?? null,
+    updatedAt: isoOrNull(row?.updated_at),
+  };
 }
 
 /**
@@ -460,28 +433,13 @@ export async function listRepoRoleSelections(
  * 删行为什么不是「写一行 provider_id='' 」：稀疏性就是语义（没行=继承），
  * 写空串会让「继承」与「覆盖成一个不存在的供应商」变成同一件事。
  */
-export async function saveRepoRoleSelection(
+export async function saveRepoModelSelection(
   db: SqlRunner,
-  input: {
-    readonly repo: string;
-    readonly role: string;
-    readonly selection: { readonly mode: 'inherit' } | {
-      readonly mode: 'override';
-      readonly provider_id: string;
-      readonly model: string;
-    };
-  },
-): Promise<saveRoleResultType> {
-  const roleParsed = modelRoleKeySchema.safeParse(input.role);
-  if (!roleParsed.success) {
-    return { ok: false, error: `角色只能是 ${MODEL_ROLE_KEYS.join(' / ')}`, issues: [roleParsed.error.message] };
-  }
+  input: { readonly repo: string; readonly selection: ModelSelection },
+): Promise<SaveModelResult> {
   const selection = input.selection;
   if (selection.mode === 'inherit') {
-    await db.query(`delete from repo_model_roles where repo = $1 and role = $2`, [
-      input.repo,
-      roleParsed.data,
-    ]);
+    await db.query(`delete from repo_model_override where repo = $1`, [input.repo]);
     return { ok: true };
   }
   const provider = await readProvider(db, selection.provider_id);
@@ -496,46 +454,36 @@ export async function saveRepoRoleSelection(
     };
   }
   await db.query(
-    `insert into repo_model_roles (repo, role, provider_id, model, updated_at)
-     values ($1, $2, $3, $4, now())
-     on conflict (repo, role) do update
-       set provider_id = $3, model = $4, updated_at = now()`,
-    [input.repo, roleParsed.data, selection.provider_id, selection.model],
+    `insert into repo_model_override (repo, provider_id, model, updated_at)
+     values ($1, $2, $3, now())
+     on conflict (repo) do update
+       set provider_id = $2, model = $3, updated_at = now()`,
+    [input.repo, selection.provider_id, selection.model],
   );
   return { ok: true };
 }
 
 /**
- * **生效**的一档（CFG-8.3 的执行面）：项目覆盖优先，否则全局。
+ * **生效**的执行模型（CFG-8.3 的执行面）：项目覆盖优先，否则全局。
  *
- * 为什么单独一个函数：执行面（`agent`/`format`/`classify`/兜底）只该问「这一档最终用谁」，
- * 不该各自实现一次「先查项目再查全局」——两处实现迟早漂成两个答案。
+ * 为什么单独一个函数：执行面只该问「这一次用谁」，不该各自实现一次「先查项目再查全局」——
+ * 两处实现迟早漂成两个答案。
  */
-export async function resolveEffectiveRole(
+export async function resolveEffectiveModel(
   db: SqlRunner,
   repo: string | null,
-  role: ModelRoleKey,
 ): Promise<{ readonly providerId: string; readonly model: string; readonly source: 'repo' | 'global' } | null> {
   if (repo !== null) {
-    const overrides = await listRepoRoleSelections(db, repo);
-    const hit = overrides.find((item) => item.role === role);
-    if (hit !== undefined && hit.overridden && hit.providerId !== null && hit.model !== null) {
-      return { providerId: hit.providerId, model: hit.model, source: 'repo' };
+    const override = await readRepoModelSelection(db, repo);
+    if (override.overridden && override.providerId !== null && override.model !== null) {
+      return { providerId: override.providerId, model: override.model, source: 'repo' };
     }
   }
-  const bindings = await listRoleBindings(db);
-  const global = bindings.find((item) => item.role === role);
-  if (global === undefined || !global.configured || global.providerId === null || global.model === null) {
+  const global = await readModelBinding(db);
+  if (!global.configured || global.providerId === null || global.model === null) {
     return null;
   }
   return { providerId: global.providerId, model: global.model, source: 'global' };
-}
-
-/** 供单价解析复用（导出给「成本计算读配置」那侧，避免它自己再查一遍目录）。 */
-export async function providerCatalogMap(
-  db: SqlRunner,
-): Promise<ReadonlyMap<string, ProviderView>> {
-  return providerCatalogOf(db);
 }
 
 /* ── 6. 面板身份（个人 PAT） ───────────────────────────────────────────────── */
@@ -722,4 +670,4 @@ export async function listFallbacks(
   return result.rows as (FallbackRow & { readonly state: string })[];
 }
 
-export type { ProviderRow, RoleRow, IdentityRow, FallbackRow };
+export type { ProviderRow, IdentityRow, FallbackRow };

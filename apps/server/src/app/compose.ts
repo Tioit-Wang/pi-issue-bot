@@ -102,9 +102,9 @@ import { runTask } from '../worker/run-task.ts';
 import type { HostPort, SessionPlan, TaskRunnerDeps, TaskRunReport, WorktreePort } from '../worker/index.ts';
 import type { AppConfig } from './config.ts';
 import { describeAppConfig } from './config.ts';
-import { hostModelEnv, hostModelRoleEnv } from './model-env.ts';
+import { hostModelEnv, hostModelNameEnv } from './model-env.ts';
 import { createSettingsApiWiring } from './settings-deps.ts';
-import { createDbModelRoleResolver, resolveAllModelRoles } from './model-role-resolver.ts';
+import { createDbModelResolver } from './model-resolver.ts';
 import { createRacpChannelFactory } from './racp.ts';
 import type { RacpChannelFactory } from './racp.ts';
 import {
@@ -595,13 +595,12 @@ function createDefaultHostPort(
   config: AppConfig,
   logger: Logger,
   /**
-   * 角色四档**当前生效的**模型名（CFG-8.2 / CFG-8.3）。
+   * **当前生效的**执行模型名（CFG-8.2 / CFG-8.3）；`null` = 面板没配，跟随部署级 env 三元组。
    *
    * 为什么是函数：Host 会被监督器反复重启，每次启动都应读一次最新配置；
    * 而 `createApplication()` 是同步函数（不能 await），所以这里只拿一个「取值器」。
-   * 全局层解析（没配的档返回 `null`）由装配层用 `resolveAllModelRoles()` 提供。
    */
-  resolvedRoles: () => readonly { readonly role: 'agent' | 'format' | 'classify' | 'fallback'; readonly model: string }[],
+  resolvedModelName: () => string | null,
 ): HostPort {
   const bundleDir = config.host.bundleDir;
   if (bundleDir === null) {
@@ -629,12 +628,13 @@ function createDefaultHostPort(
     logger,
     // 模型端点从这里进 pi-host：base URL / key / model 三个，别名同时写（见 model-env.ts）。
     // key 只在可信侧（bot + pi-host），永不进任务容器（plan §8.4）。
-    // CFG-8.2：四档角色的模型名再叠一层（执行档覆盖 `PI_BOT_MODEL_NAME`）。
-    // `resolvedRoles` 是**函数**：Host 可能被监督器反复重启，每次启动都读一次最新配置
-    // （`createDbModelRoleResolver` 自带 30s 缓存，不会把面板拖垮）。
+    // CFG-8.2：面板里配的执行模型再叠一层（覆盖部署级的 `PI_BOT_MODEL_NAME`）；
+    // 面板没配时 `hostModelNameEnv(null)` 返回 `{}`，完全跟随部署级 env。
+    // 取值器是**函数**：Host 可能被监督器反复重启，每次启动都读一次最新配置
+    // （`createDbModelResolver` 自带 30s 缓存，不会把面板拖垮）。
     extraEnv: {
       ...hostModelEnv(config),
-      ...hostModelRoleEnv(resolvedRoles()),
+      ...hostModelNameEnv(resolvedModelName()),
     },
   });
   // 设备令牌来自环境（`PI_BOT_HOST_TOKEN`）：常驻 Host 没有 `--pair` 行，必须显式传。
@@ -823,21 +823,21 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
         : // 写面优先用 App 认证的客户端：评论/打标会显示成 `<app-slug>[bot]`，
           // 与 webhook ack 用的是同一个客户端。只有 App 不可用才回落到静态 token 分支。
           { github: createGithubWriteApi(baseGithubClient) };
-  /** 模型角色解析（CFG-8.3）：项目覆盖优先、否则全局；带 30s 缓存。 */
-  const resolveModelRole = createDbModelRoleResolver({ db: pool, now: () => now().getTime() });
-  // CFG-8.2：全局四档的模型名。取值函数是同步的（`createApplication` 是同步装配），
-  // 所以这里用「上一次解析结果 + 后台刷新」：Host 启动时现算一次，失败就退回空表。
-  let globalModels: { readonly role: 'agent' | 'format' | 'classify' | 'fallback'; readonly model: string }[] = [];
-  const refreshGlobalModels = async (): Promise<void> => {
-    const next: { role: 'agent' | 'format' | 'classify' | 'fallback'; model: string }[] = [];
-    for (const item of await resolveAllModelRoles(resolveModelRole, null)) {
-      if (item.binding !== null) {
-        next.push({ role: item.role, model: item.binding.model });
-      }
-    }
-    globalModels = next;
-  };
-  void refreshGlobalModels();
+  /** 执行模型解析（CFG-8.3）：项目覆盖优先、否则全局；带 30s 缓存。 */
+  const resolveModel = createDbModelResolver({ db: pool, now: () => now().getTime() });
+  // CFG-8.2：全局执行模型名。取值函数是同步的（`createApplication` 是同步装配），
+  // 所以这里用「上一次解析结果 + 后台刷新」：装配时现算一次，读不到就保持 `null`
+  // （Host 仍按部署级 env 起，不会因为配置表还没迁完就起不来）。
+  let globalModelName: string | null = null;
+  void resolveModel(null).then(
+    (resolved) => {
+      globalModelName = resolved === null ? null : resolved.model;
+    },
+    (error: unknown) => {
+      // 读配置失败不该拦住启动：Host 下一次重启会再读一次，这里只留痕。
+      logger.warn({ err: error }, '读取全局执行模型失败：本次启动跟随部署级 env');
+    },
+  );
   const declaredPorts =
     overrides.ports ??
     createWorkerPorts({
@@ -847,7 +847,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
       ...(overrides.docker === undefined ? {} : { docker: overrides.docker }),
       worktree: overrides.worktree ?? createDefaultWorktreePort(config, logger),
       // 有 bundle 就真起 pi-host（`HostSupervisor`）；没有就换成「明确失败」的端口并告警
-      host: overrides.host ?? createDefaultHostPort(config, logger, () => globalModels),
+      host: overrides.host ?? createDefaultHostPort(config, logger, () => globalModelName),
       ...matchableGithub,
     });
   const liveContainers = new Set<string>();
@@ -898,7 +898,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
   const queries = overrides.queries ?? createQueries({ pool, now });
   // CFG-8.2：单价从「全局设置」的供应商模型目录读（TTL 缓存；失败退回代码里的官方价目表）
   const resolvePrice = overrides.resolvePrice ?? createConfigPriceResolver(pool, { now: () => now().getTime() });
-  /** 全局设置写面（供应商 / 模型角色 / 面板身份）：缺 `PI_BOT_SECRETS_KEY` 时整组不挂载。 */
+  /** 全局设置写面（供应商 / 执行模型 / 面板身份）：缺 `PI_BOT_SECRETS_KEY` 时整组不挂载。 */
   const settingsWiring = createSettingsApiWiring({ db: pool, config, logger });
   // 技能存储（面板可写面）：库里存清单与版本，正文落 `<PI_BOT_DATA_DIR>/skills/<id>/<version>/`。
   const skillStore = createSkillStore({ pool, dataDir: config.dataDir });
@@ -1046,7 +1046,7 @@ export function createApplication(config: AppConfig, overrides: ApplicationOverr
     pool,
     queries,
     skills: { store: skillStore, writeMode: config.panelWrite },
-    // 全局设置（供应商 / 模型角色 / 面板身份）：缺密钥时不注入 → 那组路由整组不存在
+    // 全局设置（供应商 / 执行模型 / 面板身份）：缺密钥时不注入 → 那组路由整组不存在
     ...(settingsWiring === null ? {} : { settings: settingsWiring }),
     // 面板静态资源（`vite build` 产物）：默认托管，`PI_BOT_PANEL_DIR=off` 时交给 Caddy。
     ...(config.panelDistDir === null ? {} : { panelDistDir: config.panelDistDir }),

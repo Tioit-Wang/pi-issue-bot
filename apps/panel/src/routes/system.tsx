@@ -30,7 +30,7 @@ import { useOverview, useSystem } from '../lib/queries.ts';
 import { repoSettingsPath } from '../lib/repo-route.ts';
 import { cn } from '../lib/utils.ts';
 import { degradedStateOf } from '../layout/degraded.ts';
-import { ModelRolesSection, ProvidersSection } from '../layout/system-settings.tsx';
+import { ExecutionModelSection, ProvidersSection } from '../layout/system-settings.tsx';
 
 const HOST_LABEL: Record<SystemResponse['host']['status'], string> = {
   ok: '正常',
@@ -110,14 +110,14 @@ export function SystemPage() {
       </AsyncSection>
 
       {/*
-       * `AC-32` 的两块（供应商 / 四档单价）**不**放在上面的 `AsyncSection` 里：
+       * `AC-32` 的两块（供应商 / 执行模型单价）**不**放在上面的 `AsyncSection` 里：
        * 它们来自 `/api/settings/*`，与 `/api/system` 是否可达无关。
        * 塞进去的后果是「系统接口一挂，全局设置跟着消失」——那正是 `FR-7.5` 说的
        * 「缺接口不许假装成功」，但这里不是缺接口，是不该被别人的失败连坐。
        */}
       <div className="flex min-w-0 flex-col gap-4">
         <ProvidersSection />
-        <ModelRolesSection />
+        <ExecutionModelSection />
       </div>
     </div>
   );

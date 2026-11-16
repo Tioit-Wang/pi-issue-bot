@@ -701,19 +701,14 @@ export function defaultEventTemplate(event: EventKey, variant: EventTemplateVari
  *
  * 放契约的理由同事件模板：面板要在输入框里显示「现在到底带的什么」，服务端要用同一份下发。
  */
-/* ── 11. 供应商与模型角色（需求 §6.8 CFG-8.1/8.2/8.3） ─────────────────────── */
+/* ── 11. 供应商与执行模型（需求 §6.8 CFG-8.1/8.2/8.3） ─────────────────────── */
 
-/**
- * 模型角色四档（CFG-8.2）：`agent`（执行）/ `format`（快速，格式检查与短分类）/
- * `classify`（分类判定）/ `fallback`（主模型 429 或超时后降级）。
- *
- * 顺序即界面上从上到下的顺序，也是「谁最贵、谁最便宜」的直觉顺序。
+/*
+ * 这里**没有「模型角色」**：执行只有一档——pi-host 每个 session 只认一个模型名，
+ * `format` / `classify` / `fallback` 三档在协议里没有对应槽位（`session/create` 只有
+ * `systemPrompt`、`turn/start` 只有 `input.text`），配置了也不生效。
+ * 与其留三档「界面上有、实际没用」的绑定，不如只留一个执行模型 + 项目级覆盖。
  */
-export const MODEL_ROLE_KEYS = ['agent', 'format', 'classify', 'fallback'] as const;
-
-export type ModelRoleKey = (typeof MODEL_ROLE_KEYS)[number];
-
-export const modelRoleKeySchema = z.enum(MODEL_ROLE_KEYS);
 
 /** 供应商 id：小写字母数字起头，面板的路由片段（`/api/settings/providers/:id`）。 */
 export const MODEL_PROVIDER_ID_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/;
@@ -753,19 +748,36 @@ export type ModelPrice = z.infer<typeof modelPriceSchema>;
 /**
  * 模型目录的一项（CFG-8.1「该家可用的 model 列表」+ CFG-8.2「每档显示输入/输出单价」）。
  *
- * 单价挂在**模型**上而不是角色上：同一个模型被两档共用时单价必须一致，
- * 而项目级覆盖换模型之后单价仍然查得到（挂在角色上，覆盖行的单价就没有来源了）。
+ * 单价挂在**模型**上而不是绑定行上：同一个模型被多个项目绑定时单价必须一致，
+ * 而项目级覆盖换模型之后单价仍然查得到（挂在绑定行上，覆盖行的单价就没有来源了）。
+ *
+ * 两个**可选**参数（`context_window` / `max_output_tokens`）由「查参数」回填：
+ * 联网（OpenRouter 公共模型库）优先，查不到才用内置兜底表（当前只覆盖 DeepSeek v4 系
+ * 与 MiMo v2.6 系，见 `apps/server/src/config/model-catalog.ts`）。
+ * 「查参数」的响应体在 `api.ts`（HTTP 契约只在一个文件里）。
+ *
+ * 为什么可选而不是必填：历史目录里只有 `{model, price}`，做成必填会让
+ * `parseModelCatalog()`（逐条 `safeParse`）把旧数据整条丢掉。
+ * 为什么查不到就不写：猜大了压缩不触发 → provider 400；猜小了每轮都压缩。
+ * 与「`null` 单价不写 `$0`」是同一条原则。
  */
+export const MAX_CONTEXT_WINDOW_TOKENS = 10_000_000;
+export const MAX_MODEL_OUTPUT_TOKENS = 1_000_000;
+
 export const modelCatalogEntrySchema = z
   .object({
     model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
     price: modelPriceSchema,
+    /** 上下文窗口（token）；`undefined` = 还不知道（没查过 / 查不到）。 */
+    context_window: z.number().int().min(1).max(MAX_CONTEXT_WINDOW_TOKENS).optional(),
+    /** 单次输出上限（token）；同上。 */
+    max_output_tokens: z.number().int().min(1).max(MAX_MODEL_OUTPUT_TOKENS).optional(),
   })
   .strict()
   .meta({ id: 'ModelCatalogEntry' });
 export type ModelCatalogEntry = z.infer<typeof modelCatalogEntrySchema>;
 
-/** 「供应商 + 模型」这一对（角色绑定的目标）。 */
+/** 「供应商 + 模型」这一对（全局默认与项目覆盖的目标）。 */
 export const modelTargetSchema = z
   .object({
     provider_id: modelProviderIdSchema,
@@ -775,23 +787,6 @@ export const modelTargetSchema = z
   .meta({ id: 'ModelTarget' });
 export type ModelTarget = z.infer<typeof modelTargetSchema>;
 
-/**
- * 一档角色的全局绑定：目标 + 单价（CFG-8.2 一档一行「各显示输入/输出单价」）。
- *
- * `price` 是**从所属供应商的模型目录解析出来的**，可能是 `null`：
- * 目录里没有这个模型（手改库 / 供应商换价没同步）时必须明说「单价未知」，
- * 不能编一个 0 冒充——那会让人以为「这次没花钱」。
- */
-export const modelRoleBindingSchema = z
-  .object({
-    role: modelRoleKeySchema,
-    provider_id: modelProviderIdSchema,
-    model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
-    price: modelPriceSchema.nullable(),
-  })
-  .strict()
-  .meta({ id: 'ModelRoleBinding' });
-export type ModelRoleBinding = z.infer<typeof modelRoleBindingSchema>;
 
 /**
  * 项目级选择（CFG-8.3）：**继承全局**还是**覆盖**。
@@ -800,7 +795,7 @@ export type ModelRoleBinding = z.infer<typeof modelRoleBindingSchema>;
  * 于是面板要猜「空着到底是跟着全局还是没配」——这正是需求点名的「两处不并列摆放」问题的反面。
  * `inherit` 表示**不写行**（删掉覆盖行），`override` 表示写一行。
  */
-export const modelRoleSelectionSchema = z
+export const modelSelectionSchema = z
   .discriminatedUnion('mode', [
     z
       .object({
@@ -817,8 +812,8 @@ export const modelRoleSelectionSchema = z
   ])
   // `meta.id`：判别联合不加它生成不出 `$ref`，OpenAPI 里就没有这个组件
   // （`contract.test.ts` 要求每个注册的响应 schema 顶层是对象或 `$ref`）。
-  .meta({ id: 'ModelRoleSelection' });
-export type ModelRoleSelection = z.infer<typeof modelRoleSelectionSchema>;
+  .meta({ id: 'ModelSelection' });
+export type ModelSelection = z.infer<typeof modelSelectionSchema>;
 
 /** 供应商连通性状态点（CFG-8.1「状态点 + 延迟，可手动测试」）。 */
 export const MODEL_PROVIDER_STATUSES = ['ok', 'fail', 'unknown'] as const;

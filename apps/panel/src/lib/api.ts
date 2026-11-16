@@ -25,14 +25,19 @@ import type {
   IssueSessionResponse,
   IssuesQuery,
   IssuesResponse,
+  ModelLookupResponse,
+  ModelProvider,
   ModelProvidersResponse,
-  ModelRolesResponse,
+  ModelSetting,
   OverviewQuery,
   OverviewResponse,
+  ProviderCheckResponse,
   QualityQuery,
   RepoSettingsResponse,
   ReposResponse,
   RevertsResponse,
+  SaveModelProviderRequest,
+  SaveModelRequest,
   SaveRepoSettingsRequest,
   SystemQuery,
   SystemResponse,
@@ -207,17 +212,56 @@ export const api = {
    * `repo` 含 `/`，路径一律拆成 `:owner/:name` 两段（`repoBasePath`）。
    */
 
-  /* ── 全局设置（供应商 / 四档模型角色，`AC-32`） ──────────────────────────────
-   * 只读：面板本版不提供「改 key / 改单价」的写入口（`FR-7.5`：缺写接口就画禁用态）。
-   * `key` 真值永不返回（契约只给 `key_configured` + `key_mask`），所以这里**不可能**
-   * 请求到明文 —— 不是「记得别显示」，是拿不到。
+  /* ── 全局设置（供应商 / 执行模型，`AC-32` / CFG-8.1 / CFG-8.2） ─────────────
+   * 读 + 写：`key` 真值永不返回（契约只给 `key_configured` + `key_mask`），所以这里
+   * **不可能**读到明文 —— 不是「记得别显示」，是拿不到。写入只收明文 key 一次性入参，
+   * 服务端落库前加密（`I9`），面板不留副本。
    */
 
   /** 每个供应商一行：名称 / baseURL / key 掩码 / 连通性状态点 + 延迟 / 可用 model 列表。 */
   modelProviders: (): Promise<ModelProvidersResponse> => request<ModelProvidersResponse>('/api/settings/providers'),
 
-  /** 四档角色（agent / format / classify / fallback）各一行，各带输入 / 输出单价。 */
-  modelRoles: (): Promise<ModelRolesResponse> => request<ModelRolesResponse>('/api/settings/models'),
+  /** 全局**执行模型**（唯一一档）：供应商 + 模型 + 输入 / 输出单价。 */
+  modelSetting: (): Promise<ModelSetting> => request<ModelSetting>('/api/settings/model'),
+
+  /**
+   * 改一家供应商（`CFG-8.1`）。**只给要改的字段**，其余原样保留。
+   *
+   * 三态 key：不传 = 保持不变；传明文 = 换新（服务端算掩码并加密）；`clear_key: true` = 清空。
+   * 为什么不用「传空串等于清空」：那会让一次误触把 key 抹掉，而抹掉之后下一次调用才炸。
+   */
+  saveModelProvider: async (id: string, body: SaveModelProviderRequest): Promise<ModelProvider> =>
+    write<ModelProvider>(`/api/settings/providers/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      contentType: 'application/json',
+    }),
+
+  /** 手动测连通性（`CFG-8.1`）。**失败也是 200**：状态点 + 原因在 body 里，不是错误横幅。 */
+  checkModelProvider: async (id: string): Promise<ProviderCheckResponse> =>
+    write<ProviderCheckResponse>(`/api/settings/providers/${encodeURIComponent(id)}/check`, {
+      method: 'POST',
+    }),
+
+  /**
+   * 「查参数」（`CFG-8.1` 模型目录扩展）：取每个模型的上下文窗口 / 输出上限。
+   *
+   * **不写库**：结果只回给表单，用户点「保存」才落 `models`。
+   * 服务端联网优先、内置表兜底，所以响应里带 `fetched` 与 `note` —— 面板必须展示它们，
+   * 否则「这组数字是刚查到的还是兜底表里的」就没人知道。
+   */
+  lookupProviderModels: async (id: string): Promise<ModelLookupResponse> =>
+    write<ModelLookupResponse>(`/api/settings/providers/${encodeURIComponent(id)}/models/lookup`, {
+      method: 'POST',
+    }),
+
+  /** 绑定执行模型（`CFG-8.2`）。服务端会校验「该供应商的模型目录里真的有这个模型」。 */
+  saveModel: async (body: SaveModelRequest): Promise<void> =>
+    write<void>('/api/settings/model', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+      contentType: 'application/json',
+    }),
 
   /** 全部仓库 + 状态（面板切换器 / 系统页 / 健康卡）。 */
   repos: (): Promise<ReposResponse> => request<ReposResponse>('/api/repos'),

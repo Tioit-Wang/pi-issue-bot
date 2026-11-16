@@ -1,5 +1,5 @@
 /**
- * 供应商 / 模型角色 / 面板身份的**真库**用例（`migrations/0013_wp9_model_providers.sql` 建的表）。
+ * 供应商 / 执行模型 / 面板身份的**真库**用例（`migrations/0013` 与 `0016` 建的表）。
  *
  * 覆盖六条「面板上看不出来但一定要对」的事实：
  *  1. key 落库是 AES-256-GCM 密文（明文不出现），掩码可读、解密回原值；
@@ -20,18 +20,19 @@ import {
   listFallbacks,
   listIdentities,
   listProviders,
-  listRepoRoleSelections,
-  listRoleBindings,
   parseModelCatalog,
   priceOf,
   readIdentityToken,
+  readModelBinding,
   readProviderKey,
+  readRepoModelSelection,
   recordFallback,
   recordIdentityCheck,
+  resolveEffectiveModel,
   saveIdentity,
+  saveModelBinding,
   saveProvider,
-  saveRepoRoleSelection,
-  saveRoleBinding,
+  saveRepoModelSelection,
 } from '../src/config/model-settings.ts';
 import { openTestDb } from './helpers/queries-db.ts';
 import type { TestDb } from './helpers/queries-db.ts';
@@ -55,7 +56,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.pool.query(
-    `truncate table model_providers, model_roles, repo_model_roles, panel_identities, identity_fallbacks cascade`,
+    `truncate table model_providers, model_default, repo_model_override, panel_identities, identity_fallbacks cascade`,
   );
 });
 
@@ -153,11 +154,10 @@ describe('CFG-8.1 供应商记录（真库）', () => {
   });
 });
 
-describe('CFG-8.2 模型角色四档（真库）', () => {
-  it('四档固定四行；没配的档 configured=false', async () => {
-    const bindings = await listRoleBindings(db.pool);
-    expect(bindings.map((item) => item.role)).toEqual(['agent', 'format', 'classify', 'fallback']);
-    expect(bindings.every((item) => !item.configured)).toBe(true);
+describe('CFG-8.2 执行模型（真库）', () => {
+  it('没配时 configured=false（单行表：最多一行，不靠「取第一行」的约定）', async () => {
+    const binding = await readModelBinding(db.pool);
+    expect(binding).toMatchObject({ configured: false, providerId: null, model: null, updatedAt: null });
   });
 
   it('只能绑目录里存在的模型（拼错就当场拒，不留下静默失效的配置）', async () => {
@@ -166,23 +166,35 @@ describe('CFG-8.2 模型角色四档（真库）', () => {
       { id: 'p1', name: 'P1', models: [{ model: 'm1', price: { input_usd_per_mtok: 1, output_usd_per_mtok: 2 } }] },
       KEY,
     );
-    const missing = await saveRoleBinding(db.pool, { role: 'agent', providerId: 'p1', model: 'm-typo' });
+    const missing = await saveModelBinding(db.pool, { providerId: 'p1', model: 'm-typo' });
     expect(missing.ok).toBe(false);
 
-    const unknownProvider = await saveRoleBinding(db.pool, { role: 'agent', providerId: 'nope', model: 'm1' });
+    const unknownProvider = await saveModelBinding(db.pool, { providerId: 'nope', model: 'm1' });
     expect(unknownProvider.ok).toBe(false);
 
-    const badRole = await saveRoleBinding(db.pool, { role: 'boss', providerId: 'p1', model: 'm1' });
-    expect(badRole.ok).toBe(false);
-
-    const ok = await saveRoleBinding(db.pool, { role: 'agent', providerId: 'p1', model: 'm1' });
+    const ok = await saveModelBinding(db.pool, { providerId: 'p1', model: 'm1' });
     expect(ok.ok).toBe(true);
-    const bindings = await listRoleBindings(db.pool);
-    expect(bindings.find((item) => item.role === 'agent')).toMatchObject({
-      configured: true,
-      providerId: 'p1',
-      model: 'm1',
-    });
+    expect(await readModelBinding(db.pool)).toMatchObject({ configured: true, providerId: 'p1', model: 'm1' });
+  });
+
+  it('反复保存只更新那一行（单行表：写第二次不是新行）', async () => {
+    await saveProvider(
+      db.pool,
+      {
+        id: 'p1',
+        name: 'P1',
+        models: [
+          { model: 'm1', price: { input_usd_per_mtok: 1, output_usd_per_mtok: 2 } },
+          { model: 'm2', price: { input_usd_per_mtok: 3, output_usd_per_mtok: 9 } },
+        ],
+      },
+      KEY,
+    );
+    await saveModelBinding(db.pool, { providerId: 'p1', model: 'm1' });
+    await saveModelBinding(db.pool, { providerId: 'p1', model: 'm2' });
+    const rows = await db.sql(`select count(*)::int as n from model_default`);
+    expect((rows[0] as { n: number }).n).toBe(1);
+    expect(await readModelBinding(db.pool)).toMatchObject({ configured: true, model: 'm2' });
   });
 });
 
@@ -200,28 +212,30 @@ describe('CFG-8.3 项目级「继承 / 覆盖」（真库）', () => {
       },
       KEY,
     );
-    await saveRoleBinding(db.pool, { role: 'agent', providerId: 'p1', model: 'global-model' });
+    await saveModelBinding(db.pool, { providerId: 'p1', model: 'global-model' });
 
     // 初始：继承
-    let selections = await listRepoRoleSelections(db.pool, REPO);
-    expect(selections.find((item) => item.role === 'agent')).toMatchObject({ overridden: false, model: null });
+    let selection = await readRepoModelSelection(db.pool, REPO);
+    expect(selection).toMatchObject({ overridden: false, model: null });
+    expect(await resolveEffectiveModel(db.pool, REPO)).toMatchObject({ model: 'global-model', source: 'global' });
 
     // 覆盖
-    const overridden = await saveRepoRoleSelection(db.pool, {
+    const overridden = await saveRepoModelSelection(db.pool, {
       repo: REPO,
-      role: 'agent',
       selection: { mode: 'override', provider_id: 'p1', model: 'repo-model' },
     });
     expect(overridden.ok).toBe(true);
-    selections = await listRepoRoleSelections(db.pool, REPO);
-    expect(selections.find((item) => item.role === 'agent')).toMatchObject({ overridden: true, model: 'repo-model' });
+    selection = await readRepoModelSelection(db.pool, REPO);
+    expect(selection).toMatchObject({ overridden: true, model: 'repo-model' });
+    expect(await resolveEffectiveModel(db.pool, REPO)).toMatchObject({ model: 'repo-model', source: 'repo' });
 
     // 回到继承（删行，而不是写一行空值）
-    const inherited = await saveRepoRoleSelection(db.pool, { repo: REPO, role: 'agent', selection: { mode: 'inherit' } });
+    const inherited = await saveRepoModelSelection(db.pool, { repo: REPO, selection: { mode: 'inherit' } });
     expect(inherited.ok).toBe(true);
-    selections = await listRepoRoleSelections(db.pool, REPO);
-    expect(selections.find((item) => item.role === 'agent')).toMatchObject({ overridden: false, model: null });
-    const rows = await db.sql(`select count(*)::int as n from repo_model_roles where repo = $1`, [REPO]);
+    selection = await readRepoModelSelection(db.pool, REPO);
+    expect(selection).toMatchObject({ overridden: false, model: null });
+    expect(await resolveEffectiveModel(db.pool, REPO)).toMatchObject({ model: 'global-model', source: 'global' });
+    const rows = await db.sql(`select count(*)::int as n from repo_model_override where repo = $1`, [REPO]);
     expect((rows[0] as { n: number }).n).toBe(0);
   });
 
@@ -231,12 +245,15 @@ describe('CFG-8.3 项目级「继承 / 覆盖」（真库）', () => {
       { id: 'p1', name: 'P1', models: [{ model: 'm1', price: { input_usd_per_mtok: 1, output_usd_per_mtok: 2 } }] },
       KEY,
     );
-    const result = await saveRepoRoleSelection(db.pool, {
+    const result = await saveRepoModelSelection(db.pool, {
       repo: REPO,
-      role: 'format',
       selection: { mode: 'override', provider_id: 'p1', model: 'm-typo' },
     });
     expect(result.ok).toBe(false);
+  });
+
+  it('全局与项目都没配时生效值就是 null（执行面退回部署级 env）', async () => {
+    expect(await resolveEffectiveModel(db.pool, REPO)).toBe(null);
   });
 });
 

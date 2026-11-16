@@ -407,7 +407,7 @@ shared ✗→ contract · contract ✗→ shared / envelope / racp-client</pre>
             <tr><td>OpenAPI 生成器</td><td><code>Endpoint.pathParam</code> 只支持单个路径参数 → <code>/api/repos/{owner}/{name}/deliveries</code>、<code>/api/issues/{owner}/{name}/{kind}/{number}/trace</code> 这类多段路径端点进不了产物（<code>openapi-typescript</code> 生成失败是同一缺口）</td></tr>
             <tr><td><code>jobs/reconcile-reverts.ts</code></td><td>只认 <code>intent==='label'</code>，而 v2.1 写的是 <code>'v21:label'</code> → 撤标没有改回检测</td></tr>
             <tr><td><code>queries/audit.ts</code> 审批列</td><td>写侧记 <code>kind='approval.audit'</code>、读侧查 <code>kind='approval'</code>，审批列恒 null</td></tr>
-            <tr><td>模型四档角色</td><td><code>agent</code> 档已真实生效；<code>format</code> / <code>classify</code> / <code>fallback</code> 与<b>项目级覆盖</b>需 RACP 支持 per-session 模型参数（<code>session/create</code> 只有 <code>systemPrompt</code>、<code>turn/start</code> 只有 <code>input.text</code>）</td></tr>
+            <tr><td>项目级模型覆盖</td><td>配置与接口齐备（CFG-8.3：<code>repo_model_override</code> + <code>/api/repos/:owner/:name/model</code>），但执行面只按全局解析（<code>resolveModel(null)</code>）；项目覆盖要等 RACP 支持 per-session 模型参数（<code>session/create</code> 只有 <code>systemPrompt</code>、<code>turn/start</code> 只有 <code>input.text</code>）。四档角色已撤掉（迁移 0016）：三档从来没有生效槽位</td></tr>
             <tr><td>供应商可用 model 列表</td><td>各家 <code>/models</code> 形状不一致，<code>check</code> 只判连通性 → <code>ProviderCheckResponse.models</code> 恒 <code>null</code></td></tr>
             <tr><td>个人 PAT 与写回身份</td><td>多用户 PAT 下 <code>GET identity</code> 取第一行；写回链路尚无 operator 概念，退回 bot 有留痕但无「按操作者切换」</td></tr>
           </tbody>

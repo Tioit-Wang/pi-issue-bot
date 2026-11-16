@@ -15,8 +15,13 @@ import type {
   CostsQuery,
   IssueSessionParams,
   IssuesQuery,
+  ModelLookupResponse,
+  ModelProvider,
   OverviewQuery,
+  ProviderCheckResponse,
   QualityQuery,
+  SaveModelProviderRequest,
+  SaveModelRequest,
   TasksQuery,
 } from './contract.ts';
 /*
@@ -63,9 +68,9 @@ export const queryKeys = {
   skillVersions: (id: string) => ['skills', 'versions', id] as const,
   /** 技能目录里每个文件的全文（模态框编辑器用；写后随 `'skills'` 前缀一起失效）。 */
   skillFiles: (id: string) => ['skills', 'files', id] as const,
-  /** 全局设置两块（`AC-32`）：供应商清单与四档角色单价，各自一个 key。 */
+  /** 全局设置两块（`AC-32`）：供应商清单与执行模型，各自一个 key。 */
   modelProviders: () => ['settings', 'providers'] as const,
-  modelRoles: () => ['settings', 'models'] as const,
+  modelSetting: () => ['settings', 'model'] as const,
 };
 /** 面板的 QueryClient 默认值：失败只重试一次（内网接口，重试多了只会拖慢首屏）。 */
 export function createQueryClient(): QueryClient {
@@ -146,7 +151,7 @@ export function useSystem() {
 /**
  * 供应商清单（`AC-32`）。轮询间隔用列表档：连通性状态由后端测定，面板不自己探测。
  *
- * 为什么不做 `enabled: false` / 懒加载：模态框一打开就要同时给出两块（供应商 + 四档单价），
+ * 为什么不做 `enabled: false` / 懒加载：一块打开就要同时给出供应商与执行模型（单价来自目录），
  * 分两次懒加载只会让「打开后先空一下再出现」。
  */
 export function useModelProviders() {
@@ -157,12 +162,76 @@ export function useModelProviders() {
   });
 }
 
-/** 四档模型角色（`agent` / `format` / `classify` / `fallback`）各一行的单价。 */
-export function useModelRoles() {
+/** 全局执行模型（唯一一档）：供应商 + 模型 + 单价。 */
+export function useModelSetting() {
   return useQuery({
-    queryKey: queryKeys.modelRoles(),
-    queryFn: () => api.modelRoles(),
+    queryKey: queryKeys.modelSetting(),
+    queryFn: () => api.modelSetting(),
     refetchInterval: REFETCH_INTERVAL.list,
+  });
+}
+
+/** 全局设置两块共用的失效口径：`['settings']` 前缀覆盖供应商与执行模型。 */
+function useInvalidateSettings(): () => Promise<void> {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: ['settings'] });
+}
+
+/**
+ * 改一家供应商（`CFG-8.1`）。
+ *
+ * 为什么改完要把**执行模型**也一起刷：`models` 是单价的来源，改目录会让读视图上的
+ * 「$3 / $15」变成「—」；只刷供应商列表会留下一屏自相矛盾的单价。
+ *
+ * 不做乐观更新：新掩码由服务端算（`key_mask`），本地猜不出「加密后长什么样」。
+ */
+export function useSaveModelProvider() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: (vars: { id: string; body: SaveModelProviderRequest }): Promise<ModelProvider> =>
+      api.saveModelProvider(vars.id, vars.body),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/**
+ * 手动测连通性（`CFG-8.1`）。
+ *
+ * 成功响应里可能是 `status: 'fail'` —— 那是「测了但不通」，不是请求失败；
+ * 页面按 `data.status` 画点，只有 `onError` 才是真的没测成。
+ */
+export function useCheckModelProvider() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: (id: string): Promise<ProviderCheckResponse> => api.checkModelProvider(id),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/** 绑定执行模型（`CFG-8.2`）：`provider_id` + `model` 必须都在该供应商的目录里。 */
+export function useSaveModel() {
+  const invalidate = useInvalidateSettings();
+  return useMutation({
+    mutationFn: (body: SaveModelRequest): Promise<void> => api.saveModel(body),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+}
+
+/**
+ * 「查参数」（`CFG-8.1` 模型目录扩展）。
+ *
+ * **刻意不失效任何查询**：结果只是回填到表单草稿，用户点「保存」才落库。
+ * 一旦在这里 `invalidateQueries`，表单会被服务端那份旧数据覆盖 —— 用户刚查到的数字直接消失。
+ */
+export function useLookupProviderModels() {
+  return useMutation({
+    mutationFn: (id: string): Promise<ModelLookupResponse> => api.lookupProviderModels(id),
   });
 }
 

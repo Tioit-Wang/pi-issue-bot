@@ -31,7 +31,7 @@ export function createHandlers(): HttpHandler[] {
     ...qualityHandlers,
     ...auditHandlers,
     ...skillsHandlers,
-    // 全局设置（`/api/settings/providers`、`/api/settings/models`）：`AC-32` 的两块
+    // 全局设置（`/api/settings/providers`、`/api/settings/model`）：`AC-32` 的两块
     ...settingsHandlers,
     // 仓库写面（`/api/repos`、`/api/repos/:owner/:name/settings`）：四段路径已按具体在前排好
     ...reposHandlers,

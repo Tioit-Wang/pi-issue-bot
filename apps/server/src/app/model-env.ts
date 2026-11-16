@@ -58,56 +58,25 @@ export function describeModelEndpoint(config: AppConfig): string {
   return `${name} @ ${base}`;
 }
 
-/* ── 角色四档 → pi-host 环境（CFG-8.2 / CFG-8.3 的执行面）────────────────────── */
+/* ── 执行模型 → pi-host 环境（CFG-8.2 / CFG-8.3 的执行面）──────────────────── */
 
 /**
- * 四档角色在 pi-host 侧的变量名。
+ * 面板里配的**执行模型名** → pi-host 环境增量。
  *
- * 为什么要单独一组变量：`PI_BOT_MODEL_NAME` 是**执行档**（`agent`）的旧名，pi-host 只认它；
- * 其余三档（`format` / `classify` / `fallback`）pi-host 当前的 RACP 协议里没有对应槽位
- * （`session/create` 只带 `systemPrompt`，`turn/start` 只带 `input.text`），
- * 所以这三档的绑定**只落在配置与面板上**，运行期由后续协议版本消费。
- * 这里仍把四档都发出去：多给的变量不会被旧 Host 误解，而省掉它们会让
- * 「界面配置了、实际没用上」这件事永远查不出来。
- */
-export const HOST_MODEL_ROLE_ENV_KEYS = {
-  agent: { name: 'PI_BOT_MODEL_NAME', alias: 'OPENAI_MODEL' },
-  format: { name: 'PI_BOT_MODEL_FORMAT_NAME', alias: 'PI_BOT_MODEL_FORMAT' },
-  classify: { name: 'PI_BOT_MODEL_CLASSIFY_NAME', alias: 'PI_BOT_MODEL_CLASSIFY' },
-  fallback: { name: 'PI_BOT_MODEL_FALLBACK_NAME', alias: 'PI_BOT_MODEL_FALLBACK' },
-} as const;
-
-/**
- * 一档角色的**生效**绑定（装配层解析好传进来，本函数不查库）。
+ * 为什么只有一个模型名：pi-host 的 RACP 协议里只有这一个模型槽位
+ * （`session/create` 只带 `systemPrompt`、`turn/start` 只带 `input.text`），
+ * 「format / classify / fallback」三档从来没有对应槽位，所以那三档连同它们的
+ * `PI_BOT_MODEL_FORMAT*` / `PI_BOT_MODEL_CLASSIFY*` / `PI_BOT_MODEL_FALLBACK*` 变量一并撤掉了。
  *
- * `providerId` / `source` 可选：Host 启动时只关心「模型名」，而项目级覆盖的解析发生在
- * 任务侧（`app/model-role-resolver.ts`）。让这两项可选，装配层才能在启动路径里只给名字。
+ * `null` = 面板没配（或还没读到）→ 返回 `{}`，pi-host 沿用部署级 env 三元组。
+ * 宁可**不出现**这个变量，也不写空字符串：空串会被下游当成「显式配了个空模型名」。
  */
-export type ResolvedModelRole = {
-  readonly role: 'agent' | 'format' | 'classify' | 'fallback';
-  readonly model: string;
-  readonly providerId?: string;
-  /** 来自项目覆盖还是全局继承（启动日志要能解释「为什么模型变了」）。 */
-  readonly source?: 'repo' | 'global';
-};
-
-/**
- * 角色四档 → pi-host 环境增量（CFG-8.2 / CFG-8.3）。
- *
- * 口径与 `hostModelEnv()` 一致：没配的档**不出现**（空字符串会被下游当成「显式配了个空端点」）；
- * 执行档同时写 `PI_BOT_MODEL_NAME` 与 `OPENAI_MODEL`（宿主机上 pi-host 与各 SDK 读标准名）。
- * 端点级的 key / base URL 仍由 `hostModelEnv()` / `hostEndpointEnv()` 给，本函数只管模型名。
- */
-export function hostModelRoleEnv(
-  roles: readonly ResolvedModelRole[],
-): Readonly<Record<string, string>> {
-  const env: Record<string, string> = {};
-  for (const role of roles) {
-    const keys = HOST_MODEL_ROLE_ENV_KEYS[role.role];
-    env[keys.name] = role.model;
-    env[keys.alias] = role.model;
-  }
-  return env;
+export function hostModelNameEnv(model: string | null): Readonly<Record<string, string>> {
+  if (model === null || model === '') return {};
+  return {
+    [HOST_MODEL_ENV_KEYS.name]: model,
+    [HOST_MODEL_ENV_KEYS.openaiModel]: model,
+  };
 }
 
 /**

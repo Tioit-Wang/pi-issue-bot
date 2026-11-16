@@ -4,7 +4,7 @@
  * 三块：
  *  1. `classifyIdentityState()` —— 令牌三态的唯一判定实现（缺失 / scope 不足 / 过期）；
  *  2. `estimateDeepSeekCostUsd({ resolvePrice })` —— 单价从配置读，取不到退回官价表；
- *  3. `hostModelRoleEnv()` / `hostEndpointEnv()` —— 四档模型名与供应商端点的环境增量。
+ *  3. `hostModelNameEnv()` / `hostEndpointEnv()` —— 执行模型名与供应商端点的环境增量。
  *
  * 为什么要这些用例：它们都是「一个数字/一个判定错了，面板上却看不出来」的地方
  * （三态判反 = 用过期令牌写回；单价取错 = 成本页少一个数量级）。
@@ -13,7 +13,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLASSIC_SCOPE_EQUIVALENTS,
-  MODEL_ROLE_KEYS,
   classifyIdentityState,
   maskSecret,
   missingRequiredScopes,
@@ -21,7 +20,7 @@ import {
 } from '../../../packages/contract/src/index.ts';
 import { estimateDeepSeekCostUsd } from '../src/cost/index.ts';
 import type { PriceResolver } from '../src/cost/index.ts';
-import { HOST_MODEL_ENV_KEYS, HOST_MODEL_ROLE_ENV_KEYS, hostEndpointEnv, hostModelRoleEnv } from '../src/app/index.ts';
+import { HOST_MODEL_ENV_KEYS, hostEndpointEnv, hostModelNameEnv } from '../src/app/index.ts';
 
 /** 判定时刻（注入时钟：三态里有一项是时间比较）。 */
 const FIXED_NOW = new Date('2026-06-01T12:00:00.000Z');
@@ -144,32 +143,21 @@ describe('CFG-8.2 单价从配置读', () => {
   });
 });
 
-describe('CFG-8.2 / CFG-8.3 四档 → pi-host 环境', () => {
-  it('四档各写两个变量名（自定义名 + 别名）', () => {
-    const env = hostModelRoleEnv([
-      { role: 'agent', providerId: 'deepseek', model: 'deepseek-v4-pro', source: 'global' },
-      { role: 'format', providerId: 'deepseek', model: 'deepseek-v4.1-flash', source: 'repo' },
-      { role: 'classify', providerId: 'deepseek', model: 'deepseek-v4.1-flash', source: 'global' },
-      { role: 'fallback', providerId: 'deepseek', model: 'deepseek-v4-pro', source: 'global' },
-    ]);
-    expect(env[HOST_MODEL_ROLE_ENV_KEYS.agent.name]).toBe('deepseek-v4-pro');
-    expect(env[HOST_MODEL_ROLE_ENV_KEYS.agent.alias]).toBe('deepseek-v4-pro');
-    expect(env[HOST_MODEL_ROLE_ENV_KEYS.format.name]).toBe('deepseek-v4.1-flash');
-    expect(env[HOST_MODEL_ROLE_ENV_KEYS.classify.name]).toBe('deepseek-v4.1-flash');
-    expect(env[HOST_MODEL_ROLE_ENV_KEYS.fallback.name]).toBe('deepseek-v4-pro');
+describe('CFG-8.2 / CFG-8.3 执行模型 → pi-host 环境', () => {
+  it('模型名同时写两个变量名（自定义名 + 标准别名）', () => {
+    const env = hostModelNameEnv('deepseek-v4-pro');
+    expect(env[HOST_MODEL_ENV_KEYS.name]).toBe('deepseek-v4-pro');
+    expect(env[HOST_MODEL_ENV_KEYS.openaiModel]).toBe('deepseek-v4-pro');
+    expect(Object.keys(env).sort()).toEqual([HOST_MODEL_ENV_KEYS.name, HOST_MODEL_ENV_KEYS.openaiModel].sort());
   });
 
-  it('没配的档**不出现**（不写空串：空串会被下游当成「显式配了个空端点」）', () => {
-    const env = hostModelRoleEnv([{ role: 'agent', providerId: 'p', model: 'm', source: 'global' }]);
-    expect(Object.keys(env).sort()).toEqual(
-      [HOST_MODEL_ROLE_ENV_KEYS.agent.name, HOST_MODEL_ROLE_ENV_KEYS.agent.alias].sort(),
-    );
+  it('没配时**不出现**（不写空串：空串会被下游当成「显式配了个空模型名」）', () => {
+    expect(hostModelNameEnv(null)).toEqual({});
+    expect(hostModelNameEnv('')).toEqual({});
   });
 
-  it('四档键各不同，且执行档沿用旧变量名（pi-host 只认它）', () => {
-    const names = MODEL_ROLE_KEYS.map((role) => HOST_MODEL_ROLE_ENV_KEYS[role].name);
-    expect(new Set(names).size).toBe(MODEL_ROLE_KEYS.length);
-    expect(HOST_MODEL_ROLE_ENV_KEYS.agent.name).toBe(HOST_MODEL_ENV_KEYS.name);
+  it('执行模型沿用部署级变量名（pi-host 只认它，`PI_BOT_MODEL_NAME`）', () => {
+    expect(HOST_MODEL_ENV_KEYS.name).toBe('PI_BOT_MODEL_NAME');
   });
 
   it('供应商端点：给了就覆盖 key/base URL 两个名字，不给就空对象', () => {

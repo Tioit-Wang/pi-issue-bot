@@ -12,18 +12,18 @@ import { isoDateTimeSchema, isoDateSchema, usdAmountSchema, ratioSchema, countSc
 import { actionStatusSchema, executorActionIntentSchema, failureClassSchema, outcomeSchema, recordedActionIntentSchema, revertKindSchema, runEventKindSchema, taskSourceSchema, taskStatusSchema, targetKindSchema, type FailureClass } from './enums.ts';
 // 仓库配置的形状（`repos.settings`）：`PUT /api/repos/*/settings` 的请求体就是它，所以两边必须同源。
 import { repoSettingsSchema } from './repo-config.ts';
-// 供应商 / 模型角色 / 面板身份的词汇表（§6.8、§6.9）：Api 只引用，不另立第二套取舍。
+// 供应商 / 执行模型 / 面板身份的词汇表（§6.8、§6.9）：Api 只引用，不另立第二套取舍。
 import {
+  MAX_CONTEXT_WINDOW_TOKENS,
+  MAX_MODEL_OUTPUT_TOKENS,
   MAX_PROVIDER_MODELS,
   MODEL_NAME_MAX_CHARS,
   MODEL_PROVIDER_NAME_MAX_CHARS,
-  MODEL_ROLE_KEYS,
   modelCatalogEntrySchema,
   modelPriceSchema,
   modelProviderIdSchema,
   modelProviderStatusSchema,
-  modelRoleKeySchema,
-  modelRoleSelectionSchema,
+  modelSelectionSchema,
   modelTargetSchema,
   panelIdentityStateSchema,
 } from './settings-v21.ts';
@@ -1299,7 +1299,7 @@ export const deliveriesResponseSchema = z
 export type DeliveriesResponse = z.infer<typeof deliveriesResponseSchema>;
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
-// 13. 供应商 / 模型角色 / 面板身份（需求 §6.8、§6.9：CFG-8.1~8.3、CFG-9.1/9.2、AC-32）
+// 13. 供应商 / 执行模型 / 面板身份（需求 §6.8、§6.9：CFG-8.1~8.3、CFG-9.1/9.2、AC-32）
 // ══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -1381,11 +1381,16 @@ export const providerCheckResponseSchema = z
   .meta({ id: 'ProviderCheckResponse' });
 export type ProviderCheckResponse = z.infer<typeof providerCheckResponseSchema>;
 
-/** `GET /api/settings/models`：四档角色各一行（CFG-8.2 / AC-32）。固定回四行，缺的那档 `configured: false`。 */
-export const modelRoleRowSchema = z
+/**
+ * `GET /api/settings/model`：**唯一**的执行模型（CFG-8.2）。
+ *
+ * 为什么是一个对象而不是「四行」：执行只有一档（见 `settings-v21.ts` 的说明），
+ * 多一行就意味着又多一个「配了但不生效」的槽位。没配时 `configured: false`，
+ * 面板显示「未配置」而不是隐藏——「现在到底用哪个模型」必须一直看得见。
+ */
+export const modelSettingSchema = z
   .object({
-    role: modelRoleKeySchema,
-    /** 是否已绑定（没配的档面板显示「未配置」而不是隐藏——四档必须都在）。 */
+    /** 是否已绑定全局执行模型。 */
     configured: z.boolean(),
     /** 绑定的供应商；未配置为 `null`。 */
     provider_id: modelProviderIdSchema.nullable(),
@@ -1396,30 +1401,59 @@ export const modelRoleRowSchema = z
     updated_at: isoDateTimeSchema.nullable(),
   })
   .strict()
-  .meta({ id: 'ModelRoleRow' });
-export type ModelRoleRow = z.infer<typeof modelRoleRowSchema>;
+  .meta({ id: 'ModelSetting' });
+export type ModelSetting = z.infer<typeof modelSettingSchema>;
 
-export const modelRolesResponseSchema = z
+/**
+ * 「查参数」一条的结果（`POST /api/settings/providers/:id/models/lookup`）。
+ *
+ * `source` 说清这个数字是哪来的：`openrouter` = 联网查到的、`table` = 内置兜底表、
+ * `none` = 两处都没有（`found=false` 且两个数字都是 `null`，面板必须显示「未知」）。
+ * 为什么不猜一个数：猜大了压缩不触发 → provider 400；猜小了每轮都压缩。
+ */
+export const modelParameterLookupSchema = z
   .object({
-    /** 固定四行，顺序同 `MODEL_ROLE_KEYS`。 */
-    items: z.array(modelRoleRowSchema).length(MODEL_ROLE_KEYS.length),
+    model: z.string().trim().min(1).max(MODEL_NAME_MAX_CHARS),
+    found: z.boolean(),
+    context_window: z.number().int().min(1).max(MAX_CONTEXT_WINDOW_TOKENS).nullable(),
+    max_output_tokens: z.number().int().min(1).max(MAX_MODEL_OUTPUT_TOKENS).nullable(),
+    source: z.enum(['openrouter', 'table', 'none']),
+    /** 命中的外部条目 id（如 `deepseek/deepseek-v4.1-flash`）；没命中为 `null`。 */
+    matched_id: z.string().max(200).nullable(),
+    /** 这一条为什么没查到（名字不在库里 / 该条缺字段）；成功为 `null`。 */
+    error: z.string().max(300).nullable(),
   })
   .strict()
-  .meta({ id: 'ModelRolesResponse' });
-export type ModelRolesResponse = z.infer<typeof modelRolesResponseSchema>;
+  .meta({ id: 'ModelParameterLookup' });
+export type ModelParameterLookup = z.infer<typeof modelParameterLookupSchema>;
 
-/** `PUT /api/settings/models/:role` 的请求体：全局绑定（角色 → 供应商 + 模型）。 */
-export const saveModelRoleRequestSchema = modelTargetSchema;
-export type SaveModelRoleRequest = z.infer<typeof saveModelRoleRequestSchema>;
+/** `POST /api/settings/providers/:id/models/lookup` 的响应：逐条参数 + 本次取数来源。 */
+export const modelLookupResponseSchema = z
+  .object({
+    items: z.array(modelParameterLookupSchema).max(MAX_PROVIDER_MODELS),
+    /** 本次整体是联网成功还是走了内置兜底（面板据此说清「这组数字是哪来的」）。 */
+    fetched: z.enum(['openrouter', 'table']),
+    /** 整次取数的失败原因；联网成功为 `null`。 */
+    note: z.string().max(300).nullable(),
+  })
+  .strict()
+  .meta({ id: 'ModelLookupResponse' });
+export type ModelLookupResponse = z.infer<typeof modelLookupResponseSchema>;
+
+/** `PUT /api/settings/model` 的请求体：全局执行模型 = 「供应商 + 模型」。 */
+export const saveModelRequestSchema = modelTargetSchema;
+export type SaveModelRequest = z.infer<typeof saveModelRequestSchema>;
 
 /**
  * 项目级「执行」里的模型选择（CFG-8.3）：`inherit` = 跟着全局（面板显示「继承全局（模型名）」），
  * `override` = 覆盖；两处**不并列**摆放可直接选的下拉由面板实现，契约这边只保证两种状态可表达。
+ *
+ * `repo` 只在响应里出现（`PUT` 的路径里已经有它），所以请求体与响应分开两个 schema。
  */
-export const repoModelRoleRowSchema = z
+export const repoModelSchema = z
   .object({
-    role: modelRoleKeySchema,
-    selection: modelRoleSelectionSchema,
+    repo: repoFullNameSchema,
+    selection: modelSelectionSchema,
     /** 生效中的供应商 + 模型（`inherit` 时来自全局，`override` 时来自项目行）；全局与项目都没配为 `null`。 */
     effective: modelTargetSchema.nullable(),
     /** 生效中的单价；模型不在目录里为 `null`。 */
@@ -1427,22 +1461,12 @@ export const repoModelRoleRowSchema = z
     updated_at: isoDateTimeSchema.nullable(),
   })
   .strict()
-  .meta({ id: 'RepoModelRoleRow' });
-export type RepoModelRoleRow = z.infer<typeof repoModelRoleRowSchema>;
+  .meta({ id: 'RepoModel' });
+export type RepoModel = z.infer<typeof repoModelSchema>;
 
-export const repoModelRolesResponseSchema = z
-  .object({
-    repo: repoFullNameSchema,
-    /** 固定四行（四档各一行）。 */
-    items: z.array(repoModelRoleRowSchema).length(MODEL_ROLE_KEYS.length),
-  })
-  .strict()
-  .meta({ id: 'RepoModelRolesResponse' });
-export type RepoModelRolesResponse = z.infer<typeof repoModelRolesResponseSchema>;
-
-/** `PUT /api/repos/:owner/:name/models/:role` 的请求体：继承（删行）或覆盖（写行）。 */
-export const saveRepoModelRoleRequestSchema = modelRoleSelectionSchema;
-export type SaveRepoModelRoleRequest = z.infer<typeof saveRepoModelRoleRequestSchema>;
+/** `PUT /api/repos/:owner/:name/model` 的请求体：继承（删行）或覆盖（写行）。 */
+export const saveRepoModelRequestSchema = modelSelectionSchema;
+export type SaveRepoModelRequest = z.infer<typeof saveRepoModelRequestSchema>;
 
 /** 一个身份的一行（CFG-9.1 / CFG-9.2）：掩码 + 三态 + scope + 过期时刻，**永不含明文**。 */
 export const panelIdentitySchema = z

@@ -66,6 +66,8 @@ export type ApiWriteWiring = {
   readonly secretKey: Uint8Array;
   /** 供应商连通性探测；不注入 → `/check` 明确 503。 */
   readonly providerProbe?: SettingsApiDeps['providerProbe'];
+  /** 「查参数」的联网取数（OpenRouter 公共库）；不注入 → 只用内置表并说明。 */
+  readonly modelCatalogFetch?: SettingsApiDeps['modelCatalogFetch'];
   /** 个人身份探测（`GET /user` 读 scope 与过期时间）。 */
   readonly identityProbe: SettingsApiDeps['identityProbe'];
   /** 写面策略（与 `/api/skills` 的写面同一份口径）；缺省 `loopback`。 */
@@ -107,7 +109,7 @@ export type ApiDeps = {
   readonly logger?: Logger;
   readonly skills?: SkillApiWiring;
   readonly repos?: RepoApiWiring;
-  /** 全局设置（供应商 / 模型角色 / 面板身份）；不注入这组路由就整组不存在。 */
+  /** 全局设置（供应商 / 执行模型 / 面板身份）；不注入这组路由就整组不存在。 */
   readonly settings?: ApiWriteWiring;
 };
 
@@ -317,7 +319,7 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
     },
   );
 
-  // ── 15. /api/settings/*（供应商 / 模型角色 / 面板身份；需求 §6.8、§6.9）──────────
+  // ── 15. /api/settings/*（供应商 / 执行模型 / 面板身份；需求 §6.8、§6.9）──────────
   // 不注入 `deps.settings` 就不挂载：只读测试不需要密钥与探测端口。写面**必须**过写守卫
   // （鉴权 + PI_BOT_PANEL_WRITE + 来源 + X-Pi-Bot-CSRF）——它改的是模型端点、key 与人身份。
   if (deps.settings !== undefined) {
@@ -332,6 +334,9 @@ export function registerApiRoutes(app: ZodFastify, deps: ApiDeps): void {
         key: deps.settings.secretKey,
         identityProbe: deps.settings.identityProbe,
         ...(deps.settings.providerProbe === undefined ? {} : { providerProbe: deps.settings.providerProbe }),
+        ...(deps.settings.modelCatalogFetch === undefined
+          ? {}
+          : { modelCatalogFetch: deps.settings.modelCatalogFetch }),
       },
       guard,
       writeGuard,

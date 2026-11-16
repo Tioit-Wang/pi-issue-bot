@@ -257,7 +257,7 @@ describe('系统页（/system）与 ⌘.', () => {
   });
 });
 
-describe('AC-32 全局设置：供应商与四档单价', () => {
+describe('AC-32 全局设置：供应商与执行模型', () => {
   it('供应商行给出 baseURL / key 掩码 / 连通性 + 延迟 / 可用 model', async () => {
     renderApp('/system');
 
@@ -287,26 +287,40 @@ describe('AC-32 全局设置：供应商与四档单价', () => {
     expect(local.textContent).toContain('没有登记可用 model');
   });
 
-  it('四档角色都在，各带输入/输出单价；没配的那档显示未配置 + —（不写 0）', async () => {
+  it('执行模型只有一档：显示供应商 + 模型 + 输入/输出单价；未配置时显示未配置 + —（不写 0）', async () => {
     renderApp('/system');
 
     const page = await screen.findByTestId('system-page');
-    const table = await within(page).findByTestId('system-model-roles');
-    // 四档必须都在（固定四行）
-    for (const role of ['agent', 'format', 'classify', 'fallback']) {
-      expect(within(table).getByTestId(`system-role-${role}`)).toBeTruthy();
-    }
+    const block = await within(page).findByTestId('system-model-setting');
 
-    const agent = within(table).getByTestId('system-role-agent').textContent ?? '';
-    expect(agent).toContain('Anthropic');
-    expect(agent).toContain('claude-opus-4');
-    expect(agent).toContain('$15 / $75');
+    expect(block.textContent).toContain('Anthropic');
+    expect(block.textContent).toContain('claude-opus-4');
+    expect(block.textContent).toContain('$15 / $75');
+    // 没有「四档」：多一行就多一个「配了但不生效」的槽位
+    expect(within(page).queryByTestId('system-model-roles')).toBeNull();
+    expect(within(page).queryByTestId('system-role-format')).toBeNull();
+  });
 
-    const fallback = within(table).getByTestId('system-role-fallback').textContent ?? '';
-    expect(fallback).toContain('未配置');
-    // 单价未知是 —，不是 $0.0000 / $0
-    expect(fallback).toContain('—');
-    expect(fallback).not.toContain('$0');
+  it('未配置时如实说未配置，单价是 —（不是 $0）', async () => {
+    server.use(
+      http.get('/api/settings/model', () =>
+        HttpResponse.json({
+          configured: false,
+          provider_id: null,
+          provider_name: null,
+          model: null,
+          price: null,
+          updated_at: null,
+        }),
+      ),
+    );
+    renderApp('/system');
+
+    const page = await screen.findByTestId('system-page');
+    const block = await within(page).findByTestId('system-model-setting');
+    expect(block.textContent).toContain('未配置');
+    expect(block.textContent).toContain('—');
+    expect(block.textContent).not.toContain('$0');
   });
 
   it('两块都读不到时不假装有值（错误态如实说原因）', async () => {
@@ -314,7 +328,7 @@ describe('AC-32 全局设置：供应商与四档单价', () => {
       http.get('/api/settings/providers', () =>
         HttpResponse.json({ error: { code: 'internal', message: '读取数据库失败' } }, { status: 500 }),
       ),
-      http.get('/api/settings/models', () =>
+      http.get('/api/settings/model', () =>
         HttpResponse.json({ error: { code: 'internal', message: '读取数据库失败' } }, { status: 500 }),
       ),
     );
@@ -322,7 +336,7 @@ describe('AC-32 全局设置：供应商与四档单价', () => {
 
     const page = await screen.findByTestId('system-page');
     expect((await within(page).findByTestId('system-providers-error')).textContent).toContain('读取数据库失败');
-    expect(within(page).getByTestId('system-roles-error').textContent).toContain('读取数据库失败');
+    expect(within(page).getByTestId('system-model-error-load').textContent).toContain('读取数据库失败');
   });
 });
 

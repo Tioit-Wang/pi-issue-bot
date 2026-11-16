@@ -46,7 +46,37 @@ export function createSettingsApiWiring(options: {
     secretKey: key,
     identityProbe: createGithubIdentityProbe(),
     providerProbe: createGithubProviderProbe(),
+    modelCatalogFetch: createOpenRouterCatalogFetch(),
     writeMode: options.config.panelWrite,
+  };
+}
+
+/** OpenRouter 公共模型库地址（公开、无需 key）。 */
+export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+
+/**
+ * 「查参数」的联网端口：取公共模型库的**原始 JSON**（解析与匹配在 `config/model-catalog.ts`）。
+ *
+ * 三条约束：
+ * - **不带任何供应商凭证**：这份库是公开的，拿供应商 key 去问第三方等于把密钥交给不相干的服务
+ *   （与「凭证只在宿主进程、不进容器」同一条安全边界）。
+ * - **超时 8s**：面板上的一次点击不该挂十几秒；超时由端点降级到内置表并说明原因。
+ * - **只做取数**：失败直接抛，由端点决定「用内置表 + 在 `note` 里说清」，不在这里吞掉。
+ */
+export function createOpenRouterCatalogFetch(
+  options: { readonly fetchImpl?: typeof fetch; readonly timeoutMs?: number } = {},
+): () => Promise<unknown> {
+  const doFetch = options.fetchImpl ?? fetch;
+  return async () => {
+    const response = await doFetch(OPENROUTER_MODELS_URL, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(options.timeoutMs ?? 8_000),
+    });
+    if (!response.ok) {
+      throw new Error(`${OPENROUTER_MODELS_URL} 返回 ${String(response.status)}`);
+    }
+    return (await response.json()) as unknown;
   };
 }
 

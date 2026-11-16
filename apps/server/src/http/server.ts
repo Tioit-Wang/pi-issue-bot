@@ -53,7 +53,7 @@ export type BuildServerDeps = {
   readonly webhook: WebhookDeps;
   /** 技能管理（写面）；不注入 → `/api/skills` 整体不挂载（读路由的测试不需要它）。 */
   readonly skills?: ApiDeps['skills'];
-  /** 全局设置（供应商 / 模型角色 / 面板身份）；不注入 → 这一组路由整组不存在。 */
+  /** 全局设置（供应商 / 执行模型 / 面板身份）；不注入 → 这一组路由整组不存在。 */
   readonly settings?: ApiDeps['settings'];
   /** 不传则建一个内部的（`serve` 会传进来，测试也可以不传）。 */
   readonly metrics?: Metrics;

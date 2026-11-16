@@ -95,13 +95,13 @@ E 的内部分层：`<style>` 里按 ①外壳 ②dock ③视图容器 ④Issue 
    → 右侧 **human 气泡**（触发 chip + 等宽事件行）→ 左侧 **agent**（无卡片、三层工具、
    `verdict`/`actions` 默认收起、model/token chips）→ 居中**平台写回行**（✓ / ✕）→ 底部输入区。
    「证据」「为什么停在这里」两块已删除。
-3. **「系统」模态框新增两块**：供应商（名称 / base URL / key 掩码 / 连通性 / model）与
-   模型角色（`agent` / `format` / `classify` / 兜底 + 输入输出单价）；另有「GitHub 身份」
+3. **「系统」页新增两块**：供应商（名称 / base URL / key 掩码 / 连通性 / model）与
+   执行模型（唯一一档：供应商 + 模型 + 输入输出单价）；另有「GitHub 身份」
    （默认 bot，可填个人 PAT，未填就用 bot）。
 4. **发送框只出 UI**：按钮 `disabled`，`title` 写明缺 `POST /api/issues/:owner/:name/:number/messages`；
    本期不做发送。
 
-需求正文（产品口径）：`docs/requirements.html` §5.7（面板：导航与页面）、§6.8（供应商与模型角色）、
+需求正文（产品口径）：`docs/requirements.html` §5.7（面板：导航与页面）、§6.8（供应商与执行模型）、
 §6.9（面板身份），验收见 §10 的 AC-26…AC-33。设计稿的版本递进（v0.1 → v0.5）在
 `docs/panel-ui-versions.html`；两者冲突时以需求正文为准。
 
