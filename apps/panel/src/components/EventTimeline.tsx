@@ -4,6 +4,7 @@ import { statusTone } from './ui/status.ts';
 import type { AuditRow } from '../lib/contract.ts';
 import { formatAbsoluteTime, formatCount, formatRelativeTime } from '../lib/format.ts';
 import { repoWorkspacePath } from '../lib/repo-route.ts';
+import { cn } from '../lib/utils.ts';
 
 /**
  * 事件时间轴（首页「最近活动」区块）。
@@ -114,7 +115,11 @@ export function EventTimeline({ rows, testId }: EventTimelineProps) {
                   key={row.id}
                   data-testid={`event-${row.id}`}
                   title={rowTitle(row, statusLabel)}
-                  className={`relative flex h-7 min-w-0 items-center gap-1.5 text-xs ${stagger < 8 ? 'stagger-row' : ''}`}
+                  className={cn(
+                    'relative flex h-7 min-w-0 items-center gap-1.5 text-xs',
+                    // 前 8 行才带入场的阶梯延迟；用 cn() 而不是模板字符串三元（shadcn styling 规则）
+                    stagger < 8 && 'stagger-row',
+                  )}
                   style={stagger < 8 ? { animationDelay: `${String(stagger * 24)}ms` } : undefined}
                 >
                   <span aria-hidden className="absolute top-1/2 -left-[21px] -translate-y-1/2">

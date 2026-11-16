@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { DEFAULT_TRIGGER_ALIASES } from '../../../../../packages/contract/src/index.ts';
 import { Alert, AlertDescription } from '../ui/alert.tsx';
 import { FieldDescription, FieldGroup } from '../ui/field.tsx';
+import { Badge } from '../ui/badge.tsx';
 import { StatusBadge } from '../ui/status-badge.tsx';
 import { TONE_BORDER } from '../ui/status.ts';
 import { cn } from '../../lib/utils.ts';
@@ -90,7 +91,8 @@ export function TriggerAdvanced({ state }: SettingsSectionProps) {
               ) : (
                 effectiveAliases.map((alias) => (
                   <li key={alias}>
-                    <span className="rounded-full bg-card px-2 py-0.5 font-mono text-xs text-foreground">@{alias}</span>
+                    {/* 用官方 `Badge` 而不是手写 rounded-full 胶囊（shadcn composition 规则） */}
+                    <Badge variant="outline" className="font-mono">{`@${alias}`}</Badge>
                   </li>
                 ))
               )}

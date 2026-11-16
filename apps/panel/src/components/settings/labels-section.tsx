@@ -13,7 +13,7 @@ import { pipelineLabelCoverage } from '../../../../../packages/contract/src/inde
 import { Button } from '../ui/button.tsx';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '../ui/field.tsx';
 import { RadioGroup, RadioGroupItem } from '../ui/radio-group.tsx';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select.tsx';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '../ui/select.tsx';
 import { StatusBadge } from '../ui/status-badge.tsx';
 import { Section } from '../Section.tsx';
 import { cn } from '../../lib/utils.ts';
@@ -234,11 +234,13 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {ROLE_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          {ROLE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </Field>
@@ -343,8 +345,10 @@ export function LabelsSection({ state }: SettingsSectionProps) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="active">active</SelectItem>
-                        <SelectItem value="retired">retired</SelectItem>
+                        <SelectGroup>
+                          <SelectItem value="active">active</SelectItem>
+                          <SelectItem value="retired">retired</SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </Field>

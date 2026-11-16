@@ -29,6 +29,7 @@ import { useState } from 'react';
 import type { EventKey, EventSwitch, RepoSettings } from '../../../../../packages/contract/src/index.ts';
 import { DEFAULT_EVENT_TEMPLATES, EVENT_PROMPT_MAX_CHARS, PROMPT_PLACEHOLDERS } from '../../../../../packages/contract/src/index.ts';
 import { cn } from '../../lib/utils.ts';
+import { Badge } from '../ui/badge.tsx';
 import { FieldDescription, FieldGroup } from '../ui/field.tsx';
 import { ChipEditor, Segmented, SwitchField, TextAreaField, TextField, type SegmentedOption } from './form.tsx';
 import { SaveBar } from './save-bar.tsx';
@@ -546,7 +547,8 @@ function RoleEditor({
         <ul className="flex flex-wrap gap-1" data-testid="v21-comment-roles">
           {roles.map((role) => (
             <li key={role.name} className="flex items-center gap-1 text-2xs">
-              <span className="rounded-full bg-card px-2 py-0.5 font-mono text-foreground">{role.name}</span>
+              {/* 用官方 `Badge` 而不是手写 rounded-full 胶囊（shadcn composition 规则） */}
+              <Badge variant="outline" className="font-mono">{role.name}</Badge>
               <button
                 type="button"
                 aria-label={`移除角色 ${role.name}`}

@@ -1,4 +1,11 @@
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.tsx';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select.tsx';
 import { cn } from '../lib/utils.ts';
 
 /**
@@ -63,12 +70,15 @@ export function FilterSelect({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {resolvedAll === null ? null : <SelectItem value={ALL}>{resolvedAll}</SelectItem>}
-          {items.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
+          {/* `SelectItem` 必须套在 `SelectGroup` 里（shadcn 组合规则，避免内容容器直接挂 item） */}
+          <SelectGroup>
+            {resolvedAll === null ? null : <SelectItem value={ALL}>{resolvedAll}</SelectItem>}
+            {items.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
         </SelectContent>
       </Select>
     </span>
