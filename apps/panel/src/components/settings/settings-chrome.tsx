@@ -194,6 +194,10 @@ export function SettingsNav({
 
   return (
     <div onKeyDown={move} className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/*
+        自定义 `@utility w-rail` 在层叠里压过 `w-full`（实机验证过），所以这里不再试图改写宽度 ——
+        左栏统一 280px（`FR-7.4`），九个列的排布问题由 `labels-section.tsx` 的 `VOCAB_GRID` 解决。
+      */}
       <Rail
         label="设置分区"
         count={railCount(items.length, '分区')}

@@ -25,7 +25,7 @@ const COLOR_PATTERN = /^[0-9A-Fa-f]{6}$/u;
 
 /** 词表行的列宽（表头与行共用一份，避免 drift）：name / 角色 / meaning / color / description / group / 操作。 */
 const VOCAB_GRID =
-  'md:grid-cols-[minmax(0,1fr)_5.5rem_minmax(0,1.2fr)_5rem_minmax(0,1fr)_5rem_5.5rem_5.5rem_auto]';
+  'md:grid-cols-[minmax(5rem,1fr)_4.5rem_minmax(0,1.2fr)_4.5rem_minmax(0,1fr)_4.5rem_3.5rem_4.5rem_auto]';
 
 /** 角色下拉：`role` 是流程分叉依据（契约必填），面板给中文标签，值仍是契约枚举。 */
 const ROLE_OPTIONS: readonly { value: LabelRole; label: string }[] = [
@@ -140,7 +140,7 @@ export function LabelsSection({ state }: SettingsSectionProps) {
       >
         <FieldGroup className="gap-2">
           <FieldDescription>
-            词表是**给模型看的标签语义**（`meaning` 会进提示词）。`managed` 决定这个标签参不参与自动对齐：
+            词表是<strong>给模型看的标签语义</strong>（`meaning` 会进提示词）。`managed` 决定这个标签参不参与自动对齐：
             关掉 = 不删不加，完全由人管；`status=retired` = GitHub 上已删掉，不再进入目标态。
             代价：词表写得含糊，打标就会含糊；`managed` 全开而词表里有手打的标签，撤标会动到人的标签。
           </FieldDescription>
@@ -159,23 +159,34 @@ export function LabelsSection({ state }: SettingsSectionProps) {
               还没有词表：模型拿不到标签语义，打标质量会下降
             </p>
           ) : (
-            <div className="flex flex-col gap-2">
-              <div aria-hidden className={cn('hidden gap-2 px-1 text-2xs text-faint md:grid', VOCAB_GRID)}>
-                <span>name</span>
-                <span>角色</span>
-                <span>meaning（注入提示词）</span>
-                <span>color</span>
-                <span>description</span>
-                <span>group</span>
-                <span>自动对齐</span>
-                <span>status</span>
+            /*
+              词表是九列表格，而设置页右栏在 1330px 视口下只有 ~723px（左栏 280 + 间距）：
+              九列压进 723px 时每列只剩 ~70px，输入值全被截断、每行还会重复画一遍字段标签
+              （2026-11-16 实机复核）。所以表头单独一行承担列名，行内标签在 md 以上用 sr-only 隐藏，
+              并给整块最小宽度 + 横向滚动兜底 —— 宁可在窄屏横向滚，也不把列压成不可读。
+            */
+            <div className="flex min-w-0 flex-col gap-2 overflow-x-auto">
+              <div
+                aria-hidden
+                className={cn('hidden min-w-[700px] gap-2 px-1 text-2xs text-faint md:grid', VOCAB_GRID)}
+              >
+                <span className="truncate">name</span>
+                <span className="truncate">角色</span>
+                <span className="truncate" title="会注入提示词">meaning</span>
+                <span className="truncate">color</span>
+                <span className="truncate">description</span>
+                <span className="truncate">group</span>
+                <span className="truncate">对齐</span>
+                <span className="truncate">status</span>
                 <span />
               </div>
               {labels.vocabulary.map((entry, index) => (
                 <div
                   key={`vocab-${String(index)}`}
                   className={cn(
-                    'grid min-w-0 grid-cols-2 gap-2 rounded-md border border-border p-2 md:border-0 md:p-0',
+                    'grid min-w-[700px] grid-cols-2 gap-2 rounded-md border border-border p-2 md:border-0 md:p-0',
+                    'md:[&_[data-slot=field-label]]:sr-only',
+                    '[&_input]:min-w-0 [&_[role=combobox]]:min-w-0',
                     VOCAB_GRID,
                   )}
                   data-testid={`labels-vocab-row-${String(index)}`}

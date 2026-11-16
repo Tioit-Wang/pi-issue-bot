@@ -195,6 +195,12 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
       */}
       <div
         className={cn(
+          /*
+            左栏用全局令牌 `--rail-width`（280，与 Issue 队列 / 技能列表一致，`FR-7.4`）：
+            自定义 `@utility w-rail` 在层叠里压过 `w-full`/`15rem` 这类写法（实机验证过），
+            所以「设置页把栏收窄、把宽度让给表单」这条路走不通 —— 宽度只能从右侧九列表格那侧找，
+            见 `labels-section.tsx` 的 `VOCAB_GRID`。
+          */
           'grid min-w-0 gap-4 lg:grid-cols-[var(--rail-width)_minmax(0,1fr)] lg:gap-6',
           // `fillHeight`（事件绑定分区）要「自己不满就内部滚」，所以整条高度链必须通到底：
           // 1. 容器拿到 `flex-1` 的剩余高度；
@@ -215,12 +221,20 @@ function SettingsBody({ repo, section }: { repo: string; section: SettingsSectio
         </div>
 
         {/*
-          `max-w-[720px]`：右侧是**单列表单**，不是表格。宽度放开到整屏时，
-          一行字会横跨 1400px，标签与控件之间的对应关系反而看不出来；
-          企业级 admin 的常规做法就是「表单窄、两侧留白」。表格类内容（词表）在分区内部
-          自己用 grid 的 `minmax(0, …)` 分配列宽，所以不会因为这里收窄而溢出。
+          右栏宽度上限**按分区**给，不写死一个数：
+          - 单列表单（通用 / 执行 / 事件绑定）用 720px：再宽一行字横跨 1400px，标签与控件的
+            对应关系反而看不出来，企业级 admin 的常规做法就是「表单窄、两侧留白」；
+          - 「标签」分区的词表是**九列表格**（name / 角色 / meaning / color / description /
+            group / 自动对齐 / status / 移除）。塞进 720px 时每列只剩 ~70px，输入值全被截断、
+            每行还要重复一遍字段标签（2026-11-16 实机复核），所以它单独放宽。
         */}
-        <div className={cn('flex w-full max-w-[720px] min-w-0 flex-col gap-3', fillHeight && 'min-h-0 flex-1')}>
+        <div
+          className={cn(
+            'flex w-full min-w-0 flex-col gap-3',
+            section === 'labels' ? 'max-w-[1120px]' : 'max-w-[720px]',
+            fillHeight && 'min-h-0 flex-1',
+          )}
+        >
           {pendingSection === null ? null : (
             <Alert className={cn('bg-card', TONE_BORDER.warn)} data-testid="repo-settings-dirty-guard">
               <AlertTitle className="flex flex-wrap items-center gap-1.5">
