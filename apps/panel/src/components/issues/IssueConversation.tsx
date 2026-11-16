@@ -21,6 +21,9 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { StatusBadge, StatusDot } from '../ui/status-badge.tsx';
 import { Button, buttonVariants } from '../ui/button.tsx';
+import { Bubble, BubbleContent } from '../ui/bubble.tsx';
+import { Marker, MarkerContent } from '../ui/marker.tsx';
+import { Message, MessageContent, MessageFooter, MessageHeader } from '../ui/message.tsx';
 import type { IssueSessionResponse, IssueToolCall, IssueTurn } from '../../lib/contract.ts';
 import { EMPTY, formatCount, formatDuration, formatTimeCell, formatTokens, formatUsd } from '../../lib/format.ts';
 import { readOriginalBody, readSystemPrompt } from './conversation-extras.ts';
@@ -265,11 +268,14 @@ function SystemPromptBlock({ data }: { data: IssueSessionResponse }) {
     const absent = prompt.state === 'absent';
     return (
       <div className="flex justify-center" data-testid="issue-system-prompt-empty">
-        <p className="max-w-[42rem] rounded-md border border-dashed border-border px-3 py-1.5 text-2xs text-muted-foreground">
-          {absent
-            ? '响应里没有 IssueSessionResponse.systemPrompt 这个字段（旧服务端 / mock 夹具）：这是契约缺字段，不是「这次会话没有提示词」。'
-            : '这次会话没有系统提示词的记录（服务端 agent_sessions.system_prompt 为 null）：可能还没跑过一轮，或只有被拒绝的投递。'}
-        </p>
+        {/* 系统提示：用官方 `Marker`（不是随手一个虚线 `<p>`） */}
+        <Marker className="w-full max-w-[42rem] rounded-md border border-dashed border-border px-3 py-1.5 text-2xs">
+          <MarkerContent>
+            {absent
+              ? '响应里没有 IssueSessionResponse.systemPrompt 这个字段（旧服务端 / mock 夹具）：这是契约缺字段，不是「这次会话没有提示词」。'
+              : '这次会话没有系统提示词的记录（服务端 agent_sessions.system_prompt 为 null）：可能还没跑过一轮，或只有被拒绝的投递。'}
+          </MarkerContent>
+        </Marker>
       </div>
     );
   }
@@ -310,31 +316,36 @@ function TurnRow({ turn, taskHref }: { turn: IssueTurn; taskHref: (taskId: strin
 function HumanRow({ turn }: { turn: IssueTurn }) {
   const time = formatTimeCell(turn.at);
   return (
-    <li className="flex min-w-0 flex-col gap-1 py-2" data-testid="issue-turn-human">
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-0.5 text-2xs text-faint">
-        <span className="font-mono text-foreground/80">{turn.login ?? '人类'}</span>
-        {turn.channel === null ? null : <StatusBadge tone="neutral">{CHANNEL_LABEL[turn.channel]}</StatusBadge>}
-        {/* 事件元信息：来源 · 编号 · 绝对时间（`FR-7.3` 的例子就是这个形状） */}
-        <span className="font-mono">
-          {`${turn.channel ?? 'event'} · #${String(turn.id.split(':')[1] ?? '')} · ${new Date(turn.at).toISOString()}`}
-        </span>
-        <time title={time.title}>{time.text}</time>
-      </div>
-      <div className="flex min-w-0 justify-end">
-        <div className="flex w-max max-w-[min(82%,37.5rem)] flex-col gap-1 rounded-lg rounded-br-sm bg-foreground/[0.08] px-3 py-2">
-          <MessageText text={turn.text} testId="issue-turn-human-text" />
-          {turn.commentUrl === null ? null : (
-            <a
-              className="self-start text-2xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              href={turn.commentUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              在 GitHub 看这条评论
-            </a>
-          )}
-        </div>
-      </div>
+    <li data-testid="issue-turn-human">
+      {/* 会话行一律用官方 `Message`；气泡用 `Bubble variant="muted"`（shadcn chat 规则） */}
+      <Message align="end">
+        <MessageContent>
+          <MessageHeader className="justify-end gap-x-2 text-2xs">
+            <span className="font-mono text-foreground/80">{turn.login ?? '人类'}</span>
+            {turn.channel === null ? null : <StatusBadge tone="neutral">{CHANNEL_LABEL[turn.channel]}</StatusBadge>}
+            {/* 事件元信息：来源 · 编号 · 绝对时间（`FR-7.3` 的例子就是这个形状） */}
+            <span className="font-mono text-faint">
+              {`${turn.channel ?? 'event'} · #${String(turn.id.split(':')[1] ?? '')} · ${new Date(turn.at).toISOString()}`}
+            </span>
+            <time title={time.title}>{time.text}</time>
+          </MessageHeader>
+          <Bubble variant="muted" className="max-w-[min(82%,37.5rem)]">
+            <BubbleContent className="flex flex-col gap-1">
+              <MessageText text={turn.text} testId="issue-turn-human-text" />
+              {turn.commentUrl === null ? null : (
+                <a
+                  className="self-start text-2xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  href={turn.commentUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  在 GitHub 看这条评论
+                </a>
+              )}
+            </BubbleContent>
+          </Bubble>
+        </MessageContent>
+      </Message>
     </li>
   );
 }
@@ -348,9 +359,12 @@ function AgentRow({ turn, taskHref }: { turn: IssueTurn; taskHref: (taskId: stri
   const failedTools = turn.toolCalls.filter((call) => !call.ok).length;
 
   return (
-    <li className="flex min-w-0 flex-col gap-1.5 py-2" data-testid="issue-turn-bot">
-      {/* 轮标题（第一层）：状态 · 时间 · 耗时 · 工具数 */}
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-muted-foreground">
+    <li data-testid="issue-turn-bot">
+      <Message>
+        {/* 宽度上限：agent 正文是长文本，不设上限会横跨整个会话宽度、与 meta 行失去层级 */}
+        <MessageContent className="max-w-[min(92%,52rem)]">
+          {/* 轮标题（第一层）：状态 · 时间 · 耗时 · 工具数 */}
+          <MessageHeader className="gap-x-2 text-2xs">
         <button
           type="button"
           className="flex w-fit items-center gap-1.5 rounded-md px-1 py-0.5 transition-[background-color,color] duration-[120ms] hover:bg-foreground/[0.04] hover:text-foreground"
@@ -379,18 +393,20 @@ function AgentRow({ turn, taskHref }: { turn: IssueTurn; taskHref: (taskId: stri
         )}
         {turn.failureClass === null ? null : <StatusBadge tone="danger">{turn.failureClass}</StatusBadge>}
         {turn.attempts > 1 ? <span className="text-faint">{`合并 ${formatCount(turn.attempts)} 次 attempt`}</span> : null}
-      </div>
+          </MessageHeader>
 
-      {/* 回答正文（agent 在左，无卡片） */}
-      {turn.text === null || turn.text === '' ? null : (
-        <div className="min-w-0 pl-3">
-          <MessageText text={turn.text} testId="issue-turn-bot-text" />
-        </div>
-      )}
+          {/* 回答正文：`Bubble variant="ghost"`（无底无边，只有正文） */}
+          {turn.text === null || turn.text === '' ? null : (
+            <Bubble variant="ghost" className="max-w-full">
+              <BubbleContent className="px-3">
+                <MessageText text={turn.text} testId="issue-turn-bot-text" />
+              </BubbleContent>
+            </Bubble>
+          )}
 
-      {/* 第二层：工具组；第三层：单次调用（展开后） */}
-      {toolCount === 0 || !toolsOpen ? null : (
-        <div className="flex min-w-0 flex-col gap-1 pl-3" data-testid="issue-turn-tool-calls">
+          {/* 第二层：工具组；第三层：单次调用（展开后） */}
+          {toolCount === 0 || !toolsOpen ? null : (
+            <div className="flex min-w-0 flex-col gap-1 pl-3" data-testid="issue-turn-tool-calls">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-muted-foreground">
             <span aria-hidden>▾</span>
             <span>工具调用</span>
@@ -411,8 +427,8 @@ function AgentRow({ turn, taskHref }: { turn: IssueTurn; taskHref: (taskId: stri
       {/* 默认收起的信封原文：`verdict` / `actions`（`AC-30` / `FR-7.3`） */}
       <EnvelopeBlock turn={turn} />
 
-      {/* 脚注：成本（token 与单价）+ 任务证据链接 + 评论链接 */}
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 pl-3 text-2xs text-faint">
+          {/* 脚注：成本（token 与单价）+ 任务证据链接 + 评论链接 */}
+          <MessageFooter className="gap-x-2 text-2xs text-faint">
         {cost.costUsd === null ? null : <span className="tabular" title="本轮成本（USD）">{formatUsd(cost.costUsd)}</span>}
         {turn.taskId === null ? (
           <span>{EMPTY}</span>
@@ -426,7 +442,9 @@ function AgentRow({ turn, taskHref }: { turn: IssueTurn; taskHref: (taskId: stri
             在 GitHub 看这条评论
           </a>
         )}
-      </div>
+          </MessageFooter>
+        </MessageContent>
+      </Message>
     </li>
   );
 }
